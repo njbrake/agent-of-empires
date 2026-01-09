@@ -67,7 +67,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: dist/${{ matrix.name }}.tar.gz*
+          path: |
+            dist/${{ matrix.name }}.tar.gz
+            dist/${{ matrix.name }}.tar.gz.sha256
 
   release:
     name: Create Release
@@ -82,12 +84,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
-      - name: Prepare release assets
+      - name: List artifacts
         run: |
-          mkdir -p release
-          find artifacts -name '*.tar.gz*' -exec cp {} release/ \;
-          ls -la release/
+          echo "=== Artifacts directory ==="
+          ls -laR artifacts/
+          echo "=== Finding tar.gz files ==="
+          find artifacts -type f -name '*.tar.gz*' | head -20
 
       - name: Get version
         id: version
@@ -105,5 +109,7 @@ jobs:
           name: Agent of Empires ${{ steps.version.outputs.version }}
           draft: false
           prerelease: false
-          files: release/*
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sha256
           generate_release_notes: true
