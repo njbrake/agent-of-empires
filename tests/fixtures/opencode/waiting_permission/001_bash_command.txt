@@ -1,11 +1,10 @@
 # FIXTURE: OpenCode - Waiting_permission State
 # Captured from: 1.1.8
 # Capture date: 2026-01-10
-# To update: scripts/capture-fixtures.sh opencode waiting_permission <tmux_session>
+# To add more: scripts/capture-fixtures.sh opencode waiting_permission <tmux_session> [description]
 #
 # Expected status: Waiting
-# Key indicators: (update this after reviewing the capture)
-
+# Key indicators: "Permission required" and "Allow once / Allow always / Reject" options
 
   ┃
   ┃  # Write 'hi' to /tmp file                                                                                        12,123  6% ($0.00)

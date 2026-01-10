@@ -2,16 +2,18 @@
 # Capture terminal fixtures for status detection golden tests
 #
 # Usage:
-#   ./scripts/capture-fixtures.sh <tool> <state> <tmux_session>
+#   ./scripts/capture-fixtures.sh <tool> <state> <tmux_session> [description]
 #
 # Examples:
 #   ./scripts/capture-fixtures.sh claude running aoe_myproject_abc12345
-#   ./scripts/capture-fixtures.sh opencode waiting_question aoe_task_def67890
+#   ./scripts/capture-fixtures.sh claude running aoe_myproject_abc12345 "tool_call"
+#   ./scripts/capture-fixtures.sh opencode waiting_question aoe_task_def67890 "clarification"
 #
 # States: running, waiting_question, waiting_permission, idle
 #
 # This script captures the current terminal content from a tmux session
-# and saves it as a fixture file for golden testing.
+# and saves it as a fixture file for golden testing. Each state is a directory
+# containing one or more fixture files, allowing multiple examples per state.
 
 set -e
 
@@ -24,16 +26,20 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 FIXTURES_DIR="$PROJECT_ROOT/tests/fixtures"
 
 usage() {
-    echo "Usage: $0 <tool> <state> <tmux_session>"
+    echo "Usage: $0 <tool> <state> <tmux_session> [description]"
     echo ""
     echo "Arguments:"
     echo "  tool          Tool name: 'claude' or 'opencode'"
     echo "  state         State to capture: 'running', 'waiting_question', 'waiting_permission', 'idle'"
     echo "  tmux_session  Name of the tmux session to capture from"
+    echo "  description   Optional description for the fixture filename (e.g., 'tool_call')"
     echo ""
     echo "Examples:"
     echo "  $0 claude running aoe_myproject_abc12345"
-    echo "  $0 opencode waiting_question aoe_task_def67890"
+    echo "  $0 claude running aoe_myproject_abc12345 tool_call"
+    echo "  $0 opencode waiting_question aoe_task_def67890 clarification"
+    echo ""
+    echo "Output filename format: NNN_description.txt (e.g., 001_capture.txt, 002_tool_call.txt)"
     echo ""
     echo "Steps to capture a fixture:"
     echo "  1. Start the tool in a tmux session managed by aoe"
@@ -45,13 +51,17 @@ usage() {
 }
 
 # Validate arguments
-if [ $# -ne 3 ]; then
+if [ $# -lt 3 ] || [ $# -gt 4 ]; then
     usage
 fi
 
 TOOL="$1"
 STATE="$2"
 SESSION="$3"
+DESCRIPTION="${4:-capture}"
+
+# Sanitize description (replace spaces/special chars with underscores)
+DESCRIPTION=$(echo "$DESCRIPTION" | tr ' ' '_' | tr -cd '[:alnum:]_')
 
 # Validate tool
 case "$TOOL" in
@@ -89,11 +99,23 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     exit 1
 fi
 
-# Create output directory if needed
-OUTPUT_DIR="$FIXTURES_DIR/$TOOL_DIR"
+# Create state directory if needed
+OUTPUT_DIR="$FIXTURES_DIR/$TOOL_DIR/$STATE"
 mkdir -p "$OUTPUT_DIR"
 
-OUTPUT_FILE="$OUTPUT_DIR/$STATE.txt"
+# Find next sequence number
+NEXT_NUM=1
+if [ -d "$OUTPUT_DIR" ]; then
+    EXISTING=$(ls "$OUTPUT_DIR"/*.txt 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$EXISTING" -gt 0 ]; then
+        LAST_NUM=$(ls "$OUTPUT_DIR"/*.txt 2>/dev/null | sed 's/.*\/\([0-9]*\)_.*/\1/' | sort -n | tail -1)
+        NEXT_NUM=$((10#$LAST_NUM + 1))
+    fi
+fi
+
+# Format sequence number with zero-padding
+SEQ_NUM=$(printf "%03d" "$NEXT_NUM")
+OUTPUT_FILE="$OUTPUT_DIR/${SEQ_NUM}_${DESCRIPTION}.txt"
 
 # Get tool version if possible
 get_version() {
@@ -121,7 +143,7 @@ cat > "$OUTPUT_FILE" << EOF
 # FIXTURE: $TOOL_DISPLAY - $STATE_DISPLAY State
 # Captured from: $VERSION
 # Capture date: $DATE
-# To update: scripts/capture-fixtures.sh $TOOL $STATE <tmux_session>
+# To add more: scripts/capture-fixtures.sh $TOOL $STATE <tmux_session> [description]
 #
 # Expected status: $(echo "$STATE" | sed 's/waiting.*/Waiting/; s/running/Running/; s/idle/Idle/')
 # Key indicators: (update this after reviewing the capture)

@@ -1,19 +1,10 @@
 # FIXTURE: OpenCode - Idle State
 # Captured from: 1.1.8
 # Capture date: 2026-01-10
-# To update: scripts/capture-fixtures.sh opencode idle <tmux_session>
+# To add more: scripts/capture-fixtures.sh opencode idle <tmux_session> [description]
 #
 # Expected status: Idle
-# Key indicators: (update this after reviewing the capture)
-
-
-
-
-
-
-
-
-
+# Key indicators: "Ask anything..." prompt with empty input
 
 
 
@@ -30,15 +21,6 @@
                                 ┃  Build  Nemotron 3 Nano LM Studio (local)
                                 ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
                                                                           tab switch agent  ctrl+p commands
-
-
-
-
-
-
-
-
-
 
 
 

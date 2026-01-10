@@ -1,11 +1,10 @@
 # FIXTURE: Claude Code - Waiting_question State
 # Captured from: 2.1.2 (Claude Code)
 # Capture date: 2026-01-10
-# To update: scripts/capture-fixtures.sh claude waiting_question <tmux_session>
+# To add more: scripts/capture-fixtures.sh claude waiting_question <tmux_session> [description]
 #
 # Expected status: Waiting
-# Key indicators: (update this after reviewing the capture)
-
+# Key indicators: Checkbox selection prompt with "Enter to select" instruction
 
 ╭─── Claude Code v2.1.2 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                                          │

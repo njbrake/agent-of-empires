@@ -1,11 +1,10 @@
 # FIXTURE: OpenCode - Running State
 # Captured from: 1.1.8
 # Capture date: 2026-01-10
-# To update: scripts/capture-fixtures.sh opencode running <tmux_session>
+# To add more: scripts/capture-fixtures.sh opencode running <tmux_session> [description]
 #
 # Expected status: Running
-# Key indicators: (update this after reviewing the capture)
-
+# Key indicators: "esc interrupt" shown at bottom, spinner animation
 
   ┃
   ┃  # Write 'hi' to /tmp file                                                                                        12,138  6% ($0.00)

@@ -1,11 +1,10 @@
 # FIXTURE: Claude Code - Running State
 # Captured from: 2.1.2 (Claude Code)
 # Capture date: 2026-01-10
-# To update: scripts/capture-fixtures.sh claude running <tmux_session>
+# To add more: scripts/capture-fixtures.sh claude running <tmux_session> [description]
 #
 # Expected status: Running
-# Key indicators: (update this after reviewing the capture)
-
+# Key indicators: "Pollinating" or "thinking" indicator shown
 
 ╭─── Claude Code v2.1.2 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                                          │
@@ -25,6 +24,6 @@
 ✳ Pollinating… (esc to interrupt · thinking)
 
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
+❯
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ? for shortcuts                                                                         Update available! Run: brew upgrade claude-code

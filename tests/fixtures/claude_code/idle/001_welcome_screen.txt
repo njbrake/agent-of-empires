@@ -1,11 +1,10 @@
-# FIXTURE: Claude Code - Waiting_permission State
+# FIXTURE: Claude Code - Idle State
 # Captured from: 2.1.2 (Claude Code)
 # Capture date: 2026-01-10
-# To update: scripts/capture-fixtures.sh claude waiting_permission <tmux_session>
+# To add more: scripts/capture-fixtures.sh claude idle <tmux_session> [description]
 #
-# Expected status: Waiting
-# Key indicators: (update this after reviewing the capture)
-
+# Expected status: Idle
+# Key indicators: Welcome screen with input prompt, no running activity
 
 ╭─── Claude Code v2.1.2 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                                          │
@@ -20,39 +19,7 @@
 │               ~/scm/agent-of-empires               │                                                                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-❯ please ask me a question that has two checkboxes
-
-⏺ I'll ask you a question with two checkboxes using the AskUserQuestion tool.
-
-⏺ User declined to answer questions
-
-❯ Thanks! Now please request to do something that will require me to approve/dissaprove
-
-⏺ I'll request to enter plan mode, which requires your approval.
-
-⏺ Entered plan mode
-  Claude is now exploring and designing an implementation approach.
-
-⏺ You just approved my request to enter plan mode! This is an example of something that requires your approval before proceeding.
-
-  Since we're now in plan mode but don't have an actual implementation task to plan, would you like me to exit plan mode, or is there something specific you'd like me to help you build for this project?
-
-❯ please ask to echo 'hi' to ~, which will request my permission
-
-⏺ I'll attempt to echo 'hi' to your home directory, which should require your permission.
-
-⏺ Bash(echo 'hi' > ~/test_permission_file.txt)
-  ⎿  Running…
-
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Bash command
-
-   echo 'hi' > ~/test_permission_file.txt
-   Echo 'hi' to home directory file
-
- Do you want to proceed?
-   1. Yes
-   2. Yes, and don't ask again for ~/test_permission_file.txt commands in /Users/nbrake/scm/agent-of-empires
- ❯ 3. Type here to tell Claude what to do differently
-
- Esc to cancel
+❯ Try "edit mcp.rs to..."
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                                                                                                                                                     Update available! Run: brew upgrade claude-code
