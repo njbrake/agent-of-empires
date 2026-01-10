@@ -32,3 +32,5 @@ Thumbs.db
 
 # Personal/local files
 *.screenstudio/
+
+debug.log

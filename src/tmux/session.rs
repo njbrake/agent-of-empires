@@ -146,33 +146,14 @@ impl Session {
         self.capture_pane_with_size(lines, None, None)
     }
 
-    fn resize_window(&self, width: u16, height: u16) {
-        let _ = Command::new("tmux")
-            .args([
-                "resize-window",
-                "-t",
-                &self.name,
-                "-x",
-                &width.to_string(),
-                "-y",
-                &height.to_string(),
-            ])
-            .output();
-    }
-
     pub fn capture_pane_with_size(
         &self,
         lines: usize,
-        width: Option<u16>,
-        height: Option<u16>,
+        _width: Option<u16>,
+        _height: Option<u16>,
     ) -> Result<String> {
         if !self.exists() {
             return Ok(String::new());
-        }
-
-        // Resize the window to match the preview dimensions if provided
-        if let (Some(w), Some(h)) = (width, height) {
-            self.resize_window(w, h);
         }
 
         let output = Command::new("tmux")
@@ -282,8 +263,8 @@ pub fn detect_claude_status(content: &str) -> Status {
         .copied()
         .collect();
 
-    // RUNNING: "esc to interrupt" is shown when Claude is busy
-    if content_lower.contains("esc to interrupt") {
+    // RUNNING: "esc to interrupt" or "ctrl+c to interrupt" shown when Claude is busy
+    if content_lower.contains("esc to interrupt") || content_lower.contains("ctrl+c to interrupt") {
         return Status::Running;
     }
 
@@ -489,6 +470,12 @@ mod tests {
         );
         assert_eq!(
             detect_claude_status("Thinking... · esc to interrupt"),
+            Status::Running
+        );
+
+        // "ctrl+c to interrupt" also indicates running (used during hashing, indexing, etc.)
+        assert_eq!(
+            detect_claude_status("✶ Hashing… (ctrl+c to interrupt)"),
             Status::Running
         );
 
