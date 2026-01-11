@@ -169,7 +169,12 @@ impl NewSessionDialog {
 
         for (idx, (label, value)) in text_fields.iter().enumerate() {
             let is_focused = idx == self.focused_field;
-            let style = if is_focused {
+            let label_style = if is_focused {
+                Style::default().fg(theme.accent).underlined()
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let value_style = if is_focused {
                 Style::default().fg(theme.accent)
             } else {
                 Style::default().fg(theme.text)
@@ -181,11 +186,11 @@ impl NewSessionDialog {
                 value.as_str()
             };
 
-            let text = format!("{} {}", label, display_value);
             let cursor = if is_focused { "█" } else { "" };
             let line = Line::from(vec![
-                Span::styled(text, style),
-                Span::styled(cursor, Style::default().fg(theme.accent)),
+                Span::styled(*label, label_style),
+                Span::styled(format!(" {}", display_value), value_style),
+                Span::styled(cursor, Style::default().fg(theme.accent).bg(theme.text)),
             ]);
 
             frame.render_widget(Paragraph::new(line), chunks[idx]);
@@ -193,13 +198,19 @@ impl NewSessionDialog {
 
         let is_tool_focused = self.focused_field == 3;
         let tool_style = if is_tool_focused && has_tool_selection {
-            Style::default().fg(theme.accent)
+            Style::default().fg(theme.accent).underlined()
         } else {
             Style::default().fg(theme.text)
         };
 
         if has_tool_selection {
-            let mut tool_spans = vec![Span::styled("Tool:  ", tool_style)];
+            let label_style = if is_tool_focused && has_tool_selection {
+                Style::default().fg(theme.accent).underlined()
+            } else {
+                Style::default().fg(theme.text)
+            };
+
+            let mut tool_spans = vec![Span::styled("Tool:", label_style), Span::raw(" ")];
 
             for (idx, tool_name) in self.available_tools.iter().enumerate() {
                 let is_selected = idx == self.tool_index;
@@ -210,7 +221,7 @@ impl NewSessionDialog {
                 };
 
                 if idx > 0 {
-                    tool_spans.push(Span::raw("   "));
+                    tool_spans.push(Span::raw("  "));
                 }
                 tool_spans.push(Span::styled(if is_selected { "● " } else { "○ " }, style));
                 tool_spans.push(Span::styled(*tool_name, style));
@@ -220,7 +231,8 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(tool_line), chunks[3]);
         } else {
             let tool_line = Line::from(vec![
-                Span::styled("Tool:  ", tool_style),
+                Span::styled("Tool:", tool_style),
+                Span::raw(" "),
                 Span::styled(self.available_tools[0], Style::default().fg(theme.accent)),
             ]);
             frame.render_widget(Paragraph::new(tool_line), chunks[3]);
