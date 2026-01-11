@@ -519,7 +519,8 @@ impl HomeView {
             })
             .collect();
 
-        let list = List::new(list_items).highlight_style(Style::default().bg(theme.selection));
+        let list =
+            List::new(list_items).highlight_style(Style::default().bg(theme.session_selection));
 
         frame.render_widget(list, inner);
 
@@ -583,7 +584,7 @@ impl HomeView {
         ]);
 
         if is_selected {
-            ListItem::new(line).style(Style::default().bg(theme.selection))
+            ListItem::new(line).style(Style::default().bg(theme.session_selection))
         } else {
             ListItem::new(line)
         }

@@ -8,6 +8,7 @@ pub struct Theme {
     pub background: Color,
     pub border: Color,
     pub selection: Color,
+    pub session_selection: Color,
 
     // Text colors
     pub title: Color,
@@ -39,6 +40,7 @@ impl Theme {
             background: Color::Rgb(16, 20, 18),
             border: Color::Rgb(45, 70, 55),
             selection: Color::Rgb(30, 50, 40),
+            session_selection: Color::Rgb(60, 60, 60),
 
             title: Color::Rgb(57, 255, 20),
             text: Color::Rgb(180, 255, 180),
@@ -62,6 +64,7 @@ impl Theme {
             background: Color::Rgb(26, 27, 38),
             border: Color::Rgb(59, 66, 97),
             selection: Color::Rgb(41, 46, 66),
+            session_selection: Color::Rgb(41, 46, 66),
 
             title: Color::Rgb(122, 162, 247),
             text: Color::Rgb(192, 202, 245),
