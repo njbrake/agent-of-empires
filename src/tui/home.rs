@@ -712,6 +712,7 @@ impl HomeView {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -784,12 +785,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_initial_cursor_position() {
         let env = create_test_env_with_sessions(3);
         assert_eq!(env.view.cursor, 0);
     }
 
     #[test]
+    #[serial]
     fn test_q_returns_quit_action() {
         let mut env = create_test_env_empty();
         let action = env.view.handle_key(key(KeyCode::Char('q')));
@@ -797,6 +800,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_question_mark_opens_help() {
         let mut env = create_test_env_empty();
         assert!(!env.view.show_help);
@@ -805,6 +809,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_help_closes_on_esc() {
         let mut env = create_test_env_empty();
         env.view.show_help = true;
@@ -813,6 +818,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_help_closes_on_question_mark() {
         let mut env = create_test_env_empty();
         env.view.show_help = true;
@@ -821,6 +827,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_help_closes_on_q() {
         let mut env = create_test_env_empty();
         env.view.show_help = true;
@@ -829,6 +836,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_has_dialog_returns_true_for_help() {
         let mut env = create_test_env_empty();
         assert!(!env.view.has_dialog());
@@ -837,6 +845,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_n_opens_new_dialog() {
         let mut env = create_test_env_empty();
         assert!(env.view.new_dialog.is_none());
@@ -845,6 +854,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_has_dialog_returns_true_for_new_dialog() {
         let mut env = create_test_env_empty();
         env.view.new_dialog = Some(NewSessionDialog::new(
@@ -858,6 +868,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_down_j() {
         let mut env = create_test_env_with_sessions(5);
         assert_eq!(env.view.cursor, 0);
@@ -866,6 +877,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_down_arrow() {
         let mut env = create_test_env_with_sessions(5);
         assert_eq!(env.view.cursor, 0);
@@ -874,6 +886,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_up_k() {
         let mut env = create_test_env_with_sessions(5);
         env.view.cursor = 3;
@@ -882,6 +895,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_up_arrow() {
         let mut env = create_test_env_with_sessions(5);
         env.view.cursor = 3;
@@ -890,6 +904,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_bounds_at_top() {
         let mut env = create_test_env_with_sessions(5);
         env.view.cursor = 0;
@@ -898,6 +913,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_bounds_at_bottom() {
         let mut env = create_test_env_with_sessions(5);
         env.view.cursor = 4;
@@ -906,6 +922,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_page_down() {
         let mut env = create_test_env_with_sessions(20);
         env.view.cursor = 0;
@@ -914,6 +931,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_page_up() {
         let mut env = create_test_env_with_sessions(20);
         env.view.cursor = 15;
@@ -922,6 +940,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_page_down_clamps_to_end() {
         let mut env = create_test_env_with_sessions(5);
         env.view.cursor = 0;
@@ -930,6 +949,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_page_up_clamps_to_start() {
         let mut env = create_test_env_with_sessions(5);
         env.view.cursor = 3;
@@ -938,6 +958,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_home_key() {
         let mut env = create_test_env_with_sessions(10);
         env.view.cursor = 7;
@@ -946,6 +967,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_end_key() {
         let mut env = create_test_env_with_sessions(10);
         env.view.cursor = 3;
@@ -954,6 +976,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_g_key_goes_to_start() {
         let mut env = create_test_env_with_sessions(10);
         env.view.cursor = 7;
@@ -962,6 +985,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_uppercase_g_goes_to_end() {
         let mut env = create_test_env_with_sessions(10);
         env.view.cursor = 3;
@@ -970,6 +994,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_movement_on_empty_list() {
         let mut env = create_test_env_empty();
         env.view.handle_key(key(KeyCode::Down));
@@ -979,6 +1004,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_enter_on_session_returns_attach_action() {
         let mut env = create_test_env_with_sessions(3);
         env.view.cursor = 1;
@@ -988,6 +1014,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_slash_enters_search_mode() {
         let mut env = create_test_env_with_sessions(3);
         assert!(!env.view.search_active);
@@ -997,6 +1024,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_search_mode_captures_chars() {
         let mut env = create_test_env_with_sessions(3);
         env.view.handle_key(key(KeyCode::Char('/')));
@@ -1008,6 +1036,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_search_mode_backspace() {
         let mut env = create_test_env_with_sessions(3);
         env.view.handle_key(key(KeyCode::Char('/')));
@@ -1018,6 +1047,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_search_mode_esc_exits_and_clears() {
         let mut env = create_test_env_with_sessions(3);
         env.view.handle_key(key(KeyCode::Char('/')));
@@ -1029,6 +1059,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_search_mode_enter_exits_keeps_filter() {
         let mut env = create_test_env_with_sessions(3);
         env.view.handle_key(key(KeyCode::Char('/')));
@@ -1039,6 +1070,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_d_on_session_opens_confirm_dialog() {
         let mut env = create_test_env_with_sessions(3);
         env.view.update_selected();
@@ -1048,6 +1080,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_d_on_group_opens_confirm_dialog() {
         let mut env = create_test_env_with_groups();
         env.view.cursor = 1;
@@ -1059,6 +1092,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_selected_session_updates_on_cursor_move() {
         let mut env = create_test_env_with_sessions(3);
         let first_id = env.view.selected_session.clone();
@@ -1067,6 +1101,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_selected_group_set_when_on_group() {
         let mut env = create_test_env_with_groups();
         for i in 0..env.view.flat_items.len() {
@@ -1082,6 +1117,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_filter_matches_session_title() {
         let mut env = create_test_env_with_sessions(5);
         env.view.search_query = "session2".to_string();
@@ -1092,6 +1128,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_filter_case_insensitive() {
         let mut env = create_test_env_with_sessions(5);
         env.view.search_query = "SESSION2".to_string();
@@ -1102,6 +1139,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_filter_matches_path() {
         let mut env = create_test_env_with_sessions(5);
         env.view.search_query = "/tmp/3".to_string();
@@ -1112,6 +1150,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_filter_matches_group_name() {
         let mut env = create_test_env_with_groups();
         env.view.search_query = "work".to_string();
@@ -1122,6 +1161,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_filter_empty_query_clears_filter() {
         let mut env = create_test_env_with_sessions(5);
         env.view.search_query = "session".to_string();
@@ -1134,6 +1174,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_filter_resets_cursor() {
         let mut env = create_test_env_with_sessions(5);
         env.view.cursor = 3;
@@ -1143,6 +1184,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_filter_no_matches() {
         let mut env = create_test_env_with_sessions(5);
         env.view.search_query = "nonexistent".to_string();
@@ -1153,6 +1195,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cursor_moves_within_filtered_list() {
         let mut env = create_test_env_with_sessions(10);
         env.view.search_query = "session".to_string();
@@ -1167,6 +1210,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_r_opens_rename_dialog() {
         let mut env = create_test_env_with_sessions(3);
         env.view.update_selected();
@@ -1176,6 +1220,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_rename_dialog_not_opened_on_group() {
         let mut env = create_test_env_with_groups();
         env.view.cursor = 1;
@@ -1187,6 +1232,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_has_dialog_returns_true_for_rename_dialog() {
         let mut env = create_test_env_with_sessions(1);
         env.view.update_selected();
