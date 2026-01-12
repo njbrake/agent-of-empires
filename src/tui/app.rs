@@ -110,10 +110,6 @@ impl App {
                 Action::AttachSession(id) => {
                     self.attach_session(&id, terminal)?;
                 }
-                Action::Refresh => {
-                    crate::tmux::refresh_session_cache();
-                    self.home.reload()?;
-                }
             }
         }
 
@@ -191,7 +187,6 @@ impl App {
 pub enum Action {
     Quit,
     AttachSession(String),
-    Refresh,
 }
 
 #[cfg(test)]
@@ -202,11 +197,9 @@ mod tests {
     fn test_action_enum() {
         let quit = Action::Quit;
         let attach = Action::AttachSession("test-id".to_string());
-        let refresh = Action::Refresh;
 
         assert_eq!(quit, Action::Quit);
         assert_eq!(attach, Action::AttachSession("test-id".to_string()));
-        assert_eq!(refresh, Action::Refresh);
     }
 
     #[test]

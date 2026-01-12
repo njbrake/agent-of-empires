@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::app::Action;
 use super::components::{HelpOverlay, Preview};
-use super::dialogs::{ConfirmDialog, NewSessionDialog};
+use super::dialogs::{ConfirmDialog, NewSessionDialog, RenameDialog};
 use super::styles::Theme;
 use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Status, Storage};
 use crate::tmux::AvailableTools;
@@ -29,6 +29,7 @@ pub struct HomeView {
     show_help: bool,
     new_dialog: Option<NewSessionDialog>,
     confirm_dialog: Option<ConfirmDialog>,
+    rename_dialog: Option<RenameDialog>,
 
     // Search
     search_active: bool,
@@ -62,6 +63,7 @@ impl HomeView {
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
+            rename_dialog: None,
             search_active: false,
             search_query: String::new(),
             filtered_items: None,
@@ -106,7 +108,10 @@ impl HomeView {
     }
 
     pub fn has_dialog(&self) -> bool {
-        self.show_help || self.new_dialog.is_some() || self.confirm_dialog.is_some()
+        self.show_help
+            || self.new_dialog.is_some()
+            || self.confirm_dialog.is_some()
+            || self.rename_dialog.is_some()
     }
 
     pub fn get_instance(&self, id: &str) -> Option<&Instance> {
@@ -169,6 +174,22 @@ impl HomeView {
                         if let Err(e) = self.delete_selected_group() {
                             tracing::error!("Failed to delete group: {}", e);
                         }
+                    }
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.rename_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel => {
+                    self.rename_dialog = None;
+                }
+                super::dialogs::DialogResult::Submit(new_title) => {
+                    self.rename_dialog = None;
+                    if let Err(e) = self.rename_selected(&new_title) {
+                        tracing::error!("Failed to rename session: {}", e);
                     }
                 }
             }
@@ -245,8 +266,12 @@ impl HomeView {
                         Some(ConfirmDialog::new("Delete Group", &message, "delete_group"));
                 }
             }
-            KeyCode::Char('r') | KeyCode::F(5) => {
-                return Some(Action::Refresh);
+            KeyCode::Char('r') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if let Some(id) = &self.selected_session {
+                    if let Some(inst) = self.instance_map.get(id) {
+                        self.rename_dialog = Some(RenameDialog::new(&inst.title));
+                    }
+                }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_cursor(-1);
@@ -445,6 +470,37 @@ impl HomeView {
         Ok(())
     }
 
+    fn rename_selected(&mut self, new_title: &str) -> anyhow::Result<()> {
+        if let Some(id) = &self.selected_session {
+            let id = id.clone();
+
+            if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                inst.title = new_title.to_string();
+            }
+
+            if let Some(inst) = self.instance_map.get(&id) {
+                if inst.title != new_title {
+                    let tmux_session = inst.tmux_session()?;
+                    if tmux_session.exists() {
+                        let new_tmux_name = crate::tmux::Session::generate_name(&id, new_title);
+                        if let Err(e) = tmux_session.rename(&new_tmux_name) {
+                            tracing::warn!("Failed to rename tmux session: {}", e);
+                        } else {
+                            crate::tmux::refresh_session_cache();
+                        }
+                    }
+                }
+            }
+
+            self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+            self.storage
+                .save_with_groups(&self.instances, &self.group_tree)?;
+
+            self.reload()?;
+        }
+        Ok(())
+    }
+
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Layout: main area + status bar at bottom
         let main_chunks = Layout::default()
@@ -472,6 +528,10 @@ impl HomeView {
         }
 
         if let Some(dialog) = &self.confirm_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.rename_dialog {
             dialog.render(frame, area, theme);
         }
     }
@@ -629,6 +689,9 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" d", key_style),
             Span::styled(" Delete ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" r", key_style),
+            Span::styled(" Rename ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" /", key_style),
             Span::styled(" Search ", desc_style),
@@ -792,20 +855,6 @@ mod tests {
             Vec::new(),
         ));
         assert!(env.view.has_dialog());
-    }
-
-    #[test]
-    fn test_r_returns_refresh_action() {
-        let mut env = create_test_env_empty();
-        let action = env.view.handle_key(key(KeyCode::Char('r')));
-        assert_eq!(action, Some(Action::Refresh));
-    }
-
-    #[test]
-    fn test_f5_returns_refresh_action() {
-        let mut env = create_test_env_empty();
-        let action = env.view.handle_key(key(KeyCode::F(5)));
-        assert_eq!(action, Some(Action::Refresh));
     }
 
     #[test]
@@ -1115,5 +1164,34 @@ mod tests {
             env.view.handle_key(key(KeyCode::Down));
         }
         assert_eq!(env.view.cursor, filtered_count - 1);
+    }
+
+    #[test]
+    fn test_r_opens_rename_dialog() {
+        let mut env = create_test_env_with_sessions(3);
+        env.view.update_selected();
+        assert!(env.view.rename_dialog.is_none());
+        env.view.handle_key(key(KeyCode::Char('r')));
+        assert!(env.view.rename_dialog.is_some());
+    }
+
+    #[test]
+    fn test_rename_dialog_not_opened_on_group() {
+        let mut env = create_test_env_with_groups();
+        env.view.cursor = 1;
+        env.view.update_selected();
+        assert!(env.view.selected_group.is_some());
+        assert!(env.view.rename_dialog.is_none());
+        env.view.handle_key(key(KeyCode::Char('r')));
+        assert!(env.view.rename_dialog.is_none());
+    }
+
+    #[test]
+    fn test_has_dialog_returns_true_for_rename_dialog() {
+        let mut env = create_test_env_with_sessions(1);
+        env.view.update_selected();
+        assert!(!env.view.has_dialog());
+        env.view.handle_key(key(KeyCode::Char('r')));
+        assert!(env.view.has_dialog());
     }
 }

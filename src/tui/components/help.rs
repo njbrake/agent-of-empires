@@ -53,7 +53,7 @@ impl HelpOverlay {
                     ("Enter", "Attach to session"),
                     ("n", "New session"),
                     ("d", "Delete session/group"),
-                    ("r", "Refresh"),
+                    ("r", "Rename session"),
                     ("f", "Fork session (Claude)"),
                 ],
             ),
