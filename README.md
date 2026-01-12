@@ -136,6 +136,9 @@ aoe
 
 When you attach to an agent session, tmux will switch to that session. To navigate back to `aoe` use the tmux command `Ctrl+b L` to switch to last session (toggle back to aoe)
 
+### Claude Code is flickering
+
+This is not an issue with `aoe`: it's a known problem with Claude Code: https://github.com/anthropics/claude-code/issues/1913 
 
 ## Acknowledgments
 
