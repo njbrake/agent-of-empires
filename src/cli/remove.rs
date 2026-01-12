@@ -9,6 +9,10 @@ use crate::session::{GroupTree, Storage};
 pub struct RemoveArgs {
     /// Session ID or title to remove
     identifier: String,
+
+    /// Keep worktree directory (don't delete it)
+    #[arg(short = 'k', long = "keep-worktree")]
+    keep_worktree: bool,
 }
 
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
@@ -26,6 +30,78 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
         {
             found = true;
             removed_title = inst.title.clone();
+
+            // Handle worktree cleanup
+            if let Some(wt_info) = &inst.worktree_info {
+                if wt_info.managed_by_aoe && wt_info.cleanup_on_delete && !args.keep_worktree {
+                    use crate::git::GitWorktree;
+                    use std::io::{self, Write};
+                    use std::path::PathBuf;
+
+                    let worktree_path = PathBuf::from(&inst.project_path);
+                    let main_repo = PathBuf::from(&wt_info.main_repo_path);
+
+                    // Check for unpushed commits if this was an aoe-created branch
+                    let has_unpushed = if let Ok(git_wt) = GitWorktree::new(main_repo.clone()) {
+                        match git_wt.branch_has_unpushed_commits(&wt_info.branch) {
+                            Ok(true) => {
+                                // Check if branch exists on remote
+                                let has_remote =
+                                    git_wt.branch_has_remote(&wt_info.branch).unwrap_or(false);
+                                if !has_remote {
+                                    println!("\n⚠️  WARNING: Branch '{}' has not been pushed to any remote!", wt_info.branch);
+                                    println!("   All commits on this branch will be lost if you delete the worktree.");
+                                    true
+                                } else {
+                                    println!(
+                                        "\n⚠️  WARNING: Branch '{}' has unpushed commits!",
+                                        wt_info.branch
+                                    );
+                                    println!(
+                                        "   Some commits may be lost if you delete the worktree."
+                                    );
+                                    true
+                                }
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+
+                    print!("\nDelete worktree at {}? (Y/n): ", inst.project_path);
+                    io::stdout().flush()?;
+
+                    let mut response = String::new();
+                    io::stdin().read_line(&mut response)?;
+                    let response = response.trim().to_lowercase();
+
+                    if response.is_empty() || response == "y" || response == "yes" {
+                        match GitWorktree::new(main_repo) {
+                            Ok(git_wt) => {
+                                if let Err(e) = git_wt.remove_worktree(&worktree_path, false) {
+                                    eprintln!("Warning: failed to remove worktree: {}", e);
+                                    eprintln!("You may need to remove it manually with: git worktree remove {}", inst.project_path);
+                                } else {
+                                    println!("✓ Worktree removed");
+                                    if has_unpushed {
+                                        println!("   Note: The branch '{}' still exists in the repository", wt_info.branch);
+                                        println!(
+                                            "   You can delete it with: git branch -D {}",
+                                            wt_info.branch
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: failed to access git repository: {}", e);
+                            }
+                        }
+                    } else {
+                        println!("Worktree preserved at: {}", inst.project_path);
+                    }
+                }
+            }
 
             // Kill tmux session if it exists
             if let Ok(tmux_session) = crate::tmux::Session::new(&inst.id, &inst.title) {

@@ -10,11 +10,18 @@ pub struct Preview;
 
 impl Preview {
     pub fn render(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
+        // Adjust height based on whether worktree info is present
+        let info_height = if instance.worktree_info.is_some() {
+            10 // Expanded to show worktree details
+        } else {
+            6 // Standard height
+        };
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6), // Info section
-                Constraint::Min(1),    // Output section
+                Constraint::Length(info_height), // Info section
+                Constraint::Min(1),              // Output section
             ])
             .split(area);
 
@@ -23,7 +30,7 @@ impl Preview {
     }
 
     fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
-        let info_lines = vec![
+        let mut info_lines = vec![
             Line::from(vec![
                 Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
                 Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
@@ -64,6 +71,44 @@ impl Preview {
                 ),
             ]),
         ];
+
+        // Add worktree information if present
+        if let Some(wt_info) = &instance.worktree_info {
+            info_lines.push(Line::from(""));
+            info_lines.push(Line::from(vec![
+                Span::styled("─", Style::default().fg(theme.border)),
+                Span::styled(" Worktree ", Style::default().fg(theme.dimmed)),
+                Span::styled("─", Style::default().fg(theme.border)),
+            ]));
+            info_lines.push(Line::from(vec![
+                Span::styled("Branch:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(&wt_info.branch, Style::default().fg(Color::Cyan)),
+            ]));
+            info_lines.push(Line::from(vec![
+                Span::styled("Main:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    shorten_path(&wt_info.main_repo_path),
+                    Style::default().fg(theme.text),
+                ),
+            ]));
+
+            let managed_text = if wt_info.managed_by_aoe {
+                "Yes (delete branch on aoe session delete)"
+            } else {
+                "No (manual worktree)"
+            };
+            info_lines.push(Line::from(vec![
+                Span::styled("Managed: ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    managed_text,
+                    Style::default().fg(if wt_info.managed_by_aoe {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    }),
+                ),
+            ]));
+        }
 
         let paragraph = Paragraph::new(info_lines);
         frame.render_widget(paragraph, area);

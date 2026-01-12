@@ -8,6 +8,7 @@ pub mod remove;
 pub mod session;
 pub mod status;
 pub mod uninstall;
+pub mod worktree;
 
 use crate::session::Instance;
 use anyhow::{bail, Result};

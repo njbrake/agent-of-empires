@@ -136,23 +136,29 @@ impl HomeView {
             return None;
         }
 
-        if let Some(dialog) = &mut self.new_dialog {
-            match dialog.handle_key(key) {
+        let dialog_result = self
+            .new_dialog
+            .as_mut()
+            .map(|dialog| dialog.handle_key(key));
+
+        if let Some(result) = dialog_result {
+            match result {
                 super::dialogs::DialogResult::Continue => {}
                 super::dialogs::DialogResult::Cancel => {
                     self.new_dialog = None;
                 }
-                super::dialogs::DialogResult::Submit(data) => {
-                    self.new_dialog = None;
-                    match self.create_session(data) {
-                        Ok(session_id) => {
-                            return Some(Action::AttachSession(session_id));
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to create session: {}", e);
+                super::dialogs::DialogResult::Submit(data) => match self.create_session(data) {
+                    Ok(session_id) => {
+                        self.new_dialog = None;
+                        return Some(Action::AttachSession(session_id));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create session: {}", e);
+                        if let Some(dialog) = &mut self.new_dialog {
+                            dialog.set_error(e.to_string());
                         }
                     }
-                }
+                },
             }
             return None;
         }
@@ -239,12 +245,27 @@ impl HomeView {
                 ));
             }
             KeyCode::Char('d') => {
-                if self.selected_session.is_some() {
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Session",
-                        "Are you sure you want to delete this session?",
-                        "delete",
-                    ));
+                if let Some(session_id) = &self.selected_session {
+                    // Check if this session has a worktree
+                    let message = if let Some(inst) = self.instance_map.get(session_id) {
+                        if let Some(wt_info) = &inst.worktree_info {
+                            if wt_info.managed_by_aoe && wt_info.cleanup_on_delete {
+                                format!(
+                                    "Delete session and worktree?\n\nWorktree: {}\nBranch: {}",
+                                    inst.project_path, wt_info.branch
+                                )
+                            } else {
+                                "Are you sure you want to delete this session?".to_string()
+                            }
+                        } else {
+                            "Are you sure you want to delete this session?".to_string()
+                        }
+                    } else {
+                        "Are you sure you want to delete this session?".to_string()
+                    };
+
+                    self.confirm_dialog =
+                        Some(ConfirmDialog::new("Delete Session", &message, "delete"));
                 } else if let Some(group_path) = &self.selected_group {
                     let session_count = self
                         .instances
@@ -410,7 +431,49 @@ impl HomeView {
     }
 
     fn create_session(&mut self, data: super::dialogs::NewSessionData) -> anyhow::Result<String> {
-        let mut instance = Instance::new(&data.title, &data.path);
+        use crate::git::GitWorktree;
+        use crate::session::{Config, WorktreeInfo};
+        use chrono::Utc;
+        use std::path::PathBuf;
+
+        let mut final_path = data.path.clone();
+        let mut worktree_info_opt = None;
+
+        if let Some(branch) = &data.worktree_branch {
+            let path = PathBuf::from(&data.path);
+
+            if !GitWorktree::is_git_repo(&path) {
+                anyhow::bail!("Path is not in a git repository");
+            }
+
+            let config = Config::load()?;
+            let main_repo_path = GitWorktree::find_main_repo(&path)?;
+            let git_wt = GitWorktree::new(main_repo_path.clone())?;
+
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let session_id_short = &session_id[..8];
+
+            let template = &config.worktree.path_template;
+            let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+
+            if worktree_path.exists() {
+                anyhow::bail!("Worktree already exists at {}", worktree_path.display());
+            }
+
+            git_wt.create_worktree(branch, &worktree_path, data.create_new_branch)?;
+
+            final_path = worktree_path.to_string_lossy().to_string();
+
+            worktree_info_opt = Some(WorktreeInfo {
+                branch: branch.clone(),
+                main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                managed_by_aoe: true,
+                created_at: Utc::now(),
+                cleanup_on_delete: true,
+            });
+        }
+
+        let mut instance = Instance::new(&data.title, &final_path);
         instance.group_path = data.group;
         instance.tool = data.tool.clone();
         instance.command = if data.tool == "opencode" {
@@ -418,6 +481,10 @@ impl HomeView {
         } else {
             String::new()
         };
+
+        if let Some(worktree_info) = worktree_info_opt {
+            instance.worktree_info = Some(worktree_info);
+        }
 
         let session_id = instance.id.clone();
         self.instances.push(instance.clone());
@@ -435,12 +502,29 @@ impl HomeView {
     fn delete_selected(&mut self) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
-            self.instances.retain(|i| i.id != id);
 
-            // Kill tmux session
+            // Handle worktree cleanup before removing from instances
             if let Some(inst) = self.instance_map.get(&id) {
+                if let Some(wt_info) = &inst.worktree_info {
+                    if wt_info.managed_by_aoe && wt_info.cleanup_on_delete {
+                        use crate::git::GitWorktree;
+                        use std::path::PathBuf;
+
+                        let worktree_path = PathBuf::from(&inst.project_path);
+                        let main_repo = PathBuf::from(&wt_info.main_repo_path);
+
+                        if let Ok(git_wt) = GitWorktree::new(main_repo) {
+                            let _ = git_wt.remove_worktree(&worktree_path, false);
+                            // Silently fail - worktree removal is best-effort in TUI
+                        }
+                    }
+                }
+
+                // Kill tmux session
                 let _ = inst.kill();
             }
+
+            self.instances.retain(|i| i.id != id);
 
             self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
             self.storage
@@ -637,11 +721,24 @@ impl HomeView {
             }
         };
 
-        let line = Line::from(vec![
+        let mut line_spans = vec![
             Span::raw(indent),
             Span::styled(format!("{} ", icon), style),
             Span::styled(text, if is_selected { style.bold() } else { style }),
-        ]);
+        ];
+
+        if let Item::Session { id, .. } = item {
+            if let Some(inst) = self.instance_map.get(id) {
+                if let Some(wt_info) = &inst.worktree_info {
+                    line_spans.push(Span::styled(
+                        format!("  {}", wt_info.branch),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                }
+            }
+        }
+
+        let line = Line::from(line_spans);
 
         if is_selected {
             ListItem::new(line).style(Style::default().bg(theme.session_selection))

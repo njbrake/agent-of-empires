@@ -7,6 +7,10 @@ use uuid::Uuid;
 
 use crate::tmux;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -16,6 +20,16 @@ pub enum Status {
     Idle,
     Error,
     Starting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeInfo {
+    pub branch: String,
+    pub main_repo_path: String,
+    pub managed_by_aoe: bool,
+    pub created_at: DateTime<Utc>,
+    #[serde(default = "default_true")]
+    pub cleanup_on_delete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +57,10 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_detected_at: Option<DateTime<Utc>>,
 
+    // Git worktree integration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_info: Option<WorktreeInfo>,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -67,6 +85,7 @@ impl Instance {
             last_accessed_at: None,
             claude_session_id: None,
             claude_detected_at: None,
+            worktree_info: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,

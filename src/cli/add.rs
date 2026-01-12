@@ -31,10 +31,18 @@ pub struct AddArgs {
     /// Launch the session immediately after creating
     #[arg(short = 'l', long)]
     launch: bool,
+
+    /// Create session in a git worktree for the specified branch
+    #[arg(short = 'w', long = "worktree")]
+    worktree_branch: Option<String>,
+
+    /// Create a new branch (use with --worktree)
+    #[arg(short = 'b', long = "new-branch")]
+    create_branch: bool,
 }
 
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
-    let path = if args.path.as_os_str() == "." {
+    let mut path = if args.path.as_os_str() == "." {
         std::env::current_dir()?
     } else {
         args.path.canonicalize()?
@@ -42,6 +50,69 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if !path.is_dir() {
         bail!("Path is not a directory: {}", path.display());
+    }
+
+    let mut worktree_info_opt = None;
+
+    if let Some(branch) = &args.worktree_branch {
+        use crate::git::GitWorktree;
+        use crate::session::{Config, WorktreeInfo};
+        use chrono::Utc;
+
+        if !GitWorktree::is_git_repo(&path) {
+            bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
+        }
+
+        let config = Config::load()?;
+        if !config.worktree.enabled {
+            println!("Git worktree integration is disabled.");
+            println!("Enable it? This will add a [worktree] section to your config.");
+            print!("(Y/n): ");
+            use std::io::{self, Write};
+            io::stdout().flush()?;
+
+            let mut response = String::new();
+            io::stdin().read_line(&mut response)?;
+            let response = response.trim().to_lowercase();
+
+            if response.is_empty() || response == "y" || response == "yes" {
+                println!("Enabling worktree integration...");
+            } else {
+                bail!("Worktree integration is disabled. Enable it with config.worktree.enabled = true");
+            }
+        }
+
+        let main_repo_path = GitWorktree::find_main_repo(&path)?;
+        let git_wt = GitWorktree::new(main_repo_path.clone())?;
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_id_short = &session_id[..8];
+
+        let template = &config.worktree.path_template;
+        let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+
+        if worktree_path.exists() {
+            bail!(
+                "Worktree already exists at {}\nTip: Use 'aoe add {}' to add the existing worktree",
+                worktree_path.display(),
+                worktree_path.display()
+            );
+        }
+
+        println!("Creating worktree at: {}", worktree_path.display());
+        git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
+
+        path = worktree_path;
+
+        worktree_info_opt = Some(WorktreeInfo {
+            branch: branch.clone(),
+            main_repo_path: main_repo_path.to_string_lossy().to_string(),
+            managed_by_aoe: true,
+            created_at: Utc::now(),
+            cleanup_on_delete: true,
+        });
+
+        println!("✓ Worktree created successfully");
     }
 
     let storage = Storage::new(profile)?;
@@ -85,6 +156,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     if let Some(cmd) = &args.command {
         instance.command = cmd.clone();
         instance.tool = detect_tool(cmd);
+    }
+
+    if let Some(worktree_info) = worktree_info_opt {
+        instance.worktree_info = Some(worktree_info);
     }
 
     instances.push(instance.clone());

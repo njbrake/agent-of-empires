@@ -20,6 +20,9 @@ pub struct Config {
 
     #[serde(default)]
     pub updates: UpdatesConfig,
+
+    #[serde(default)]
+    pub worktree: WorktreeConfig,
 }
 
 fn default_profile() -> String {
@@ -72,8 +75,51 @@ fn default_check_interval() -> u64 {
     24
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_worktree_template")]
+    pub path_template: String,
+
+    #[serde(default = "default_true")]
+    pub auto_cleanup: bool,
+
+    #[serde(default = "default_true")]
+    pub show_branch_in_tui: bool,
+}
+
+impl Default for WorktreeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path_template: default_worktree_template(),
+            auto_cleanup: true,
+            show_branch_in_tui: true,
+        }
+    }
+}
+
+fn default_worktree_template() -> String {
+    "../{repo-name}-worktrees/{branch}".to_string()
+}
+
 fn config_path() -> Result<PathBuf> {
     Ok(get_app_dir()?.join("config.toml"))
+}
+
+impl Config {
+    pub fn load() -> Result<Self> {
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(Config::default());
+        }
+
+        let content = fs::read_to_string(&path)?;
+        let config: Config = toml::from_str(&content)?;
+        Ok(config)
+    }
 }
 
 pub fn load_config() -> Result<Option<Config>> {
