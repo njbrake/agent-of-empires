@@ -16,7 +16,7 @@ impl RenameDialog {
     pub fn new(current_title: &str) -> Self {
         Self {
             current_title: current_title.to_string(),
-            new_title: current_title.to_string(),
+            new_title: String::new(),
         }
     }
 

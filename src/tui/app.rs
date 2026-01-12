@@ -44,7 +44,9 @@ impl App {
         crate::tmux::refresh_session_cache();
 
         let mut last_status_refresh = std::time::Instant::now();
+        let mut last_disk_refresh = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+        const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
         loop {
             // Force full redraw if needed (e.g., after returning from tmux)
@@ -72,6 +74,13 @@ impl App {
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.refresh_status();
                 last_status_refresh = std::time::Instant::now();
+                terminal.draw(|f| self.render(f))?;
+            }
+
+            // Periodic disk refresh to sync with other instances
+            if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
+                self.home.reload()?;
+                last_disk_refresh = std::time::Instant::now();
                 terminal.draw(|f| self.render(f))?;
             }
 
