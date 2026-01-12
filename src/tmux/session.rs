@@ -262,12 +262,22 @@ fn is_claude_code_content(content: &str) -> bool {
 }
 
 pub fn detect_claude_status(content: &str) -> Status {
+    let content_lower = content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let non_empty_lines: Vec<&str> = lines
         .iter()
         .filter(|l| !l.trim().is_empty())
         .copied()
         .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
 
     if content_lower.contains("esc to interrupt") || content_lower.contains("ctrl+c to interrupt") {
         return Status::Running;
