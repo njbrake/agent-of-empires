@@ -262,7 +262,6 @@ fn is_claude_code_content(content: &str) -> bool {
 }
 
 pub fn detect_claude_status(content: &str) -> Status {
-    let content_lower = content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let non_empty_lines: Vec<&str> = lines
         .iter()
@@ -278,8 +277,11 @@ pub fn detect_claude_status(content: &str) -> Status {
         .copied()
         .collect::<Vec<&str>>()
         .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
 
-    if content_lower.contains("esc to interrupt") || content_lower.contains("ctrl+c to interrupt") {
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+    {
         return Status::Running;
     }
 
@@ -291,9 +293,10 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
-    if content_lower.contains("enter to select") || content_lower.contains("esc to cancel") {
+    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
         return Status::Waiting;
     }
+
     let permission_prompts = [
         "Yes, allow once",
         "Yes, allow always",
@@ -480,6 +483,7 @@ mod tests {
 
     #[test]
     fn test_detect_claude_status_running() {
+        // "esc to interrupt" indicates Claude is actively working
         assert_eq!(
             detect_claude_status("Working on your request (esc to interrupt)"),
             Status::Running
