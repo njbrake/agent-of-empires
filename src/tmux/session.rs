@@ -12,7 +12,6 @@ const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 fn strip_ansi(content: &str) -> String {
     let mut result = content.to_string();
 
-    // Remove CSI sequences: ESC [ ... letter
     while let Some(start) = result.find("\x1b[") {
         let rest = &result[start + 2..];
         let end_offset = rest
@@ -22,7 +21,6 @@ fn strip_ansi(content: &str) -> String {
         result = format!("{}{}", &result[..start], &result[start + 2 + end_offset..]);
     }
 
-    // Remove OSC sequences: ESC ] ... BEL
     while let Some(start) = result.find("\x1b]") {
         if let Some(end) = result[start..].find('\x07') {
             result = format!("{}{}", &result[..start], &result[start + end + 1..]);
@@ -52,12 +50,10 @@ impl Session {
     }
 
     pub fn exists(&self) -> bool {
-        // Try cache first
         if let Some(exists) = session_exists_from_cache(&self.name) {
             return exists;
         }
 
-        // Fallback to direct check
         Command::new("tmux")
             .args(["has-session", "-t", &self.name])
             .output()
@@ -90,7 +86,6 @@ impl Session {
             bail!("Failed to create tmux session: {}", stderr);
         }
 
-        // Register in cache
         super::refresh_session_cache();
 
         Ok(())
@@ -113,14 +108,29 @@ impl Session {
         Ok(())
     }
 
+    pub fn rename(&self, new_name: &str) -> Result<()> {
+        if !self.exists() {
+            return Ok(());
+        }
+
+        let output = Command::new("tmux")
+            .args(["rename-session", "-t", &self.name, new_name])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Failed to rename tmux session: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn attach(&self) -> Result<()> {
         if !self.exists() {
             bail!("Session does not exist: {}", self.name);
         }
 
-        // Check if we're already in tmux
         if std::env::var("TMUX").is_ok() {
-            // Switch to session
             let status = Command::new("tmux")
                 .args(["switch-client", "-t", &self.name])
                 .status()?;
@@ -129,7 +139,6 @@ impl Session {
                 bail!("Failed to switch to tmux session");
             }
         } else {
-            // Attach to session
             let status = Command::new("tmux")
                 .args(["attach-session", "-t", &self.name])
                 .status()?;
@@ -204,7 +213,6 @@ fn sanitize_session_name(name: &str) -> String {
 }
 
 fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
-    // Detect tool type - auto-detect TUI apps from content if tool is "shell"
     let content_lower = content.to_lowercase();
     let effective_tool = if tool == "shell" && is_opencode_content(&content_lower) {
         "opencode"
@@ -214,11 +222,10 @@ fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -
         tool
     };
 
-    // Pattern matching on terminal content
     match effective_tool {
         "claude" => detect_claude_status(content),
         "opencode" => detect_opencode_status(&content_lower),
-        _ => detect_claude_status(content), // Default to claude pattern matching
+        _ => detect_claude_status(content),
     }
 }
 
@@ -263,12 +270,10 @@ pub fn detect_claude_status(content: &str) -> Status {
         .copied()
         .collect();
 
-    // RUNNING: "esc to interrupt" or "ctrl+c to interrupt" shown when Claude is busy
     if content_lower.contains("esc to interrupt") || content_lower.contains("ctrl+c to interrupt") {
         return Status::Running;
     }
 
-    // Also check for spinner characters anywhere in content
     for line in &lines {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
@@ -277,12 +282,10 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
     if content_lower.contains("enter to select") || content_lower.contains("esc to cancel") {
         return Status::Waiting;
     }
 
-    // WAITING: Permission prompts (Claude-specific UI elements)
     let permission_prompts = [
         "Yes, allow once",
         "Yes, allow always",
@@ -298,8 +301,6 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Selection cursor with numbered options (e.g., "❯ 1.", "❯ 2.")
-    // Must check for actual selection patterns, not just "❯" anywhere with numbers anywhere
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
@@ -310,7 +311,6 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Check for ">" input prompt in non-empty lines
     for line in non_empty_lines.iter().rev().take(10) {
         let clean_line = strip_ansi(line).trim().to_string();
         if clean_line == ">" || clean_line == "> " {
@@ -324,7 +324,6 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Y/N confirmation prompts
     let question_prompts = ["(Y/n)", "(y/N)", "[Y/n]", "[y/N]"];
     for prompt in &question_prompts {
         if content.contains(prompt) {
@@ -343,13 +342,10 @@ pub fn detect_opencode_status(content: &str) -> Status {
         .copied()
         .collect();
 
-    // RUNNING: OpenCode shows "esc to interrupt" when busy (same as Claude Code)
-    // Search entire content since status bar can be anywhere in TUI
     if content.contains("esc to interrupt") || content.contains("esc interrupt") {
         return Status::Running;
     }
 
-    // Also check for spinner characters anywhere
     for line in &lines {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
@@ -358,12 +354,10 @@ pub fn detect_opencode_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
     if content.contains("enter to select") || content.contains("esc to cancel") {
         return Status::Waiting;
     }
 
-    // WAITING: Permission/confirmation prompts
     let permission_prompts = [
         "(y/n)",
         "[y/n]",
@@ -378,8 +372,6 @@ pub fn detect_opencode_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Selection cursor with numbered options
-    // Must check for actual selection patterns, not just "❯" anywhere with numbers anywhere
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
@@ -392,18 +384,15 @@ pub fn detect_opencode_status(content: &str) -> Status {
             }
         }
     }
-    // Legacy check - keep for backwards compatibility but only if "❯" is on a line with the number
     if lines.iter().any(|line| {
         line.contains("❯") && (line.contains(" 1.") || line.contains(" 2.") || line.contains(" 3."))
     }) {
         return Status::Waiting;
     }
 
-    // WAITING: Check for input prompt in non-empty lines
     for line in non_empty_lines.iter().rev().take(10) {
         let clean_line = strip_ansi(line).trim().to_string();
 
-        // OpenCode input prompts
         if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
             return Status::Waiting;
         }
@@ -415,7 +404,6 @@ pub fn detect_opencode_status(content: &str) -> Status {
         }
     }
 
-    // WAITING - Completion indicators + input prompt nearby
     let completion_indicators = [
         "complete",
         "done",
@@ -463,7 +451,6 @@ mod tests {
 
     #[test]
     fn test_detect_claude_status_running() {
-        // "esc to interrupt" indicates Claude is actively working
         assert_eq!(
             detect_claude_status("Working on your request (esc to interrupt)"),
             Status::Running
@@ -472,35 +459,24 @@ mod tests {
             detect_claude_status("Thinking... · esc to interrupt"),
             Status::Running
         );
-
-        // "ctrl+c to interrupt" also indicates running (used during hashing, indexing, etc.)
         assert_eq!(
             detect_claude_status("✶ Hashing… (ctrl+c to interrupt)"),
             Status::Running
         );
-
-        // Spinner characters indicate active processing
         assert_eq!(detect_claude_status("Processing ⠋"), Status::Running);
         assert_eq!(detect_claude_status("Loading ⠹"), Status::Running);
     }
 
     #[test]
     fn test_detect_claude_status_waiting() {
-        // Permission prompts
         assert_eq!(detect_claude_status("Yes, allow once"), Status::Waiting);
         assert_eq!(
             detect_claude_status("Do you trust the files in this folder?"),
             Status::Waiting
         );
-
-        // Input prompt
         assert_eq!(detect_claude_status("Task complete.\n>"), Status::Waiting);
         assert_eq!(detect_claude_status("Done!\n> "), Status::Waiting);
-
-        // Question prompts
         assert_eq!(detect_claude_status("Continue? (Y/n)"), Status::Waiting);
-
-        // Selection menus
         assert_eq!(
             detect_claude_status("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"),
             Status::Waiting
@@ -513,7 +489,6 @@ mod tests {
 
     #[test]
     fn test_detect_claude_status_idle() {
-        // No indicators = idle
         assert_eq!(detect_claude_status("completed the task"), Status::Idle);
         assert_eq!(detect_claude_status("some random output"), Status::Idle);
     }
@@ -527,7 +502,6 @@ mod tests {
 
     #[test]
     fn test_detect_opencode_status_running() {
-        // "esc to interrupt" at bottom = running (same pattern as Claude Code)
         assert_eq!(
             detect_opencode_status("Processing your request\nesc to interrupt"),
             Status::Running
@@ -536,30 +510,23 @@ mod tests {
             detect_opencode_status("Working... esc interrupt"),
             Status::Running
         );
-
-        // Spinner characters indicate active processing
         assert_eq!(detect_opencode_status("Generating ⠋"), Status::Running);
         assert_eq!(detect_opencode_status("Loading ⠹"), Status::Running);
     }
 
     #[test]
     fn test_detect_opencode_status_waiting() {
-        // Permission prompts (function expects lowercase input from content_lower)
         assert_eq!(
             detect_opencode_status("allow this action? [y/n]"),
             Status::Waiting
         );
         assert_eq!(detect_opencode_status("continue? (y/n)"), Status::Waiting);
         assert_eq!(detect_opencode_status("approve changes"), Status::Waiting);
-
-        // Input prompt
         assert_eq!(detect_opencode_status("task complete.\n>"), Status::Waiting);
         assert_eq!(
             detect_opencode_status("ready for input\n> "),
             Status::Waiting
         );
-
-        // Completion + prompt
         assert_eq!(
             detect_opencode_status("done! what else can i help with?\n>"),
             Status::Waiting
@@ -568,7 +535,6 @@ mod tests {
 
     #[test]
     fn test_detect_opencode_status_idle() {
-        // No indicators = idle (function expects lowercase input from content_lower)
         assert_eq!(detect_opencode_status("some random output"), Status::Idle);
         assert_eq!(
             detect_opencode_status("file saved successfully"),
