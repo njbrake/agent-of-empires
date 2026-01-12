@@ -1,5 +1,7 @@
 //! Session instance definition and operations
 
+use std::collections::VecDeque;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -68,6 +70,8 @@ pub struct Instance {
     pub last_start_time: Option<std::time::Instant>,
     #[serde(skip)]
     pub last_error: Option<String>,
+    #[serde(skip)]
+    pub status_history: VecDeque<Status>,
 }
 
 impl Instance {
@@ -89,6 +93,7 @@ impl Instance {
             last_error_check: None,
             last_start_time: None,
             last_error: None,
+            status_history: VecDeque::new(),
         }
     }
 
@@ -167,6 +172,7 @@ impl Instance {
             Ok(s) => s,
             Err(_) => {
                 self.status = Status::Error;
+                self.status_history.clear();
                 self.last_error_check = Some(std::time::Instant::now());
                 return;
             }
@@ -174,15 +180,26 @@ impl Instance {
 
         if !session.exists() {
             self.status = Status::Error;
+            self.status_history.clear();
             self.last_error_check = Some(std::time::Instant::now());
             return;
         }
 
         // Detect status from pane content
-        self.status = match session.detect_status(&self.tool) {
+        let detected = match session.detect_status(&self.tool) {
             Ok(status) => status,
             Err(_) => Status::Idle,
         };
+
+        // Debounce: require 3 consecutive identical readings before updating
+        self.status_history.push_back(detected);
+        while self.status_history.len() > 3 {
+            self.status_history.pop_front();
+        }
+
+        if self.status_history.len() == 3 && self.status_history.iter().all(|s| *s == detected) {
+            self.status = detected;
+        }
 
         // Detect Claude session ID if applicable
         if self.tool == "claude" && self.claude_session_id.is_none() {

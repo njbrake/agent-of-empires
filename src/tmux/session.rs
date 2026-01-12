@@ -324,10 +324,10 @@ pub fn detect_claude_status(content: &str) -> Status {
 
     for line in non_empty_lines.iter().rev().take(10) {
         let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
+        if clean_line == ">" || clean_line == "> " || clean_line == "❯" || clean_line == "❯ " {
             return Status::Waiting;
         }
-        if clean_line.starts_with("> ")
+        if (clean_line.starts_with("> ") || clean_line.starts_with("❯ "))
             && !clean_line.to_lowercase().contains("esc")
             && clean_line.len() < 100
         {
