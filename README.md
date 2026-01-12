@@ -42,7 +42,7 @@ Once you attach to a session, you're working directly in tmux. Basic tmux knowle
 | `Ctrl+b [` | Enter scroll/copy mode |
 | `Ctrl+b n` / `Ctrl+b p` | Next/previous window |
 
-If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and return to the TUI.
+If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and return to the TUI, and that with Claude Code you'll need to enter scroll mode in order to scroll up in the Claude Code window (this isn't necessary when using opencode).
 
 ## Features
 
@@ -61,54 +61,6 @@ aoe
 
 # Or add a session directly from CLI
 aoe add /path/to/project
-```
-
-## Using the TUI
-
-### Launching
-
-```bash
-aoe           # Launch TUI with default profile
-aoe -p work   # Launch with a specific profile
-```
-
-### Session Status Indicators
-
-- 🟢 **Running** - Agent is actively processing
-- 🟡 **Waiting** - Agent is waiting for input
-- ⚪ **Idle** - Session is inactive
-- 🔴 **Error** - An error was detected
-
-## CLI Commands
-
-```bash
-# Session management
-aoe add <path>              # Add a new session
-aoe add . --title "my-proj" # Add with custom title
-aoe list                    # List all sessions
-aoe list --json             # List as JSON
-aoe remove <id|title>       # Remove a session
-aoe status                  # Show status summary
-
-# Session lifecycle
-aoe session start <id>      # Start a session
-aoe session stop <id>       # Stop a session
-aoe session restart <id>    # Restart a session
-aoe session attach <id>     # Attach to a session
-aoe session show <id>       # Show session details
-
-# Groups
-aoe group create <name>     # Create a group
-aoe group list              # List groups
-aoe group delete <name>     # Delete a group
-
-# Profiles
-aoe profile list            # List profiles
-aoe profile create <name>   # Create a profile
-aoe profile delete <name>   # Delete a profile
-
-# Maintenance
-aoe uninstall               # Uninstall Agent of Empires
 ```
 
 ## Configuration
