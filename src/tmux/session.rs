@@ -275,7 +275,9 @@ pub fn detect_claude_status(content: &str) -> Status {
 
     // RUNNING: "esc to interrupt" or "ctrl+c to interrupt" shown when Claude is busy
     // Only check in last lines to avoid matching comments/code in terminal output
-    if last_lines_lower.contains("esc to interrupt") || last_lines_lower.contains("ctrl+c to interrupt") {
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+    {
         return Status::Running;
     }
 
