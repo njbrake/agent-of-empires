@@ -1,6 +1,6 @@
 [package]
 name = "agent-of-empires"
-version = "0.0.12"
+version = "0.1.0"
 edition = "2021"
 authors = ["Agent of Empires Contributors"]
 description = "Terminal session manager for AI coding agents"
