@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod cli;
+mod git;
 mod process;
 mod session;
 mod tmux;
@@ -59,6 +60,12 @@ enum Commands {
         command: Option<cli::profile::ProfileCommands>,
     },
 
+    /// Manage git worktrees
+    Worktree {
+        #[command(subcommand)]
+        command: cli::worktree::WorktreeCommands,
+    },
+
     /// Uninstall Agent of Empires
     Uninstall(cli::uninstall::UninstallArgs),
 }
@@ -83,6 +90,7 @@ async fn main() -> Result<()> {
         Some(Commands::Session { command }) => cli::session::run(&profile, command).await,
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
+        Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
         Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
         None => {
             // Launch TUI
