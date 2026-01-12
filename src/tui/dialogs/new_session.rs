@@ -3,6 +3,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
 use super::DialogResult;
 use crate::session::civilizations;
@@ -17,9 +19,9 @@ pub struct NewSessionData {
 }
 
 pub struct NewSessionDialog {
-    title: String,
-    path: String,
-    group: String,
+    title: Input,
+    path: Input,
+    group: Input,
     tool_index: usize,
     focused_field: usize,
     available_tools: Vec<&'static str>,
@@ -35,9 +37,9 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
 
         Self {
-            title: String::new(),
-            path: current_dir,
-            group: String::new(),
+            title: Input::default(),
+            path: Input::new(current_dir),
+            group: Input::default(),
             tool_index: 0,
             focused_field: 0,
             available_tools,
@@ -48,9 +50,9 @@ impl NewSessionDialog {
     #[cfg(test)]
     fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
         Self {
-            title: String::new(),
-            path,
-            group: String::new(),
+            title: Input::default(),
+            path: Input::new(path),
+            group: Input::default(),
             tool_index: 0,
             focused_field: 0,
             available_tools: tools,
@@ -65,16 +67,17 @@ impl NewSessionDialog {
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
             KeyCode::Enter => {
-                let final_title = if self.title.is_empty() {
+                let title_value = self.title.value();
+                let final_title = if title_value.is_empty() {
                     let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
                     civilizations::generate_random_title(&refs)
                 } else {
-                    self.title.clone()
+                    title_value.to_string()
                 };
                 DialogResult::Submit(NewSessionData {
                     title: final_title,
-                    path: self.path.clone(),
-                    group: self.group.clone(),
+                    path: self.path.value().to_string(),
+                    group: self.group.value().to_string(),
                     tool: self.available_tools[self.tool_index].to_string(),
                 })
             }
@@ -98,23 +101,17 @@ impl NewSessionDialog {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
                 DialogResult::Continue
             }
-            KeyCode::Backspace => {
+            _ => {
                 if self.focused_field != 3 || !has_tool_selection {
-                    self.current_field_mut().pop();
+                    self.current_input_mut()
+                        .handle_event(&crossterm::event::Event::Key(key));
                 }
                 DialogResult::Continue
             }
-            KeyCode::Char(c) => {
-                if self.focused_field != 3 || !has_tool_selection {
-                    self.current_field_mut().push(c);
-                }
-                DialogResult::Continue
-            }
-            _ => DialogResult::Continue,
         }
     }
 
-    fn current_field_mut(&mut self) -> &mut String {
+    fn current_input_mut(&mut self) -> &mut Input {
         match self.focused_field {
             0 => &mut self.title,
             1 => &mut self.path,
@@ -125,7 +122,7 @@ impl NewSessionDialog {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
-        let dialog_width = 60;
+        let dialog_width = 80;
         let dialog_height = 14;
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -161,13 +158,13 @@ impl NewSessionDialog {
             ])
             .split(inner);
 
-        let text_fields = [
+        let text_fields: [(&str, &Input); 3] = [
             ("Title:", &self.title),
             ("Path:", &self.path),
             ("Group:", &self.group),
         ];
 
-        for (idx, (label, value)) in text_fields.iter().enumerate() {
+        for (idx, (label, input)) in text_fields.iter().enumerate() {
             let is_focused = idx == self.focused_field;
             let label_style = if is_focused {
                 Style::default().fg(theme.accent).underlined()
@@ -180,17 +177,21 @@ impl NewSessionDialog {
                 Style::default().fg(theme.text)
             };
 
+            let value = input.value();
+            let cursor_pos = input.visual_cursor();
+
             let display_value = if value.is_empty() && idx == 0 {
-                "(random civ)"
+                "(random civ)".to_string()
+            } else if is_focused {
+                let (before, after) = value.split_at(cursor_pos.min(value.len()));
+                format!("{}█{}", before, after)
             } else {
-                value.as_str()
+                value.to_string()
             };
 
-            let cursor = if is_focused { "█" } else { "" };
             let line = Line::from(vec![
                 Span::styled(*label, label_style),
                 Span::styled(format!(" {}", display_value), value_style),
-                Span::styled(cursor, Style::default().fg(theme.accent).bg(theme.text)),
             ]);
 
             frame.render_widget(Paragraph::new(line), chunks[idx]);
@@ -287,9 +288,9 @@ mod tests {
     #[test]
     fn test_initial_state() {
         let dialog = single_tool_dialog();
-        assert_eq!(dialog.title, "");
-        assert_eq!(dialog.path, "/tmp/project");
-        assert_eq!(dialog.group, "");
+        assert_eq!(dialog.title.value(), "");
+        assert_eq!(dialog.path.value(), "/tmp/project");
+        assert_eq!(dialog.group.value(), "");
         assert_eq!(dialog.focused_field, 0);
         assert_eq!(dialog.tool_index, 0);
     }
@@ -323,7 +324,7 @@ mod tests {
     #[test]
     fn test_enter_preserves_custom_title() {
         let mut dialog = single_tool_dialog();
-        dialog.title = "My Custom Title".to_string();
+        dialog.title = Input::new("My Custom Title".to_string());
         let result = dialog.handle_key(key(KeyCode::Enter));
         match result {
             DialogResult::Submit(data) => {
@@ -386,43 +387,42 @@ mod tests {
         let mut dialog = single_tool_dialog();
         dialog.handle_key(key(KeyCode::Char('H')));
         dialog.handle_key(key(KeyCode::Char('i')));
-        assert_eq!(dialog.title, "Hi");
+        assert_eq!(dialog.title.value(), "Hi");
     }
 
     #[test]
     fn test_char_input_to_path() {
         let mut dialog = single_tool_dialog();
-        dialog.handle_key(key(KeyCode::Tab));
+        dialog.focused_field = 1;
         dialog.handle_key(key(KeyCode::Char('/')));
         dialog.handle_key(key(KeyCode::Char('a')));
-        assert_eq!(dialog.path, "/tmp/project/a");
+        assert_eq!(dialog.path.value(), "/tmp/project/a");
     }
 
     #[test]
     fn test_char_input_to_group() {
         let mut dialog = single_tool_dialog();
-        dialog.handle_key(key(KeyCode::Tab));
-        dialog.handle_key(key(KeyCode::Tab));
+        dialog.focused_field = 2;
         dialog.handle_key(key(KeyCode::Char('w')));
         dialog.handle_key(key(KeyCode::Char('o')));
         dialog.handle_key(key(KeyCode::Char('r')));
         dialog.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(dialog.group, "work");
+        assert_eq!(dialog.group.value(), "work");
     }
 
     #[test]
     fn test_backspace_removes_char() {
         let mut dialog = single_tool_dialog();
-        dialog.title = "Hello".to_string();
+        dialog.title = Input::new("Hello".to_string());
         dialog.handle_key(key(KeyCode::Backspace));
-        assert_eq!(dialog.title, "Hell");
+        assert_eq!(dialog.title.value(), "Hell");
     }
 
     #[test]
     fn test_backspace_on_empty_field() {
         let mut dialog = single_tool_dialog();
         dialog.handle_key(key(KeyCode::Backspace));
-        assert_eq!(dialog.title, "");
+        assert_eq!(dialog.title.value(), "");
     }
 
     #[test]
@@ -459,7 +459,7 @@ mod tests {
         let mut dialog = multi_tool_dialog();
         dialog.focused_field = 0;
         dialog.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(dialog.title, " ");
+        assert_eq!(dialog.title.value(), " ");
         assert_eq!(dialog.tool_index, 0);
     }
 
@@ -476,7 +476,7 @@ mod tests {
         let mut dialog = multi_tool_dialog();
         dialog.focused_field = 3;
         dialog.handle_key(key(KeyCode::Right));
-        dialog.title = "Test".to_string();
+        dialog.title = Input::new("Test".to_string());
 
         let result = dialog.handle_key(key(KeyCode::Enter));
         match result {
