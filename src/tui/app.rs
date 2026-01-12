@@ -70,17 +70,24 @@ impl App {
                 }
             }
 
-            // Periodic status refresh (only when no input pending)
+            // Periodic refreshes (only when no input pending)
+            let mut refresh_needed = false;
+
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.refresh_status();
                 last_status_refresh = std::time::Instant::now();
-                terminal.draw(|f| self.render(f))?;
+                refresh_needed = true;
             }
 
             // Periodic disk refresh to sync with other instances
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
+                refresh_needed = true;
+            }
+
+            // Single draw after all refreshes to avoid flicker
+            if refresh_needed {
                 terminal.draw(|f| self.render(f))?;
             }
 

@@ -75,7 +75,18 @@ impl HomeView {
     }
 
     pub fn reload(&mut self) -> anyhow::Result<()> {
-        let (instances, groups) = self.storage.load_with_groups()?;
+        let (mut instances, groups) = self.storage.load_with_groups()?;
+
+        // Preserve runtime status from previous instances (status is not persisted to disk)
+        for inst in &mut instances {
+            if let Some(prev) = self.instance_map.get(&inst.id) {
+                inst.status = prev.status;
+                inst.last_error = prev.last_error.clone();
+                inst.last_error_check = prev.last_error_check;
+                inst.last_start_time = prev.last_start_time;
+            }
+        }
+
         self.instances = instances;
         self.instance_map = self
             .instances
