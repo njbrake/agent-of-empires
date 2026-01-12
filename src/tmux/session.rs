@@ -263,7 +263,6 @@ fn is_claude_code_content(content: &str) -> bool {
 
 pub fn detect_claude_status(content: &str) -> Status {
     let lines: Vec<&str> = content.lines().collect();
-    let content_lower = content.to_lowercase();
     let non_empty_lines: Vec<&str> = lines
         .iter()
         .filter(|l| !l.trim().is_empty())
@@ -285,7 +284,6 @@ pub fn detect_claude_status(content: &str) -> Status {
     if content_lower.contains("enter to select") || content_lower.contains("esc to cancel") {
         return Status::Waiting;
     }
-
     let permission_prompts = [
         "Yes, allow once",
         "Yes, allow always",
@@ -296,7 +294,7 @@ pub fn detect_claude_status(content: &str) -> Status {
         "Do you trust the files in this folder?",
     ];
     for prompt in &permission_prompts {
-        if content.contains(prompt) {
+        if last_lines.contains(prompt) {
             return Status::Waiting;
         }
     }
@@ -324,9 +322,11 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
+    // WAITING: Y/N confirmation prompts
+    // Only check in last lines
     let question_prompts = ["(Y/n)", "(y/N)", "[Y/n]", "[y/N]"];
     for prompt in &question_prompts {
-        if content.contains(prompt) {
+        if last_lines.contains(prompt) {
             return Status::Waiting;
         }
     }
@@ -342,7 +342,20 @@ pub fn detect_opencode_status(content: &str) -> Status {
         .copied()
         .collect();
 
-    if content.contains("esc to interrupt") || content.contains("esc interrupt") {
+    // Get last 30 lines for UI status checks (to avoid matching code/comments in terminal output)
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: OpenCode shows "esc to interrupt" when busy (same as Claude Code)
+    // Only check in last lines to avoid matching comments/code in terminal output
+    if last_lines_lower.contains("esc to interrupt") || last_lines_lower.contains("esc interrupt") {
         return Status::Running;
     }
 
@@ -354,10 +367,14 @@ pub fn detect_opencode_status(content: &str) -> Status {
         }
     }
 
-    if content.contains("enter to select") || content.contains("esc to cancel") {
+    // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
+    // Only check in last lines to avoid matching comments/code
+    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
         return Status::Waiting;
     }
 
+    // WAITING: Permission/confirmation prompts
+    // Only check in last lines
     let permission_prompts = [
         "(y/n)",
         "[y/n]",
@@ -367,7 +384,7 @@ pub fn detect_opencode_status(content: &str) -> Status {
         "allow",
     ];
     for prompt in &permission_prompts {
-        if content.contains(prompt) {
+        if last_lines_lower.contains(prompt) {
             return Status::Waiting;
         }
     }
@@ -404,6 +421,8 @@ pub fn detect_opencode_status(content: &str) -> Status {
         }
     }
 
+    // WAITING - Completion indicators + input prompt nearby
+    // Only check in last lines
     let completion_indicators = [
         "complete",
         "done",
@@ -417,7 +436,7 @@ pub fn detect_opencode_status(content: &str) -> Status {
     ];
     let has_completion = completion_indicators
         .iter()
-        .any(|ind| content.contains(ind));
+        .any(|ind| last_lines_lower.contains(ind));
     if has_completion {
         for line in non_empty_lines.iter().rev().take(10) {
             let clean = strip_ansi(line).trim().to_string();
