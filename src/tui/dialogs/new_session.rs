@@ -73,7 +73,7 @@ impl NewSessionDialog {
             existing_titles: Vec::new(),
             worktree_branch: Input::default(),
             sandbox_enabled: false,
-            docker_available: false, // Disable in tests to keep field count consistent
+            docker_available: false,
             error_message: None,
         }
     }
@@ -86,10 +86,10 @@ impl NewSessionDialog {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
         let max_field = match (has_tool_selection, has_sandbox) {
-            (true, true) => 6,   // title, path, group, tool, worktree, sandbox
-            (true, false) => 5,  // title, path, group, tool, worktree
-            (false, true) => 5,  // title, path, group, worktree, sandbox
-            (false, false) => 4, // title, path, group, worktree
+            (true, true) => 6,
+            (true, false) => 5,
+            (false, true) => 5,
+            (false, false) => 4,
         };
         let tool_field = if has_tool_selection { 3 } else { usize::MAX };
         let sandbox_field = if has_sandbox {
@@ -128,7 +128,7 @@ impl NewSessionDialog {
                     group: self.group.value().to_string(),
                     tool: self.available_tools[self.tool_index].to_string(),
                     worktree_branch,
-                    create_new_branch: true, // Always create new branch when worktree specified
+                    create_new_branch: true,
                     sandbox: self.sandbox_enabled,
                 })
             }
@@ -209,26 +209,15 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let constraints = if has_sandbox {
-            vec![
-                Constraint::Length(2), // title
-                Constraint::Length(2), // path
-                Constraint::Length(2), // group
-                Constraint::Length(2), // tool
-                Constraint::Length(2), // worktree
-                Constraint::Length(2), // sandbox
-                Constraint::Min(1),    // hint/error
-            ]
-        } else {
-            vec![
-                Constraint::Length(2),
-                Constraint::Length(2),
-                Constraint::Length(2),
-                Constraint::Length(2),
-                Constraint::Length(2),
-                Constraint::Min(1),
-            ]
-        };
+        let constraints = vec![
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ];
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -347,7 +336,6 @@ impl NewSessionDialog {
         ]);
         frame.render_widget(Paragraph::new(wt_line), chunks[4]);
 
-        // Render sandbox toggle if Docker is available
         let hint_chunk = if has_sandbox {
             let sandbox_field = if has_tool_selection { 5 } else { 4 };
             let is_sandbox_focused = self.focused_field == sandbox_field;
