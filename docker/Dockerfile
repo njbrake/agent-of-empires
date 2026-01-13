@@ -16,19 +16,26 @@ RUN apt-get update && apt-get install -y \
     fzf \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user for running Claude (required for --dangerously-skip-permissions)
+RUN useradd -m -s /bin/bash sandbox
+
+# Switch to sandbox user for tool installation
+USER sandbox
+WORKDIR /home/sandbox
+
 # Install Claude Code CLI (official installer)
 RUN curl -fsSL https://claude.ai/install.sh | bash
-ENV PATH="/root/.local/bin:${PATH}"
+ENV PATH="/home/sandbox/.local/bin:${PATH}"
 
 # Install OpenCode
 RUN curl -fsSL https://opencode.ai/install | bash
-ENV PATH="/root/.opencode/bin:${PATH}"
+ENV PATH="/home/sandbox/.opencode/bin:${PATH}"
 
 # Create directories for credential mounts
-RUN mkdir -p /root/.claude \
-    /root/.config/opencode \
-    /root/.local/share/opencode \
-    /root/.ssh
+RUN mkdir -p /home/sandbox/.claude \
+    /home/sandbox/.config/opencode \
+    /home/sandbox/.local/share/opencode \
+    /home/sandbox/.ssh
 
 # Set working directory
 WORKDIR /workspace

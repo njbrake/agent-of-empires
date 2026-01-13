@@ -214,11 +214,13 @@ impl Instance {
             read_only: false,
         }];
 
+        const CONTAINER_HOME: &str = "/home/sandbox";
+
         let gitconfig = home.join(".gitconfig");
         if gitconfig.exists() {
             volumes.push(VolumeMount {
                 host_path: gitconfig.to_string_lossy().to_string(),
-                container_path: "/root/.gitconfig".to_string(),
+                container_path: format!("{}/.gitconfig", CONTAINER_HOME),
                 read_only: true,
             });
         }
@@ -227,7 +229,7 @@ impl Instance {
         if ssh_dir.exists() {
             volumes.push(VolumeMount {
                 host_path: ssh_dir.to_string_lossy().to_string(),
-                container_path: "/root/.ssh".to_string(),
+                container_path: format!("{}/.ssh", CONTAINER_HOME),
                 read_only: true,
             });
         }
@@ -236,16 +238,16 @@ impl Instance {
         if opencode_config.exists() {
             volumes.push(VolumeMount {
                 host_path: opencode_config.to_string_lossy().to_string(),
-                container_path: "/root/.config/opencode".to_string(),
+                container_path: format!("{}/.config/opencode", CONTAINER_HOME),
                 read_only: true,
             });
         }
 
         let named_volumes = vec![
-            (CLAUDE_AUTH_VOLUME.to_string(), "/root/.claude".to_string()),
+            (CLAUDE_AUTH_VOLUME.to_string(), format!("{}/.claude", CONTAINER_HOME)),
             (
                 OPENCODE_AUTH_VOLUME.to_string(),
-                "/root/.local/share/opencode".to_string(),
+                format!("{}/.local/share/opencode", CONTAINER_HOME),
             ),
         ];
 
@@ -260,9 +262,7 @@ impl Instance {
             .filter_map(|key| std::env::var(key).ok().map(|val| (key.clone(), val)))
             .collect();
 
-        // Set CLAUDE_CONFIG_DIR so Claude Code looks for all config files
-        // (including .credentials.json) in the mounted volume
-        environment.push(("CLAUDE_CONFIG_DIR".to_string(), "/root/.claude".to_string()));
+        environment.push(("CLAUDE_CONFIG_DIR".to_string(), format!("{}/.claude", CONTAINER_HOME)));
 
         Ok(ContainerConfig {
             working_dir: "/workspace".to_string(),
