@@ -11,6 +11,7 @@ use super::dialogs::{ConfirmDialog, NewSessionDialog, RenameDialog};
 use super::styles::Theme;
 use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Status, Storage};
 use crate::tmux::AvailableTools;
+use crate::update::UpdateInfo;
 
 pub struct HomeView {
     storage: Storage,
@@ -596,7 +597,13 @@ impl HomeView {
         Ok(())
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        update_info: Option<&UpdateInfo>,
+    ) {
         // Layout: main area + status bar at bottom
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -611,7 +618,7 @@ impl HomeView {
 
         self.render_list(frame, chunks[0], theme);
         self.render_preview(frame, chunks[1], theme);
-        self.render_status_bar(frame, main_chunks[1], theme);
+        self.render_status_bar(frame, main_chunks[1], theme, update_info);
 
         // Render dialogs on top
         if self.show_help {
@@ -780,12 +787,18 @@ impl HomeView {
         }
     }
 
-    fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_status_bar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        update_info: Option<&UpdateInfo>,
+    ) {
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
 
-        let spans = vec![
+        let mut spans = vec![
             Span::styled(" j/k", key_style),
             Span::styled(" Navigate ", desc_style),
             Span::styled("│", sep_style),
@@ -810,6 +823,14 @@ impl HomeView {
             Span::styled(" q", key_style),
             Span::styled(" Quit", desc_style),
         ];
+
+        if update_info.is_some() {
+            let update_style = Style::default().fg(theme.waiting).bold();
+            spans.push(Span::styled(
+                "  Update available: brew update && brew upgrade aoe ",
+                update_style,
+            ));
+        }
 
         let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
         frame.render_widget(status, area);
