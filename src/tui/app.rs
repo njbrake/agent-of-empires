@@ -8,14 +8,17 @@ use std::time::Duration;
 
 use super::home::HomeView;
 use super::styles::Theme;
-use crate::session::Storage;
+use crate::session::{get_update_settings, Storage};
 use crate::tmux::AvailableTools;
+use crate::update::{check_for_update, UpdateInfo};
 
 pub struct App {
     home: HomeView,
     should_quit: bool,
     theme: Theme,
     needs_redraw: bool,
+    update_info: Option<UpdateInfo>,
+    update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
 }
 
 impl App {
@@ -29,6 +32,8 @@ impl App {
             should_quit: false,
             theme,
             needs_redraw: true,
+            update_info: None,
+            update_rx: None,
         })
     }
 
@@ -42,6 +47,17 @@ impl App {
 
         // Refresh tmux session cache
         crate::tmux::refresh_session_cache();
+
+        // Spawn async update check
+        let settings = get_update_settings();
+        if settings.check_enabled {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.update_rx = Some(rx);
+            tokio::spawn(async move {
+                let version = env!("CARGO_PKG_VERSION");
+                let _ = tx.send(check_for_update(version, false).await);
+            });
+        }
 
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
@@ -67,6 +83,23 @@ impl App {
                         break;
                     }
                     continue; // Skip status refresh this iteration for responsiveness
+                }
+            }
+
+            // Check for update result (non-blocking)
+            if let Some(mut rx) = self.update_rx.take() {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        if let Ok(info) = result {
+                            if info.available {
+                                self.update_info = Some(info);
+                            }
+                        }
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                        self.update_rx = Some(rx);
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
                 }
             }
 
@@ -100,7 +133,8 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.home.render(frame, frame.area(), &self.theme);
+        self.home
+            .render(frame, frame.area(), &self.theme, self.update_info.as_ref());
     }
 
     async fn handle_key(
