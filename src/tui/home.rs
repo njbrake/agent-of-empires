@@ -262,25 +262,38 @@ impl HomeView {
             KeyCode::Char('d') => {
                 if let Some(session_id) = &self.selected_session {
                     // Check if this session has a worktree
-                    let message = if let Some(inst) = self.instance_map.get(session_id) {
+                    let (title, message) = if let Some(inst) = self.instance_map.get(session_id) {
                         if let Some(wt_info) = &inst.worktree_info {
                             if wt_info.managed_by_aoe && wt_info.cleanup_on_delete {
-                                format!(
-                                    "Delete session and worktree?\n\nWorktree: {}\nBranch: {}",
-                                    inst.project_path, wt_info.branch
+                                (
+                                    "Delete Session & Worktree",
+                                    format!(
+                                        "WARNING: This will permanently delete the worktree directory and all its contents!\n\n\
+                                        Path: {}\n\
+                                        Branch: {}",
+                                        inst.project_path, wt_info.branch
+                                    ),
                                 )
                             } else {
-                                "Are you sure you want to delete this session?".to_string()
+                                (
+                                    "Delete Session",
+                                    "Are you sure you want to delete this session?".to_string(),
+                                )
                             }
                         } else {
-                            "Are you sure you want to delete this session?".to_string()
+                            (
+                                "Delete Session",
+                                "Are you sure you want to delete this session?".to_string(),
+                            )
                         }
                     } else {
-                        "Are you sure you want to delete this session?".to_string()
+                        (
+                            "Delete Session",
+                            "Are you sure you want to delete this session?".to_string(),
+                        )
                     };
 
-                    self.confirm_dialog =
-                        Some(ConfirmDialog::new("Delete Session", &message, "delete"));
+                    self.confirm_dialog = Some(ConfirmDialog::new(title, &message, "delete"));
                 } else if let Some(group_path) = &self.selected_group {
                     let session_count = self
                         .instances
