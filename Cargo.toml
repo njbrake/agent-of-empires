@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 authors = ["Agent of Empires Contributors"]
 description = "Terminal session manager for AI coding agents"
