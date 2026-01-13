@@ -16,13 +16,9 @@ RUN apt-get update && apt-get install -y \
     fzf \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20 (required for Claude Code)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI (official installer)
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:${PATH}"
 
 # Install OpenCode
 RUN curl -fsSL https://opencode.ai/install | bash

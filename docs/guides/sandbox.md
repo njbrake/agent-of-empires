@@ -180,22 +180,146 @@ These variables are read from your host environment and passed to containers.
 
 ## Custom Docker Images
 
-Build custom images with additional tools:
+The default sandbox image includes Claude Code, OpenCode, Node.js, git, and basic development tools. For projects requiring additional dependencies (Python, Rust, Go, databases, etc.), you can extend the base image.
+
+### Step 1: Create a Dockerfile
+
+Create a `Dockerfile` in your project (or a shared location):
 
 ```dockerfile
 FROM ghcr.io/njbrake/aoe-sandbox:latest
 
-# Add your tools
-RUN apt-get update && apt-get install -y ripgrep fd-find
+# Example: Add Python for a data science project
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
 
-# Add language runtimes
-RUN curl -fsSL https://get.pnpm.io/install.sh | sh -
+# Install Python packages
+RUN pip3 install --break-system-packages \
+    pandas \
+    numpy \
+    requests
 ```
 
-Use with:
+### Step 2: Build Your Image
+
 ```bash
-aoe add --sandbox-image myregistry/my-sandbox:latest .
+# Build locally
+docker build -t my-sandbox:latest .
+
+# Or build and push to a registry
+docker build -t ghcr.io/yourusername/my-sandbox:latest .
+docker push ghcr.io/yourusername/my-sandbox:latest
 ```
+
+### Step 3: Configure AOE to Use Your Image
+
+**Option A: Set as default for all sessions**
+
+Add to `~/.agent-of-empires/config.toml`:
+
+```toml
+[sandbox]
+default_image = "my-sandbox:latest"
+# Or with registry:
+# default_image = "ghcr.io/yourusername/my-sandbox:latest"
+```
+
+**Option B: Use per-session via CLI**
+
+```bash
+aoe add --sandbox-image my-sandbox:latest .
+```
+
+### Example Dockerfiles
+
+**Rust Development:**
+```dockerfile
+FROM ghcr.io/njbrake/aoe-sandbox:latest
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Add common Rust tools
+RUN cargo install cargo-watch cargo-edit
+```
+
+**Go Development:**
+```dockerfile
+FROM ghcr.io/njbrake/aoe-sandbox:latest
+
+RUN apt-get update && apt-get install -y golang-go \
+    && rm -rf /var/lib/apt/lists/*
+ENV GOPATH="/root/go"
+ENV PATH="${GOPATH}/bin:${PATH}"
+```
+
+**Full-Stack Web Development:**
+```dockerfile
+FROM ghcr.io/njbrake/aoe-sandbox:latest
+
+# pnpm for faster package management
+RUN npm install -g pnpm
+
+# Python for backend/scripts
+RUN apt-get update && apt-get install -y python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# PostgreSQL client for database access
+RUN apt-get update && apt-get install -y postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+**Machine Learning / Data Science:**
+```dockerfile
+FROM ghcr.io/njbrake/aoe-sandbox:latest
+
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --break-system-packages \
+    numpy \
+    pandas \
+    scikit-learn \
+    matplotlib \
+    jupyter
+```
+
+### Full Configuration Example
+
+Here's a complete `~/.agent-of-empires/config.toml` with sandbox settings:
+
+```toml
+[sandbox]
+# Use your custom image by default
+default_image = "ghcr.io/yourusername/my-sandbox:latest"
+
+# Auto-enable sandbox for all new sessions
+enabled_by_default = true
+
+# Resource limits
+cpu_limit = "4"
+memory_limit = "8g"
+
+# Pass through API keys from host environment
+environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DATABASE_URL"]
+
+# Clean up containers when sessions are removed
+auto_cleanup = true
+```
+
+### Tips for Custom Images
+
+- **Keep images small:** Only install what you need to minimize pull times
+- **Use multi-stage builds:** For compiled languages, build in one stage and copy artifacts to final image
+- **Pin versions:** Use specific versions (e.g., `python3.11`) for reproducibility
+- **Layer caching:** Put frequently changing instructions (like `pip install`) later in the Dockerfile
+- **Test locally:** Run `docker run -it my-sandbox:latest bash` to verify your tools work before using with aoe
 
 ## Pro Tips
 
