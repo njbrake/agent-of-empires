@@ -12,6 +12,7 @@
 ## Build, Test, and Development Commands
 
 - `cargo build` / `cargo build --release`: compile (release binary at `target/release/aoe`).
+- `cargo build --profile dev-release`: faster optimized builds for local development. Skips LTO for quicker compile times while still producing an optimized binary. Use `--release` for final/CI builds.
 - `cargo run --release`: run from source; requires `tmux` installed.
 - `cargo check`: fast type-checking during development.
 - `cargo test`: run unit + integration tests (some tests skip if `tmux` is unavailable).

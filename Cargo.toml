@@ -89,6 +89,11 @@ lto = true
 codegen-units = 1
 strip = true
 
+[profile.dev-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [[bin]]
 name = "aoe"
 path = "src/main.rs"
