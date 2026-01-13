@@ -3,7 +3,6 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
-use std::io::Write;
 use std::time::Duration;
 
 use super::home::HomeView;
@@ -191,12 +190,12 @@ impl App {
         // Leave TUI mode completely
         crossterm::terminal::disable_raw_mode()?;
         crossterm::execute!(
-            std::io::stdout(),
+            terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::event::DisableMouseCapture,
             crossterm::cursor::Show
         )?;
-        std::io::stdout().flush()?;
+        std::io::Write::flush(terminal.backend_mut())?;
 
         // Attach to tmux session (this blocks until user detaches with Ctrl+b d)
         let attach_result = tmux_session.attach();
@@ -204,12 +203,12 @@ impl App {
         // Re-enter TUI mode
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(
-            std::io::stdout(),
+            terminal.backend_mut(),
             crossterm::terminal::EnterAlternateScreen,
             crossterm::event::EnableMouseCapture,
             crossterm::cursor::Hide
         )?;
-        std::io::stdout().flush()?;
+        std::io::Write::flush(terminal.backend_mut())?;
 
         // Drain any stale events that accumulated during tmux session
         while event::poll(Duration::from_millis(0))? {
