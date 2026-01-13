@@ -29,6 +29,13 @@ impl DockerContainer {
         }
     }
 
+    pub fn from_session_id(session_id: &str) -> Self {
+        Self {
+            name: Self::generate_name(session_id),
+            image: String::new(),
+        }
+    }
+
     pub fn generate_name(session_id: &str) -> String {
         let short_id = if session_id.len() > 8 {
             &session_id[..8]

@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 
 use crate::docker::DockerContainer;
-use crate::session::{GroupTree, Storage};
+use crate::session::{GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -18,6 +18,18 @@ pub struct RemoveArgs {
     /// Keep Docker container (don't remove it)
     #[arg(long = "keep-container")]
     keep_container: bool,
+}
+
+fn needs_cleanup_confirmation(inst: &Instance, args: &RemoveArgs) -> (bool, bool) {
+    let will_cleanup_worktree = inst
+        .worktree_info
+        .as_ref()
+        .is_some_and(|wt| wt.managed_by_aoe && wt.cleanup_on_delete && !args.keep_worktree);
+    let will_cleanup_container = inst
+        .sandbox_info
+        .as_ref()
+        .is_some_and(|s| s.enabled && !args.keep_container);
+    (will_cleanup_worktree, will_cleanup_container)
 }
 
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
@@ -36,15 +48,8 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
             found = true;
             removed_title = inst.title.clone();
 
-            // Determine what resources will be cleaned up
-            let will_cleanup_worktree = inst
-                .worktree_info
-                .as_ref()
-                .is_some_and(|wt| wt.managed_by_aoe && wt.cleanup_on_delete && !args.keep_worktree);
-            let will_cleanup_container = inst
-                .sandbox_info
-                .as_ref()
-                .is_some_and(|s| s.enabled && !args.keep_container);
+            let (will_cleanup_worktree, will_cleanup_container) =
+                needs_cleanup_confirmation(&inst, &args);
 
             // Show combined warning and get confirmation
             let user_confirmed = if will_cleanup_worktree || will_cleanup_container {
@@ -109,8 +114,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
             if will_cleanup_container {
                 if user_confirmed {
                     let sandbox = inst.sandbox_info.as_ref().unwrap();
-                    let container =
-                        DockerContainer::new(&inst.id, sandbox.image.as_deref().unwrap_or(""));
+                    let container = DockerContainer::from_session_id(&inst.id);
 
                     if container.exists().unwrap_or(false) {
                         match container.remove(true) {

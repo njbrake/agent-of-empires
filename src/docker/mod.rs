@@ -72,6 +72,6 @@ pub fn ensure_named_volume(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn default_sandbox_image() -> String {
-    "ghcr.io/njbrake/aoe-sandbox:latest".to_string()
+pub fn default_sandbox_image() -> &'static str {
+    "ghcr.io/njbrake/aoe-sandbox:latest"
 }

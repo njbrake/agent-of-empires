@@ -120,17 +120,15 @@ impl Instance {
         self.sandbox_info.as_ref().is_some_and(|s| s.enabled)
     }
 
-    pub fn get_tool_command(&self) -> String {
+    pub fn get_tool_command(&self) -> &str {
         if self.command.is_empty() {
-            if self.tool == "claude" {
-                "claude".to_string()
-            } else if self.tool == "opencode" {
-                "opencode".to_string()
-            } else {
-                "bash".to_string()
+            match self.tool.as_str() {
+                "claude" => "claude",
+                "opencode" => "opencode",
+                _ => "bash",
             }
         } else {
-            self.command.clone()
+            &self.command
         }
     }
 
@@ -179,7 +177,7 @@ impl Instance {
         let image = sandbox
             .image
             .as_deref()
-            .unwrap_or_else(|| docker::default_sandbox_image().leak());
+            .unwrap_or(docker::default_sandbox_image());
 
         let container = DockerContainer::new(&self.id, image);
 

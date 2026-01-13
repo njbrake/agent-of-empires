@@ -147,7 +147,7 @@ impl Default for SandboxConfig {
 }
 
 fn default_sandbox_image() -> String {
-    crate::docker::default_sandbox_image()
+    crate::docker::default_sandbox_image().to_string()
 }
 
 fn config_path() -> Result<PathBuf> {

@@ -602,10 +602,7 @@ impl HomeView {
                 // Handle container cleanup
                 if let Some(sandbox) = &inst.sandbox_info {
                     if sandbox.enabled {
-                        let container = crate::docker::DockerContainer::new(
-                            &inst.id,
-                            sandbox.image.as_deref().unwrap_or(""),
-                        );
+                        let container = crate::docker::DockerContainer::from_session_id(&inst.id);
                         if container.exists().unwrap_or(false) {
                             let _ = container.remove(true);
                         }
