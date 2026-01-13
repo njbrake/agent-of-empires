@@ -33,6 +33,9 @@ Thumbs.db
 # VS Code extensions data
 .serena/
 
+# AI coding tools
+.opencode/
+
 # Personal/local files
 *.screenstudio/
 
