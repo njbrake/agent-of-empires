@@ -178,6 +178,11 @@ jobs:
 
             depends_on "tmux"
 
+            livecheck do
+              url :stable
+              strategy :github_latest
+            end
+
             def install
               if OS.mac?
                 if Hardware::CPU.arm?

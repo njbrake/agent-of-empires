@@ -141,3 +141,37 @@ fn test_event_draining_concept() {
     let drain_timeout_ms = 0;
     assert_eq!(drain_timeout_ms, 0, "Drain should use zero timeout");
 }
+
+/// Test that attach/detach uses terminal backend, not std::io::stdout()
+///
+/// This test verifies the fix for the terminal corruption bug where
+/// using std::io::stdout() instead of terminal.backend_mut() caused
+/// file descriptor desynchronization, corrupting tmux sessions.
+#[test]
+fn test_attach_uses_terminal_backend() {
+    let source = std::fs::read_to_string("src/tui/app.rs").expect("Failed to read app.rs");
+
+    let attach_fn_start = source
+        .find("fn attach_session(")
+        .expect("attach_session function not found");
+
+    let attach_fn_section = &source[attach_fn_start..];
+    let fn_end = attach_fn_section
+        .find("\n    fn ")
+        .or_else(|| attach_fn_section.find("\n}\n"))
+        .unwrap_or(attach_fn_section.len());
+
+    let attach_fn_body = &attach_fn_section[..fn_end];
+
+    assert!(
+        !attach_fn_body.contains("std::io::stdout()"),
+        "attach_session should use terminal.backend_mut() instead of std::io::stdout(). \
+         Using std::io::stdout() creates separate file descriptor handles that can \
+         corrupt terminal state and cause 'open terminal failed: not a terminal' errors."
+    );
+
+    assert!(
+        attach_fn_body.contains("terminal.backend_mut()"),
+        "attach_session should use terminal.backend_mut() for terminal operations"
+    );
+}
