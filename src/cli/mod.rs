@@ -1,6 +1,7 @@
 //! CLI command implementations
 
 pub mod add;
+pub mod definition;
 pub mod group;
 pub mod list;
 pub mod profile;
@@ -9,6 +10,8 @@ pub mod session;
 pub mod status;
 pub mod uninstall;
 pub mod worktree;
+
+pub use definition::{Cli, Commands};
 
 use crate::session::Instance;
 use anyhow::{bail, Result};
