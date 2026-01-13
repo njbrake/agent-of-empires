@@ -7,6 +7,7 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::DialogResult;
+use crate::docker;
 use crate::session::civilizations;
 use crate::tmux::AvailableTools;
 use crate::tui::styles::Theme;
@@ -19,6 +20,7 @@ pub struct NewSessionData {
     pub tool: String,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
+    pub sandbox: bool,
 }
 
 pub struct NewSessionDialog {
@@ -30,6 +32,8 @@ pub struct NewSessionDialog {
     available_tools: Vec<&'static str>,
     existing_titles: Vec<String>,
     worktree_branch: Input,
+    sandbox_enabled: bool,
+    docker_available: bool,
     error_message: Option<String>,
 }
 
@@ -40,6 +44,7 @@ impl NewSessionDialog {
             .unwrap_or_default();
 
         let available_tools = tools.available_list();
+        let docker_available = docker::is_docker_available();
 
         Self {
             title: Input::default(),
@@ -50,6 +55,8 @@ impl NewSessionDialog {
             available_tools,
             existing_titles,
             worktree_branch: Input::default(),
+            sandbox_enabled: false,
+            docker_available,
             error_message: None,
         }
     }
@@ -65,6 +72,8 @@ impl NewSessionDialog {
             available_tools: tools,
             existing_titles: Vec::new(),
             worktree_branch: Input::default(),
+            sandbox_enabled: false,
+            docker_available: false, // Disable in tests to keep field count consistent
             error_message: None,
         }
     }
@@ -75,8 +84,23 @@ impl NewSessionDialog {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
         let has_tool_selection = self.available_tools.len() > 1;
-        let max_field = if has_tool_selection { 5 } else { 4 };
+        let has_sandbox = self.docker_available;
+        let max_field = match (has_tool_selection, has_sandbox) {
+            (true, true) => 6,   // title, path, group, tool, worktree, sandbox
+            (true, false) => 5,  // title, path, group, tool, worktree
+            (false, true) => 5,  // title, path, group, worktree, sandbox
+            (false, false) => 4, // title, path, group, worktree
+        };
         let tool_field = if has_tool_selection { 3 } else { usize::MAX };
+        let sandbox_field = if has_sandbox {
+            if has_tool_selection {
+                5
+            } else {
+                4
+            }
+        } else {
+            usize::MAX
+        };
 
         match key.code {
             KeyCode::Esc => {
@@ -105,6 +129,7 @@ impl NewSessionDialog {
                     tool: self.available_tools[self.tool_index].to_string(),
                     worktree_branch,
                     create_new_branch: true, // Always create new branch when worktree specified
+                    sandbox: self.sandbox_enabled,
                 })
             }
             KeyCode::Tab => {
@@ -127,8 +152,14 @@ impl NewSessionDialog {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
                 DialogResult::Continue
             }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.focused_field == sandbox_field =>
+            {
+                self.sandbox_enabled = !self.sandbox_enabled;
+                DialogResult::Continue
+            }
             _ => {
-                if self.focused_field != tool_field {
+                if self.focused_field != tool_field && self.focused_field != sandbox_field {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
                     self.error_message = None;
@@ -153,8 +184,9 @@ impl NewSessionDialog {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
+        let has_sandbox = self.docker_available;
         let dialog_width = 80;
-        let dialog_height = 16;
+        let dialog_height = if has_sandbox { 18 } else { 16 };
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -177,17 +209,31 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(1)
-            .constraints([
+        let constraints = if has_sandbox {
+            vec![
+                Constraint::Length(2), // title
+                Constraint::Length(2), // path
+                Constraint::Length(2), // group
+                Constraint::Length(2), // tool
+                Constraint::Length(2), // worktree
+                Constraint::Length(2), // sandbox
+                Constraint::Min(1),    // hint/error
+            ]
+        } else {
+            vec![
                 Constraint::Length(2),
                 Constraint::Length(2),
                 Constraint::Length(2),
                 Constraint::Length(2),
                 Constraint::Length(2),
                 Constraint::Min(1),
-            ])
+            ]
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints(constraints)
             .split(inner);
 
         let text_fields: [(&str, &Input); 3] = [
@@ -301,12 +347,48 @@ impl NewSessionDialog {
         ]);
         frame.render_widget(Paragraph::new(wt_line), chunks[4]);
 
+        // Render sandbox toggle if Docker is available
+        let hint_chunk = if has_sandbox {
+            let sandbox_field = if has_tool_selection { 5 } else { 4 };
+            let is_sandbox_focused = self.focused_field == sandbox_field;
+            let sandbox_label_style = if is_sandbox_focused {
+                Style::default().fg(theme.accent).underlined()
+            } else {
+                Style::default().fg(theme.text)
+            };
+
+            let checkbox = if self.sandbox_enabled { "[x]" } else { "[ ]" };
+            let checkbox_style = if self.sandbox_enabled {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+
+            let sandbox_line = Line::from(vec![
+                Span::styled("Sandbox:", sandbox_label_style),
+                Span::raw(" "),
+                Span::styled(checkbox, checkbox_style),
+                Span::styled(
+                    " Run in Docker container",
+                    if self.sandbox_enabled {
+                        Style::default().fg(theme.accent)
+                    } else {
+                        Style::default().fg(theme.dimmed)
+                    },
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(sandbox_line), chunks[5]);
+            6
+        } else {
+            5
+        };
+
         if let Some(error) = &self.error_message {
             let error_line = Line::from(vec![
                 Span::styled("✗ Error: ", Style::default().fg(Color::Red).bold()),
                 Span::styled(error, Style::default().fg(Color::Red)),
             ]);
-            frame.render_widget(Paragraph::new(error_line), chunks[5]);
+            frame.render_widget(Paragraph::new(error_line), chunks[hint_chunk]);
         } else {
             let hint = if has_tool_selection {
                 Line::from(vec![
@@ -333,7 +415,7 @@ impl NewSessionDialog {
                     Span::raw(" cancel"),
                 ])
             };
-            frame.render_widget(Paragraph::new(hint), chunks[5]);
+            frame.render_widget(Paragraph::new(hint), chunks[hint_chunk]);
         }
     }
 }

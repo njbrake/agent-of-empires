@@ -5,6 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::docker::{
+    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, OPENCODE_AUTH_VOLUME,
+};
 use crate::tmux;
 
 fn default_true() -> bool {
@@ -30,6 +33,18 @@ pub struct WorktreeInfo {
     pub created_at: DateTime<Utc>,
     #[serde(default = "default_true")]
     pub cleanup_on_delete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxInfo {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    pub container_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +76,10 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_info: Option<WorktreeInfo>,
 
+    // Docker sandbox integration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_info: Option<SandboxInfo>,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -86,6 +105,7 @@ impl Instance {
             claude_session_id: None,
             claude_detected_at: None,
             worktree_info: None,
+            sandbox_info: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,
@@ -94,6 +114,24 @@ impl Instance {
 
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
+    }
+
+    pub fn is_sandboxed(&self) -> bool {
+        self.sandbox_info.as_ref().is_some_and(|s| s.enabled)
+    }
+
+    pub fn get_tool_command(&self) -> String {
+        if self.command.is_empty() {
+            if self.tool == "claude" {
+                "claude".to_string()
+            } else if self.tool == "opencode" {
+                "opencode".to_string()
+            } else {
+                "bash".to_string()
+            }
+        } else {
+            self.command.clone()
+        }
     }
 
     pub fn tmux_session(&self) -> Result<tmux::Session> {
@@ -107,21 +145,135 @@ impl Instance {
             return Ok(());
         }
 
-        let cmd = if self.command.is_empty() {
+        let cmd = if self.is_sandboxed() {
+            self.ensure_container_running()?;
+            let sandbox = self.sandbox_info.as_ref().unwrap();
+            let tool_cmd = self.get_tool_command();
+            Some(format!(
+                "docker exec -it {} {}",
+                sandbox.container_name, tool_cmd
+            ))
+        } else if self.command.is_empty() {
             if self.tool == "claude" {
-                Some("claude")
+                Some("claude".to_string())
             } else {
                 None
             }
         } else {
-            Some(self.command.as_str())
+            Some(self.command.clone())
         };
 
-        session.create(&self.project_path, cmd)?;
+        session.create(&self.project_path, cmd.as_deref())?;
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
 
         Ok(())
+    }
+
+    fn ensure_container_running(&mut self) -> Result<()> {
+        let sandbox = self
+            .sandbox_info
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Cannot ensure container for non-sandboxed session"))?;
+
+        let image = sandbox
+            .image
+            .as_deref()
+            .unwrap_or_else(|| docker::default_sandbox_image().leak());
+
+        let container = DockerContainer::new(&self.id, image);
+
+        if container.is_running()? {
+            return Ok(());
+        }
+
+        if container.exists()? {
+            container.start()?;
+            return Ok(());
+        }
+
+        docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
+        docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
+
+        let config = self.build_container_config()?;
+        let container_id = container.create(&config)?;
+
+        if let Some(ref mut sandbox) = self.sandbox_info {
+            sandbox.container_id = Some(container_id);
+            sandbox.created_at = Some(Utc::now());
+        }
+
+        Ok(())
+    }
+
+    fn build_container_config(&self) -> Result<ContainerConfig> {
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+
+        let mut volumes = vec![VolumeMount {
+            host_path: self.project_path.clone(),
+            container_path: "/workspace".to_string(),
+            read_only: false,
+        }];
+
+        let gitconfig = home.join(".gitconfig");
+        if gitconfig.exists() {
+            volumes.push(VolumeMount {
+                host_path: gitconfig.to_string_lossy().to_string(),
+                container_path: "/root/.gitconfig".to_string(),
+                read_only: true,
+            });
+        }
+
+        let ssh_dir = home.join(".ssh");
+        if ssh_dir.exists() {
+            volumes.push(VolumeMount {
+                host_path: ssh_dir.to_string_lossy().to_string(),
+                container_path: "/root/.ssh".to_string(),
+                read_only: true,
+            });
+        }
+
+        let opencode_config = home.join(".config").join("opencode");
+        if opencode_config.exists() {
+            volumes.push(VolumeMount {
+                host_path: opencode_config.to_string_lossy().to_string(),
+                container_path: "/root/.config/opencode".to_string(),
+                read_only: true,
+            });
+        }
+
+        let named_volumes = vec![
+            (CLAUDE_AUTH_VOLUME.to_string(), "/root/.claude".to_string()),
+            (
+                OPENCODE_AUTH_VOLUME.to_string(),
+                "/root/.local/share/opencode".to_string(),
+            ),
+        ];
+
+        let sandbox_config = super::config::Config::load()
+            .ok()
+            .map(|c| c.sandbox)
+            .unwrap_or_default();
+
+        let mut environment: Vec<(String, String)> = sandbox_config
+            .environment
+            .iter()
+            .filter_map(|key| std::env::var(key).ok().map(|val| (key.clone(), val)))
+            .collect();
+
+        // Set CLAUDE_CONFIG_DIR so Claude Code looks for all config files
+        // (including .credentials.json) in the mounted volume
+        environment.push(("CLAUDE_CONFIG_DIR".to_string(), "/root/.claude".to_string()));
+
+        Ok(ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes,
+            named_volumes,
+            environment,
+            cpu_limit: sandbox_config.cpu_limit,
+            memory_limit: sandbox_config.memory_limit,
+        })
     }
 
     pub fn restart(&mut self) -> Result<()> {

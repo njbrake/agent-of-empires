@@ -23,6 +23,9 @@ pub struct Config {
 
     #[serde(default)]
     pub worktree: WorktreeConfig,
+
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 fn default_profile() -> String {
@@ -103,6 +106,48 @@ impl Default for WorktreeConfig {
 
 fn default_worktree_template() -> String {
     "../{repo-name}-worktrees/{branch}".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    #[serde(default)]
+    pub enabled_by_default: bool,
+
+    #[serde(default = "default_sandbox_image")]
+    pub default_image: String,
+
+    #[serde(default)]
+    pub extra_volumes: Vec<String>,
+
+    #[serde(default)]
+    pub environment: Vec<String>,
+
+    #[serde(default = "default_true")]
+    pub auto_cleanup: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_limit: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit: Option<String>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled_by_default: false,
+            default_image: default_sandbox_image(),
+            extra_volumes: Vec::new(),
+            environment: Vec::new(),
+            auto_cleanup: true,
+            cpu_limit: None,
+            memory_limit: None,
+        }
+    }
+}
+
+fn default_sandbox_image() -> String {
+    crate::docker::default_sandbox_image()
 }
 
 fn config_path() -> Result<PathBuf> {

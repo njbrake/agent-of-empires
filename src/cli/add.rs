@@ -4,7 +4,8 @@ use anyhow::{bail, Result};
 use clap::Args;
 use std::path::PathBuf;
 
-use crate::session::{civilizations, GroupTree, Instance, Storage};
+use crate::docker::{self, DockerContainer};
+use crate::session::{civilizations, Config, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -39,6 +40,14 @@ pub struct AddArgs {
     /// Create a new branch (use with --worktree)
     #[arg(short = 'b', long = "new-branch")]
     create_branch: bool,
+
+    /// Run session in Docker sandbox
+    #[arg(short = 's', long)]
+    sandbox: bool,
+
+    /// Custom Docker image for sandbox (implies --sandbox)
+    #[arg(long = "sandbox-image")]
+    sandbox_image: Option<String>,
 }
 
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
@@ -56,7 +65,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(branch) = &args.worktree_branch {
         use crate::git::GitWorktree;
-        use crate::session::{Config, WorktreeInfo};
+        use crate::session::WorktreeInfo;
         use chrono::Utc;
 
         if !GitWorktree::is_git_repo(&path) {
@@ -162,6 +171,31 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         instance.worktree_info = Some(worktree_info);
     }
 
+    // Handle sandbox setup
+    let use_sandbox = args.sandbox || args.sandbox_image.is_some();
+    let config = Config::load()?;
+
+    if use_sandbox || config.sandbox.enabled_by_default {
+        if !docker::is_docker_available() {
+            if use_sandbox {
+                bail!(
+                    "Docker is not installed or not accessible.\n\
+                     Install Docker: https://docs.docker.com/get-docker/\n\
+                     Tip: Use 'aoe add' without --sandbox to run directly on host"
+                );
+            }
+        } else {
+            let container_name = DockerContainer::generate_name(&instance.id);
+            instance.sandbox_info = Some(SandboxInfo {
+                enabled: true,
+                container_id: None,
+                image: args.sandbox_image.clone(),
+                container_name,
+                created_at: None,
+            });
+        }
+    }
+
     instances.push(instance.clone());
 
     // Rebuild group tree
@@ -182,6 +216,9 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
     if let Some(parent) = &args.parent {
         println!("  Parent:  {}", parent);
+    }
+    if instance.sandbox_info.is_some() {
+        println!("  Sandbox: enabled");
     }
 
     if args.launch {

@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
+use crate::docker::DockerContainer;
 use crate::session::{GroupTree, Storage};
 
 #[derive(Args)]
@@ -13,6 +14,10 @@ pub struct RemoveArgs {
     /// Keep worktree directory (don't delete it)
     #[arg(short = 'k', long = "keep-worktree")]
     keep_worktree: bool,
+
+    /// Keep Docker container (don't remove it)
+    #[arg(long = "keep-container")]
+    keep_container: bool,
 }
 
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
@@ -100,6 +105,29 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                     } else {
                         println!("Worktree preserved at: {}", inst.project_path);
                     }
+                }
+            }
+
+            // Handle container cleanup
+            if let Some(sandbox) = &inst.sandbox_info {
+                if sandbox.enabled && !args.keep_container {
+                    let container =
+                        DockerContainer::new(&inst.id, sandbox.image.as_deref().unwrap_or(""));
+
+                    if container.exists().unwrap_or(false) {
+                        match container.remove(true) {
+                            Ok(_) => println!("✓ Container removed"),
+                            Err(e) => {
+                                eprintln!("Warning: failed to remove container: {}", e);
+                                eprintln!(
+                                    "   You can remove it manually with: docker rm -f {}",
+                                    sandbox.container_name
+                                );
+                            }
+                        }
+                    }
+                } else if sandbox.enabled && args.keep_container {
+                    println!("Container preserved: {}", sandbox.container_name);
                 }
             }
 
