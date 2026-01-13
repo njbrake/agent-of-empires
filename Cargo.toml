@@ -5,6 +5,7 @@ members = [".", "xtask"]
 name = "agent-of-empires"
 version = "0.3.4"
 edition = "2021"
+rust-version = "1.74"
 authors = ["Agent of Empires Contributors"]
 description = "Terminal session manager for AI coding agents"
 license = "MIT"

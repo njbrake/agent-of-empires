@@ -1,8 +1,12 @@
 # Agent of Empires (aoe)
 
 [![Documentation](https://img.shields.io/badge/docs-aoe-blue)](https://njbrake.github.io/agent-of-empires/)
+[![CI](https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml/badge.svg)](https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/njbrake/agent-of-empires)](https://github.com/njbrake/agent-of-empires/releases)
+[![MSRV](https://img.shields.io/badge/MSRV-1.74-blue?logo=rust)](https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html)
 
-A terminal session manager for Linux and MacOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
+A terminal session manager for Linux and macOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
 
 - Git worktree management for easily handling parallel agents in one codebase
 - Easily sandbox your agents in docker containers
@@ -11,6 +15,11 @@ A terminal session manager for Linux and MacOS using tmux to aid in management a
 `aoe` manages cleanup of worktrees and sandboxes once you've completed your session. 
 
 ![Agent of Empires Demo](assets/demo.gif)
+
+## Prerequisites
+
+- [tmux](https://github.com/tmux/tmux/wiki) (required)
+- [Docker](https://www.docker.com/) (optional, for sandboxing agents in containers)
 
 ## Installation
 
@@ -128,7 +137,7 @@ AGENT_OF_EMPIRES_DEBUG=1 cargo run
 cargo build --release
 ```
 
-## FAQ
+## Troubleshooting
 
 ### Using aoe with mobile SSH clients (Termius, Blink, etc.)
 
