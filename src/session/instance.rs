@@ -244,7 +244,10 @@ impl Instance {
         }
 
         let named_volumes = vec![
-            (CLAUDE_AUTH_VOLUME.to_string(), format!("{}/.claude", CONTAINER_HOME)),
+            (
+                CLAUDE_AUTH_VOLUME.to_string(),
+                format!("{}/.claude", CONTAINER_HOME),
+            ),
             (
                 OPENCODE_AUTH_VOLUME.to_string(),
                 format!("{}/.local/share/opencode", CONTAINER_HOME),
@@ -262,7 +265,10 @@ impl Instance {
             .filter_map(|key| std::env::var(key).ok().map(|val| (key.clone(), val)))
             .collect();
 
-        environment.push(("CLAUDE_CONFIG_DIR".to_string(), format!("{}/.claude", CONTAINER_HOME)));
+        environment.push((
+            "CLAUDE_CONFIG_DIR".to_string(),
+            format!("{}/.claude", CONTAINER_HOME),
+        ));
 
         Ok(ContainerConfig {
             working_dir: "/workspace".to_string(),
