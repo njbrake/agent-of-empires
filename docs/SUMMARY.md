@@ -14,3 +14,7 @@
 # Guides
 
 - [Git Worktrees](guides/worktrees.md)
+
+# Contributing
+
+- [Development](development.md)
