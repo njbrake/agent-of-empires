@@ -261,10 +261,30 @@ impl HomeView {
             }
             KeyCode::Char('d') => {
                 if let Some(session_id) = &self.selected_session {
-                    // Check if this session has a worktree
                     let (title, message) = if let Some(inst) = self.instance_map.get(session_id) {
-                        if let Some(wt_info) = &inst.worktree_info {
-                            if wt_info.managed_by_aoe && wt_info.cleanup_on_delete {
+                        let has_worktree = inst
+                            .worktree_info
+                            .as_ref()
+                            .is_some_and(|wt| wt.managed_by_aoe && wt.cleanup_on_delete);
+                        let has_sandbox = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+
+                        match (has_worktree, has_sandbox) {
+                            (true, true) => {
+                                let wt_info = inst.worktree_info.as_ref().unwrap();
+                                let sandbox = inst.sandbox_info.as_ref().unwrap();
+                                (
+                                    "Delete Session, Worktree & Container",
+                                    format!(
+                                        "WARNING: This will permanently delete:\n\n\
+                                        Worktree: {}\n\
+                                        Branch: {}\n\n\
+                                        Docker container: {}",
+                                        inst.project_path, wt_info.branch, sandbox.container_name
+                                    ),
+                                )
+                            }
+                            (true, false) => {
+                                let wt_info = inst.worktree_info.as_ref().unwrap();
                                 (
                                     "Delete Session & Worktree",
                                     format!(
@@ -274,17 +294,22 @@ impl HomeView {
                                         inst.project_path, wt_info.branch
                                     ),
                                 )
-                            } else {
+                            }
+                            (false, true) => {
+                                let sandbox = inst.sandbox_info.as_ref().unwrap();
                                 (
-                                    "Delete Session",
-                                    "Are you sure you want to delete this session?".to_string(),
+                                    "Delete Session & Container",
+                                    format!(
+                                        "WARNING: This will remove the Docker container:\n\n\
+                                        Container: {}",
+                                        sandbox.container_name
+                                    ),
                                 )
                             }
-                        } else {
-                            (
+                            (false, false) => (
                                 "Delete Session",
                                 "Are you sure you want to delete this session?".to_string(),
-                            )
+                            ),
                         }
                     } else {
                         (

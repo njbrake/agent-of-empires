@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     openssh-client \
+    ripgrep \
+    fzf \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 (required for Claude Code)
@@ -19,17 +21,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go 1.22 (required for OpenCode)
-ARG TARGETARCH
-RUN GOARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
-    curl -fsSL "https://go.dev/dl/go1.22.0.linux-${GOARCH}.tar.gz" | tar -C /usr/local -xzf -
-ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
-
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
 # Install OpenCode
-RUN go install github.com/opencode-ai/opencode@latest
+RUN curl -fsSL https://opencode.ai/install | bash
+ENV PATH="/root/.opencode/bin:${PATH}"
 
 # Create directories for credential mounts
 RUN mkdir -p /root/.claude \
