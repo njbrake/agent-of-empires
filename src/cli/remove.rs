@@ -41,34 +41,6 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                     let worktree_path = PathBuf::from(&inst.project_path);
                     let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
-                    // Check for unpushed commits if this was an aoe-created branch
-                    let has_unpushed = if let Ok(git_wt) = GitWorktree::new(main_repo.clone()) {
-                        match git_wt.branch_has_unpushed_commits(&wt_info.branch) {
-                            Ok(true) => {
-                                // Check if branch exists on remote
-                                let has_remote =
-                                    git_wt.branch_has_remote(&wt_info.branch).unwrap_or(false);
-                                if !has_remote {
-                                    println!("\n⚠️  WARNING: Branch '{}' has not been pushed to any remote!", wt_info.branch);
-                                    println!("   All commits on this branch will be lost if you delete the worktree.");
-                                    true
-                                } else {
-                                    println!(
-                                        "\n⚠️  WARNING: Branch '{}' has unpushed commits!",
-                                        wt_info.branch
-                                    );
-                                    println!(
-                                        "   Some commits may be lost if you delete the worktree."
-                                    );
-                                    true
-                                }
-                            }
-                            _ => false,
-                        }
-                    } else {
-                        false
-                    };
-
                     print!("\nDelete worktree at {}? (Y/n): ", inst.project_path);
                     io::stdout().flush()?;
 
@@ -84,13 +56,6 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                                     eprintln!("You may need to remove it manually with: git worktree remove {}", inst.project_path);
                                 } else {
                                     println!("✓ Worktree removed");
-                                    if has_unpushed {
-                                        println!("   Note: The branch '{}' still exists in the repository", wt_info.branch);
-                                        println!(
-                                            "   You can delete it with: git branch -D {}",
-                                            wt_info.branch
-                                        );
-                                    }
                                 }
                             }
                             Err(e) => {

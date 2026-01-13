@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["Agent of Empires Contributors"]
 description = "Terminal session manager for AI coding agents"
@@ -88,6 +88,11 @@ cargo-husky = { version = "1", default-features = false, features = ["precommit-
 lto = true
 codegen-units = 1
 strip = true
+
+[profile.dev-release]
+inherits = "release"
+lto = false
+codegen-units = 16
 
 [[bin]]
 name = "aoe"
