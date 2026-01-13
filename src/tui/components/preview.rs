@@ -177,17 +177,27 @@ impl Preview {
 
 fn shorten_path(path: &str) -> String {
     let path_buf = std::path::PathBuf::from(path);
-    let resolved = path_buf.canonicalize().unwrap_or(path_buf);
-    let path_str = resolved.to_string_lossy();
 
     if let Some(home) = dirs::home_dir() {
+        if let (Ok(canonical_path), Ok(canonical_home)) =
+            (path_buf.canonicalize(), home.canonicalize())
+        {
+            let path_str = canonical_path.to_string_lossy();
+            if let Some(home_str) = canonical_home.to_str() {
+                if let Some(stripped) = path_str.strip_prefix(home_str) {
+                    return format!("~{}", stripped);
+                }
+            }
+            return path_str.into_owned();
+        }
+
         if let Some(home_str) = home.to_str() {
-            if let Some(stripped) = path_str.strip_prefix(home_str) {
+            if let Some(stripped) = path.strip_prefix(home_str) {
                 return format!("~{}", stripped);
             }
         }
     }
-    path_str.into_owned()
+    path.to_string()
 }
 
 #[cfg(test)]
