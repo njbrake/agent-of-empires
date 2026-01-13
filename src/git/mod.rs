@@ -136,49 +136,6 @@ impl GitWorktree {
             Err(GitError::NotAGitRepo)
         }
     }
-
-    /// Check if a branch exists on any remote
-    pub fn branch_has_remote(&self, branch_name: &str) -> Result<bool> {
-        let repo = git2::Repository::open(&self.repo_path)?;
-
-        // Check all remotes for this branch
-        let remotes = repo.remotes()?;
-        for remote_name in remotes.iter().flatten() {
-            let remote_branch = format!("{}/{}", remote_name, branch_name);
-            if repo
-                .find_branch(&remote_branch, git2::BranchType::Remote)
-                .is_ok()
-            {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
-    /// Check if a local branch has unpushed commits
-    pub fn branch_has_unpushed_commits(&self, branch_name: &str) -> Result<bool> {
-        let repo = git2::Repository::open(&self.repo_path)?;
-
-        // Get local branch
-        let local_branch = repo.find_branch(branch_name, git2::BranchType::Local)?;
-        let local_commit = local_branch.get().peel_to_commit()?;
-
-        // Find tracking branch
-        let upstream = local_branch.upstream();
-        if let Ok(upstream_branch) = upstream {
-            let upstream_commit = upstream_branch.get().peel_to_commit()?;
-
-            // Check if local is ahead of upstream
-            let (ahead, _behind) =
-                repo.graph_ahead_behind(local_commit.id(), upstream_commit.id())?;
-
-            Ok(ahead > 0)
-        } else {
-            // No upstream configured - treat as unpushed
-            Ok(true)
-        }
-    }
 }
 
 #[cfg(test)]
