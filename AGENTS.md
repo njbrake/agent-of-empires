@@ -6,8 +6,16 @@
 - `src/lib.rs`: shared library code used by the CLI/TUI.
 - `src/cli/`: clap command handlers (e.g., `src/cli/add.rs`, `src/cli/session.rs`).
 - `src/tui/`: ratatui UI and input handling.
-- `src/session/`, `src/tmux/`: session storage + tmux integration and status detection.
-- `tests/`: integration tests (`tests/*.rs`). `target/` is build output.
+- `src/session/`: session storage, configuration, and group management.
+- `src/tmux/`: tmux integration and status detection.
+- `src/process/`: OS-specific process handling (`macos.rs`, `linux.rs`).
+- `src/docker/`: Docker sandboxing and container management.
+- `src/git/`: git worktree operations and template resolution.
+- `src/update/`: version checking against GitHub releases.
+- `tests/`: integration tests (`tests/*.rs`).
+- `docs/`: user-facing documentation and guides.
+- `scripts/`: installation and utility scripts.
+- `xtask/`: build automation workspace.
 
 ## Build, Test, and Development Commands
 
@@ -35,7 +43,7 @@
 ## Commit & Pull Request Guidelines
 
 - Branch names: `feature/...`, `fix/...`, `docs/...`, `refactor/...`.
-- Commit messages: history is small; follow the repo convention from `CONTRIBUTING.md` (`feat:`, `fix:`, `docs:`, `refactor:`).
+- Commit messages: use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `refactor:`).
 - PRs: include a clear “what/why”, how you tested (`cargo test`, plus any manual tmux/TUI checks), and screenshots/recordings for UI changes.
 
 ## Local Data & Configuration Tips
