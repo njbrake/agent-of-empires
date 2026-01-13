@@ -21,9 +21,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(name = "aoe")]
 #[command(about = "Terminal session manager for AI coding agents")]
 #[command(version = VERSION)]
-#[command(long_about = "Agent of Empires (aoe) is a terminal session manager that uses tmux to help \
+#[command(
+    long_about = "Agent of Empires (aoe) is a terminal session manager that uses tmux to help \
     you manage and monitor AI coding agents like Claude Code and OpenCode.\n\n\
-    Run without arguments to launch the TUI dashboard.")]
+    Run without arguments to launch the TUI dashboard."
+)]
 pub struct Cli {
     /// Profile to use (separate workspace with its own sessions)
     #[arg(short = 'p', long, global = true, env = "AGENT_OF_EMPIRES_PROFILE")]
