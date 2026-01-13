@@ -1,0 +1,13 @@
+[book]
+title = "Agent of Empires"
+description = "Terminal session manager for AI coding agents"
+authors = ["Agent of Empires Contributors"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/njbrake/agent-of-empires"
+edit-url-template = "https://github.com/njbrake/agent-of-empires/edit/main/docs/{path}"
