@@ -2,6 +2,9 @@
 /target/
 Cargo.lock
 
+# Documentation build output
+/book/
+
 # Binaries
 *.exe
 *.exe~
