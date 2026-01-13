@@ -73,23 +73,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         }
 
         let config = Config::load()?;
-        if !config.worktree.enabled {
-            println!("Git worktree integration is disabled.");
-            println!("Enable it? This will add a [worktree] section to your config.");
-            print!("(Y/n): ");
-            use std::io::{self, Write};
-            io::stdout().flush()?;
-
-            let mut response = String::new();
-            io::stdin().read_line(&mut response)?;
-            let response = response.trim().to_lowercase();
-
-            if response.is_empty() || response == "y" || response == "yes" {
-                println!("Enabling worktree integration...");
-            } else {
-                bail!("Worktree integration is disabled. Enable it with config.worktree.enabled = true");
-            }
-        }
 
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
