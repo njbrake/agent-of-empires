@@ -11,6 +11,34 @@ use crate::session::civilizations;
 use crate::tmux::AvailableTools;
 use crate::tui::styles::Theme;
 
+struct FieldHelp {
+    name: &'static str,
+    description: &'static str,
+}
+
+const FIELD_HELP: &[FieldHelp] = &[
+    FieldHelp {
+        name: "Title",
+        description: "Session name (auto-generates if empty)",
+    },
+    FieldHelp {
+        name: "Path",
+        description: "Working directory for the session",
+    },
+    FieldHelp {
+        name: "Group",
+        description: "Optional grouping for organization",
+    },
+    FieldHelp {
+        name: "Tool",
+        description: "Which AI tool to use",
+    },
+    FieldHelp {
+        name: "Worktree Branch",
+        description: "Creates a git worktree if specified",
+    },
+];
+
 #[derive(Clone)]
 pub struct NewSessionData {
     pub title: String,
@@ -31,6 +59,7 @@ pub struct NewSessionDialog {
     existing_titles: Vec<String>,
     worktree_branch: Input,
     error_message: Option<String>,
+    show_help: bool,
 }
 
 impl NewSessionDialog {
@@ -51,6 +80,7 @@ impl NewSessionDialog {
             existing_titles,
             worktree_branch: Input::default(),
             error_message: None,
+            show_help: false,
         }
     }
 
@@ -66,6 +96,7 @@ impl NewSessionDialog {
             existing_titles: Vec::new(),
             worktree_branch: Input::default(),
             error_message: None,
+            show_help: false,
         }
     }
 
@@ -74,11 +105,22 @@ impl NewSessionDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        if self.show_help {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+                self.show_help = false;
+            }
+            return DialogResult::Continue;
+        }
+
         let has_tool_selection = self.available_tools.len() > 1;
         let max_field = if has_tool_selection { 5 } else { 4 };
         let tool_field = if has_tool_selection { 3 } else { usize::MAX };
 
         match key.code {
+            KeyCode::Char('?') => {
+                self.show_help = true;
+                DialogResult::Continue
+            }
             KeyCode::Esc => {
                 self.error_message = None;
                 DialogResult::Cancel
@@ -314,10 +356,10 @@ impl NewSessionDialog {
                     Span::raw(" next  "),
                     Span::styled("←/→", Style::default().fg(theme.hint)),
                     Span::raw(" tool  "),
-                    Span::styled("Space", Style::default().fg(theme.hint)),
-                    Span::raw(" toggle  "),
                     Span::styled("Enter", Style::default().fg(theme.hint)),
                     Span::raw(" create  "),
+                    Span::styled("?", Style::default().fg(theme.hint)),
+                    Span::raw(" help  "),
                     Span::styled("Esc", Style::default().fg(theme.hint)),
                     Span::raw(" cancel"),
                 ])
@@ -325,16 +367,74 @@ impl NewSessionDialog {
                 Line::from(vec![
                     Span::styled("Tab", Style::default().fg(theme.hint)),
                     Span::raw(" next  "),
-                    Span::styled("Space", Style::default().fg(theme.hint)),
-                    Span::raw(" toggle  "),
                     Span::styled("Enter", Style::default().fg(theme.hint)),
                     Span::raw(" create  "),
+                    Span::styled("?", Style::default().fg(theme.hint)),
+                    Span::raw(" help  "),
                     Span::styled("Esc", Style::default().fg(theme.hint)),
                     Span::raw(" cancel"),
                 ])
             };
             frame.render_widget(Paragraph::new(hint), chunks[5]);
         }
+
+        if self.show_help {
+            self.render_help_overlay(frame, area, theme);
+        }
+    }
+
+    fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let has_tool_selection = self.available_tools.len() > 1;
+        let dialog_width: u16 = 50;
+        let dialog_height: u16 = if has_tool_selection { 16 } else { 14 };
+        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+
+        let dialog_area = Rect {
+            x,
+            y,
+            width: dialog_width.min(area.width),
+            height: dialog_height.min(area.height),
+        };
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .title(" New Session Help ")
+            .title_style(Style::default().fg(theme.title).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        for (idx, help) in FIELD_HELP.iter().enumerate() {
+            if idx == 3 && !has_tool_selection {
+                continue;
+            }
+
+            lines.push(Line::from(Span::styled(
+                help.name,
+                Style::default().fg(theme.accent).bold(),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", help.description),
+                Style::default().fg(theme.text),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        lines.push(Line::from(vec![
+            Span::styled("Press ", Style::default().fg(theme.dimmed)),
+            Span::styled("?", Style::default().fg(theme.hint)),
+            Span::styled(" or ", Style::default().fg(theme.dimmed)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::styled(" to close", Style::default().fg(theme.dimmed)),
+        ]));
+
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 }
 
