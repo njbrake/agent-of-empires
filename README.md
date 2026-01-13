@@ -1,6 +1,6 @@
 # Agent of Empires (aoe)
 
-[![Documentation](https://img.shields.io/badge/docs-njbrake.github.io-blue)](https://njbrake.github.io/agent-of-empires/)
+[![Documentation](https://img.shields.io/badge/docs-aoe-blue)](https://njbrake.github.io/agent-of-empires/)
 
 A terminal session manager for Linux and MacOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
 
