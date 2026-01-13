@@ -14,6 +14,7 @@
 # Guides
 
 - [Git Worktrees](guides/worktrees.md)
+- [Two-Terminal Workflow](guides/two-terminal-workflow.md)
 
 # Contributing
 
