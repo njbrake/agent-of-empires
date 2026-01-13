@@ -502,7 +502,10 @@ impl HomeView {
             }
         }
 
-        let mut final_path = data.path.clone();
+        let mut final_path = PathBuf::from(&data.path)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| data.path.clone());
         let mut worktree_info_opt = None;
 
         if let Some(branch) = &data.worktree_branch {

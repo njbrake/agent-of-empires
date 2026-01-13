@@ -2,7 +2,7 @@
 
 A terminal session manager for Linux and macOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
 
-![Agent of Empires TUI](assets/tui.png)
+![Agent of Empires Demo](assets/demo.gif)
 
 ## Features
 

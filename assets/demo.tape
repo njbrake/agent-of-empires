@@ -108,11 +108,67 @@ Sleep 50ms
 Type "d"
 Sleep 500ms
 
+# === Create third session with sandbox enabled ===
+# Open new session dialog
+Type "n"
+Sleep 500ms
+
+# Enter title
+Type "Chat App"
+Sleep 500ms
+
+# Move to path field
+Tab
+Sleep 500ms
+
+# Enter project path (clear default first)
+Set TypingSpeed 1ms
+Backspace 100
+Set TypingSpeed 50ms
+Type "/tmp/demo-projects/chat-app"
+Sleep 500ms
+
+# Skip group field, tool field, worktree field to reach sandbox
+Tab
+Tab
+Tab
+Tab
+Sleep 500ms
+
+# Toggle sandbox ON (space to toggle)
+Space
+Sleep 500ms
+
+# Submit
+Enter
+Sleep 500ms
+
+# accept warning dialogue if any
+Enter
+Sleep 1000ms
+
+# Type a prompt
+Set TypingSpeed 20ms
+Type "Write me a poem about sandboxes and containers."
+Set TypingSpeed 50ms
+Enter
+Sleep 500ms
+
+# Detach from tmux (Ctrl+b d)
+Ctrl+b
+Sleep 50ms
+Type "d"
+Sleep 500ms
+
 # Wait for statuses to resolve
 Type "j"
-Sleep 6000ms
+Sleep 3000ms
+Type "j"
+Sleep 3000ms
 Type "k"
-Sleep 5000ms
+Sleep 3000ms
+Type "k"
+Sleep 3000ms
 
 # Exit aoe
 
