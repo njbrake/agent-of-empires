@@ -260,7 +260,11 @@ impl NewSessionDialog {
         let has_tool_selection = self.available_tools.len() > 1;
         let worktree_field = if has_tool_selection { 4 } else { 3 };
         let sandbox_field = if self.docker_available {
-            if has_tool_selection { 5 } else { 4 }
+            if has_tool_selection {
+                5
+            } else {
+                4
+            }
         } else {
             usize::MAX
         };
