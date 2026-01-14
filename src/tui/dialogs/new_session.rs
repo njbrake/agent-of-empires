@@ -40,7 +40,8 @@ const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "New Branch",
-        description: "Create new branch vs attach to existing",
+        description:
+            "Checked: create new branch. Unchecked: use existing (creates worktree if needed)",
     },
     FieldHelp {
         name: "Sandbox",

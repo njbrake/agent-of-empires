@@ -626,27 +626,62 @@ impl HomeView {
             let main_repo_path = GitWorktree::find_main_repo(&path)?;
             let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
-            let session_id = uuid::Uuid::new_v4().to_string();
-            let session_id_short = &session_id[..8];
+            // When attaching to existing branch, check if worktree already exists
+            if !data.create_new_branch {
+                let existing_worktrees = git_wt.list_worktrees()?;
+                if let Some(existing) = existing_worktrees
+                    .iter()
+                    .find(|wt| wt.branch.as_deref() == Some(branch))
+                {
+                    // Use existing worktree
+                    final_path = existing.path.to_string_lossy().to_string();
+                    worktree_info_opt = Some(WorktreeInfo {
+                        branch: branch.clone(),
+                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                        managed_by_aoe: false,
+                        created_at: Utc::now(),
+                        cleanup_on_delete: false,
+                    });
+                } else {
+                    // Create new worktree for existing branch
+                    let session_id = uuid::Uuid::new_v4().to_string();
+                    let session_id_short = &session_id[..8];
+                    let template = &config.worktree.path_template;
+                    let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
 
-            let template = &config.worktree.path_template;
-            let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+                    git_wt.create_worktree(branch, &worktree_path, false)?;
 
-            if worktree_path.exists() {
-                anyhow::bail!("Worktree already exists at {}", worktree_path.display());
+                    final_path = worktree_path.to_string_lossy().to_string();
+                    worktree_info_opt = Some(WorktreeInfo {
+                        branch: branch.clone(),
+                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                        managed_by_aoe: true,
+                        created_at: Utc::now(),
+                        cleanup_on_delete: true,
+                    });
+                }
+            } else {
+                // Creating new branch - always create new worktree
+                let session_id = uuid::Uuid::new_v4().to_string();
+                let session_id_short = &session_id[..8];
+                let template = &config.worktree.path_template;
+                let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+
+                if worktree_path.exists() {
+                    anyhow::bail!("Worktree already exists at {}", worktree_path.display());
+                }
+
+                git_wt.create_worktree(branch, &worktree_path, true)?;
+
+                final_path = worktree_path.to_string_lossy().to_string();
+                worktree_info_opt = Some(WorktreeInfo {
+                    branch: branch.clone(),
+                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                    managed_by_aoe: true,
+                    created_at: Utc::now(),
+                    cleanup_on_delete: true,
+                });
             }
-
-            git_wt.create_worktree(branch, &worktree_path, data.create_new_branch)?;
-
-            final_path = worktree_path.to_string_lossy().to_string();
-
-            worktree_info_opt = Some(WorktreeInfo {
-                branch: branch.clone(),
-                main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                managed_by_aoe: true,
-                created_at: Utc::now(),
-                cleanup_on_delete: true,
-            });
         }
 
         let mut instance = Instance::new(&data.title, &final_path);
