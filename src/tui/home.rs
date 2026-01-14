@@ -34,33 +34,6 @@ impl Default for PreviewCache {
     }
 }
 
-// Pre-computed indentation strings to avoid allocations
-const INDENTS: [&str; 10] = [
-    "",
-    "  ",
-    "    ",
-    "      ",
-    "        ",
-    "          ",
-    "            ",
-    "              ",
-    "                ",
-    "                  ",
-];
-
-fn get_indent(depth: usize) -> &'static str {
-    INDENTS.get(depth).copied().unwrap_or(INDENTS[9])
-}
-
-// Status icon constants
-const ICON_RUNNING: &str = "●";
-const ICON_WAITING: &str = "◐";
-const ICON_IDLE: &str = "○";
-const ICON_ERROR: &str = "✕";
-const ICON_STARTING: &str = "◌";
-const ICON_COLLAPSED: &str = "▶";
-const ICON_EXPANDED: &str = "▼";
-
 pub struct HomeView {
     storage: Storage,
     instances: Vec<Instance>,
@@ -100,7 +73,6 @@ impl HomeView {
     pub fn new(storage: Storage, available_tools: AvailableTools) -> anyhow::Result<Self> {
         let (mut instances, groups) = storage.load_with_groups()?;
 
-        // Initialize search cache for all instances
         for inst in &mut instances {
             inst.update_search_cache();
         }
@@ -142,8 +114,6 @@ impl HomeView {
     pub fn reload(&mut self) -> anyhow::Result<()> {
         let (mut instances, groups) = self.storage.load_with_groups()?;
 
-        // Preserve runtime status from previous instances (status is not persisted to disk)
-        // and initialize search cache
         for inst in &mut instances {
             if let Some(prev) = self.instance_map.get(&inst.id) {
                 inst.status = prev.status;
@@ -177,8 +147,7 @@ impl HomeView {
     /// Call `apply_status_updates` to check for and apply results.
     pub fn request_status_refresh(&mut self) {
         if !self.pending_status_refresh {
-            // Clone instances for the background thread
-            let instances: Vec<Instance> = self.instances.clone();
+            let instances = self.instances.clone();
             self.status_poller.request_refresh(instances);
             self.pending_status_refresh = true;
         }
@@ -189,7 +158,6 @@ impl HomeView {
     pub fn apply_status_updates(&mut self) -> bool {
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
-                // Update in instances vec
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
                     inst.status = update.status;
                     inst.last_error = update.last_error.clone();
@@ -197,7 +165,6 @@ impl HomeView {
                         inst.claude_session_id = update.claude_session_id.clone();
                     }
                 }
-                // Update in instance_map (incremental, not full rebuild)
                 if let Some(inst) = self.instance_map.get_mut(&update.id) {
                     inst.status = update.status;
                     inst.last_error = update.last_error;
@@ -555,7 +522,6 @@ impl HomeView {
             match item {
                 Item::Session { id, .. } => {
                     if let Some(inst) = self.instance_map.get(id) {
-                        // Use pre-computed lowercase strings (no allocation per keystroke)
                         if inst.title_lower.contains(&query)
                             || inst.project_path_lower.contains(&query)
                         {
@@ -564,7 +530,6 @@ impl HomeView {
                     }
                 }
                 Item::Group { name, path, .. } => {
-                    // Groups are typically few, allocating here is acceptable
                     if name.to_lowercase().contains(&query) || path.to_lowercase().contains(&query)
                     {
                         matches.push(idx);
@@ -836,21 +801,22 @@ impl HomeView {
             return;
         }
 
-        // Render session tree using indices (avoids cloning items)
-        let indices: Vec<usize> = if let Some(ref filtered) = self.filtered_items {
-            filtered.clone() // Clone Vec<usize> is cheap
+        let items_to_show = if let Some(ref filtered) = self.filtered_items {
+            filtered
+                .iter()
+                .filter_map(|&idx| self.flat_items.get(idx))
+                .cloned()
+                .collect()
         } else {
-            (0..self.flat_items.len()).collect()
+            self.flat_items.clone()
         };
 
-        let list_items: Vec<ListItem> = indices
+        let list_items: Vec<ListItem> = items_to_show
             .iter()
             .enumerate()
-            .filter_map(|(display_idx, &item_idx)| {
-                self.flat_items.get(item_idx).map(|item| {
-                    let is_selected = display_idx == self.cursor;
-                    self.render_item(item, is_selected, theme)
-                })
+            .map(|(idx, item)| {
+                let is_selected = idx == self.cursor;
+                self.render_item(item, is_selected, theme)
             })
             .collect();
 
@@ -874,39 +840,28 @@ impl HomeView {
     }
 
     fn render_item(&self, item: &Item, is_selected: bool, theme: &Theme) -> ListItem<'_> {
-        // Use pre-computed static indentation string (no allocation)
-        let indent = get_indent(item.depth());
+        let indent = "  ".repeat(item.depth());
 
-        // Use Cow to avoid cloning title when possible
-        use std::borrow::Cow;
-
-        let (icon, text, style): (&str, Cow<str>, Style) = match item {
+        let (icon, text, style) = match item {
             Item::Group {
                 name,
                 collapsed,
                 session_count,
                 ..
             } => {
-                // Use static icon strings
-                let icon = if *collapsed {
-                    ICON_COLLAPSED
-                } else {
-                    ICON_EXPANDED
-                };
-                // Groups need format for count, which is acceptable since groups are few
-                let text = Cow::Owned(format!("{} ({})", name, session_count));
+                let icon = if *collapsed { "▶" } else { "▼" };
+                let text = format!("{} ({})", name, session_count);
                 let style = Style::default().fg(theme.group).bold();
                 (icon, text, style)
             }
             Item::Session { id, .. } => {
                 if let Some(inst) = self.instance_map.get(id) {
-                    // Use static icon strings
                     let icon = match inst.status {
-                        Status::Running => ICON_RUNNING,
-                        Status::Waiting => ICON_WAITING,
-                        Status::Idle => ICON_IDLE,
-                        Status::Error => ICON_ERROR,
-                        Status::Starting => ICON_STARTING,
+                        Status::Running => "●",
+                        Status::Waiting => "◐",
+                        Status::Idle => "○",
+                        Status::Error => "✕",
+                        Status::Starting => "◌",
                     };
                     let color = match inst.status {
                         Status::Running => theme.running,
@@ -916,26 +871,18 @@ impl HomeView {
                         Status::Starting => theme.dimmed,
                     };
                     let style = Style::default().fg(color);
-                    // Borrow title directly (no clone)
-                    (icon, Cow::Borrowed(&inst.title), style)
+                    (icon, inst.title.clone(), style)
                 } else {
-                    (
-                        "?",
-                        Cow::Borrowed(id.as_str()),
-                        Style::default().fg(theme.dimmed),
-                    )
+                    ("?", id.clone(), Style::default().fg(theme.dimmed))
                 }
             }
         };
 
-        // Pre-allocate vector with expected capacity
-        let mut line_spans = Vec::with_capacity(5);
-        line_spans.push(Span::raw(indent));
-        line_spans.push(Span::styled(format!("{} ", icon), style));
-        line_spans.push(Span::styled(
-            text.into_owned(),
-            if is_selected { style.bold() } else { style },
-        ));
+        let mut line_spans = vec![
+            Span::raw(indent),
+            Span::styled(format!("{} ", icon), style),
+            Span::styled(text, if is_selected { style.bold() } else { style }),
+        ];
 
         if let Item::Session { id, .. } = item {
             if let Some(inst) = self.instance_map.get(id) {
