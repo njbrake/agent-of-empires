@@ -11,7 +11,7 @@ impl HelpOverlay {
     pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
         // Center the help dialog
         let dialog_width = 50;
-        let dialog_height = 20;
+        let dialog_height = 22;
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
