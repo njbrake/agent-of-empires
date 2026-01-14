@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use std::process::Command;
 
 use super::{session_exists_from_cache, SESSION_PREFIX};
+use crate::cli::truncate_id;
 use crate::process;
 use crate::session::Status;
 
@@ -45,8 +46,7 @@ impl Session {
 
     pub fn generate_name(id: &str, title: &str) -> String {
         let safe_title = sanitize_session_name(title);
-        let short_id = if id.len() > 8 { &id[..8] } else { id };
-        format!("{}{}_{}", SESSION_PREFIX, safe_title, short_id)
+        format!("{}{}_{}", SESSION_PREFIX, safe_title, truncate_id(id, 8))
     }
 
     pub fn exists(&self) -> bool {

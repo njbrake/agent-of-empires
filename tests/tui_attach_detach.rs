@@ -97,7 +97,7 @@ fn test_terminal_mode_sequence_documented() {
     // This test documents the expected behavior rather than testing it directly
     // since testing terminal modes requires actual terminal interaction.
 
-    let expected_exit_sequence = vec![
+    let expected_exit_sequence = [
         "disable_raw_mode",
         "LeaveAlternateScreen",
         "DisableMouseCapture",
@@ -105,7 +105,7 @@ fn test_terminal_mode_sequence_documented() {
         "flush",
     ];
 
-    let expected_reenter_sequence = vec![
+    let expected_reenter_sequence = [
         "enable_raw_mode",
         "EnterAlternateScreen",
         "EnableMouseCapture",

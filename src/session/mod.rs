@@ -7,10 +7,13 @@ mod groups;
 mod instance;
 mod storage;
 
-pub use config::*;
-pub use groups::*;
-pub use instance::*;
-pub use storage::*;
+pub use config::{
+    get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
+    SandboxConfig, ThemeConfig, UpdatesConfig, WorktreeConfig,
+};
+pub use groups::{flatten_tree, Group, GroupTree, Item};
+pub use instance::{Instance, SandboxInfo, Status, WorktreeInfo, YOLO_SUPPORTED_TOOLS};
+pub use storage::Storage;
 
 use anyhow::Result;
 use std::fs;

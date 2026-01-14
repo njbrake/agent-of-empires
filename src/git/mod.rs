@@ -91,7 +91,7 @@ impl GitWorktree {
         Ok(entries)
     }
 
-    pub fn remove_worktree(&self, path: &Path, _force: bool) -> Result<()> {
+    pub fn remove_worktree(&self, path: &Path) -> Result<()> {
         if !path.exists() {
             return Err(GitError::WorktreeNotFound(path.to_path_buf()));
         }
@@ -257,7 +257,7 @@ mod tests {
 
         assert!(wt_path.exists());
 
-        git_wt.remove_worktree(&wt_path, false).unwrap();
+        git_wt.remove_worktree(&wt_path).unwrap();
         assert!(!wt_path.exists());
     }
 

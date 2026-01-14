@@ -4,6 +4,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
+use tracing::warn;
 
 use crate::session::{get_app_dir, get_update_settings};
 
@@ -81,7 +82,9 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         checked_at: chrono::Utc::now(),
         latest_version: latest_version.clone(),
     };
-    let _ = save_cache(&cache);
+    if let Err(e) = save_cache(&cache) {
+        warn!("Failed to save update cache: {}", e);
+    }
 
     let available = is_newer_version(&latest_version, current_version);
 

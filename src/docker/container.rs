@@ -1,4 +1,5 @@
 use super::error::{DockerError, Result};
+use crate::cli::truncate_id;
 use std::process::Command;
 
 pub struct VolumeMount {
@@ -37,12 +38,7 @@ impl DockerContainer {
     }
 
     pub fn generate_name(session_id: &str) -> String {
-        let short_id = if session_id.len() > 8 {
-            &session_id[..8]
-        } else {
-            session_id
-        };
-        format!("aoe-sandbox-{}", short_id)
+        format!("aoe-sandbox-{}", truncate_id(session_id, 8))
     }
 
     pub fn exists(&self) -> Result<bool> {

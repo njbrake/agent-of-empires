@@ -91,7 +91,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
 
                     match GitWorktree::new(main_repo) {
                         Ok(git_wt) => {
-                            if let Err(e) = git_wt.remove_worktree(&worktree_path, false) {
+                            if let Err(e) = git_wt.remove_worktree(&worktree_path) {
                                 eprintln!("Warning: failed to remove worktree: {}", e);
                                 eprintln!(
                                     "You may need to remove it manually with: git worktree remove {}",
