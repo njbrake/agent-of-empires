@@ -49,3 +49,11 @@ pub fn truncate(s: &str, max: usize) -> String {
         format!("{}...", &s[..max - 3])
     }
 }
+
+pub fn truncate_id(id: &str, max_len: usize) -> &str {
+    if id.len() > max_len {
+        &id[..max_len]
+    } else {
+        id
+    }
+}

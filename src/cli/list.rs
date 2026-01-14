@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
 
-use crate::session::Storage;
+use crate::session::{Instance, Storage};
 
 const TABLE_COL_TITLE: usize = 20;
 const TABLE_COL_GROUP: usize = 15;
@@ -33,6 +33,39 @@ struct SessionJson {
     command: String,
     profile: String,
     created_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn print_table_header() {
+    println!(
+        "{:<width_title$} {:<width_group$} {:<width_path$} ID",
+        "TITLE",
+        "GROUP",
+        "PATH",
+        width_title = TABLE_COL_TITLE,
+        width_group = TABLE_COL_GROUP,
+        width_path = TABLE_COL_PATH
+    );
+    println!(
+        "{}",
+        "-".repeat(TABLE_COL_TITLE + TABLE_COL_GROUP + TABLE_COL_PATH + TABLE_COL_ID_DISPLAY + 5)
+    );
+}
+
+fn print_table_row(inst: &Instance) {
+    let title = super::truncate(&inst.title, TABLE_COL_TITLE);
+    let group = super::truncate(&inst.group_path, TABLE_COL_GROUP);
+    let path = super::truncate(&inst.project_path, TABLE_COL_PATH);
+    let id_display = super::truncate_id(&inst.id, TABLE_COL_ID_DISPLAY);
+    println!(
+        "{:<width_title$} {:<width_group$} {:<width_path$} {}",
+        title,
+        group,
+        path,
+        id_display,
+        width_title = TABLE_COL_TITLE,
+        width_group = TABLE_COL_GROUP,
+        width_path = TABLE_COL_PATH
+    );
 }
 
 pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
@@ -66,45 +99,13 @@ pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Table output
     println!("Profile: {}\n", storage.profile());
-    println!(
-        "{:<width_title$} {:<width_group$} {:<width_path$} ID",
-        "TITLE",
-        "GROUP",
-        "PATH",
-        width_title = TABLE_COL_TITLE,
-        width_group = TABLE_COL_GROUP,
-        width_path = TABLE_COL_PATH
-    );
-    println!(
-        "{}",
-        "-".repeat(TABLE_COL_TITLE + TABLE_COL_GROUP + TABLE_COL_PATH + TABLE_COL_ID_DISPLAY + 5)
-    );
-
+    print_table_header();
     for inst in &instances {
-        let title = super::truncate(&inst.title, TABLE_COL_TITLE);
-        let group = super::truncate(&inst.group_path, TABLE_COL_GROUP);
-        let path = super::truncate(&inst.project_path, TABLE_COL_PATH);
-        let id_display = if inst.id.len() > TABLE_COL_ID_DISPLAY {
-            &inst.id[..TABLE_COL_ID_DISPLAY]
-        } else {
-            &inst.id
-        };
-        println!(
-            "{:<width_title$} {:<width_group$} {:<width_path$} {}",
-            title,
-            group,
-            path,
-            id_display,
-            width_title = TABLE_COL_TITLE,
-            width_group = TABLE_COL_GROUP,
-            width_path = TABLE_COL_PATH
-        );
+        print_table_row(inst);
     }
     println!("\nTotal: {} sessions", instances.len());
 
-    // Show update notice
     crate::update::print_update_notice().await;
 
     Ok(())
@@ -151,45 +152,9 @@ async fn run_all_profiles(json: bool) -> Result<()> {
                 }
 
                 println!("\n═══ Profile: {} ═══\n", profile_name);
-                println!(
-                    "{:<width_title$} {:<width_group$} {:<width_path$} ID",
-                    "TITLE",
-                    "GROUP",
-                    "PATH",
-                    width_title = TABLE_COL_TITLE,
-                    width_group = TABLE_COL_GROUP,
-                    width_path = TABLE_COL_PATH
-                );
-                println!(
-                    "{}",
-                    "-".repeat(
-                        TABLE_COL_TITLE
-                            + TABLE_COL_GROUP
-                            + TABLE_COL_PATH
-                            + TABLE_COL_ID_DISPLAY
-                            + 5
-                    )
-                );
-
+                print_table_header();
                 for inst in &instances {
-                    let title = super::truncate(&inst.title, TABLE_COL_TITLE);
-                    let group = super::truncate(&inst.group_path, TABLE_COL_GROUP);
-                    let path = super::truncate(&inst.project_path, TABLE_COL_PATH);
-                    let id_display = if inst.id.len() > TABLE_COL_ID_DISPLAY {
-                        &inst.id[..TABLE_COL_ID_DISPLAY]
-                    } else {
-                        &inst.id
-                    };
-                    println!(
-                        "{:<width_title$} {:<width_group$} {:<width_path$} {}",
-                        title,
-                        group,
-                        path,
-                        id_display,
-                        width_title = TABLE_COL_TITLE,
-                        width_group = TABLE_COL_GROUP,
-                        width_path = TABLE_COL_PATH
-                    );
+                    print_table_row(inst);
                 }
                 println!("({} sessions)", instances.len());
                 total_sessions += instances.len();

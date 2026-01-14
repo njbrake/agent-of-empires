@@ -26,7 +26,7 @@ fn test_sandbox_info_serialization() {
     let json = serde_json::to_string(&sandbox_info).unwrap();
     let deserialized: SandboxInfo = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(deserialized.enabled, true);
+    assert!(deserialized.enabled);
     assert_eq!(deserialized.container_id, Some("abc123".to_string()));
     assert_eq!(deserialized.container_name, "aoe-sandbox-test1234");
 }

@@ -726,7 +726,7 @@ impl HomeView {
                         let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
                         if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                            let _ = git_wt.remove_worktree(&worktree_path, false);
+                            let _ = git_wt.remove_worktree(&worktree_path);
                         }
                     }
                 }

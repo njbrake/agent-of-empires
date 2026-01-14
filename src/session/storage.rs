@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
+use tracing::warn;
 
 use super::{get_profile_dir, Group, GroupTree, Instance, DEFAULT_PROFILE};
 
@@ -69,7 +70,9 @@ impl Storage {
         // Create backup
         if self.sessions_path.exists() {
             let backup_path = self.sessions_path.with_extension("json.bak");
-            let _ = fs::copy(&self.sessions_path, &backup_path);
+            if let Err(e) = fs::copy(&self.sessions_path, &backup_path) {
+                warn!("Failed to create backup: {}", e);
+            }
         }
 
         let content = serde_json::to_string_pretty(instances)?;

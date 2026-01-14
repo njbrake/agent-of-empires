@@ -240,7 +240,7 @@ async fn cleanup_orphaned(profile: &str, force: bool) -> Result<()> {
         let git_wt = GitWorktree::new(main_repo)?;
 
         for wt in &orphaned_worktrees {
-            match git_wt.remove_worktree(&wt.path, false) {
+            match git_wt.remove_worktree(&wt.path) {
                 Ok(_) => {
                     println!("✓ Removed worktree: {}", wt.path.display());
                     removed_count += 1;
