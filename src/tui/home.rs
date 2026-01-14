@@ -1078,10 +1078,13 @@ impl HomeView {
             Span::styled(" Quit", desc_style),
         ];
 
-        if update_info.is_some() {
+        if let Some(info) = update_info {
             let update_style = Style::default().fg(theme.waiting).bold();
             spans.push(Span::styled(
-                "  Update available: brew update && brew upgrade aoe ",
+                format!(
+                    "  update available {} -> {} ",
+                    info.current_version, info.latest_version
+                ),
                 update_style,
             ));
         }
