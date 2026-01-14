@@ -17,6 +17,8 @@ struct FieldHelp {
     description: &'static str,
 }
 
+const HELP_DIALOG_WIDTH: u16 = 85;
+
 const FIELD_HELP: &[FieldHelp] = &[
     FieldHelp {
         name: "Title",
@@ -695,7 +697,7 @@ impl NewSessionDialog {
         let show_sandbox_options_help = has_sandbox && self.sandbox_enabled;
 
         // Adjust dialog height for conditional help entries
-        let dialog_width: u16 = 70;
+        let dialog_width: u16 = HELP_DIALOG_WIDTH;
         let base_height: u16 = 17; // Base + worktree + new_branch entries
         let dialog_height: u16 = base_height
             + if has_tool_selection { 3 } else { 0 }
@@ -1291,5 +1293,24 @@ mod tests {
         dialog.handle_key(key(KeyCode::Char(' ')));
         assert!(!dialog.sandbox_enabled);
         assert!(!dialog.yolo_mode); // Should be reset
+    }
+
+    #[test]
+    fn help_content_fits_in_dialog() {
+        const BORDER_WIDTH: u16 = 2;
+        const INDENT: usize = 2;
+        let available_width = (HELP_DIALOG_WIDTH - BORDER_WIDTH) as usize;
+
+        for help in FIELD_HELP {
+            let line_width = INDENT + help.description.len();
+            assert!(
+                line_width <= available_width,
+                "Help for '{}': description '{}' exceeds dialog width ({} > {})",
+                help.name,
+                help.description,
+                line_width,
+                available_width
+            );
+        }
     }
 }
