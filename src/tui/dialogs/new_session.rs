@@ -38,6 +38,14 @@ const FIELD_HELP: &[FieldHelp] = &[
         name: "Worktree Branch",
         description: "Creates a git worktree if specified",
     },
+    FieldHelp {
+        name: "Sandbox",
+        description: "Run session in Docker container for isolation",
+    },
+    FieldHelp {
+        name: "Image",
+        description: "Docker image. Edit config.toml [sandbox] default_image to change default",
+    },
 ];
 
 #[derive(Clone)]
@@ -49,6 +57,7 @@ pub struct NewSessionData {
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
+    pub sandbox_image: Option<String>,
 }
 
 pub struct NewSessionDialog {
@@ -61,6 +70,8 @@ pub struct NewSessionDialog {
     existing_titles: Vec<String>,
     worktree_branch: Input,
     sandbox_enabled: bool,
+    sandbox_image: Input,
+    default_sandbox_image: String,
     docker_available: bool,
     error_message: Option<String>,
     show_help: bool,
@@ -75,6 +86,12 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
         let docker_available = docker::is_docker_available();
 
+        // Load default image from config or use hardcoded fallback
+        let default_sandbox_image = crate::session::Config::load()
+            .ok()
+            .map(|c| c.sandbox.default_image)
+            .unwrap_or_else(|| docker::default_sandbox_image().to_string());
+
         Self {
             title: Input::default(),
             path: Input::new(current_dir),
@@ -85,6 +102,8 @@ impl NewSessionDialog {
             existing_titles,
             worktree_branch: Input::default(),
             sandbox_enabled: false,
+            sandbox_image: Input::new(default_sandbox_image.clone()),
+            default_sandbox_image,
             docker_available,
             error_message: None,
             show_help: false,
@@ -93,6 +112,7 @@ impl NewSessionDialog {
 
     #[cfg(test)]
     fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
+        let default_image = docker::default_sandbox_image().to_string();
         Self {
             title: Input::default(),
             path: Input::new(path),
@@ -103,6 +123,8 @@ impl NewSessionDialog {
             existing_titles: Vec::new(),
             worktree_branch: Input::default(),
             sandbox_enabled: false,
+            sandbox_image: Input::new(default_image.clone()),
+            default_sandbox_image: default_image,
             docker_available: false,
             error_message: None,
             show_help: false,
@@ -123,11 +145,17 @@ impl NewSessionDialog {
 
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
-        let max_field = match (has_tool_selection, has_sandbox) {
+        let base_max_field = match (has_tool_selection, has_sandbox) {
             (true, true) => 6,
             (true, false) => 5,
             (false, true) => 5,
             (false, false) => 4,
+        };
+        // Add 1 more field if sandbox is enabled (for image input)
+        let max_field = if has_sandbox && self.sandbox_enabled {
+            base_max_field + 1
+        } else {
+            base_max_field
         };
         let tool_field = if has_tool_selection { 3 } else { usize::MAX };
         let sandbox_field = if has_sandbox {
@@ -164,6 +192,18 @@ impl NewSessionDialog {
                 } else {
                     Some(worktree_value.to_string())
                 };
+                // Determine sandbox image override
+                let sandbox_image = if self.sandbox_enabled {
+                    let image_val = self.sandbox_image.value().trim().to_string();
+                    // Only set if different from default and non-empty
+                    if !image_val.is_empty() && image_val != self.default_sandbox_image {
+                        Some(image_val)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 DialogResult::Submit(NewSessionData {
                     title: final_title,
                     path: self.path.value().to_string(),
@@ -172,6 +212,7 @@ impl NewSessionDialog {
                     worktree_branch,
                     create_new_branch: true,
                     sandbox: self.sandbox_enabled,
+                    sandbox_image,
                 })
             }
             KeyCode::Tab => {
@@ -198,6 +239,10 @@ impl NewSessionDialog {
                 if self.focused_field == sandbox_field =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
+                // If sandbox was disabled and cursor was on image field, move back to sandbox field
+                if !self.sandbox_enabled && self.focused_field > sandbox_field {
+                    self.focused_field = sandbox_field;
+                }
                 DialogResult::Continue
             }
             _ => {
@@ -214,12 +259,23 @@ impl NewSessionDialog {
     fn current_input_mut(&mut self) -> &mut Input {
         let has_tool_selection = self.available_tools.len() > 1;
         let worktree_field = if has_tool_selection { 4 } else { 3 };
+        let sandbox_field = if self.docker_available {
+            if has_tool_selection { 5 } else { 4 }
+        } else {
+            usize::MAX
+        };
+        let sandbox_image_field = if self.docker_available && self.sandbox_enabled {
+            sandbox_field + 1
+        } else {
+            usize::MAX
+        };
 
         match self.focused_field {
             0 => &mut self.title,
             1 => &mut self.path,
             2 => &mut self.group,
             n if n == worktree_field => &mut self.worktree_branch,
+            n if n == sandbox_image_field => &mut self.sandbox_image,
             _ => &mut self.title,
         }
     }
@@ -227,8 +283,15 @@ impl NewSessionDialog {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
+        let sandbox_image_visible = has_sandbox && self.sandbox_enabled;
         let dialog_width = 80;
-        let dialog_height = if has_sandbox { 18 } else { 16 };
+        let dialog_height = if sandbox_image_visible {
+            20 // Extra 2 lines for image field
+        } else if has_sandbox {
+            18
+        } else {
+            16
+        };
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -251,15 +314,18 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let constraints = vec![
+        let mut constraints = vec![
             Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Length(2),
-            Constraint::Min(1),
         ];
+        if sandbox_image_visible {
+            constraints.push(Constraint::Length(2)); // Image field
+        }
+        constraints.push(Constraint::Min(1)); // Hints/errors
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -408,7 +474,42 @@ impl NewSessionDialog {
                 ),
             ]);
             frame.render_widget(Paragraph::new(sandbox_line), chunks[5]);
-            6
+
+            // Render sandbox image field if sandbox is enabled
+            if sandbox_image_visible {
+                let sandbox_image_field = sandbox_field + 1;
+                let is_image_focused = self.focused_field == sandbox_image_field;
+                let image_label_style = if is_image_focused {
+                    Style::default().fg(theme.accent).underlined()
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                let image_value_style = if is_image_focused {
+                    Style::default().fg(theme.accent)
+                } else {
+                    Style::default().fg(theme.text)
+                };
+
+                let image_value = self.sandbox_image.value();
+                let image_cursor_pos = self.sandbox_image.visual_cursor();
+
+                let image_display = if is_image_focused {
+                    let (before, after) =
+                        image_value.split_at(image_cursor_pos.min(image_value.len()));
+                    format!("{}█{}", before, after)
+                } else {
+                    image_value.to_string()
+                };
+
+                let image_line = Line::from(vec![
+                    Span::styled("  Image:", image_label_style), // Indented to show it's related to sandbox
+                    Span::styled(format!(" {}", image_display), image_value_style),
+                ]);
+                frame.render_widget(Paragraph::new(image_line), chunks[6]);
+                7
+            } else {
+                6
+            }
         } else {
             5
         };
@@ -455,8 +556,17 @@ impl NewSessionDialog {
 
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
-        let dialog_width: u16 = 50;
-        let dialog_height: u16 = if has_tool_selection { 16 } else { 14 };
+        let has_sandbox = self.docker_available;
+        let show_image_help = has_sandbox && self.sandbox_enabled;
+
+        // Adjust dialog height for conditional help entries
+        let dialog_width: u16 = 70; // Wider to fit image description
+        let base_height: u16 = 14;
+        let dialog_height: u16 = base_height
+            + if has_tool_selection { 3 } else { 0 }
+            + if has_sandbox { 3 } else { 0 }
+            + if show_image_help { 3 } else { 0 };
+
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -481,7 +591,16 @@ impl NewSessionDialog {
         let mut lines: Vec<Line> = Vec::new();
 
         for (idx, help) in FIELD_HELP.iter().enumerate() {
+            // Skip tool help if only one tool
             if idx == 3 && !has_tool_selection {
+                continue;
+            }
+            // Skip sandbox help if Docker not available
+            if idx == 5 && !has_sandbox {
+                continue;
+            }
+            // Skip image help if sandbox not enabled
+            if idx == 6 && !show_image_help {
                 continue;
             }
 
@@ -764,5 +883,123 @@ mod tests {
         let result = dialog.handle_key(key(KeyCode::Esc));
         assert!(matches!(result, DialogResult::Cancel));
         assert_eq!(dialog.error_message, None);
+    }
+
+    // Sandbox image tests
+
+    #[test]
+    fn test_sandbox_disabled_by_default() {
+        let dialog = multi_tool_dialog();
+        assert!(!dialog.sandbox_enabled);
+    }
+
+    #[test]
+    fn test_sandbox_image_initialized_with_default() {
+        let dialog = multi_tool_dialog();
+        assert_eq!(dialog.sandbox_image.value(), dialog.default_sandbox_image);
+    }
+
+    #[test]
+    fn test_tab_includes_sandbox_image_when_sandbox_enabled() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = true;
+
+        // Tab through all fields including sandbox image
+        // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image
+        for _ in 0..6 {
+            dialog.handle_key(key(KeyCode::Tab));
+        }
+        assert_eq!(dialog.focused_field, 6); // sandbox image field
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 0); // wrap to start
+    }
+
+    #[test]
+    fn test_tab_skips_sandbox_image_when_sandbox_disabled() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = false;
+
+        // Tab through all fields - should not include sandbox image
+        // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox (no image)
+        for _ in 0..5 {
+            dialog.handle_key(key(KeyCode::Tab));
+        }
+        assert_eq!(dialog.focused_field, 5); // sandbox field (last)
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 0); // wrap to start
+    }
+
+    #[test]
+    fn test_submit_with_custom_sandbox_image() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = true;
+        dialog.sandbox_image = Input::new("custom/image:tag".to_string());
+        dialog.title = Input::new("Test".to_string());
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(data) => {
+                assert!(data.sandbox);
+                assert_eq!(data.sandbox_image, Some("custom/image:tag".to_string()));
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_submit_with_default_image_returns_none() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = true;
+        // sandbox_image is already initialized to default
+        dialog.title = Input::new("Test".to_string());
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(data) => {
+                assert!(data.sandbox);
+                assert_eq!(data.sandbox_image, None); // Should be None when same as default
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_submit_with_sandbox_disabled_no_image() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = false;
+        dialog.sandbox_image = Input::new("custom/image:tag".to_string());
+        dialog.title = Input::new("Test".to_string());
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(data) => {
+                assert!(!data.sandbox);
+                assert_eq!(data.sandbox_image, None); // Should be None when sandbox disabled
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_sandbox_image_input_works() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = true;
+        dialog.focused_field = 6; // sandbox image field
+
+        dialog.handle_key(key(KeyCode::Char('a')));
+        dialog.handle_key(key(KeyCode::Char('b')));
+        dialog.handle_key(key(KeyCode::Char('c')));
+
+        // The default image should have "abc" appended
+        let expected = format!("{}abc", dialog.default_sandbox_image);
+        assert_eq!(dialog.sandbox_image.value(), expected);
     }
 }

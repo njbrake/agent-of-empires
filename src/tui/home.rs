@@ -563,7 +563,7 @@ impl HomeView {
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,
-                image: None,
+                image: data.sandbox_image,
                 container_name,
                 created_at: None,
             });
