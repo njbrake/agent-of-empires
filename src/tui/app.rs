@@ -86,20 +86,8 @@ impl App {
             }
 
             // Check for update result (non-blocking)
-            if let Some(mut rx) = self.update_rx.take() {
-                match rx.try_recv() {
-                    Ok(result) => {
-                        if let Ok(info) = result {
-                            if info.available {
-                                self.update_info = Some(info);
-                            }
-                        }
-                    }
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                        self.update_rx = Some(rx);
-                    }
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
-                }
+            if self.poll_update_check() {
+                self.needs_redraw = true;
             }
 
             // Periodic refreshes (only when no input pending)
@@ -141,6 +129,48 @@ impl App {
             .render(frame, frame.area(), &self.theme, self.update_info.as_ref());
     }
 
+    /// Poll for update check result (non-blocking).
+    /// Returns true if an update is available and was just received.
+    fn poll_update_check(&mut self) -> bool {
+        let (update_info, update_rx, received) =
+            poll_update_receiver(self.update_rx.take(), self.update_info.take());
+        self.update_info = update_info;
+        self.update_rx = update_rx;
+        received
+    }
+}
+
+/// Polls the update receiver and returns the new state.
+/// Returns (update_info, update_rx, was_update_received).
+fn poll_update_receiver(
+    rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    current_info: Option<UpdateInfo>,
+) -> (
+    Option<UpdateInfo>,
+    Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    bool,
+) {
+    if let Some(mut rx) = rx {
+        match rx.try_recv() {
+            Ok(result) => {
+                if let Ok(info) = result {
+                    if info.available {
+                        return (Some(info), None, true);
+                    }
+                }
+                (current_info, None, false)
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                (current_info, Some(rx), false)
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => (current_info, None, false),
+        }
+    } else {
+        (current_info, None, false)
+    }
+}
+
+impl App {
     async fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -262,5 +292,70 @@ mod tests {
         let original = Action::AttachSession("session-123".to_string());
         let cloned = original.clone();
         assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_poll_update_check_returns_true_when_update_available() {
+        // Create a oneshot channel and send an update notification
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let update_info = UpdateInfo {
+            available: true,
+            current_version: "0.4.0".to_string(),
+            latest_version: "0.5.0".to_string(),
+        };
+        tx.send(Ok(update_info)).unwrap();
+
+        // poll_update_receiver should return true when an update is available
+        let (info, rx_out, received) = poll_update_receiver(Some(rx), None);
+        assert!(received);
+        assert!(info.is_some());
+        assert_eq!(info.as_ref().unwrap().latest_version, "0.5.0");
+        assert!(rx_out.is_none()); // Channel consumed
+    }
+
+    #[test]
+    fn test_poll_update_check_returns_false_when_no_update() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let update_info = UpdateInfo {
+            available: false,
+            current_version: "0.5.0".to_string(),
+            latest_version: "0.5.0".to_string(),
+        };
+        tx.send(Ok(update_info)).unwrap();
+
+        // poll_update_receiver should return false when no update available
+        let (info, rx_out, received) = poll_update_receiver(Some(rx), None);
+        assert!(!received);
+        assert!(info.is_none());
+        assert!(rx_out.is_none()); // Channel consumed even though no update
+    }
+
+    #[test]
+    fn test_poll_update_check_returns_false_when_channel_empty() {
+        let (_tx, rx) = tokio::sync::oneshot::channel::<anyhow::Result<UpdateInfo>>();
+
+        // poll_update_receiver should return false when channel is empty
+        let (info, rx_out, received) = poll_update_receiver(Some(rx), None);
+        assert!(!received);
+        assert!(info.is_none());
+        // Receiver should be put back for next poll
+        assert!(rx_out.is_some());
+    }
+
+    #[test]
+    fn test_poll_update_check_preserves_existing_info() {
+        // If we already have update info and the channel is closed, preserve the existing info
+        let existing_info = UpdateInfo {
+            available: true,
+            current_version: "0.4.0".to_string(),
+            latest_version: "0.5.0".to_string(),
+        };
+
+        // No receiver, just existing info
+        let (info, rx_out, received) = poll_update_receiver(None, Some(existing_info));
+        assert!(!received); // No new update received
+        assert!(info.is_some()); // But existing info is preserved
+        assert_eq!(info.as_ref().unwrap().latest_version, "0.5.0");
+        assert!(rx_out.is_none());
     }
 }
