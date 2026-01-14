@@ -36,7 +36,11 @@ const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Worktree Branch",
-        description: "Creates a git worktree if specified",
+        description: "Branch name for git worktree",
+    },
+    FieldHelp {
+        name: "New Branch",
+        description: "Create new branch vs attach to existing",
     },
 ];
 
@@ -60,6 +64,7 @@ pub struct NewSessionDialog {
     available_tools: Vec<&'static str>,
     existing_titles: Vec<String>,
     worktree_branch: Input,
+    create_new_branch: bool,
     sandbox_enabled: bool,
     docker_available: bool,
     error_message: Option<String>,
@@ -84,6 +89,7 @@ impl NewSessionDialog {
             available_tools,
             existing_titles,
             worktree_branch: Input::default(),
+            create_new_branch: true,
             sandbox_enabled: false,
             docker_available,
             error_message: None,
@@ -102,6 +108,7 @@ impl NewSessionDialog {
             available_tools: tools,
             existing_titles: Vec::new(),
             worktree_branch: Input::default(),
+            create_new_branch: true,
             sandbox_enabled: false,
             docker_available: false,
             error_message: None,
@@ -123,21 +130,30 @@ impl NewSessionDialog {
 
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
-        let max_field = match (has_tool_selection, has_sandbox) {
-            (true, true) => 6,
-            (true, false) => 5,
-            (false, true) => 5,
-            (false, false) => 4,
-        };
+        let has_worktree = !self.worktree_branch.value().is_empty();
+        // Fields: title(0), path(1), group(2), [tool(3)], worktree(3/4), [new_branch(4/5)], [sandbox(5/6)]
         let tool_field = if has_tool_selection { 3 } else { usize::MAX };
+        let worktree_field = if has_tool_selection { 4 } else { 3 };
+        let new_branch_field = if has_worktree {
+            worktree_field + 1
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if has_sandbox {
-            if has_tool_selection {
-                5
+            if has_worktree {
+                new_branch_field + 1
             } else {
-                4
+                worktree_field + 1
             }
         } else {
             usize::MAX
+        };
+        let max_field = if has_sandbox {
+            sandbox_field + 1
+        } else if has_worktree {
+            new_branch_field + 1
+        } else {
+            worktree_field + 1
         };
 
         match key.code {
@@ -170,7 +186,7 @@ impl NewSessionDialog {
                     group: self.group.value().to_string(),
                     tool: self.available_tools[self.tool_index].to_string(),
                     worktree_branch,
-                    create_new_branch: true,
+                    create_new_branch: self.create_new_branch,
                     sandbox: self.sandbox_enabled,
                 })
             }
@@ -195,13 +211,22 @@ impl NewSessionDialog {
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.focused_field == new_branch_field =>
+            {
+                self.create_new_branch = !self.create_new_branch;
+                DialogResult::Continue
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
                 if self.focused_field == sandbox_field =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
                 DialogResult::Continue
             }
             _ => {
-                if self.focused_field != tool_field && self.focused_field != sandbox_field {
+                if self.focused_field != tool_field
+                    && self.focused_field != new_branch_field
+                    && self.focused_field != sandbox_field
+                {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
                     self.error_message = None;
@@ -228,7 +253,7 @@ impl NewSessionDialog {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
         let dialog_width = 80;
-        let dialog_height = if has_sandbox { 18 } else { 16 };
+        let dialog_height = if has_sandbox { 20 } else { 18 };
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -252,13 +277,14 @@ impl NewSessionDialog {
         frame.render_widget(block, dialog_area);
 
         let constraints = vec![
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Min(1),
+            Constraint::Length(2), // Title
+            Constraint::Length(2), // Path
+            Constraint::Length(2), // Group
+            Constraint::Length(2), // Tool
+            Constraint::Length(2), // Worktree Branch
+            Constraint::Length(2), // New Branch checkbox
+            Constraint::Length(2), // Sandbox checkbox
+            Constraint::Min(1),    // Hints/Errors
         ];
 
         let chunks = Layout::default()
@@ -349,6 +375,7 @@ impl NewSessionDialog {
         }
 
         let worktree_field = if has_tool_selection { 4 } else { 3 };
+        let new_branch_field = worktree_field + 1;
 
         let is_wt_focused = self.focused_field == worktree_field;
         let wt_label_style = if is_wt_focused {
@@ -365,7 +392,7 @@ impl NewSessionDialog {
         let wt_value = self.worktree_branch.value();
         let wt_cursor_pos = self.worktree_branch.visual_cursor();
         let wt_display = if wt_value.is_empty() && !is_wt_focused {
-            "(leave empty to skip worktree creation)".to_string()
+            "(leave empty to skip worktree)".to_string()
         } else if is_wt_focused {
             let (before, after) = wt_value.split_at(wt_cursor_pos.min(wt_value.len()));
             format!("{}█{}", before, after)
@@ -373,13 +400,56 @@ impl NewSessionDialog {
             wt_value.to_string()
         };
         let wt_line = Line::from(vec![
-            Span::styled("Worktree Name:", wt_label_style),
+            Span::styled("Worktree Branch:", wt_label_style),
             Span::styled(format!(" {}", wt_display), wt_value_style),
         ]);
         frame.render_widget(Paragraph::new(wt_line), chunks[4]);
 
+        // New branch checkbox (only shown when worktree branch is set)
+        let has_worktree = !wt_value.is_empty();
+        let next_chunk = if has_worktree {
+            let is_nb_focused = self.focused_field == new_branch_field;
+            let nb_label_style = if is_nb_focused {
+                Style::default().fg(theme.accent).underlined()
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let checkbox = if self.create_new_branch { "[x]" } else { "[ ]" };
+            let checkbox_style = if self.create_new_branch {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let nb_text = if self.create_new_branch {
+                "Create new branch"
+            } else {
+                "Attach to existing branch"
+            };
+            let nb_line = Line::from(vec![
+                Span::styled("New Branch:", nb_label_style),
+                Span::raw(" "),
+                Span::styled(checkbox, checkbox_style),
+                Span::styled(
+                    format!(" {}", nb_text),
+                    if self.create_new_branch {
+                        Style::default().fg(theme.accent)
+                    } else {
+                        Style::default().fg(theme.dimmed)
+                    },
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(nb_line), chunks[5]);
+            6
+        } else {
+            5
+        };
+
         let hint_chunk = if has_sandbox {
-            let sandbox_field = if has_tool_selection { 5 } else { 4 };
+            let sandbox_field = if has_worktree {
+                new_branch_field + 1
+            } else {
+                worktree_field + 1
+            };
             let is_sandbox_focused = self.focused_field == sandbox_field;
             let sandbox_label_style = if is_sandbox_focused {
                 Style::default().fg(theme.accent).underlined()
@@ -407,10 +477,10 @@ impl NewSessionDialog {
                     },
                 ),
             ]);
-            frame.render_widget(Paragraph::new(sandbox_line), chunks[5]);
-            6
+            frame.render_widget(Paragraph::new(sandbox_line), chunks[next_chunk]);
+            next_chunk + 1
         } else {
-            5
+            next_chunk
         };
 
         if let Some(error) = &self.error_message {
@@ -456,7 +526,7 @@ impl NewSessionDialog {
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let dialog_width: u16 = 50;
-        let dialog_height: u16 = if has_tool_selection { 16 } else { 14 };
+        let dialog_height: u16 = if has_tool_selection { 19 } else { 17 };
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -580,6 +650,7 @@ mod tests {
 
     #[test]
     fn test_tab_cycles_fields_single_tool() {
+        // Without worktree set, new_branch field is hidden
         let mut dialog = single_tool_dialog();
         assert_eq!(dialog.focused_field, 0);
 
@@ -593,11 +664,34 @@ mod tests {
         assert_eq!(dialog.focused_field, 3); // worktree branch
 
         dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 0); // wrap to start (no new_branch without worktree)
+    }
+
+    #[test]
+    fn test_tab_cycles_fields_single_tool_with_worktree() {
+        let mut dialog = single_tool_dialog();
+        dialog.worktree_branch = Input::new("feature".to_string());
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 1);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 2);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 3); // worktree branch
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 4); // new branch checkbox (now visible)
+
+        dialog.handle_key(key(KeyCode::Tab));
         assert_eq!(dialog.focused_field, 0); // wrap to start
     }
 
     #[test]
     fn test_tab_cycles_fields_multi_tool() {
+        // Without worktree set, new_branch field is hidden
         let mut dialog = multi_tool_dialog();
         assert_eq!(dialog.focused_field, 0);
 
@@ -614,16 +708,17 @@ mod tests {
         assert_eq!(dialog.focused_field, 4); // worktree branch
 
         dialog.handle_key(key(KeyCode::Tab));
-        assert_eq!(dialog.focused_field, 0); // wrap to start
+        assert_eq!(dialog.focused_field, 0); // wrap to start (no new_branch without worktree)
     }
 
     #[test]
     fn test_backtab_cycles_fields_reverse() {
+        // Without worktree set, new_branch field is hidden
         let mut dialog = single_tool_dialog();
         assert_eq!(dialog.focused_field, 0);
 
         dialog.handle_key(shift_key(KeyCode::BackTab));
-        assert_eq!(dialog.focused_field, 3); // worktree branch (last field)
+        assert_eq!(dialog.focused_field, 3); // worktree branch (last field without worktree set)
 
         dialog.handle_key(shift_key(KeyCode::BackTab));
         assert_eq!(dialog.focused_field, 2); // group
@@ -764,5 +859,55 @@ mod tests {
         let result = dialog.handle_key(key(KeyCode::Esc));
         assert!(matches!(result, DialogResult::Cancel));
         assert_eq!(dialog.error_message, None);
+    }
+
+    #[test]
+    fn test_new_branch_checkbox_default_true() {
+        let dialog = single_tool_dialog();
+        assert!(dialog.create_new_branch);
+    }
+
+    #[test]
+    fn test_new_branch_checkbox_toggle() {
+        let mut dialog = single_tool_dialog();
+        dialog.worktree_branch = Input::new("feature-branch".to_string());
+        dialog.focused_field = 4; // new_branch checkbox field (single tool, with worktree set)
+        assert!(dialog.create_new_branch);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.create_new_branch);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(dialog.create_new_branch);
+    }
+
+    #[test]
+    fn test_submit_respects_create_new_branch() {
+        let mut dialog = single_tool_dialog();
+        dialog.worktree_branch = Input::new("feature-branch".to_string());
+        dialog.focused_field = 4;
+        dialog.handle_key(key(KeyCode::Char(' '))); // Toggle off
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(data) => {
+                assert!(!data.create_new_branch);
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_new_branch_field_hidden_without_worktree() {
+        let mut dialog = single_tool_dialog();
+        // Without worktree set, field 4 should wrap to 0 (no new_branch field)
+        assert_eq!(dialog.focused_field, 0);
+
+        // Tab through all fields: title(0) -> path(1) -> group(2) -> worktree(3) -> wrap to 0
+        dialog.handle_key(key(KeyCode::Tab)); // 1
+        dialog.handle_key(key(KeyCode::Tab)); // 2
+        dialog.handle_key(key(KeyCode::Tab)); // 3 (worktree)
+        dialog.handle_key(key(KeyCode::Tab)); // Should wrap to 0
+        assert_eq!(dialog.focused_field, 0);
     }
 }
