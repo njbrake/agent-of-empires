@@ -227,6 +227,7 @@ impl App {
         // Refresh session state since things may have changed
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
+        self.home.select_session_by_id(session_id);
 
         // Log any attach errors but don't fail
         if let Err(e) = attach_result {

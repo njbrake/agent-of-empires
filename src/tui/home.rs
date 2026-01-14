@@ -542,6 +542,18 @@ impl HomeView {
         }
     }
 
+    pub fn select_session_by_id(&mut self, session_id: &str) {
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            if let Item::Session { id, .. } = item {
+                if id == session_id {
+                    self.cursor = idx;
+                    self.update_selected();
+                    return;
+                }
+            }
+        }
+    }
+
     fn update_filter(&mut self) {
         if self.search_query.is_empty() {
             self.filtered_items = None;
@@ -658,7 +670,7 @@ impl HomeView {
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,
-                image: None,
+                image: data.sandbox_image,
                 container_name,
                 created_at: None,
             });
@@ -1596,5 +1608,29 @@ mod tests {
         assert!(!env.view.has_dialog());
         env.view.handle_key(key(KeyCode::Char('r')));
         assert!(env.view.has_dialog());
+    }
+
+    #[test]
+    #[serial]
+    fn test_select_session_by_id() {
+        let mut env = create_test_env_with_sessions(3);
+        let session_id = env.view.instances[1].id.clone();
+
+        assert_eq!(env.view.cursor, 0);
+
+        env.view.select_session_by_id(&session_id);
+
+        assert_eq!(env.view.cursor, 1);
+        assert_eq!(env.view.selected_session, Some(session_id));
+    }
+
+    #[test]
+    #[serial]
+    fn test_select_session_by_id_nonexistent() {
+        let mut env = create_test_env_with_sessions(3);
+
+        assert_eq!(env.view.cursor, 0);
+        env.view.select_session_by_id("nonexistent-id");
+        assert_eq!(env.view.cursor, 0);
     }
 }
