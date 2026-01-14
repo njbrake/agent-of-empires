@@ -11,7 +11,9 @@ use super::components::{HelpOverlay, Preview};
 use super::dialogs::{ConfirmDialog, NewSessionDialog, RenameDialog};
 use super::status_poller::StatusPoller;
 use super::styles::Theme;
-use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Status, Storage};
+use crate::session::{
+    flatten_tree, list_profiles, Group, GroupTree, Instance, Item, Status, Storage,
+};
 use crate::tmux::AvailableTools;
 use crate::update::UpdateInfo;
 
@@ -215,6 +217,21 @@ impl HomeView {
         self.instance_map.get(id)
     }
 
+    pub fn available_tools(&self) -> AvailableTools {
+        self.available_tools.clone()
+    }
+
+    fn get_next_profile(&self) -> Option<String> {
+        let profiles = list_profiles().ok()?;
+        if profiles.len() <= 1 {
+            return None;
+        }
+        let current = self.storage.profile();
+        let current_idx = profiles.iter().position(|p| p == current).unwrap_or(0);
+        let next_idx = (current_idx + 1) % profiles.len();
+        Some(profiles[next_idx].clone())
+    }
+
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
         if let Some(inst) = self.instance_map.get_mut(id) {
             inst.last_error = error.clone();
@@ -331,6 +348,11 @@ impl HomeView {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => {
                 self.show_help = true;
+            }
+            KeyCode::Char('P') => {
+                if let Some(next) = self.get_next_profile() {
+                    return Some(Action::SwitchProfile(next));
+                }
             }
             KeyCode::Char('/') => {
                 self.search_active = true;

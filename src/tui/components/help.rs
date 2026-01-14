@@ -6,7 +6,7 @@ use ratatui::widgets::*;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 22;
+const DIALOG_HEIGHT: u16 = 23;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -39,7 +39,12 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         ),
         (
             "Other",
-            vec![("/", "Search"), ("?", "Toggle help"), ("q", "Quit")],
+            vec![
+                ("/", "Search"),
+                ("P", "Next profile"),
+                ("?", "Toggle help"),
+                ("q", "Quit"),
+            ],
         ),
     ]
 }
@@ -69,10 +74,10 @@ impl HelpOverlay {
             height: DIALOG_HEIGHT.min(area.height),
         };
 
-        let clear = Block::default().style(Style::default().bg(theme.background));
-        frame.render_widget(clear, dialog_area);
+        frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
+            .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
             .title(" Keyboard Shortcuts ")
