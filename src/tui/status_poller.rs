@@ -45,13 +45,11 @@ impl StatusPoller {
         result_tx: mpsc::Sender<Vec<StatusUpdate>>,
     ) {
         while let Ok(instances) = request_rx.recv() {
-            // Refresh the tmux session cache once before checking all sessions
             crate::tmux::refresh_session_cache();
 
             let updates: Vec<StatusUpdate> = instances
                 .into_iter()
                 .map(|mut inst| {
-                    // Call the existing update_status method which handles all the logic
                     inst.update_status();
 
                     StatusUpdate {
@@ -70,10 +68,8 @@ impl StatusPoller {
         }
     }
 
-    /// Request a status refresh for all given instances.
-    /// This is non-blocking - the actual polling happens in the background thread.
+    /// Request a status refresh for all given instances (non-blocking).
     pub fn request_refresh(&self, instances: Vec<Instance>) {
-        // Use try_send semantics - if channel is full, skip this refresh
         let _ = self.request_tx.send(instances);
     }
 

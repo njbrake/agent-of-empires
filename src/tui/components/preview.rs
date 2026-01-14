@@ -9,7 +9,6 @@ use crate::tui::styles::Theme;
 pub struct Preview;
 
 impl Preview {
-    /// Render preview with pre-cached output content (avoids subprocess calls per frame)
     pub fn render_with_cache(
         frame: &mut Frame,
         area: Rect,
@@ -121,7 +120,6 @@ impl Preview {
         frame.render_widget(paragraph, area);
     }
 
-    /// Render output section using pre-cached content (avoids subprocess calls)
     fn render_output_cached(
         frame: &mut Frame,
         area: Rect,
