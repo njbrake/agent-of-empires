@@ -9,6 +9,33 @@ use crate::tui::styles::Theme;
 pub struct Preview;
 
 impl Preview {
+    /// Render preview with pre-cached output content (avoids subprocess calls per frame)
+    pub fn render_with_cache(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
+        // Adjust height based on whether worktree info is present
+        let info_height = if instance.worktree_info.is_some() {
+            10 // Expanded to show worktree details
+        } else {
+            6 // Standard height
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(info_height), // Info section
+                Constraint::Min(1),              // Output section
+            ])
+            .split(area);
+
+        Self::render_info(frame, chunks[0], instance, theme);
+        Self::render_output_cached(frame, chunks[1], instance, cached_output, theme);
+    }
+
     pub fn render(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
         // Adjust height based on whether worktree info is present
         let info_height = if instance.worktree_info.is_some() {
@@ -152,6 +179,69 @@ impl Preview {
             frame.render_widget(hint, inner);
         } else {
             let output_lines: Vec<Line> = output
+                .lines()
+                .map(|line| Line::from(Span::raw(line)))
+                .collect();
+
+            let line_count = output_lines.len();
+            let visible_height = inner.height as usize;
+
+            // Scroll to show the bottom of the content
+            let scroll_offset = if line_count > visible_height {
+                (line_count - visible_height) as u16
+            } else {
+                0
+            };
+
+            let paragraph = Paragraph::new(output_lines)
+                .style(Style::default().fg(theme.text))
+                .scroll((scroll_offset, 0));
+
+            frame.render_widget(paragraph, inner);
+        }
+    }
+
+    /// Render output section using pre-cached content (avoids subprocess calls)
+    fn render_output_cached(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Output ")
+            .title_style(Style::default().fg(theme.dimmed));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if let Some(error) = &instance.last_error {
+            let error_lines: Vec<Line> = vec![
+                Line::from(Span::styled(
+                    "Error:",
+                    Style::default().fg(theme.error).bold(),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    error.as_str(),
+                    Style::default().fg(theme.error),
+                )),
+            ];
+            let paragraph = Paragraph::new(error_lines).wrap(Wrap { trim: false });
+            frame.render_widget(paragraph, inner);
+            return;
+        }
+
+        if cached_output.is_empty() {
+            let hint = Paragraph::new("No output available")
+                .style(Style::default().fg(theme.dimmed))
+                .alignment(Alignment::Center);
+            frame.render_widget(hint, inner);
+        } else {
+            let output_lines: Vec<Line> = cached_output
                 .lines()
                 .map(|line| Line::from(Span::raw(line)))
                 .collect();

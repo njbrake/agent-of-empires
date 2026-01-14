@@ -4,6 +4,7 @@ mod app;
 mod components;
 mod dialogs;
 mod home;
+mod status_poller;
 mod styles;
 
 pub use app::*;
