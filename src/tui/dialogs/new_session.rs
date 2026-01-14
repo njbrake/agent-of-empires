@@ -44,7 +44,7 @@ const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Image",
-        description: "Docker image. Edit config.toml [sandbox] default_image to change default",
+        description: "Docker image (set default in config.toml [sandbox] default_image)",
     },
 ];
 
@@ -239,10 +239,6 @@ impl NewSessionDialog {
                 if self.focused_field == sandbox_field =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
-                // If sandbox was disabled and cursor was on image field, move back to sandbox field
-                if !self.sandbox_enabled && self.focused_field > sandbox_field {
-                    self.focused_field = sandbox_field;
-                }
                 DialogResult::Continue
             }
             _ => {
