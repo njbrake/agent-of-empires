@@ -1669,4 +1669,83 @@ mod tests {
         env.view.select_session_by_id("nonexistent-id");
         assert_eq!(env.view.cursor, 0);
     }
+
+    #[test]
+    #[serial]
+    fn test_get_next_profile_single_profile_returns_none() {
+        let env = create_test_env_empty();
+        assert!(env.view.get_next_profile().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_next_profile_cycles_through_profiles() {
+        let temp = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp.path());
+
+        crate::session::create_profile("alpha").unwrap();
+        crate::session::create_profile("beta").unwrap();
+        crate::session::create_profile("gamma").unwrap();
+
+        let storage = Storage::new("alpha").unwrap();
+        let tools = AvailableTools {
+            claude: true,
+            opencode: false,
+        };
+        let view = HomeView::new(storage, tools).unwrap();
+
+        // From alpha -> beta
+        assert_eq!(view.get_next_profile(), Some("beta".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_next_profile_wraps_around() {
+        let temp = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp.path());
+
+        crate::session::create_profile("alpha").unwrap();
+        crate::session::create_profile("beta").unwrap();
+
+        // Start on beta (last alphabetically)
+        let storage = Storage::new("beta").unwrap();
+        let tools = AvailableTools {
+            claude: true,
+            opencode: false,
+        };
+        let view = HomeView::new(storage, tools).unwrap();
+
+        // From beta -> alpha (wraps)
+        assert_eq!(view.get_next_profile(), Some("alpha".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_uppercase_p_returns_switch_profile_action() {
+        let temp = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp.path());
+
+        crate::session::create_profile("first").unwrap();
+        crate::session::create_profile("second").unwrap();
+
+        let storage = Storage::new("first").unwrap();
+        let tools = AvailableTools {
+            claude: true,
+            opencode: false,
+        };
+        let mut view = HomeView::new(storage, tools).unwrap();
+
+        let action = view.handle_key(key(KeyCode::Char('P')));
+        assert_eq!(action, Some(Action::SwitchProfile("second".to_string())));
+    }
+
+    #[test]
+    #[serial]
+    fn test_uppercase_p_does_nothing_with_single_profile() {
+        let env = create_test_env_empty();
+        let mut view = env.view;
+
+        let action = view.handle_key(key(KeyCode::Char('P')));
+        assert_eq!(action, None);
+    }
 }
