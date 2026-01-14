@@ -888,7 +888,11 @@ impl HomeView {
                 ..
             } => {
                 // Use static icon strings
-                let icon = if *collapsed { ICON_COLLAPSED } else { ICON_EXPANDED };
+                let icon = if *collapsed {
+                    ICON_COLLAPSED
+                } else {
+                    ICON_EXPANDED
+                };
                 // Groups need format for count, which is acceptable since groups are few
                 let text = Cow::Owned(format!("{} ({})", name, session_count));
                 let style = Style::default().fg(theme.group).bold();
@@ -915,7 +919,11 @@ impl HomeView {
                     // Borrow title directly (no clone)
                     (icon, Cow::Borrowed(&inst.title), style)
                 } else {
-                    ("?", Cow::Borrowed(id.as_str()), Style::default().fg(theme.dimmed))
+                    (
+                        "?",
+                        Cow::Borrowed(id.as_str()),
+                        Style::default().fg(theme.dimmed),
+                    )
                 }
             }
         };
@@ -924,7 +932,10 @@ impl HomeView {
         let mut line_spans = Vec::with_capacity(5);
         line_spans.push(Span::raw(indent));
         line_spans.push(Span::styled(format!("{} ", icon), style));
-        line_spans.push(Span::styled(text.into_owned(), if is_selected { style.bold() } else { style }));
+        line_spans.push(Span::styled(
+            text.into_owned(),
+            if is_selected { style.bold() } else { style },
+        ));
 
         if let Item::Session { id, .. } = item {
             if let Some(inst) = self.instance_map.get(id) {
@@ -989,10 +1000,11 @@ impl HomeView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // Refresh cache before borrowing from instance_map to avoid borrow conflicts
+        self.refresh_preview_cache_if_needed(inner.width, inner.height);
+
         if let Some(id) = &self.selected_session {
             if let Some(inst) = self.instance_map.get(id) {
-                // Refresh cache if needed before rendering
-                self.refresh_preview_cache_if_needed(inner.width, inner.height);
                 Preview::render_with_cache(frame, inner, inst, &self.preview_cache.content, theme);
             }
         } else {
