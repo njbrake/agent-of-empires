@@ -105,9 +105,14 @@ impl App {
             // Periodic refreshes (only when no input pending)
             let mut refresh_needed = false;
 
+            // Request status refresh every interval (non-blocking)
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
-                self.home.refresh_status();
+                self.home.request_status_refresh();
                 last_status_refresh = std::time::Instant::now();
+            }
+
+            // Always check for and apply status updates (non-blocking)
+            if self.home.apply_status_updates() {
                 refresh_needed = true;
             }
 

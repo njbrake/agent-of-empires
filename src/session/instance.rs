@@ -87,6 +87,12 @@ pub struct Instance {
     pub last_start_time: Option<std::time::Instant>,
     #[serde(skip)]
     pub last_error: Option<String>,
+
+    // Search optimization: pre-computed lowercase strings (not serialized)
+    #[serde(skip)]
+    pub title_lower: String,
+    #[serde(skip)]
+    pub project_path_lower: String,
 }
 
 impl Instance {
@@ -109,7 +115,16 @@ impl Instance {
             last_error_check: None,
             last_start_time: None,
             last_error: None,
+            title_lower: title.to_lowercase(),
+            project_path_lower: project_path.to_lowercase(),
         }
+    }
+
+    /// Update the pre-computed lowercase fields for search optimization.
+    /// Call this after loading instances from disk or modifying title/path.
+    pub fn update_search_cache(&mut self) {
+        self.title_lower = self.title.to_lowercase();
+        self.project_path_lower = self.project_path.to_lowercase();
     }
 
     pub fn is_sub_session(&self) -> bool {

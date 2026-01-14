@@ -9,7 +9,13 @@ use crate::tui::styles::Theme;
 pub struct Preview;
 
 impl Preview {
-    pub fn render(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
+    pub fn render_with_cache(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
         // Adjust height based on whether worktree info is present
         let info_height = if instance.worktree_info.is_some() {
             10 // Expanded to show worktree details
@@ -26,7 +32,7 @@ impl Preview {
             .split(area);
 
         Self::render_info(frame, chunks[0], instance, theme);
-        Self::render_output(frame, chunks[1], instance, theme);
+        Self::render_output_cached(frame, chunks[1], instance, cached_output, theme);
     }
 
     fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
@@ -114,7 +120,13 @@ impl Preview {
         frame.render_widget(paragraph, area);
     }
 
-    fn render_output(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
+    fn render_output_cached(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
         let block = Block::default()
             .borders(Borders::TOP)
             .border_style(Style::default().fg(theme.border))
@@ -141,17 +153,13 @@ impl Preview {
             return;
         }
 
-        let output = instance
-            .capture_output_with_size(inner.height as usize, inner.width, inner.height)
-            .unwrap_or_default();
-
-        if output.is_empty() {
+        if cached_output.is_empty() {
             let hint = Paragraph::new("No output available")
                 .style(Style::default().fg(theme.dimmed))
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else {
-            let output_lines: Vec<Line> = output
+            let output_lines: Vec<Line> = cached_output
                 .lines()
                 .map(|line| Line::from(Span::raw(line)))
                 .collect();

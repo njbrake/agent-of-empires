@@ -4,14 +4,35 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::collections::HashMap;
+use std::time::Instant;
 
 use super::app::Action;
 use super::components::{HelpOverlay, Preview};
 use super::dialogs::{ConfirmDialog, NewSessionDialog, RenameDialog};
+use super::status_poller::StatusPoller;
 use super::styles::Theme;
 use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Status, Storage};
 use crate::tmux::AvailableTools;
 use crate::update::UpdateInfo;
+
+/// Cached preview content to avoid subprocess calls on every frame
+struct PreviewCache {
+    session_id: Option<String>,
+    content: String,
+    last_refresh: Instant,
+    dimensions: (u16, u16),
+}
+
+impl Default for PreviewCache {
+    fn default() -> Self {
+        Self {
+            session_id: None,
+            content: String::new(),
+            last_refresh: Instant::now(),
+            dimensions: (0, 0),
+        }
+    }
+}
 
 pub struct HomeView {
     storage: Storage,
@@ -39,11 +60,23 @@ pub struct HomeView {
 
     // Tool availability
     available_tools: AvailableTools,
+
+    // Performance: background status polling
+    status_poller: StatusPoller,
+    pending_status_refresh: bool,
+
+    // Performance: preview caching
+    preview_cache: PreviewCache,
 }
 
 impl HomeView {
     pub fn new(storage: Storage, available_tools: AvailableTools) -> anyhow::Result<Self> {
-        let (instances, groups) = storage.load_with_groups()?;
+        let (mut instances, groups) = storage.load_with_groups()?;
+
+        for inst in &mut instances {
+            inst.update_search_cache();
+        }
+
         let instance_map: HashMap<String, Instance> = instances
             .iter()
             .map(|i| (i.id.clone(), i.clone()))
@@ -69,6 +102,9 @@ impl HomeView {
             search_query: String::new(),
             filtered_items: None,
             available_tools,
+            status_poller: StatusPoller::new(),
+            pending_status_refresh: false,
+            preview_cache: PreviewCache::default(),
         };
 
         view.update_selected();
@@ -78,7 +114,6 @@ impl HomeView {
     pub fn reload(&mut self) -> anyhow::Result<()> {
         let (mut instances, groups) = self.storage.load_with_groups()?;
 
-        // Preserve runtime status from previous instances (status is not persisted to disk)
         for inst in &mut instances {
             if let Some(prev) = self.instance_map.get(&inst.id) {
                 inst.status = prev.status;
@@ -86,6 +121,7 @@ impl HomeView {
                 inst.last_error_check = prev.last_error_check;
                 inst.last_start_time = prev.last_start_time;
             }
+            inst.update_search_cache();
         }
 
         self.instances = instances;
@@ -107,16 +143,40 @@ impl HomeView {
         Ok(())
     }
 
-    pub fn refresh_status(&mut self) {
-        crate::tmux::refresh_session_cache();
-        for inst in &mut self.instances {
-            inst.update_status();
+    /// Request a status refresh in the background (non-blocking).
+    /// Call `apply_status_updates` to check for and apply results.
+    pub fn request_status_refresh(&mut self) {
+        if !self.pending_status_refresh {
+            let instances = self.instances.clone();
+            self.status_poller.request_refresh(instances);
+            self.pending_status_refresh = true;
         }
-        self.instance_map = self
-            .instances
-            .iter()
-            .map(|i| (i.id.clone(), i.clone()))
-            .collect();
+    }
+
+    /// Apply any pending status updates from the background poller.
+    /// Returns true if updates were applied.
+    pub fn apply_status_updates(&mut self) -> bool {
+        if let Some(updates) = self.status_poller.try_recv_updates() {
+            for update in updates {
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
+                    inst.status = update.status;
+                    inst.last_error = update.last_error.clone();
+                    if update.claude_session_id.is_some() {
+                        inst.claude_session_id = update.claude_session_id.clone();
+                    }
+                }
+                if let Some(inst) = self.instance_map.get_mut(&update.id) {
+                    inst.status = update.status;
+                    inst.last_error = update.last_error;
+                    if update.claude_session_id.is_some() {
+                        inst.claude_session_id = update.claude_session_id;
+                    }
+                }
+            }
+            self.pending_status_refresh = false;
+            return true;
+        }
+        false
     }
 
     pub fn has_dialog(&self) -> bool {
@@ -462,8 +522,8 @@ impl HomeView {
             match item {
                 Item::Session { id, .. } => {
                     if let Some(inst) = self.instance_map.get(id) {
-                        if inst.title.to_lowercase().contains(&query)
-                            || inst.project_path.to_lowercase().contains(&query)
+                        if inst.title_lower.contains(&query)
+                            || inst.project_path_lower.contains(&query)
                         {
                             matches.push(idx);
                         }
@@ -741,7 +801,6 @@ impl HomeView {
             return;
         }
 
-        // Render session tree
         let items_to_show = if let Some(ref filtered) = self.filtered_items {
             filtered
                 .iter()
@@ -791,7 +850,7 @@ impl HomeView {
                 ..
             } => {
                 let icon = if *collapsed { "▶" } else { "▼" };
-                let text = format!("{} ({}) ", name, session_count);
+                let text = format!("{} ({})", name, session_count);
                 let style = Style::default().fg(theme.group).bold();
                 (icon, text, style)
             }
@@ -851,7 +910,34 @@ impl HomeView {
         }
     }
 
-    fn render_preview(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)
+    fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
+        const PREVIEW_REFRESH_MS: u128 = 250; // Refresh preview 4x/second max
+
+        let needs_refresh = match &self.selected_session {
+            Some(id) => {
+                self.preview_cache.session_id.as_ref() != Some(id)
+                    || self.preview_cache.dimensions != (width, height)
+                    || self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS
+            }
+            None => false,
+        };
+
+        if needs_refresh {
+            if let Some(id) = &self.selected_session {
+                if let Some(inst) = self.instance_map.get(id) {
+                    self.preview_cache.content = inst
+                        .capture_output_with_size(height as usize, width, height)
+                        .unwrap_or_default();
+                    self.preview_cache.session_id = Some(id.clone());
+                    self.preview_cache.dimensions = (width, height);
+                    self.preview_cache.last_refresh = Instant::now();
+                }
+            }
+        }
+    }
+
+    fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
@@ -861,9 +947,12 @@ impl HomeView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // Refresh cache before borrowing from instance_map to avoid borrow conflicts
+        self.refresh_preview_cache_if_needed(inner.width, inner.height);
+
         if let Some(id) = &self.selected_session {
             if let Some(inst) = self.instance_map.get(id) {
-                Preview::render(frame, inner, inst, theme);
+                Preview::render_with_cache(frame, inner, inst, &self.preview_cache.content, theme);
             }
         } else {
             let hint = Paragraph::new("Select a session to preview")
