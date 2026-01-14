@@ -83,7 +83,7 @@ impl DockerContainer {
             "--name".to_string(),
             self.name.clone(),
             "-w".to_string(),
-            "/workspace".to_string(),
+            config.working_dir.clone(),
         ];
 
         for vol in &config.volumes {
