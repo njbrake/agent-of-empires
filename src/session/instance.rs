@@ -223,9 +223,16 @@ impl Instance {
         let home =
             dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
 
+        // Extract dir name from project path to preserve it in the container mount
+        let dir_name = std::path::Path::new(&self.project_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "workspace".to_string());
+        let workspace_path = format!("/workspace/{}", dir_name);
+
         let mut volumes = vec![VolumeMount {
             host_path: self.project_path.clone(),
-            container_path: "/workspace".to_string(),
+            container_path: workspace_path.clone(),
             read_only: false,
         }];
 
@@ -286,7 +293,7 @@ impl Instance {
         ));
 
         Ok(ContainerConfig {
-            working_dir: "/workspace".to_string(),
+            working_dir: workspace_path,
             volumes,
             named_volumes,
             environment,
