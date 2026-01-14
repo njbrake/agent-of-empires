@@ -51,6 +51,11 @@ const FIELD_HELP: &[FieldHelp] = &[
         name: "Image",
         description: "Docker image. Edit config.toml [sandbox] default_image to change default",
     },
+    FieldHelp {
+        name: "YOLO Mode",
+        description:
+            "Skip permission prompts for autonomous operation (--dangerously-skip-permissions)",
+    },
 ];
 
 #[derive(Clone)]
@@ -63,6 +68,7 @@ pub struct NewSessionData {
     pub create_new_branch: bool,
     pub sandbox: bool,
     pub sandbox_image: Option<String>,
+    pub yolo_mode: bool,
 }
 
 pub struct NewSessionDialog {
@@ -79,6 +85,7 @@ pub struct NewSessionDialog {
     sandbox_image: Input,
     default_sandbox_image: String,
     docker_available: bool,
+    yolo_mode: bool,
     error_message: Option<String>,
     show_help: bool,
 }
@@ -112,6 +119,7 @@ impl NewSessionDialog {
             sandbox_image: Input::new(default_sandbox_image.clone()),
             default_sandbox_image,
             docker_available,
+            yolo_mode: false,
             error_message: None,
             show_help: false,
         }
@@ -134,6 +142,7 @@ impl NewSessionDialog {
             sandbox_image: Input::new(default_image.clone()),
             default_sandbox_image: default_image,
             docker_available: false,
+            yolo_mode: false,
             error_message: None,
             show_help: false,
         }
@@ -154,8 +163,8 @@ impl NewSessionDialog {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
         let has_worktree = !self.worktree_branch.value().is_empty();
-        let sandbox_image_visible = has_sandbox && self.sandbox_enabled;
-        // Fields: title(0), path(1), group(2), [tool(3)], worktree(3/4), [new_branch(4/5)], [sandbox(5/6)], [image(6/7)]
+        let sandbox_options_visible = has_sandbox && self.sandbox_enabled;
+        // Fields: title(0), path(1), group(2), [tool(3)], worktree(3/4), [new_branch(4/5)], [sandbox(5/6)], [image(6/7)], [yolo(7/8)]
         let tool_field = if has_tool_selection { 3 } else { usize::MAX };
         let worktree_field = if has_tool_selection { 4 } else { 3 };
         let new_branch_field = if has_worktree {
@@ -172,13 +181,18 @@ impl NewSessionDialog {
         } else {
             usize::MAX
         };
-        let sandbox_image_field = if sandbox_image_visible {
+        let sandbox_image_field = if sandbox_options_visible {
             sandbox_field + 1
         } else {
             usize::MAX
         };
-        let max_field = if sandbox_image_visible {
+        let yolo_mode_field = if sandbox_options_visible {
             sandbox_image_field + 1
+        } else {
+            usize::MAX
+        };
+        let max_field = if sandbox_options_visible {
+            yolo_mode_field + 1
         } else if has_sandbox {
             sandbox_field + 1
         } else if has_worktree {
@@ -232,6 +246,7 @@ impl NewSessionDialog {
                     create_new_branch: self.create_new_branch,
                     sandbox: self.sandbox_enabled,
                     sandbox_image,
+                    yolo_mode: self.sandbox_enabled && self.yolo_mode,
                 })
             }
             KeyCode::Tab => {
@@ -264,16 +279,26 @@ impl NewSessionDialog {
                 if self.focused_field == sandbox_field =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
-                // If sandbox was disabled and cursor was on image field, move back to sandbox field
-                if !self.sandbox_enabled && self.focused_field > sandbox_field {
-                    self.focused_field = sandbox_field;
+                // If sandbox was disabled, reset yolo_mode and move cursor back
+                if !self.sandbox_enabled {
+                    self.yolo_mode = false;
+                    if self.focused_field > sandbox_field {
+                        self.focused_field = sandbox_field;
+                    }
                 }
+                DialogResult::Continue
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.focused_field == yolo_mode_field =>
+            {
+                self.yolo_mode = !self.yolo_mode;
                 DialogResult::Continue
             }
             _ => {
                 if self.focused_field != tool_field
                     && self.focused_field != new_branch_field
                     && self.focused_field != sandbox_field
+                    && self.focused_field != yolo_mode_field
                 {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
@@ -315,10 +340,10 @@ impl NewSessionDialog {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
-        let sandbox_image_visible = has_sandbox && self.sandbox_enabled;
+        let sandbox_options_visible = has_sandbox && self.sandbox_enabled;
         let dialog_width = 80;
-        let dialog_height = if sandbox_image_visible {
-            22 // Base + worktree + new_branch + sandbox + image
+        let dialog_height = if sandbox_options_visible {
+            24 // Base + worktree + new_branch + sandbox + image + yolo
         } else if has_sandbox {
             20 // Base + worktree + new_branch + sandbox
         } else {
@@ -355,8 +380,9 @@ impl NewSessionDialog {
             Constraint::Length(2), // New Branch checkbox
             Constraint::Length(2), // Sandbox checkbox
         ];
-        if sandbox_image_visible {
+        if sandbox_options_visible {
             constraints.push(Constraint::Length(2)); // Image field
+            constraints.push(Constraint::Length(2)); // YOLO mode checkbox
         }
         constraints.push(Constraint::Min(1)); // Hints/errors
 
@@ -552,8 +578,8 @@ impl NewSessionDialog {
             ]);
             frame.render_widget(Paragraph::new(sandbox_line), chunks[next_chunk]);
 
-            // Render sandbox image field if sandbox is enabled
-            if sandbox_image_visible {
+            // Render sandbox options (image and YOLO mode) if sandbox is enabled
+            if sandbox_options_visible {
                 let sandbox_image_field = sandbox_field + 1;
                 let is_image_focused = self.focused_field == sandbox_image_field;
                 let image_label_style = if is_image_focused {
@@ -583,7 +609,39 @@ impl NewSessionDialog {
                     Span::styled(format!(" {}", image_display), image_value_style),
                 ]);
                 frame.render_widget(Paragraph::new(image_line), chunks[next_chunk + 1]);
-                next_chunk + 2
+
+                // Render YOLO mode checkbox
+                let yolo_mode_field = sandbox_image_field + 1;
+                let is_yolo_focused = self.focused_field == yolo_mode_field;
+                let yolo_label_style = if is_yolo_focused {
+                    Style::default().fg(theme.accent).underlined()
+                } else {
+                    Style::default().fg(theme.text)
+                };
+
+                let yolo_checkbox = if self.yolo_mode { "[x]" } else { "[ ]" };
+                let yolo_checkbox_style = if self.yolo_mode {
+                    Style::default().fg(theme.accent).bold()
+                } else {
+                    Style::default().fg(theme.dimmed)
+                };
+
+                let yolo_line = Line::from(vec![
+                    Span::styled("  YOLO Mode:", yolo_label_style),
+                    Span::raw(" "),
+                    Span::styled(yolo_checkbox, yolo_checkbox_style),
+                    Span::styled(
+                        " Skip permission prompts",
+                        if self.yolo_mode {
+                            Style::default().fg(theme.accent)
+                        } else {
+                            Style::default().fg(theme.dimmed)
+                        },
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(yolo_line), chunks[next_chunk + 2]);
+
+                next_chunk + 3
             } else {
                 next_chunk + 1
             }
@@ -634,7 +692,7 @@ impl NewSessionDialog {
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
-        let show_image_help = has_sandbox && self.sandbox_enabled;
+        let show_sandbox_options_help = has_sandbox && self.sandbox_enabled;
 
         // Adjust dialog height for conditional help entries
         let dialog_width: u16 = 70;
@@ -642,7 +700,7 @@ impl NewSessionDialog {
         let dialog_height: u16 = base_height
             + if has_tool_selection { 3 } else { 0 }
             + if has_sandbox { 3 } else { 0 }
-            + if show_image_help { 3 } else { 0 };
+            + if show_sandbox_options_help { 6 } else { 0 }; // image + yolo
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -673,11 +731,15 @@ impl NewSessionDialog {
                 continue;
             }
             // Skip sandbox help if Docker not available
-            if idx == 5 && !has_sandbox {
+            if idx == 6 && !has_sandbox {
                 continue;
             }
             // Skip image help if sandbox not enabled
-            if idx == 6 && !show_image_help {
+            if idx == 7 && !show_sandbox_options_help {
+                continue;
+            }
+            // Skip YOLO mode help if sandbox not enabled
+            if idx == 8 && !show_sandbox_options_help {
                 continue;
             }
 
@@ -1054,17 +1116,20 @@ mod tests {
     }
 
     #[test]
-    fn test_tab_includes_sandbox_image_when_sandbox_enabled() {
+    fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
         let mut dialog = multi_tool_dialog();
         dialog.docker_available = true;
         dialog.sandbox_enabled = true;
 
-        // Tab through all fields including sandbox image
-        // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image
+        // Tab through all fields including sandbox image and yolo mode
+        // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo
         for _ in 0..6 {
             dialog.handle_key(key(KeyCode::Tab));
         }
         assert_eq!(dialog.focused_field, 6); // sandbox image field
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 7); // yolo mode field
 
         dialog.handle_key(key(KeyCode::Tab));
         assert_eq!(dialog.focused_field, 0); // wrap to start
@@ -1155,5 +1220,76 @@ mod tests {
         // The default image should have "abc" appended
         let expected = format!("{}abc", dialog.default_sandbox_image);
         assert_eq!(dialog.sandbox_image.value(), expected);
+    }
+
+    #[test]
+    fn test_yolo_mode_disabled_by_default() {
+        let dialog = multi_tool_dialog();
+        assert!(!dialog.yolo_mode);
+    }
+
+    #[test]
+    fn test_yolo_mode_toggle() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = true;
+        dialog.focused_field = 7; // yolo mode field
+        assert!(!dialog.yolo_mode);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(dialog.yolo_mode);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.yolo_mode);
+    }
+
+    #[test]
+    fn test_submit_with_yolo_mode_enabled() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = true;
+        dialog.yolo_mode = true;
+        dialog.title = Input::new("Test".to_string());
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(data) => {
+                assert!(data.sandbox);
+                assert!(data.yolo_mode);
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_submit_yolo_mode_false_when_sandbox_disabled() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = false;
+        dialog.yolo_mode = true; // Even if set, should be false when sandbox disabled
+        dialog.title = Input::new("Test".to_string());
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(data) => {
+                assert!(!data.sandbox);
+                assert!(!data.yolo_mode); // Should be false because sandbox is disabled
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_disabling_sandbox_resets_yolo_mode() {
+        let mut dialog = multi_tool_dialog();
+        dialog.docker_available = true;
+        dialog.sandbox_enabled = true;
+        dialog.yolo_mode = true;
+        dialog.focused_field = 5; // sandbox field
+
+        // Disable sandbox
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.sandbox_enabled);
+        assert!(!dialog.yolo_mode); // Should be reset
     }
 }

@@ -20,6 +20,7 @@ fn test_sandbox_info_serialization() {
         image: Some("ubuntu:latest".to_string()),
         container_name: "aoe-sandbox-test1234".to_string(),
         created_at: Some(chrono::Utc::now()),
+        yolo_mode: None,
     };
 
     let json = serde_json::to_string(&sandbox_info).unwrap();
@@ -41,6 +42,7 @@ fn test_instance_is_sandboxed() {
         image: None,
         container_name: "aoe-sandbox-test".to_string(),
         created_at: None,
+        yolo_mode: None,
     });
     assert!(inst.is_sandboxed());
 
@@ -50,6 +52,7 @@ fn test_instance_is_sandboxed() {
         image: None,
         container_name: "aoe-sandbox-test".to_string(),
         created_at: None,
+        yolo_mode: None,
     });
     assert!(!inst.is_sandboxed());
 }
@@ -68,6 +71,7 @@ fn test_sandbox_info_persists_across_save_load() {
         image: Some("custom:image".to_string()),
         container_name: "aoe-sandbox-abcd1234".to_string(),
         created_at: Some(chrono::Utc::now()),
+        yolo_mode: Some(true),
     });
 
     storage.save(&[inst.clone()]).unwrap();

@@ -175,6 +175,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 image: args.sandbox_image.clone(),
                 container_name,
                 created_at: None,
+                yolo_mode: None,
             });
         }
     }

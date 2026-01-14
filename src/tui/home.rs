@@ -694,6 +694,7 @@ impl HomeView {
                 image: data.sandbox_image,
                 container_name,
                 created_at: None,
+                yolo_mode: if data.yolo_mode { Some(true) } else { None },
             });
         }
 

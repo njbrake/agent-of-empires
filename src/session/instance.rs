@@ -45,6 +45,8 @@ pub struct SandboxInfo {
     pub container_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yolo_mode: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +137,12 @@ impl Instance {
         self.sandbox_info.as_ref().is_some_and(|s| s.enabled)
     }
 
+    pub fn is_yolo_mode(&self) -> bool {
+        self.sandbox_info
+            .as_ref()
+            .is_some_and(|s| s.yolo_mode.unwrap_or(false))
+    }
+
     pub fn get_tool_command(&self) -> &str {
         if self.command.is_empty() {
             match self.tool.as_str() {
@@ -161,7 +169,11 @@ impl Instance {
         let cmd = if self.is_sandboxed() {
             self.ensure_container_running()?;
             let sandbox = self.sandbox_info.as_ref().unwrap();
-            let tool_cmd = self.get_tool_command();
+            let tool_cmd = if self.is_yolo_mode() && self.tool == "claude" {
+                "claude --dangerously-skip-permissions".to_string()
+            } else {
+                self.get_tool_command().to_string()
+            };
             Some(format!(
                 "docker exec -it {} {}",
                 sandbox.container_name, tool_cmd
@@ -292,6 +304,13 @@ impl Instance {
             format!("{}/.claude", CONTAINER_HOME),
         ));
 
+        if self.is_yolo_mode() && self.tool == "opencode" {
+            environment.push((
+                "OPENCODE_PERMISSION".to_string(),
+                r#"{"*":"allow"}"#.to_string(),
+            ));
+        }
+
         Ok(ContainerConfig {
             working_dir: workspace_path,
             volumes,
@@ -405,6 +424,12 @@ fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
 }
 
+/// Tools that have YOLO mode support configured.
+/// When adding a new tool, add it here and implement YOLO support in:
+/// - `start()` for command construction (Claude uses CLI flag)
+/// - `build_container_config()` for environment variables (OpenCode uses env var)
+pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +450,48 @@ mod tests {
 
         inst.parent_session_id = Some("parent123".to_string());
         assert!(inst.is_sub_session());
+    }
+
+    #[test]
+    fn test_all_available_tools_have_yolo_support() {
+        // This test ensures that when a new tool is added to AvailableTools,
+        // YOLO mode support is also configured for it.
+        // If this test fails, add the new tool to YOLO_SUPPORTED_TOOLS and
+        // implement YOLO support in start() and/or build_container_config().
+        let available_tools = crate::tmux::AvailableTools {
+            claude: true,
+            opencode: true,
+        };
+        for tool in available_tools.available_list() {
+            assert!(
+                YOLO_SUPPORTED_TOOLS.contains(&tool),
+                "Tool '{}' is available but not in YOLO_SUPPORTED_TOOLS. \
+                 Add YOLO mode support for this tool in start() and/or build_container_config(), \
+                 then add it to YOLO_SUPPORTED_TOOLS.",
+                tool
+            );
+        }
+    }
+
+    #[test]
+    fn test_yolo_mode_helper() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        assert!(!inst.is_yolo_mode());
+
+        inst.sandbox_info = Some(SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: None,
+            container_name: "test".to_string(),
+            created_at: None,
+            yolo_mode: Some(true),
+        });
+        assert!(inst.is_yolo_mode());
+
+        inst.sandbox_info.as_mut().unwrap().yolo_mode = Some(false);
+        assert!(!inst.is_yolo_mode());
+
+        inst.sandbox_info.as_mut().unwrap().yolo_mode = None;
+        assert!(!inst.is_yolo_mode());
     }
 }
