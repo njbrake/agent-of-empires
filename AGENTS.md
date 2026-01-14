@@ -33,6 +33,7 @@
 - Prefer “let the tools decide”: keep code `cargo fmt`-clean and `cargo clippy`-clean.
 - Rust naming: `snake_case` for modules/functions, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
 - Keep OS-specific logic in `src/process/{macos,linux}.rs` rather than sprinkling `cfg` checks.
+- Please add code comments if you find them helpful to accomplish your objective. However, please remove any comments you added that describe obvious behavior before finishing your task.
 
 ## Testing Guidelines
 

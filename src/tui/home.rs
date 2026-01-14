@@ -835,10 +835,19 @@ impl HomeView {
         theme: &Theme,
         update_info: Option<&UpdateInfo>,
     ) {
-        // Layout: main area + status bar at bottom
+        // Layout: main area + status bar + optional update bar at bottom
+        let constraints = if update_info.is_some() {
+            vec![
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+        } else {
+            vec![Constraint::Min(0), Constraint::Length(1)]
+        };
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .constraints(constraints)
             .split(area);
 
         // Layout: left panel (list) and right panel (preview)
@@ -849,7 +858,11 @@ impl HomeView {
 
         self.render_list(frame, chunks[0], theme);
         self.render_preview(frame, chunks[1], theme);
-        self.render_status_bar(frame, main_chunks[1], theme, update_info);
+        self.render_status_bar(frame, main_chunks[1], theme);
+
+        if let Some(info) = update_info {
+            self.render_update_bar(frame, main_chunks[2], theme, info);
+        }
 
         // Render dialogs on top
         if self.show_help {
@@ -1063,18 +1076,12 @@ impl HomeView {
         }
     }
 
-    fn render_status_bar(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        theme: &Theme,
-        update_info: Option<&UpdateInfo>,
-    ) {
+    fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
 
-        let mut spans = vec![
+        let spans = vec![
             Span::styled(" j/k", key_style),
             Span::styled(" Navigate ", desc_style),
             Span::styled("│", sep_style),
@@ -1100,16 +1107,19 @@ impl HomeView {
             Span::styled(" Quit", desc_style),
         ];
 
-        if update_info.is_some() {
-            let update_style = Style::default().fg(theme.waiting).bold();
-            spans.push(Span::styled(
-                "  Update available: brew update && brew upgrade aoe ",
-                update_style,
-            ));
-        }
-
         let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
         frame.render_widget(status, area);
+    }
+
+    fn render_update_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme, info: &UpdateInfo) {
+        let update_style = Style::default().fg(theme.waiting).bold();
+        let text = format!(
+            " update available {} -> {}",
+            info.current_version, info.latest_version
+        );
+        let bar = Paragraph::new(Line::from(Span::styled(text, update_style)))
+            .style(Style::default().bg(theme.selection));
+        frame.render_widget(bar, area);
     }
 }
 
