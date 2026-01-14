@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::session::Instance;
+use crate::session::{Instance, Status};
 use crate::tui::styles::Theme;
 
 pub struct Preview;
@@ -62,6 +62,7 @@ impl Preview {
                         crate::session::Status::Idle => theme.idle,
                         crate::session::Status::Error => theme.error,
                         crate::session::Status::Starting => theme.dimmed,
+                        crate::session::Status::Pulling => theme.waiting,
                     }),
                 ),
             ]),
@@ -135,6 +136,25 @@ impl Preview {
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
+
+        if instance.status == Status::Pulling {
+            if let Some(msg) = &instance.last_error {
+                let lines: Vec<Line> = vec![
+                    Line::from(Span::styled(
+                        "Status:",
+                        Style::default().fg(theme.waiting).bold(),
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        msg.as_str(),
+                        Style::default().fg(theme.waiting),
+                    )),
+                ];
+                let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+                frame.render_widget(paragraph, inner);
+                return;
+            }
+        }
 
         if let Some(error) = &instance.last_error {
             let error_lines: Vec<Line> = vec![

@@ -4,6 +4,7 @@ mod app;
 mod components;
 mod dialogs;
 mod home;
+mod image_puller;
 mod status_poller;
 mod styles;
 

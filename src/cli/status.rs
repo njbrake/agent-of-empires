@@ -105,7 +105,7 @@ fn count_by_status(instances: &[crate::session::Instance]) -> StatusCounts {
     for inst in instances {
         match inst.status {
             Status::Running => counts.running += 1,
-            Status::Waiting => counts.waiting += 1,
+            Status::Waiting | Status::Pulling => counts.waiting += 1,
             Status::Idle => counts.idle += 1,
             Status::Error => counts.error += 1,
             Status::Starting => counts.idle += 1,

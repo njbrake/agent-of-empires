@@ -23,6 +23,7 @@ pub enum Status {
     Idle,
     Error,
     Starting,
+    Pulling,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +206,10 @@ impl Instance {
             return Ok(());
         }
 
+        if !docker::image_exists_locally(image) {
+            anyhow::bail!("Image not available locally: {}", image);
+        }
+
         docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
         docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
 
@@ -351,8 +356,24 @@ impl Instance {
         };
 
         if !session.exists() {
-            self.status = Status::Error;
-            self.last_error_check = Some(std::time::Instant::now());
+            if self.is_sandboxed() {
+                // If container exists but tmux doesn't, the command failed
+                let sandbox = self.sandbox_info.as_ref().unwrap();
+                let image = sandbox
+                    .image
+                    .as_deref()
+                    .unwrap_or(docker::default_sandbox_image());
+                let container = DockerContainer::new(&self.id, image);
+                if container.exists().unwrap_or(false) {
+                    self.status = Status::Error;
+                    self.last_error_check = Some(std::time::Instant::now());
+                } else {
+                    self.status = Status::Idle;
+                }
+            } else {
+                self.status = Status::Error;
+                self.last_error_check = Some(std::time::Instant::now());
+            }
             return;
         }
 

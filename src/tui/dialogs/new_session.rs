@@ -44,7 +44,7 @@ const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Image",
-        description: "Docker image. Edit config.toml [sandbox] default_image to change default",
+        description: "Docker image for sandbox container",
     },
 ];
 
@@ -135,6 +135,60 @@ impl NewSessionDialog {
         self.error_message = Some(error);
     }
 
+    fn has_tool_selection(&self) -> bool {
+        self.available_tools.len() > 1
+    }
+
+    fn tool_field_index(&self) -> usize {
+        if self.has_tool_selection() {
+            3
+        } else {
+            usize::MAX
+        }
+    }
+
+    fn worktree_field_index(&self) -> usize {
+        if self.has_tool_selection() {
+            4
+        } else {
+            3
+        }
+    }
+
+    fn sandbox_field_index(&self) -> usize {
+        if self.docker_available {
+            if self.has_tool_selection() {
+                5
+            } else {
+                4
+            }
+        } else {
+            usize::MAX
+        }
+    }
+
+    fn sandbox_image_field_index(&self) -> usize {
+        if self.docker_available && self.sandbox_enabled {
+            self.sandbox_field_index() + 1
+        } else {
+            usize::MAX
+        }
+    }
+
+    fn max_field_index(&self) -> usize {
+        let base = match (self.has_tool_selection(), self.docker_available) {
+            (true, true) => 6,
+            (true, false) => 5,
+            (false, true) => 5,
+            (false, false) => 4,
+        };
+        if self.docker_available && self.sandbox_enabled {
+            base + 1
+        } else {
+            base
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
         if self.show_help {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
@@ -143,30 +197,9 @@ impl NewSessionDialog {
             return DialogResult::Continue;
         }
 
-        let has_tool_selection = self.available_tools.len() > 1;
-        let has_sandbox = self.docker_available;
-        let base_max_field = match (has_tool_selection, has_sandbox) {
-            (true, true) => 6,
-            (true, false) => 5,
-            (false, true) => 5,
-            (false, false) => 4,
-        };
-        // Add 1 more field if sandbox is enabled (for image input)
-        let max_field = if has_sandbox && self.sandbox_enabled {
-            base_max_field + 1
-        } else {
-            base_max_field
-        };
-        let tool_field = if has_tool_selection { 3 } else { usize::MAX };
-        let sandbox_field = if has_sandbox {
-            if has_tool_selection {
-                5
-            } else {
-                4
-            }
-        } else {
-            usize::MAX
-        };
+        let max_field = self.max_field_index();
+        let tool_field = self.tool_field_index();
+        let sandbox_field = self.sandbox_field_index();
 
         match key.code {
             KeyCode::Char('?') => {
@@ -257,22 +290,8 @@ impl NewSessionDialog {
     }
 
     fn current_input_mut(&mut self) -> &mut Input {
-        let has_tool_selection = self.available_tools.len() > 1;
-        let worktree_field = if has_tool_selection { 4 } else { 3 };
-        let sandbox_field = if self.docker_available {
-            if has_tool_selection {
-                5
-            } else {
-                4
-            }
-        } else {
-            usize::MAX
-        };
-        let sandbox_image_field = if self.docker_available && self.sandbox_enabled {
-            sandbox_field + 1
-        } else {
-            usize::MAX
-        };
+        let worktree_field = self.worktree_field_index();
+        let sandbox_image_field = self.sandbox_image_field_index();
 
         match self.focused_field {
             0 => &mut self.title,
@@ -376,7 +395,7 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(line), chunks[idx]);
         }
 
-        let is_tool_focused = self.focused_field == 3;
+        let is_tool_focused = self.focused_field == self.tool_field_index();
         let tool_style = if is_tool_focused && has_tool_selection {
             Style::default().fg(theme.accent).underlined()
         } else {
@@ -418,9 +437,7 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(tool_line), chunks[3]);
         }
 
-        let worktree_field = if has_tool_selection { 4 } else { 3 };
-
-        let is_wt_focused = self.focused_field == worktree_field;
+        let is_wt_focused = self.focused_field == self.worktree_field_index();
         let wt_label_style = if is_wt_focused {
             Style::default().fg(theme.accent).underlined()
         } else {
@@ -449,8 +466,7 @@ impl NewSessionDialog {
         frame.render_widget(Paragraph::new(wt_line), chunks[4]);
 
         let hint_chunk = if has_sandbox {
-            let sandbox_field = if has_tool_selection { 5 } else { 4 };
-            let is_sandbox_focused = self.focused_field == sandbox_field;
+            let is_sandbox_focused = self.focused_field == self.sandbox_field_index();
             let sandbox_label_style = if is_sandbox_focused {
                 Style::default().fg(theme.accent).underlined()
             } else {
@@ -481,8 +497,7 @@ impl NewSessionDialog {
 
             // Render sandbox image field if sandbox is enabled
             if sandbox_image_visible {
-                let sandbox_image_field = sandbox_field + 1;
-                let is_image_focused = self.focused_field == sandbox_image_field;
+                let is_image_focused = self.focused_field == self.sandbox_image_field_index();
                 let image_label_style = if is_image_focused {
                     Style::default().fg(theme.accent).underlined()
                 } else {

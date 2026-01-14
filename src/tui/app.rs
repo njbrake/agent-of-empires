@@ -116,6 +116,11 @@ impl App {
                 refresh_needed = true;
             }
 
+            // Check for image pull completion
+            if let Some((_session_id, _success)) = self.home.check_pull_completion() {
+                refresh_needed = true;
+            }
+
             // Periodic disk refresh to sync with other instances
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;
@@ -185,8 +190,20 @@ impl App {
         if !tmux_session.exists() {
             let mut inst = instance.clone();
             if let Err(e) = inst.start() {
-                self.home
-                    .set_instance_error(session_id, Some(e.to_string()));
+                let error_str = e.to_string();
+                if error_str.contains("Docker image not found")
+                    || error_str.contains("Image not available locally")
+                {
+                    if let Some(sandbox) = &instance.sandbox_info {
+                        let image = sandbox
+                            .image
+                            .as_deref()
+                            .unwrap_or(crate::docker::default_sandbox_image());
+                        self.home.start_image_pull(session_id, image);
+                        return Ok(());
+                    }
+                }
+                self.home.set_instance_error(session_id, Some(error_str));
                 return Ok(());
             }
             self.home.set_instance_error(session_id, None);

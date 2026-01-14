@@ -9,6 +9,7 @@ use std::time::Instant;
 use super::app::Action;
 use super::components::{HelpOverlay, Preview};
 use super::dialogs::{ConfirmDialog, NewSessionDialog, RenameDialog};
+use super::image_puller::ImagePuller;
 use super::status_poller::StatusPoller;
 use super::styles::Theme;
 use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Status, Storage};
@@ -65,6 +66,9 @@ pub struct HomeView {
     status_poller: StatusPoller,
     pending_status_refresh: bool,
 
+    // Background Docker image pulling
+    image_puller: ImagePuller,
+
     // Performance: preview caching
     preview_cache: PreviewCache,
 }
@@ -104,6 +108,7 @@ impl HomeView {
             available_tools,
             status_poller: StatusPoller::new(),
             pending_status_refresh: false,
+            image_puller: ImagePuller::new(),
             preview_cache: PreviewCache::default(),
         };
 
@@ -158,6 +163,16 @@ impl HomeView {
     pub fn apply_status_updates(&mut self) -> bool {
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
+                let current_instance = self.instance_map.get(&update.id);
+
+                // Skip updates for sessions that are currently pulling an image
+                let is_pulling = current_instance
+                    .map(|i| i.status == Status::Pulling)
+                    .unwrap_or(false);
+                if is_pulling {
+                    continue;
+                }
+
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
                     inst.status = update.status;
                     inst.last_error = update.last_error.clone();
@@ -196,6 +211,38 @@ impl HomeView {
         }
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
             inst.last_error = error;
+        }
+    }
+
+    pub fn set_instance_status(&mut self, id: &str, status: Status) {
+        if let Some(inst) = self.instance_map.get_mut(id) {
+            inst.status = status;
+        }
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            inst.status = status;
+        }
+    }
+
+    pub fn start_image_pull(&mut self, session_id: &str, image: &str) {
+        self.set_instance_status(session_id, Status::Pulling);
+        self.set_instance_error(session_id, Some(format!("Pulling image: {}", image)));
+        self.image_puller
+            .request_pull(session_id.to_string(), image.to_string());
+    }
+
+    pub fn check_pull_completion(&mut self) -> Option<(String, bool)> {
+        if let Some(result) = self.image_puller.try_recv_result() {
+            if result.success {
+                self.set_instance_status(&result.session_id, Status::Idle);
+                self.set_instance_error(&result.session_id, None);
+                Some((result.session_id, true))
+            } else {
+                self.set_instance_status(&result.session_id, Status::Error);
+                self.set_instance_error(&result.session_id, result.error);
+                Some((result.session_id, false))
+            }
+        } else {
+            None
         }
     }
 
@@ -862,6 +909,7 @@ impl HomeView {
                         Status::Idle => "○",
                         Status::Error => "✕",
                         Status::Starting => "◌",
+                        Status::Pulling => "⟳",
                     };
                     let color = match inst.status {
                         Status::Running => theme.running,
@@ -869,6 +917,7 @@ impl HomeView {
                         Status::Idle => theme.idle,
                         Status::Error => theme.error,
                         Status::Starting => theme.dimmed,
+                        Status::Pulling => theme.waiting,
                     };
                     let style = Style::default().fg(color);
                     (icon, inst.title.clone(), style)

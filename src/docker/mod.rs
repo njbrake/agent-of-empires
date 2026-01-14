@@ -75,3 +75,11 @@ pub fn ensure_named_volume(name: &str) -> Result<()> {
 pub fn default_sandbox_image() -> &'static str {
     "ghcr.io/njbrake/aoe-sandbox:latest"
 }
+
+pub fn image_exists_locally(image: &str) -> bool {
+    Command::new("docker")
+        .args(["image", "inspect", image])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
