@@ -137,6 +137,14 @@ AGENT_OF_EMPIRES_DEBUG=1 cargo run
 cargo build --release
 ```
 
+## FAQ
+
+### What happens when I close aoe?
+
+Nothing! Your sessions keep running. Since aoe is just a frontend for tmux, all your agent sessions are actually tmux sessions running independently in the background. You can freely open and close aoe as often as you like—your sessions will still be there when you come back.
+
+Sessions are never deleted automatically. They only get removed when you explicitly delete them (either through aoe's interface or with tmux commands like `tmux kill-session`).
+
 ## Troubleshooting
 
 ### Using aoe with mobile SSH clients (Termius, Blink, etc.)
