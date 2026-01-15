@@ -392,28 +392,18 @@ impl HomeView {
                 if let Some(session_id) = &self.selected_session {
                     if let Some(inst) = self.instance_map.get(session_id) {
                         // Check for worktree that would be managed
-                        let worktree_info = inst
+                        let worktree_branch = inst
                             .worktree_info
                             .as_ref()
                             .filter(|wt| wt.managed_by_aoe)
-                            .map(|wt| (wt.branch.clone(), inst.project_path.clone()));
+                            .map(|wt| wt.branch.clone());
 
-                        // Check for enabled sandbox
-                        let container_name = inst
-                            .sandbox_info
-                            .as_ref()
-                            .filter(|s| s.enabled)
-                            .map(|s| s.container_name.clone());
-
-                        if worktree_info.is_some() || container_name.is_some() {
-                            // Show options dialog when there are resources to manage
-                            self.delete_options_dialog = Some(DeleteOptionsDialog::new(
-                                inst.title.clone(),
-                                worktree_info,
-                                container_name,
-                            ));
+                        if let Some(branch) = worktree_branch {
+                            // Show options dialog when there's a managed worktree
+                            self.delete_options_dialog =
+                                Some(DeleteOptionsDialog::new(inst.title.clone(), branch));
                         } else {
-                            // Simple confirmation for sessions without managed resources
+                            // Simple confirmation for sessions without managed worktree
                             self.confirm_dialog = Some(ConfirmDialog::new(
                                 "Delete Session",
                                 "Are you sure you want to delete this session?",
@@ -752,19 +742,6 @@ impl HomeView {
 
                             if let Ok(git_wt) = GitWorktree::new(main_repo) {
                                 let _ = git_wt.remove_worktree(&worktree_path);
-                            }
-                        }
-                    }
-                }
-
-                // Handle container cleanup if user opted to delete it
-                if options.delete_container {
-                    if let Some(sandbox) = &inst.sandbox_info {
-                        if sandbox.enabled {
-                            let container =
-                                crate::docker::DockerContainer::from_session_id(&inst.id);
-                            if container.exists().unwrap_or(false) {
-                                let _ = container.remove(true);
                             }
                         }
                     }
