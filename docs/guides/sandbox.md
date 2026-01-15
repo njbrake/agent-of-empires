@@ -114,9 +114,38 @@ environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
 
 These variables are read from your host environment and passed to containers.
 
+## Available Images
+
+AOE provides two official sandbox images:
+
+| Image | Description |
+|-------|-------------|
+| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, git, ripgrep, fzf |
+| `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
+
+### Dev Sandbox Tools
+
+The dev sandbox (`aoe-dev-sandbox`) includes everything in the base image plus:
+
+- **Rust** (rustup, cargo, rustc)
+- **uv** (fast Python package manager)
+- **Node.js LTS** (via nvm, with npm and npx)
+- **GitHub CLI** (gh)
+
+To use the dev sandbox:
+
+```bash
+# Per-session
+aoe add --sandbox-image ghcr.io/njbrake/aoe-dev-sandbox:latest .
+
+# Or set as default in ~/.agent-of-empires/config.toml
+[sandbox]
+default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
+```
+
 ## Custom Docker Images
 
-The default sandbox image includes Claude Code, OpenCode, Node.js, git, and basic development tools. For projects requiring additional dependencies (Python, Rust, Go, databases, etc.), you can extend the base image.
+The default sandbox image includes Claude Code, OpenCode, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
 
 ### Step 1: Create a Dockerfile
 

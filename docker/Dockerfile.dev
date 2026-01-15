@@ -1,0 +1,38 @@
+# aoe-dev-sandbox: Extended sandbox with development tools
+# Includes: Rust, uv (Python), nvm + Node.js, gh (GitHub CLI)
+
+FROM ghcr.io/njbrake/aoe-sandbox:latest
+
+USER root
+
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+USER sandbox
+WORKDIR /home/sandbox
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/home/sandbox/.local/bin:${PATH}"
+
+ENV NVM_DIR="/home/sandbox/.nvm"
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash \
+    && . "$NVM_DIR/nvm.sh" \
+    && nvm install --lts \
+    && nvm alias default node \
+    && ln -s "$(which node)" /home/sandbox/.local/bin/node \
+    && ln -s "$(which npm)" /home/sandbox/.local/bin/npm \
+    && ln -s "$(which npx)" /home/sandbox/.local/bin/npx
+
+RUN echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc \
+    && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc
+
+WORKDIR /workspace
