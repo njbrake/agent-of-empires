@@ -3,7 +3,6 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
-use crate::docker::DockerContainer;
 use crate::session::{GroupTree, Instance, Storage};
 
 #[derive(Args)]
@@ -11,25 +10,15 @@ pub struct RemoveArgs {
     /// Session ID or title to remove
     identifier: String,
 
-    /// Keep worktree directory (don't delete it)
-    #[arg(short = 'k', long = "keep-worktree")]
-    keep_worktree: bool,
-
-    /// Keep Docker container (don't remove it)
-    #[arg(long = "keep-container")]
-    keep_container: bool,
+    /// Delete worktree directory (default: keep worktree)
+    #[arg(long = "delete-worktree")]
+    delete_worktree: bool,
 }
 
-fn needs_cleanup_confirmation(inst: &Instance, args: &RemoveArgs) -> (bool, bool) {
-    let will_cleanup_worktree = inst
-        .worktree_info
+fn needs_worktree_cleanup(inst: &Instance, args: &RemoveArgs) -> bool {
+    inst.worktree_info
         .as_ref()
-        .is_some_and(|wt| wt.managed_by_aoe && wt.cleanup_on_delete && !args.keep_worktree);
-    let will_cleanup_container = inst
-        .sandbox_info
-        .as_ref()
-        .is_some_and(|s| s.enabled && !args.keep_container);
-    (will_cleanup_worktree, will_cleanup_container)
+        .is_some_and(|wt| wt.managed_by_aoe && args.delete_worktree)
 }
 
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
@@ -48,25 +37,18 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
             found = true;
             removed_title = inst.title.clone();
 
-            let (will_cleanup_worktree, will_cleanup_container) =
-                needs_cleanup_confirmation(&inst, &args);
+            let will_cleanup_worktree = needs_worktree_cleanup(&inst, &args);
 
-            // Show combined warning and get confirmation
-            let user_confirmed = if will_cleanup_worktree || will_cleanup_container {
+            // Show warning and get confirmation for worktree deletion
+            let user_confirmed = if will_cleanup_worktree {
                 use std::io::{self, Write};
 
+                let wt_info = inst.worktree_info.as_ref().unwrap();
                 println!("\nThis will delete:");
-                if will_cleanup_worktree {
-                    let wt_info = inst.worktree_info.as_ref().unwrap();
-                    println!(
-                        "  - Worktree: {} (branch: {})",
-                        inst.project_path, wt_info.branch
-                    );
-                }
-                if will_cleanup_container {
-                    let sandbox = inst.sandbox_info.as_ref().unwrap();
-                    println!("  - Docker container: {}", sandbox.container_name);
-                }
+                println!(
+                    "  - Worktree: {} (branch: {})",
+                    inst.project_path, wt_info.branch
+                );
                 print!("\nProceed? (Y/n): ");
                 io::stdout().flush()?;
 
@@ -108,33 +90,13 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                 } else {
                     println!("Worktree preserved at: {}", inst.project_path);
                 }
-            }
-
-            // Handle container cleanup
-            if will_cleanup_container {
-                if user_confirmed {
-                    let sandbox = inst.sandbox_info.as_ref().unwrap();
-                    let container = DockerContainer::from_session_id(&inst.id);
-
-                    if container.exists().unwrap_or(false) {
-                        match container.remove(true) {
-                            Ok(_) => println!("✓ Container removed"),
-                            Err(e) => {
-                                eprintln!("Warning: failed to remove container: {}", e);
-                                eprintln!(
-                                    "   You can remove it manually with: docker rm -f {}",
-                                    sandbox.container_name
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    let sandbox = inst.sandbox_info.as_ref().unwrap();
-                    println!("Container preserved: {}", sandbox.container_name);
-                }
-            } else if let Some(sandbox) = &inst.sandbox_info {
-                if sandbox.enabled && args.keep_container {
-                    println!("Container preserved: {}", sandbox.container_name);
+            } else if let Some(wt_info) = &inst.worktree_info {
+                // Worktree exists but not scheduled for deletion (user didn't use --delete-worktree)
+                if wt_info.managed_by_aoe {
+                    println!(
+                        "Worktree preserved at: {} (use --delete-worktree to remove)",
+                        inst.project_path
+                    );
                 }
             }
 

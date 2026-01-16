@@ -136,7 +136,17 @@ impl Session {
                 .status()?;
 
             if !status.success() {
-                bail!("Failed to switch to tmux session");
+                // Fall back to attach-session if switch-client fails.
+                // This handles cases where TMUX env var is inherited but we're
+                // not actually inside a tmux client (e.g., terminal spawned
+                // from within tmux via `open -a Terminal`).
+                let status = Command::new("tmux")
+                    .args(["attach-session", "-t", &self.name])
+                    .status()?;
+
+                if !status.success() {
+                    bail!("Failed to attach to tmux session");
+                }
             }
         } else {
             let status = Command::new("tmux")
