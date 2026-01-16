@@ -9,7 +9,10 @@ use std::time::Instant;
 use super::app::Action;
 use super::components::{HelpOverlay, Preview};
 use super::deletion_poller::{DeletionPoller, DeletionRequest};
-use super::dialogs::{ConfirmDialog, NewSessionDialog, RenameDialog};
+use super::dialogs::{
+    ChangelogDialog, ConfirmDialog, DeleteOptions, DeleteOptionsDialog, NewSessionDialog,
+    RenameDialog, WelcomeDialog,
+};
 use super::status_poller::StatusPoller;
 use super::styles::Theme;
 use crate::session::{
@@ -80,7 +83,10 @@ pub struct HomeView {
     show_help: bool,
     new_dialog: Option<NewSessionDialog>,
     confirm_dialog: Option<ConfirmDialog>,
+    delete_options_dialog: Option<DeleteOptionsDialog>,
     rename_dialog: Option<RenameDialog>,
+    welcome_dialog: Option<WelcomeDialog>,
+    changelog_dialog: Option<ChangelogDialog>,
 
     // Search
     search_active: bool,
@@ -129,7 +135,10 @@ impl HomeView {
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
+            delete_options_dialog: None,
             rename_dialog: None,
+            welcome_dialog: None,
+            changelog_dialog: None,
             search_active: false,
             search_query: String::new(),
             filtered_items: None,
@@ -254,6 +263,16 @@ impl HomeView {
             || self.new_dialog.is_some()
             || self.confirm_dialog.is_some()
             || self.rename_dialog.is_some()
+            || self.welcome_dialog.is_some()
+            || self.changelog_dialog.is_some()
+    }
+
+    pub fn show_welcome(&mut self) {
+        self.welcome_dialog = Some(WelcomeDialog::new());
+    }
+
+    pub fn show_changelog(&mut self, from_version: Option<String>) {
+        self.changelog_dialog = Some(ChangelogDialog::new(from_version));
     }
 
     pub fn get_instance(&self, id: &str) -> Option<&Instance> {
@@ -285,7 +304,28 @@ impl HomeView {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
-        // Handle dialog input first
+        // Handle welcome/changelog dialogs first (highest priority)
+        if let Some(dialog) = &mut self.welcome_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
+                    self.welcome_dialog = None;
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.changelog_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
+                    self.changelog_dialog = None;
+                }
+            }
+            return None;
+        }
+
+        // Handle other dialog input
         if self.show_help {
             if matches!(
                 key.code,
@@ -333,13 +373,31 @@ impl HomeView {
                     let action = dialog.action().to_string();
                     self.confirm_dialog = None;
                     if action == "delete" {
-                        if let Err(e) = self.delete_selected() {
+                        // Simple delete without worktree/container options
+                        let options = DeleteOptions::default();
+                        if let Err(e) = self.delete_selected(&options) {
                             tracing::error!("Failed to delete session: {}", e);
                         }
                     } else if action == "delete_group" {
                         if let Err(e) = self.delete_selected_group() {
                             tracing::error!("Failed to delete group: {}", e);
                         }
+                    }
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.delete_options_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel => {
+                    self.delete_options_dialog = None;
+                }
+                super::dialogs::DialogResult::Submit(options) => {
+                    self.delete_options_dialog = None;
+                    if let Err(e) = self.delete_selected(&options) {
+                        tracing::error!("Failed to delete session: {}", e);
                     }
                 }
             }
@@ -415,65 +473,32 @@ impl HomeView {
                         if inst.status == Status::Deleting {
                             return None;
                         }
-                    }
-                    let (title, message) = if let Some(inst) = self.instance_map.get(session_id) {
-                        let has_worktree = inst
+                        // Check for worktree that would be managed
+                        let worktree_branch = inst
                             .worktree_info
                             .as_ref()
-                            .is_some_and(|wt| wt.managed_by_aoe && wt.cleanup_on_delete);
-                        let has_sandbox = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+                            .filter(|wt| wt.managed_by_aoe)
+                            .map(|wt| wt.branch.clone());
 
-                        match (has_worktree, has_sandbox) {
-                            (true, true) => {
-                                let wt_info = inst.worktree_info.as_ref().unwrap();
-                                let sandbox = inst.sandbox_info.as_ref().unwrap();
-                                (
-                                    "Delete Session, Worktree & Container",
-                                    format!(
-                                        "WARNING: This will permanently delete:\n\n\
-                                        Worktree: {}\n\
-                                        Branch: {}\n\n\
-                                        Docker container: {}",
-                                        inst.project_path, wt_info.branch, sandbox.container_name
-                                    ),
-                                )
-                            }
-                            (true, false) => {
-                                let wt_info = inst.worktree_info.as_ref().unwrap();
-                                (
-                                    "Delete Session & Worktree",
-                                    format!(
-                                        "WARNING: This will permanently delete the worktree directory and all its contents!\n\n\
-                                        Path: {}\n\
-                                        Branch: {}",
-                                        inst.project_path, wt_info.branch
-                                    ),
-                                )
-                            }
-                            (false, true) => {
-                                let sandbox = inst.sandbox_info.as_ref().unwrap();
-                                (
-                                    "Delete Session & Container",
-                                    format!(
-                                        "WARNING: This will remove the Docker container:\n\n\
-                                        Container: {}",
-                                        sandbox.container_name
-                                    ),
-                                )
-                            }
-                            (false, false) => (
+                        if let Some(branch) = worktree_branch {
+                            // Show options dialog when there's a managed worktree
+                            self.delete_options_dialog =
+                                Some(DeleteOptionsDialog::new(inst.title.clone(), branch));
+                        } else {
+                            // Simple confirmation for sessions without managed worktree
+                            self.confirm_dialog = Some(ConfirmDialog::new(
                                 "Delete Session",
-                                "Are you sure you want to delete this session?".to_string(),
-                            ),
+                                "Are you sure you want to delete this session?",
+                                "delete",
+                            ));
                         }
                     } else {
-                        (
+                        self.confirm_dialog = Some(ConfirmDialog::new(
                             "Delete Session",
-                            "Are you sure you want to delete this session?".to_string(),
-                        )
-                    };
-
-                    self.confirm_dialog = Some(ConfirmDialog::new(title, &message, "delete"));
+                            "Are you sure you want to delete this session?",
+                            "delete",
+                        ));
+                    }
                 } else if let Some(group_path) = &self.selected_group {
                     let session_count = self
                         .instances
@@ -789,7 +814,7 @@ impl HomeView {
         Ok(session_id)
     }
 
-    fn delete_selected(&mut self) -> anyhow::Result<()> {
+    fn delete_selected(&mut self, options: &DeleteOptions) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 
@@ -804,6 +829,7 @@ impl HomeView {
                 let request = DeletionRequest {
                     session_id: id.clone(),
                     instance: inst.clone(),
+                    delete_worktree: options.delete_worktree,
                 };
                 self.deletion_poller.request_deletion(request);
             }
@@ -910,7 +936,19 @@ impl HomeView {
             dialog.render(frame, area, theme);
         }
 
+        if let Some(dialog) = &self.delete_options_dialog {
+            dialog.render(frame, area, theme);
+        }
+
         if let Some(dialog) = &self.rename_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.welcome_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.changelog_dialog {
             dialog.render(frame, area, theme);
         }
     }

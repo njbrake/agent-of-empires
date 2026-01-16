@@ -1,15 +1,17 @@
 //! Update check functionality
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tracing::warn;
 
 use crate::session::{get_app_dir, get_update_settings};
 
-const GITHUB_API_URL: &str =
+const GITHUB_API_LATEST: &str =
     "https://api.github.com/repos/njbrake/agent-of-empires/releases/latest";
+const GITHUB_API_RELEASES: &str =
+    "https://api.github.com/repos/njbrake/agent-of-empires/releases?per_page=20";
 
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
@@ -18,15 +20,27 @@ pub struct UpdateInfo {
     pub latest_version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    pub version: String,
+    pub body: String,
+    pub published_at: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+    #[serde(default)]
+    body: Option<String>,
+    published_at: Option<String>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct UpdateCache {
     checked_at: chrono::DateTime<chrono::Utc>,
     latest_version: String,
+    #[serde(default)]
+    releases: Vec<ReleaseInfo>,
 }
 
 fn cache_path() -> Result<PathBuf> {
@@ -69,18 +83,43 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         .user_agent("agent-of-empires")
         .build()?;
 
-    let response = client.get(GITHUB_API_URL).send().await?;
+    // Fetch all releases (includes body/release notes)
+    let releases = fetch_releases(&client).await.unwrap_or_default();
 
-    if !response.status().is_success() {
-        anyhow::bail!("Failed to check for updates: HTTP {}", response.status());
+    let latest_version = releases
+        .first()
+        .map(|r| r.version.clone())
+        .unwrap_or_default();
+
+    if latest_version.is_empty() {
+        // Fall back to latest endpoint if releases fetch failed
+        let response = client.get(GITHUB_API_LATEST).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to check for updates: HTTP {}", response.status());
+        }
+        let release: GitHubRelease = response.json().await?;
+        let version = release.tag_name.trim_start_matches('v').to_string();
+
+        let cache = UpdateCache {
+            checked_at: chrono::Utc::now(),
+            latest_version: version.clone(),
+            releases: vec![],
+        };
+        if let Err(e) = save_cache(&cache) {
+            warn!("Failed to save update cache: {}", e);
+        }
+
+        return Ok(UpdateInfo {
+            available: is_newer_version(&version, current_version),
+            current_version: current_version.to_string(),
+            latest_version: version,
+        });
     }
-
-    let release: GitHubRelease = response.json().await?;
-    let latest_version = release.tag_name.trim_start_matches('v').to_string();
 
     let cache = UpdateCache {
         checked_at: chrono::Utc::now(),
         latest_version: latest_version.clone(),
+        releases,
     };
     if let Err(e) = save_cache(&cache) {
         warn!("Failed to save update cache: {}", e);
@@ -93,6 +132,45 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         current_version: current_version.to_string(),
         latest_version,
     })
+}
+
+async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<ReleaseInfo>> {
+    let response = client.get(GITHUB_API_RELEASES).send().await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to fetch releases: HTTP {}", response.status());
+    }
+
+    let github_releases: Vec<GitHubRelease> = response.json().await?;
+
+    let releases = github_releases
+        .into_iter()
+        .map(|r| ReleaseInfo {
+            version: r.tag_name.trim_start_matches('v').to_string(),
+            body: r.body.unwrap_or_default(),
+            published_at: r.published_at,
+        })
+        .collect();
+
+    Ok(releases)
+}
+
+/// Get cached release notes, filtered to show only releases newer than from_version.
+/// Returns releases in newest-first order.
+pub fn get_cached_releases(from_version: Option<&str>) -> Vec<ReleaseInfo> {
+    let cache = match load_cache() {
+        Some(c) => c,
+        None => return vec![],
+    };
+
+    match from_version {
+        Some(from) => cache
+            .releases
+            .into_iter()
+            .take_while(|r| r.version != from)
+            .collect(),
+        None => cache.releases,
+    }
 }
 
 fn is_newer_version(latest: &str, current: &str) -> bool {

@@ -11,6 +11,7 @@ use crate::session::Instance;
 pub struct DeletionRequest {
     pub session_id: String,
     pub instance: Instance,
+    pub delete_worktree: bool,
 }
 
 #[derive(Debug)]
@@ -57,15 +58,17 @@ impl DeletionPoller {
     fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         let mut errors = Vec::new();
 
-        // Worktree cleanup
-        if let Some(wt_info) = &request.instance.worktree_info {
-            if wt_info.managed_by_aoe && wt_info.cleanup_on_delete {
-                let worktree_path = PathBuf::from(&request.instance.project_path);
-                let main_repo = PathBuf::from(&wt_info.main_repo_path);
+        // Worktree cleanup (if user opted to delete it)
+        if request.delete_worktree {
+            if let Some(wt_info) = &request.instance.worktree_info {
+                if wt_info.managed_by_aoe {
+                    let worktree_path = PathBuf::from(&request.instance.project_path);
+                    let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
-                if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                    if let Err(e) = git_wt.remove_worktree(&worktree_path) {
-                        errors.push(format!("Worktree: {}", e));
+                    if let Ok(git_wt) = GitWorktree::new(main_repo) {
+                        if let Err(e) = git_wt.remove_worktree(&worktree_path) {
+                            errors.push(format!("Worktree: {}", e));
+                        }
                     }
                 }
             }

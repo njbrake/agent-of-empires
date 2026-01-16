@@ -26,6 +26,18 @@ pub struct Config {
 
     #[serde(default)]
     pub sandbox: SandboxConfig,
+
+    #[serde(default)]
+    pub app_state: AppStateConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AppStateConfig {
+    #[serde(default)]
+    pub has_seen_welcome: bool,
+
+    #[serde(default)]
+    pub last_seen_version: Option<String>,
 }
 
 fn default_profile() -> String {

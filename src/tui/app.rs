@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::home::HomeView;
 use super::styles::Theme;
-use crate::session::{get_update_settings, Storage};
+use crate::session::{get_update_settings, load_config, save_config, Storage};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
@@ -23,8 +23,23 @@ pub struct App {
 impl App {
     pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
         let storage = Storage::new(profile)?;
-        let home = HomeView::new(storage, available_tools)?;
+        let mut home = HomeView::new(storage, available_tools)?;
         let theme = Theme::default();
+
+        // Check if we need to show welcome or changelog dialogs
+        let mut config = load_config()?.unwrap_or_default();
+        let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+        if !config.app_state.has_seen_welcome {
+            home.show_welcome();
+            config.app_state.has_seen_welcome = true;
+            config.app_state.last_seen_version = Some(current_version);
+            save_config(&config)?;
+        } else if config.app_state.last_seen_version.as_deref() != Some(&current_version) {
+            home.show_changelog(config.app_state.last_seen_version.clone());
+            config.app_state.last_seen_version = Some(current_version);
+            save_config(&config)?;
+        }
 
         Ok(Self {
             home,
