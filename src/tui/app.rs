@@ -104,6 +104,11 @@ impl App {
                 refresh_needed = true;
             }
 
+            // Check for and apply deletion results (non-blocking)
+            if self.home.apply_deletion_results() {
+                refresh_needed = true;
+            }
+
             // Periodic disk refresh to sync with other instances
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;

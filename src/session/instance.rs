@@ -23,6 +23,7 @@ pub enum Status {
     Idle,
     Error,
     Starting,
+    Deleting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
