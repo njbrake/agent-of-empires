@@ -3,7 +3,7 @@
 mod app;
 mod components;
 mod deletion_poller;
-mod dialogs;
+pub mod dialogs;
 mod home;
 mod status_poller;
 mod styles;

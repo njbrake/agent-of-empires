@@ -3,7 +3,8 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
-use crate::session::{GroupTree, Instance, Storage};
+use crate::docker::DockerContainer;
+use crate::session::{Config, GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -13,6 +14,10 @@ pub struct RemoveArgs {
     /// Delete worktree directory (default: keep worktree)
     #[arg(long = "delete-worktree")]
     delete_worktree: bool,
+
+    /// Keep container instead of deleting it (default: delete per config)
+    #[arg(long = "keep-container")]
+    keep_container: bool,
 }
 
 fn needs_worktree_cleanup(inst: &Instance, args: &RemoveArgs) -> bool {
@@ -109,6 +114,30 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                             "Session removed from Agent of Empires but may still be running in tmux"
                         );
                     }
+                }
+            }
+
+            // Container cleanup (if config allows and user didn't request --keep-container)
+            if let Some(sandbox) = &inst.sandbox_info {
+                if sandbox.enabled && !args.keep_container {
+                    let config = Config::load().ok().unwrap_or_default();
+                    if config.sandbox.auto_cleanup {
+                        let container = DockerContainer::from_session_id(&inst.id);
+                        if container.exists().unwrap_or(false) {
+                            if let Err(e) = container.remove(true) {
+                                eprintln!("Warning: failed to remove container: {}", e);
+                            } else {
+                                println!("✓ Container removed");
+                            }
+                        }
+                    } else {
+                        println!(
+                            "Container preserved: {} (auto_cleanup disabled in config)",
+                            sandbox.container_name
+                        );
+                    }
+                } else if args.keep_container {
+                    println!("Container preserved: {}", sandbox.container_name);
                 }
             }
         } else {

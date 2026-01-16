@@ -41,6 +41,8 @@ pub struct UnifiedDeleteDialog {
 
 impl UnifiedDeleteDialog {
     pub fn new(session_title: String, config: DeleteDialogConfig) -> Self {
+        let user_config = crate::session::Config::load().ok().unwrap_or_default();
+
         let mut focusable_elements = Vec::new();
 
         if config.worktree_branch.is_some() {
@@ -61,13 +63,22 @@ impl UnifiedDeleteDialog {
             FocusElement::NoButton
         };
 
+        let options = DeleteOptions {
+            delete_worktree: config.worktree_branch.is_some() && user_config.worktree.auto_cleanup,
+            delete_sandbox: config.has_sandbox && user_config.sandbox.auto_cleanup,
+        };
+
         Self {
             session_title,
             config,
-            options: DeleteOptions::default(),
+            options,
             focus: initial_focus,
             focusable_elements,
         }
+    }
+
+    pub fn options(&self) -> &DeleteOptions {
+        &self.options
     }
 
     fn focus_index(&self) -> usize {
@@ -385,6 +396,19 @@ mod tests {
     }
 
     #[test]
+    fn test_full_dialog_respects_config_defaults() {
+        let dialog = full_dialog();
+        assert!(
+            dialog.options.delete_worktree,
+            "With default config (auto_cleanup: true), delete_worktree should be true"
+        );
+        assert!(
+            dialog.options.delete_sandbox,
+            "With default config (auto_cleanup: true), delete_sandbox should be true"
+        );
+    }
+
+    #[test]
     fn test_tab_cycles_through_elements() {
         let mut dialog = full_dialog();
         assert_eq!(dialog.focus, FocusElement::WorktreeCheckbox);
@@ -405,13 +429,13 @@ mod tests {
     #[test]
     fn test_space_toggles_checkbox() {
         let mut dialog = full_dialog();
-        assert!(!dialog.options.delete_worktree);
+        let initial = dialog.options.delete_worktree;
 
         dialog.handle_key(key(KeyCode::Char(' ')));
-        assert!(dialog.options.delete_worktree);
+        assert_eq!(dialog.options.delete_worktree, !initial);
 
         dialog.handle_key(key(KeyCode::Char(' ')));
-        assert!(!dialog.options.delete_worktree);
+        assert_eq!(dialog.options.delete_worktree, initial);
     }
 
     #[test]
