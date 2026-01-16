@@ -1,0 +1,415 @@
+//! Group delete options dialog
+
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::prelude::*;
+use ratatui::widgets::*;
+
+use super::DialogResult;
+use crate::tui::styles::Theme;
+
+#[derive(Clone, Debug, Default)]
+pub struct GroupDeleteOptions {
+    pub delete_sessions: bool,
+    pub delete_worktrees: bool,
+}
+
+pub struct GroupDeleteOptionsDialog {
+    group_path: String,
+    session_count: usize,
+    has_managed_worktrees: bool,
+    options: GroupDeleteOptions,
+    focused_field: usize,
+}
+
+impl GroupDeleteOptionsDialog {
+    pub fn new(group_path: String, session_count: usize, has_managed_worktrees: bool) -> Self {
+        Self {
+            group_path,
+            session_count,
+            has_managed_worktrees,
+            options: GroupDeleteOptions::default(),
+            focused_field: 0,
+        }
+    }
+
+    fn max_field(&self) -> usize {
+        if self.options.delete_sessions && self.has_managed_worktrees {
+            3 // move(0), delete(1), worktree checkbox(2)
+        } else {
+            2 // move(0), delete(1)
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<GroupDeleteOptions> {
+        match key.code {
+            KeyCode::Esc => DialogResult::Cancel,
+            KeyCode::Enter => DialogResult::Submit(self.options.clone()),
+            KeyCode::Tab => {
+                self.focused_field = (self.focused_field + 1) % self.max_field();
+                DialogResult::Continue
+            }
+            KeyCode::BackTab => {
+                let max = self.max_field();
+                self.focused_field = if self.focused_field == 0 {
+                    max - 1
+                } else {
+                    self.focused_field - 1
+                };
+                DialogResult::Continue
+            }
+            KeyCode::Char(' ') => {
+                match self.focused_field {
+                    0 => {
+                        self.options.delete_sessions = false;
+                        self.options.delete_worktrees = false;
+                    }
+                    1 => {
+                        self.options.delete_sessions = true;
+                    }
+                    2 if self.options.delete_sessions && self.has_managed_worktrees => {
+                        self.options.delete_worktrees = !self.options.delete_worktrees;
+                    }
+                    _ => {}
+                }
+                DialogResult::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let max = self.max_field();
+                self.focused_field = if self.focused_field == 0 {
+                    max - 1
+                } else {
+                    self.focused_field - 1
+                };
+                DialogResult::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.focused_field = (self.focused_field + 1) % self.max_field();
+                DialogResult::Continue
+            }
+            _ => DialogResult::Continue,
+        }
+    }
+
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let show_worktree_option = self.options.delete_sessions && self.has_managed_worktrees;
+        let dialog_width = 50;
+        let dialog_height = if show_worktree_option { 12 } else { 11 };
+
+        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+
+        let dialog_area = Rect {
+            x,
+            y,
+            width: dialog_width.min(area.width),
+            height: dialog_height.min(area.height),
+        };
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.error))
+            .title(" Delete Group ")
+            .title_style(Style::default().fg(theme.error).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let mut constraints = vec![
+            Constraint::Length(2), // Group info
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Move option
+            Constraint::Length(1), // Delete option
+        ];
+        if show_worktree_option {
+            constraints.push(Constraint::Length(1)); // Worktree checkbox
+        }
+        constraints.push(Constraint::Min(1)); // Hints
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints(constraints)
+            .split(inner);
+
+        // Group info
+        let session_word = if self.session_count == 1 {
+            "session"
+        } else {
+            "sessions"
+        };
+        let info_line = Line::from(vec![
+            Span::styled("Group: ", Style::default().fg(theme.text)),
+            Span::styled(
+                format!("\"{}\"", self.group_path),
+                Style::default().fg(theme.accent).bold(),
+            ),
+            Span::styled(
+                format!(" ({} {})", self.session_count, session_word),
+                Style::default().fg(theme.dimmed),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(info_line), chunks[0]);
+
+        // Move sessions option
+        let move_focused = self.focused_field == 0;
+        let move_selected = !self.options.delete_sessions;
+        let move_radio = if move_selected { "(•)" } else { "( )" };
+        let move_style = if move_focused {
+            Style::default().fg(theme.accent).underlined()
+        } else if move_selected {
+            Style::default().fg(theme.accent)
+        } else {
+            Style::default().fg(theme.dimmed)
+        };
+        let move_line = Line::from(vec![
+            Span::styled(move_radio, move_style),
+            Span::styled(" Move sessions to default group", move_style),
+        ]);
+        frame.render_widget(Paragraph::new(move_line), chunks[2]);
+
+        // Delete sessions option
+        let delete_focused = self.focused_field == 1;
+        let delete_selected = self.options.delete_sessions;
+        let delete_radio = if delete_selected { "(•)" } else { "( )" };
+        let delete_style = if delete_focused {
+            Style::default().fg(theme.error).underlined()
+        } else if delete_selected {
+            Style::default().fg(theme.error)
+        } else {
+            Style::default().fg(theme.dimmed)
+        };
+        let delete_line = Line::from(vec![
+            Span::styled(delete_radio, delete_style),
+            Span::styled(" Delete all sessions", delete_style),
+        ]);
+        frame.render_widget(Paragraph::new(delete_line), chunks[3]);
+
+        // Worktree checkbox (only shown when delete is selected and has managed worktrees)
+        let hint_chunk = if show_worktree_option {
+            let wt_focused = self.focused_field == 2;
+            let wt_checkbox = if self.options.delete_worktrees {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let wt_style = if wt_focused {
+                Style::default().fg(theme.error).underlined()
+            } else if self.options.delete_worktrees {
+                Style::default().fg(theme.error)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let wt_line = Line::from(vec![
+                Span::raw("    "),
+                Span::styled(wt_checkbox, wt_style),
+                Span::styled(" Also delete managed worktrees", wt_style),
+            ]);
+            frame.render_widget(Paragraph::new(wt_line), chunks[4]);
+            5
+        } else {
+            4
+        };
+
+        // Hints
+        let hints = Line::from(vec![
+            Span::styled("Tab", Style::default().fg(theme.hint)),
+            Span::raw(" next  "),
+            Span::styled("Space", Style::default().fg(theme.hint)),
+            Span::raw(" select  "),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::raw(" cancel"),
+        ]);
+        frame.render_widget(Paragraph::new(hints), chunks[hint_chunk]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn shift_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::SHIFT)
+    }
+
+    fn dialog() -> GroupDeleteOptionsDialog {
+        GroupDeleteOptionsDialog::new("work".to_string(), 3, false)
+    }
+
+    fn dialog_with_worktrees() -> GroupDeleteOptionsDialog {
+        GroupDeleteOptionsDialog::new("work".to_string(), 3, true)
+    }
+
+    #[test]
+    fn test_default_options() {
+        let options = GroupDeleteOptions::default();
+        assert!(!options.delete_sessions);
+        assert!(!options.delete_worktrees);
+    }
+
+    #[test]
+    fn test_esc_cancels() {
+        let mut dialog = dialog();
+        let result = dialog.handle_key(key(KeyCode::Esc));
+        assert!(matches!(result, DialogResult::Cancel));
+    }
+
+    #[test]
+    fn test_enter_confirms() {
+        let mut dialog = dialog();
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        assert!(matches!(result, DialogResult::Submit(_)));
+    }
+
+    #[test]
+    fn test_default_is_move() {
+        let mut dialog = dialog();
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(opts) => {
+                assert!(!opts.delete_sessions);
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_tab_cycles_fields() {
+        let mut dialog = dialog();
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 1);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 0);
+    }
+
+    #[test]
+    fn test_backtab_cycles_reverse() {
+        let mut dialog = dialog();
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(shift_key(KeyCode::BackTab));
+        assert_eq!(dialog.focused_field, 1);
+
+        dialog.handle_key(shift_key(KeyCode::BackTab));
+        assert_eq!(dialog.focused_field, 0);
+    }
+
+    #[test]
+    fn test_space_selects_delete() {
+        let mut dialog = dialog();
+        dialog.handle_key(key(KeyCode::Tab)); // Move to delete option
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(dialog.options.delete_sessions);
+    }
+
+    #[test]
+    fn test_space_selects_move() {
+        let mut dialog = dialog();
+        dialog.options.delete_sessions = true;
+        dialog.focused_field = 0;
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.delete_sessions);
+    }
+
+    #[test]
+    fn test_worktree_checkbox_appears_when_delete_selected() {
+        let mut dialog = dialog_with_worktrees();
+        assert_eq!(dialog.max_field(), 2); // No worktree option yet
+
+        dialog.options.delete_sessions = true;
+        assert_eq!(dialog.max_field(), 3); // Now worktree option is available
+    }
+
+    #[test]
+    fn test_worktree_checkbox_toggle() {
+        let mut dialog = dialog_with_worktrees();
+        dialog.options.delete_sessions = true;
+        dialog.focused_field = 2;
+        assert!(!dialog.options.delete_worktrees);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(dialog.options.delete_worktrees);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.delete_worktrees);
+    }
+
+    #[test]
+    fn test_tab_includes_worktree_when_delete_selected() {
+        let mut dialog = dialog_with_worktrees();
+        dialog.options.delete_sessions = true;
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 1);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 2);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 0);
+    }
+
+    #[test]
+    fn test_up_down_navigation() {
+        let mut dialog = dialog();
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(key(KeyCode::Down));
+        assert_eq!(dialog.focused_field, 1);
+
+        dialog.handle_key(key(KeyCode::Up));
+        assert_eq!(dialog.focused_field, 0);
+    }
+
+    #[test]
+    fn test_jk_navigation() {
+        let mut dialog = dialog();
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(dialog.focused_field, 1);
+
+        dialog.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(dialog.focused_field, 0);
+    }
+
+    #[test]
+    fn test_submit_with_delete_and_worktrees() {
+        let mut dialog = dialog_with_worktrees();
+        dialog.options.delete_sessions = true;
+        dialog.options.delete_worktrees = true;
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(opts) => {
+                assert!(opts.delete_sessions);
+                assert!(opts.delete_worktrees);
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_selecting_move_clears_delete_worktrees() {
+        let mut dialog = dialog_with_worktrees();
+        dialog.options.delete_sessions = true;
+        dialog.options.delete_worktrees = true;
+        dialog.focused_field = 0;
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.delete_sessions);
+        assert!(!dialog.options.delete_worktrees);
+    }
+}
