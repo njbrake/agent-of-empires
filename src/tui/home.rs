@@ -10,8 +10,8 @@ use super::app::Action;
 use super::components::{HelpOverlay, Preview};
 use super::deletion_poller::{DeletionPoller, DeletionRequest};
 use super::dialogs::{
-    ChangelogDialog, ConfirmDialog, DeleteOptions, DeleteOptionsDialog, NewSessionDialog,
-    RenameDialog, WelcomeDialog,
+    ChangelogDialog, ConfirmDialog, DeleteDialogConfig, DeleteOptions, GroupDeleteOptions,
+    GroupDeleteOptionsDialog, NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
 use super::status_poller::StatusPoller;
 use super::styles::Theme;
@@ -83,7 +83,8 @@ pub struct HomeView {
     show_help: bool,
     new_dialog: Option<NewSessionDialog>,
     confirm_dialog: Option<ConfirmDialog>,
-    delete_options_dialog: Option<DeleteOptionsDialog>,
+    unified_delete_dialog: Option<UnifiedDeleteDialog>,
+    group_delete_options_dialog: Option<GroupDeleteOptionsDialog>,
     rename_dialog: Option<RenameDialog>,
     welcome_dialog: Option<WelcomeDialog>,
     changelog_dialog: Option<ChangelogDialog>,
@@ -135,7 +136,8 @@ impl HomeView {
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
-            delete_options_dialog: None,
+            unified_delete_dialog: None,
+            group_delete_options_dialog: None,
             rename_dialog: None,
             welcome_dialog: None,
             changelog_dialog: None,
@@ -262,6 +264,8 @@ impl HomeView {
         self.show_help
             || self.new_dialog.is_some()
             || self.confirm_dialog.is_some()
+            || self.unified_delete_dialog.is_some()
+            || self.group_delete_options_dialog.is_some()
             || self.rename_dialog.is_some()
             || self.welcome_dialog.is_some()
             || self.changelog_dialog.is_some()
@@ -372,13 +376,7 @@ impl HomeView {
                 super::dialogs::DialogResult::Submit(_) => {
                     let action = dialog.action().to_string();
                     self.confirm_dialog = None;
-                    if action == "delete" {
-                        // Simple delete without worktree/container options
-                        let options = DeleteOptions::default();
-                        if let Err(e) = self.delete_selected(&options) {
-                            tracing::error!("Failed to delete session: {}", e);
-                        }
-                    } else if action == "delete_group" {
+                    if action == "delete_group" {
                         if let Err(e) = self.delete_selected_group() {
                             tracing::error!("Failed to delete group: {}", e);
                         }
@@ -388,16 +386,36 @@ impl HomeView {
             return None;
         }
 
-        if let Some(dialog) = &mut self.delete_options_dialog {
+        if let Some(dialog) = &mut self.unified_delete_dialog {
             match dialog.handle_key(key) {
                 super::dialogs::DialogResult::Continue => {}
                 super::dialogs::DialogResult::Cancel => {
-                    self.delete_options_dialog = None;
+                    self.unified_delete_dialog = None;
                 }
                 super::dialogs::DialogResult::Submit(options) => {
-                    self.delete_options_dialog = None;
+                    self.unified_delete_dialog = None;
                     if let Err(e) = self.delete_selected(&options) {
                         tracing::error!("Failed to delete session: {}", e);
+                    }
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.group_delete_options_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel => {
+                    self.group_delete_options_dialog = None;
+                }
+                super::dialogs::DialogResult::Submit(options) => {
+                    self.group_delete_options_dialog = None;
+                    if options.delete_sessions {
+                        if let Err(e) = self.delete_group_with_sessions(&options) {
+                            tracing::error!("Failed to delete group with sessions: {}", e);
+                        }
+                    } else if let Err(e) = self.delete_selected_group() {
+                        tracing::error!("Failed to delete group: {}", e);
                     }
                 }
             }
@@ -473,51 +491,48 @@ impl HomeView {
                         if inst.status == Status::Deleting {
                             return None;
                         }
-                        // Check for worktree that would be managed
-                        let worktree_branch = inst
-                            .worktree_info
-                            .as_ref()
-                            .filter(|wt| wt.managed_by_aoe)
-                            .map(|wt| wt.branch.clone());
 
-                        if let Some(branch) = worktree_branch {
-                            // Show options dialog when there's a managed worktree
-                            self.delete_options_dialog =
-                                Some(DeleteOptionsDialog::new(inst.title.clone(), branch));
-                        } else {
-                            // Simple confirmation for sessions without managed worktree
-                            self.confirm_dialog = Some(ConfirmDialog::new(
-                                "Delete Session",
-                                "Are you sure you want to delete this session?",
-                                "delete",
-                            ));
-                        }
+                        let config = DeleteDialogConfig {
+                            worktree_branch: inst
+                                .worktree_info
+                                .as_ref()
+                                .filter(|wt| wt.managed_by_aoe)
+                                .map(|wt| wt.branch.clone()),
+                            has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
+                        };
+
+                        self.unified_delete_dialog =
+                            Some(UnifiedDeleteDialog::new(inst.title.clone(), config));
                     } else {
-                        self.confirm_dialog = Some(ConfirmDialog::new(
-                            "Delete Session",
-                            "Are you sure you want to delete this session?",
-                            "delete",
+                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
+                            "Unknown Session".to_string(),
+                            DeleteDialogConfig::default(),
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
+                    let prefix = format!("{}/", group_path);
                     let session_count = self
                         .instances
                         .iter()
                         .filter(|i| {
-                            i.group_path == *group_path
-                                || i.group_path.starts_with(&format!("{}/", group_path))
+                            i.group_path == *group_path || i.group_path.starts_with(&prefix)
                         })
                         .count();
-                    let message = if session_count > 0 {
-                        format!(
-                            "Delete group '{}'? It contains {} session(s) which will be moved to the default group.",
-                            group_path, session_count
-                        )
+
+                    if session_count > 0 {
+                        let has_managed_worktrees =
+                            self.group_has_managed_worktrees(group_path, &prefix);
+                        self.group_delete_options_dialog = Some(GroupDeleteOptionsDialog::new(
+                            group_path.clone(),
+                            session_count,
+                            has_managed_worktrees,
+                        ));
                     } else {
-                        format!("Are you sure you want to delete group '{}'?", group_path)
-                    };
-                    self.confirm_dialog =
-                        Some(ConfirmDialog::new("Delete Group", &message, "delete_group"));
+                        let message =
+                            format!("Are you sure you want to delete group '{}'?", group_path);
+                        self.confirm_dialog =
+                            Some(ConfirmDialog::new("Delete Group", &message, "delete_group"));
+                    }
                 }
             }
             KeyCode::Char('r') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -830,6 +845,7 @@ impl HomeView {
                     session_id: id.clone(),
                     instance: inst.clone(),
                     delete_worktree: options.delete_worktree,
+                    delete_sandbox: options.delete_sandbox,
                 };
                 self.deletion_poller.request_deletion(request);
             }
@@ -854,6 +870,57 @@ impl HomeView {
             self.reload()?;
         }
         Ok(())
+    }
+
+    fn delete_group_with_sessions(&mut self, options: &GroupDeleteOptions) -> anyhow::Result<()> {
+        if let Some(group_path) = self.selected_group.take() {
+            let prefix = format!("{}/", group_path);
+
+            let sessions_to_delete: Vec<String> = self
+                .instances
+                .iter()
+                .filter(|i| i.group_path == group_path || i.group_path.starts_with(&prefix))
+                .map(|i| i.id.clone())
+                .collect();
+
+            for session_id in sessions_to_delete {
+                if let Some(inst) = self.instance_map.get_mut(&session_id) {
+                    inst.status = Status::Deleting;
+                }
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == session_id) {
+                    inst.status = Status::Deleting;
+                }
+
+                if let Some(inst) = self.instance_map.get(&session_id) {
+                    let delete_worktree = options.delete_worktrees
+                        && inst
+                            .worktree_info
+                            .as_ref()
+                            .is_some_and(|wt| wt.managed_by_aoe);
+                    let delete_sandbox = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+                    let request = DeletionRequest {
+                        session_id: session_id.clone(),
+                        instance: inst.clone(),
+                        delete_worktree,
+                        delete_sandbox,
+                    };
+                    self.deletion_poller.request_deletion(request);
+                }
+            }
+
+            self.group_tree.delete_group(&group_path);
+            self.storage
+                .save_with_groups(&self.instances, &self.group_tree)?;
+            self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+        }
+        Ok(())
+    }
+
+    fn group_has_managed_worktrees(&self, group_path: &str, prefix: &str) -> bool {
+        self.instances.iter().any(|i| {
+            (i.group_path == group_path || i.group_path.starts_with(prefix))
+                && i.worktree_info.as_ref().is_some_and(|wt| wt.managed_by_aoe)
+        })
     }
 
     fn rename_selected(&mut self, new_title: &str) -> anyhow::Result<()> {
@@ -936,7 +1003,11 @@ impl HomeView {
             dialog.render(frame, area, theme);
         }
 
-        if let Some(dialog) = &self.delete_options_dialog {
+        if let Some(dialog) = &self.unified_delete_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.group_delete_options_dialog {
             dialog.render(frame, area, theme);
         }
 
@@ -1559,24 +1630,24 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_d_on_session_opens_confirm_dialog() {
+    fn test_d_on_session_opens_delete_dialog() {
         let mut env = create_test_env_with_sessions(3);
         env.view.update_selected();
-        assert!(env.view.confirm_dialog.is_none());
+        assert!(env.view.unified_delete_dialog.is_none());
         env.view.handle_key(key(KeyCode::Char('d')));
-        assert!(env.view.confirm_dialog.is_some());
+        assert!(env.view.unified_delete_dialog.is_some());
     }
 
     #[test]
     #[serial]
-    fn test_d_on_group_opens_confirm_dialog() {
+    fn test_d_on_group_with_sessions_opens_group_delete_options_dialog() {
         let mut env = create_test_env_with_groups();
         env.view.cursor = 1;
         env.view.update_selected();
         assert!(env.view.selected_group.is_some());
-        assert!(env.view.confirm_dialog.is_none());
+        assert!(env.view.group_delete_options_dialog.is_none());
         env.view.handle_key(key(KeyCode::Char('d')));
-        assert!(env.view.confirm_dialog.is_some());
+        assert!(env.view.group_delete_options_dialog.is_some());
     }
 
     #[test]
