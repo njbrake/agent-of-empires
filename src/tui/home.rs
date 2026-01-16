@@ -9,7 +9,8 @@ use std::time::Instant;
 use super::app::Action;
 use super::components::{HelpOverlay, Preview};
 use super::dialogs::{
-    ConfirmDialog, DeleteOptions, DeleteOptionsDialog, NewSessionDialog, RenameDialog,
+    ChangelogDialog, ConfirmDialog, DeleteOptions, DeleteOptionsDialog, NewSessionDialog,
+    RenameDialog, WelcomeDialog,
 };
 use super::status_poller::StatusPoller;
 use super::styles::Theme;
@@ -82,6 +83,8 @@ pub struct HomeView {
     confirm_dialog: Option<ConfirmDialog>,
     delete_options_dialog: Option<DeleteOptionsDialog>,
     rename_dialog: Option<RenameDialog>,
+    welcome_dialog: Option<WelcomeDialog>,
+    changelog_dialog: Option<ChangelogDialog>,
 
     // Search
     search_active: bool,
@@ -129,6 +132,8 @@ impl HomeView {
             confirm_dialog: None,
             delete_options_dialog: None,
             rename_dialog: None,
+            welcome_dialog: None,
+            changelog_dialog: None,
             search_active: false,
             search_query: String::new(),
             filtered_items: None,
@@ -215,6 +220,16 @@ impl HomeView {
             || self.new_dialog.is_some()
             || self.confirm_dialog.is_some()
             || self.rename_dialog.is_some()
+            || self.welcome_dialog.is_some()
+            || self.changelog_dialog.is_some()
+    }
+
+    pub fn show_welcome(&mut self) {
+        self.welcome_dialog = Some(WelcomeDialog::new());
+    }
+
+    pub fn show_changelog(&mut self, from_version: Option<String>) {
+        self.changelog_dialog = Some(ChangelogDialog::new(from_version));
     }
 
     pub fn get_instance(&self, id: &str) -> Option<&Instance> {
@@ -246,7 +261,28 @@ impl HomeView {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
-        // Handle dialog input first
+        // Handle welcome/changelog dialogs first (highest priority)
+        if let Some(dialog) = &mut self.welcome_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
+                    self.welcome_dialog = None;
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.changelog_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
+                    self.changelog_dialog = None;
+                }
+            }
+            return None;
+        }
+
+        // Handle other dialog input
         if self.show_help {
             if matches!(
                 key.code,
@@ -866,6 +902,14 @@ impl HomeView {
         }
 
         if let Some(dialog) = &self.rename_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.welcome_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.changelog_dialog {
             dialog.render(frame, area, theme);
         }
     }
