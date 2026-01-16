@@ -134,6 +134,7 @@ mod tests {
             session_id: instance.id.clone(),
             instance,
             delete_worktree: false,
+            delete_sandbox: false,
         };
 
         let result = DeletionPoller::perform_deletion(&request);
@@ -150,6 +151,7 @@ mod tests {
             session_id: instance.id.clone(),
             instance,
             delete_worktree: true,
+            delete_sandbox: false,
         };
 
         let result = DeletionPoller::perform_deletion(&request);
@@ -168,6 +170,7 @@ mod tests {
             session_id: session_id.clone(),
             instance,
             delete_worktree: false,
+            delete_sandbox: false,
         });
 
         std::thread::sleep(Duration::from_millis(100));
@@ -195,6 +198,7 @@ mod tests {
             session_id: custom_id.clone(),
             instance,
             delete_worktree: false,
+            delete_sandbox: false,
         };
 
         let result = DeletionPoller::perform_deletion(&request);
