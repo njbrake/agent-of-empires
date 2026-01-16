@@ -163,13 +163,16 @@ pub fn get_cached_releases(from_version: Option<&str>) -> Vec<ReleaseInfo> {
         None => return vec![],
     };
 
+    filter_releases(cache.releases, from_version)
+}
+
+fn filter_releases(releases: Vec<ReleaseInfo>, from_version: Option<&str>) -> Vec<ReleaseInfo> {
     match from_version {
-        Some(from) => cache
-            .releases
+        Some(from) => releases
             .into_iter()
             .take_while(|r| r.version != from)
             .collect(),
-        None => cache.releases,
+        None => releases,
     }
 }
 
@@ -222,5 +225,73 @@ mod tests {
         assert!(is_newer_version("2.0.0", "1.9.9"));
         assert!(!is_newer_version("1.0.0", "1.0.0"));
         assert!(!is_newer_version("1.0.0", "1.0.1"));
+    }
+
+    fn make_release(version: &str) -> ReleaseInfo {
+        ReleaseInfo {
+            version: version.to_string(),
+            body: format!("Release notes for {}", version),
+            published_at: None,
+        }
+    }
+
+    #[test]
+    fn test_filter_releases_returns_all_when_no_filter() {
+        let releases = vec![
+            make_release("0.5.0"),
+            make_release("0.4.3"),
+            make_release("0.4.2"),
+        ];
+
+        let filtered = filter_releases(releases.clone(), None);
+
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(filtered[0].version, "0.5.0");
+        assert_eq!(filtered[1].version, "0.4.3");
+        assert_eq!(filtered[2].version, "0.4.2");
+    }
+
+    #[test]
+    fn test_filter_releases_stops_at_from_version() {
+        let releases = vec![
+            make_release("0.5.0"),
+            make_release("0.4.3"),
+            make_release("0.4.2"),
+            make_release("0.4.1"),
+        ];
+
+        let filtered = filter_releases(releases, Some("0.4.3"));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].version, "0.5.0");
+    }
+
+    #[test]
+    fn test_filter_releases_returns_empty_when_from_version_is_latest() {
+        let releases = vec![make_release("0.5.0"), make_release("0.4.3")];
+
+        let filtered = filter_releases(releases, Some("0.5.0"));
+
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_releases_returns_all_when_from_version_not_found() {
+        let releases = vec![make_release("0.5.0"), make_release("0.4.3")];
+
+        let filtered = filter_releases(releases.clone(), Some("0.3.0"));
+
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_releases_handles_empty_list() {
+        let releases: Vec<ReleaseInfo> = vec![];
+
+        let filtered = filter_releases(releases.clone(), Some("0.4.3"));
+        assert!(filtered.is_empty());
+
+        let filtered = filter_releases(releases, None);
+        assert!(filtered.is_empty());
     }
 }

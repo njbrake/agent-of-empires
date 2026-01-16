@@ -114,3 +114,87 @@ impl Default for DeletionPoller {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn create_test_instance() -> Instance {
+        Instance::new("Test Session", "/tmp/test-project")
+    }
+
+    #[test]
+    fn test_deletion_result_success_when_no_worktree_or_sandbox() {
+        let instance = create_test_instance();
+        let request = DeletionRequest {
+            session_id: instance.id.clone(),
+            instance,
+            delete_worktree: false,
+        };
+
+        let result = DeletionPoller::perform_deletion(&request);
+
+        assert!(result.success);
+        assert!(result.error.is_none());
+        assert_eq!(result.session_id, request.session_id);
+    }
+
+    #[test]
+    fn test_deletion_result_success_even_with_delete_worktree_flag_when_no_worktree() {
+        let instance = create_test_instance();
+        let request = DeletionRequest {
+            session_id: instance.id.clone(),
+            instance,
+            delete_worktree: true,
+        };
+
+        let result = DeletionPoller::perform_deletion(&request);
+
+        assert!(result.success);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_deletion_poller_channel_communication() {
+        let poller = DeletionPoller::new();
+        let instance = create_test_instance();
+        let session_id = instance.id.clone();
+
+        poller.request_deletion(DeletionRequest {
+            session_id: session_id.clone(),
+            instance,
+            delete_worktree: false,
+        });
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let result = poller.try_recv_result();
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        assert_eq!(result.session_id, session_id);
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_deletion_poller_try_recv_returns_none_when_empty() {
+        let poller = DeletionPoller::new();
+        assert!(poller.try_recv_result().is_none());
+    }
+
+    #[test]
+    fn test_deletion_request_preserves_session_id() {
+        let instance = create_test_instance();
+        let custom_id = "custom-session-id-123".to_string();
+
+        let request = DeletionRequest {
+            session_id: custom_id.clone(),
+            instance,
+            delete_worktree: false,
+        };
+
+        let result = DeletionPoller::perform_deletion(&request);
+        assert_eq!(result.session_id, custom_id);
+    }
+}
