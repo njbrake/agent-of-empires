@@ -2062,4 +2062,67 @@ mod tests {
         let action = view.handle_key(key(KeyCode::Char('P')));
         assert_eq!(action, None);
     }
+
+    #[test]
+    #[serial]
+    fn test_t_toggles_view_mode() {
+        let env = create_test_env_empty();
+        let mut view = env.view;
+
+        assert_eq!(view.view_mode, ViewMode::Agent);
+
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Terminal);
+
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Agent);
+    }
+
+    #[test]
+    #[serial]
+    fn test_enter_returns_attach_terminal_in_terminal_view() {
+        let env = create_test_env_with_sessions(1);
+        let mut view = env.view;
+
+        // In Agent view, Enter returns AttachSession
+        let action = view.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, Some(Action::AttachSession(_))));
+
+        // Switch to Terminal view
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Terminal);
+
+        // In Terminal view, Enter returns AttachTerminal
+        let action = view.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, Some(Action::AttachTerminal(_))));
+    }
+
+    #[test]
+    #[serial]
+    fn test_d_shows_info_dialog_in_terminal_view() {
+        let env = create_test_env_with_sessions(1);
+        let mut view = env.view;
+
+        // Switch to Terminal view
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Terminal);
+
+        // Press 'd' - should show info dialog, not delete dialog
+        assert!(view.info_dialog.is_none());
+        view.handle_key(key(KeyCode::Char('d')));
+        assert!(view.info_dialog.is_some());
+        assert!(view.unified_delete_dialog.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_has_dialog_includes_info_dialog() {
+        let env = create_test_env_empty();
+        let mut view = env.view;
+
+        assert!(!view.has_dialog());
+
+        view.info_dialog = Some(InfoDialog::new("Test", "Test message"));
+        assert!(view.has_dialog());
+    }
 }

@@ -542,4 +542,37 @@ mod tests {
         inst.sandbox_info.as_mut().unwrap().yolo_mode = None;
         assert!(!inst.is_yolo_mode());
     }
+
+    #[test]
+    fn test_has_terminal_false_by_default() {
+        let inst = Instance::new("test", "/tmp/test");
+        assert!(!inst.has_terminal());
+    }
+
+    #[test]
+    fn test_has_terminal_true_when_created() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.terminal_info = Some(TerminalInfo {
+            created: true,
+            created_at: Some(Utc::now()),
+        });
+        assert!(inst.has_terminal());
+    }
+
+    #[test]
+    fn test_terminal_info_none_means_no_terminal() {
+        let inst = Instance::new("test", "/tmp/test");
+        assert!(inst.terminal_info.is_none());
+        assert!(!inst.has_terminal());
+    }
+
+    #[test]
+    fn test_terminal_info_created_false_means_no_terminal() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.terminal_info = Some(TerminalInfo {
+            created: false,
+            created_at: None,
+        });
+        assert!(!inst.has_terminal());
+    }
 }
