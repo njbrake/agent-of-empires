@@ -1,8 +1,13 @@
 //! tmux integration module
 
 mod session;
+mod status_detection;
+mod terminal_session;
+mod utils;
 
-pub use session::*;
+pub use session::Session;
+pub use status_detection::{detect_claude_status, detect_opencode_status};
+pub use terminal_session::TerminalSession;
 
 use std::collections::HashMap;
 use std::process::Command;

@@ -1,20 +1,17 @@
-//! tmux session management
+//! Terminal session for paired terminal functionality
 
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::status_detection::detect_status_from_content;
 use super::utils::sanitize_session_name;
-use super::{refresh_session_cache, session_exists_from_cache, SESSION_PREFIX};
+use super::{refresh_session_cache, session_exists_from_cache, TERMINAL_PREFIX};
 use crate::cli::truncate_id;
-use crate::process;
-use crate::session::Status;
 
-pub struct Session {
+pub struct TerminalSession {
     name: String,
 }
 
-impl Session {
+impl TerminalSession {
     pub fn new(id: &str, title: &str) -> Result<Self> {
         Ok(Self {
             name: Self::generate_name(id, title),
@@ -23,7 +20,7 @@ impl Session {
 
     pub fn generate_name(id: &str, title: &str) -> String {
         let safe_title = sanitize_session_name(title);
-        format!("{}{}_{}", SESSION_PREFIX, safe_title, truncate_id(id, 8))
+        format!("{}{}_{}", TERMINAL_PREFIX, safe_title, truncate_id(id, 8))
     }
 
     pub fn exists(&self) -> bool {
@@ -38,12 +35,12 @@ impl Session {
             .unwrap_or(false)
     }
 
-    pub fn create(&self, working_dir: &str, command: Option<&str>) -> Result<()> {
+    pub fn create(&self, working_dir: &str) -> Result<()> {
         if self.exists() {
             return Ok(());
         }
 
-        let mut args = vec![
+        let args = vec![
             "new-session".to_string(),
             "-d".to_string(),
             "-s".to_string(),
@@ -52,15 +49,11 @@ impl Session {
             working_dir.to_string(),
         ];
 
-        if let Some(cmd) = command {
-            args.push(cmd.to_string());
-        }
-
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to create tmux session: {}", stderr);
+            bail!("Failed to create terminal session: {}", stderr);
         }
 
         refresh_session_cache();
@@ -79,24 +72,7 @@ impl Session {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to kill tmux session: {}", stderr);
-        }
-
-        Ok(())
-    }
-
-    pub fn rename(&self, new_name: &str) -> Result<()> {
-        if !self.exists() {
-            return Ok(());
-        }
-
-        let output = Command::new("tmux")
-            .args(["rename-session", "-t", &self.name, new_name])
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to rename tmux session: {}", stderr);
+            bail!("Failed to kill terminal session: {}", stderr);
         }
 
         Ok(())
@@ -104,7 +80,7 @@ impl Session {
 
     pub fn attach(&self) -> Result<()> {
         if !self.exists() {
-            bail!("Session does not exist: {}", self.name);
+            bail!("Terminal session does not exist: {}", self.name);
         }
 
         if std::env::var("TMUX").is_ok() {
@@ -113,16 +89,12 @@ impl Session {
                 .status()?;
 
             if !status.success() {
-                // Fall back to attach-session if switch-client fails.
-                // This handles cases where TMUX env var is inherited but we're
-                // not actually inside a tmux client (e.g., terminal spawned
-                // from within tmux via `open -a Terminal`).
                 let status = Command::new("tmux")
                     .args(["attach-session", "-t", &self.name])
                     .status()?;
 
                 if !status.success() {
-                    bail!("Failed to attach to tmux session");
+                    bail!("Failed to attach to terminal session");
                 }
             }
         } else {
@@ -131,7 +103,7 @@ impl Session {
                 .status()?;
 
             if !status.success() {
-                bail!("Failed to attach to tmux session");
+                bail!("Failed to attach to terminal session");
             }
         }
 
@@ -139,15 +111,6 @@ impl Session {
     }
 
     pub fn capture_pane(&self, lines: usize) -> Result<String> {
-        self.capture_pane_with_size(lines, None, None)
-    }
-
-    pub fn capture_pane_with_size(
-        &self,
-        lines: usize,
-        _width: Option<u16>,
-        _height: Option<u16>,
-    ) -> Result<String> {
         if !self.exists() {
             return Ok(String::new());
         }
@@ -169,32 +132,27 @@ impl Session {
             Ok(String::new())
         }
     }
-
-    pub fn get_pane_pid(&self) -> Option<u32> {
-        process::get_pane_pid(&self.name)
-    }
-
-    pub fn get_foreground_pid(&self) -> Option<u32> {
-        let pane_pid = self.get_pane_pid()?;
-        process::get_foreground_pid(pane_pid).or(Some(pane_pid))
-    }
-
-    pub fn detect_status(&self, tool: &str) -> Result<Status> {
-        let content = self.capture_pane(50)?;
-        let fg_pid = self.get_foreground_pid();
-        Ok(detect_status_from_content(&content, tool, fg_pid))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::{Session, SESSION_PREFIX};
 
     #[test]
-    fn test_generate_name() {
-        let name = Session::generate_name("abc123def456", "My Project");
-        assert!(name.starts_with(SESSION_PREFIX));
+    fn test_terminal_session_generate_name() {
+        let name = TerminalSession::generate_name("abc123def456", "My Project");
+        assert!(name.starts_with(TERMINAL_PREFIX));
         assert!(name.contains("My_Project"));
         assert!(name.contains("abc123de"));
+    }
+
+    #[test]
+    fn test_terminal_session_name_differs_from_agent_session() {
+        let agent_name = Session::generate_name("abc123def456", "My Project");
+        let terminal_name = TerminalSession::generate_name("abc123def456", "My Project");
+        assert_ne!(agent_name, terminal_name);
+        assert!(agent_name.starts_with(SESSION_PREFIX));
+        assert!(terminal_name.starts_with(TERMINAL_PREFIX));
     }
 }
