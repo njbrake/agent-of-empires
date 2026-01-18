@@ -35,11 +35,12 @@ aoe -p <same profile as Terminal 1>
 # Press 't' to switch to Terminal View
 ```
 
-The status bar will show `[Term]` when in Terminal View.
-
 ## Daily Workflow
 
 ### Starting Work
+
+Generally I keep one agent session open that is located in the main repo (no worktrees). I use the agent for answering questions about the codebase, and the paired terminal 
+for general operations that I want to effect the main branch (like git pulls)
 
 1. **Update main** (Terminal 2 - Terminal View):
    - Select your main project session and press Enter to attach to its terminal
@@ -54,19 +55,6 @@ The status bar will show `[Term]` when in Terminal View.
 
 - **Terminal 1 (Agent View)**: Interact with agents, switch between sessions, monitor status
 - **Terminal 2 (Terminal View)**: Access paired terminals, run builds, check git status
-
-Each agent session has a paired terminal that:
-- Opens at the same `project_path` as the agent
-- Runs on the host (not in Docker, even if the agent is sandboxed)
-- Is created lazily when you first attach to it
-
-### Finishing a Task
-
-Once an agent is finished and you've committed and pushed the branch to GitHub, filed and merged the PR:
-- Switch to Terminal 1 (Agent View)
-- Delete the session, which automatically deletes both the git worktree branch and the paired terminal
-
-Note: You cannot delete sessions from Terminal View. Switch back to Agent View to delete.
 
 ## Directory Layout
 
@@ -91,12 +79,11 @@ Note: You cannot delete sessions from Terminal View. Switch back to Agent View t
 | `?` | Show help |
 
 ## Tips
-
+- **Keep one agent session open and on the main branch (no worktree) for answering questions and using its paired terminal for commands**
 - **Keep main clean**: Never work directly in the main repo. Always use worktrees.
 - **Pull before creating**: Always `git pull` on main before creating new sessions so branches start from recent commits.
 - **One task, one session**: Each worktree maps to one aoe session. This keeps context isolated.
 - **Let agents stay focused**: The agent in each session only sees its worktree. Git operations happen in the paired terminal.
-- **Use the same profile**: Both terminals should use the same profile to see the same sessions.
 
 ## Why This Works
 
