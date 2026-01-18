@@ -345,4 +345,106 @@ mod tests {
             Status::Idle
         );
     }
+
+    #[test]
+    fn test_detect_status_from_content_auto_detects_claude() {
+        let content = "some output\nesc to interrupt\nclaude code";
+        let status = detect_status_from_content(content, "shell", None);
+        assert_eq!(status, Status::Running);
+    }
+
+    #[test]
+    fn test_detect_status_from_content_auto_detects_opencode() {
+        let content = "Tab switch agent\nesc to interrupt";
+        let status = detect_status_from_content(content, "shell", None);
+        assert_eq!(status, Status::Running);
+    }
+
+    #[test]
+    fn test_detect_status_from_content_falls_back_to_claude() {
+        let content = "Processing ⠋";
+        let status = detect_status_from_content(content, "unknown_tool", None);
+        assert_eq!(status, Status::Running);
+    }
+
+    #[test]
+    fn test_detect_claude_status_numbered_list_selection() {
+        let content = "Choose an option:\n❯ 1. First option\n  2. Second option\n  3. Third option";
+        assert_eq!(detect_claude_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_claude_status_all_spinner_chars() {
+        for spinner in SPINNER_CHARS {
+            let content = format!("Working... {}", spinner);
+            assert_eq!(
+                detect_claude_status(&content),
+                Status::Running,
+                "Failed for spinner: {}",
+                spinner
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_claude_status_prompt_with_text() {
+        assert_eq!(detect_claude_status("> hello"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_claude_status_yn_variations() {
+        assert_eq!(detect_claude_status("Continue? [Y/n]"), Status::Waiting);
+        assert_eq!(detect_claude_status("Proceed? [y/N]"), Status::Waiting);
+        assert_eq!(detect_claude_status("Confirm (Y/n)"), Status::Waiting);
+        assert_eq!(detect_claude_status("Delete? (y/N)"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_claude_status_allow_prompts() {
+        assert_eq!(detect_claude_status("❯ Yes"), Status::Waiting);
+        assert_eq!(detect_claude_status("❯ No"), Status::Waiting);
+        assert_eq!(detect_claude_status("Allow once"), Status::Waiting);
+        assert_eq!(detect_claude_status("Allow always"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_opencode_status_numbered_selection() {
+        let content = "Select:\n❯ 1. Option A\n  2. Option B";
+        assert_eq!(detect_opencode_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_opencode_status_completion_with_prompt() {
+        let content = "Task complete! What else can I help with?\n>";
+        assert_eq!(detect_opencode_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_opencode_status_double_prompt() {
+        assert_eq!(detect_opencode_status("Ready\n>>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_is_opencode_content_indicators() {
+        assert!(is_opencode_content("tab switch agent"));
+        assert!(is_opencode_content("ctrl+p commands"));
+        assert!(is_opencode_content("/compact"));
+        assert!(is_opencode_content("/status"));
+        assert!(!is_opencode_content("random text"));
+    }
+
+    #[test]
+    fn test_is_claude_code_content_indicators() {
+        assert!(is_claude_code_content("esc to interrupt"));
+        assert!(is_claude_code_content("yes, allow once"));
+        assert!(is_claude_code_content("/ to search"));
+        assert!(is_claude_code_content("? for help"));
+        assert!(!is_claude_code_content("random text"));
+    }
+
+    #[test]
+    fn test_is_claude_code_content_prompt_with_box_chars() {
+        let content = "│ some content ─\n>";
+        assert!(is_claude_code_content(content));
+    }
 }

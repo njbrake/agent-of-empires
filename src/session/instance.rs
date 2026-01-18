@@ -543,6 +543,294 @@ mod tests {
         assert!(!inst.is_yolo_mode());
     }
 
+    // Additional tests for is_sandboxed
+    #[test]
+    fn test_is_sandboxed_without_sandbox_info() {
+        let inst = Instance::new("test", "/tmp/test");
+        assert!(!inst.is_sandboxed());
+    }
+
+    #[test]
+    fn test_is_sandboxed_with_disabled_sandbox() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.sandbox_info = Some(SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: None,
+            container_name: "test".to_string(),
+            created_at: None,
+            yolo_mode: None,
+        });
+        assert!(!inst.is_sandboxed());
+    }
+
+    #[test]
+    fn test_is_sandboxed_with_enabled_sandbox() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.sandbox_info = Some(SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: None,
+            container_name: "test".to_string(),
+            created_at: None,
+            yolo_mode: None,
+        });
+        assert!(inst.is_sandboxed());
+    }
+
+    // Tests for get_tool_command
+    #[test]
+    fn test_get_tool_command_default_claude() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        assert_eq!(inst.get_tool_command(), "claude");
+    }
+
+    #[test]
+    fn test_get_tool_command_opencode() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "opencode".to_string();
+        assert_eq!(inst.get_tool_command(), "opencode");
+    }
+
+    #[test]
+    fn test_get_tool_command_unknown_tool() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "unknown".to_string();
+        assert_eq!(inst.get_tool_command(), "bash");
+    }
+
+    #[test]
+    fn test_get_tool_command_custom_command() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.command = "claude --resume abc123".to_string();
+        assert_eq!(inst.get_tool_command(), "claude --resume abc123");
+    }
+
+    // Tests for update_search_cache
+    #[test]
+    fn test_update_search_cache() {
+        let mut inst = Instance::new("Test Title", "/Path/To/Project");
+        // Manually modify title
+        inst.title = "New Title".to_string();
+        inst.project_path = "/New/Path".to_string();
+
+        // Cache is stale
+        assert_ne!(inst.title_lower, "new title");
+        assert_ne!(inst.project_path_lower, "/new/path");
+
+        // Update cache
+        inst.update_search_cache();
+
+        assert_eq!(inst.title_lower, "new title");
+        assert_eq!(inst.project_path_lower, "/new/path");
+    }
+
+    // Tests for Status enum
+    #[test]
+    fn test_status_default() {
+        let status = Status::default();
+        assert_eq!(status, Status::Idle);
+    }
+
+    #[test]
+    fn test_status_serialization() {
+        let statuses = vec![
+            Status::Running,
+            Status::Waiting,
+            Status::Idle,
+            Status::Error,
+            Status::Starting,
+            Status::Deleting,
+        ];
+
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let deserialized: Status = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, deserialized);
+        }
+    }
+
+    // Tests for WorktreeInfo
+    #[test]
+    fn test_worktree_info_serialization() {
+        let info = WorktreeInfo {
+            branch: "feature/test".to_string(),
+            main_repo_path: "/home/user/repo".to_string(),
+            managed_by_aoe: true,
+            created_at: Utc::now(),
+            cleanup_on_delete: true,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let deserialized: WorktreeInfo = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(info.branch, deserialized.branch);
+        assert_eq!(info.main_repo_path, deserialized.main_repo_path);
+        assert_eq!(info.managed_by_aoe, deserialized.managed_by_aoe);
+        assert_eq!(info.cleanup_on_delete, deserialized.cleanup_on_delete);
+    }
+
+    #[test]
+    fn test_worktree_info_default_cleanup_on_delete() {
+        // Deserialize without cleanup_on_delete field - should default to true
+        let json = r#"{"branch":"test","main_repo_path":"/path","managed_by_aoe":true,"created_at":"2024-01-01T00:00:00Z"}"#;
+        let info: WorktreeInfo = serde_json::from_str(json).unwrap();
+        assert!(info.cleanup_on_delete);
+    }
+
+    // Tests for SandboxInfo
+    #[test]
+    fn test_sandbox_info_serialization() {
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: Some("abc123".to_string()),
+            image: Some("myimage:latest".to_string()),
+            container_name: "test_container".to_string(),
+            created_at: Some(Utc::now()),
+            yolo_mode: Some(true),
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let deserialized: SandboxInfo = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(info.enabled, deserialized.enabled);
+        assert_eq!(info.container_id, deserialized.container_id);
+        assert_eq!(info.image, deserialized.image);
+        assert_eq!(info.container_name, deserialized.container_name);
+        assert_eq!(info.yolo_mode, deserialized.yolo_mode);
+    }
+
+    #[test]
+    fn test_sandbox_info_minimal_serialization() {
+        // Only required fields
+        let json = r#"{"enabled":false,"container_name":"test"}"#;
+        let info: SandboxInfo = serde_json::from_str(json).unwrap();
+
+        assert!(!info.enabled);
+        assert_eq!(info.container_name, "test");
+        assert!(info.container_id.is_none());
+        assert!(info.image.is_none());
+        assert!(info.created_at.is_none());
+        assert!(info.yolo_mode.is_none());
+    }
+
+    // Tests for Instance serialization
+    #[test]
+    fn test_instance_serialization_roundtrip() {
+        let mut inst = Instance::new("Test Project", "/home/user/project");
+        inst.tool = "claude".to_string();
+        inst.group_path = "work/clients".to_string();
+        inst.command = "claude --resume xyz".to_string();
+
+        let json = serde_json::to_string(&inst).unwrap();
+        let deserialized: Instance = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(inst.id, deserialized.id);
+        assert_eq!(inst.title, deserialized.title);
+        assert_eq!(inst.project_path, deserialized.project_path);
+        assert_eq!(inst.group_path, deserialized.group_path);
+        assert_eq!(inst.tool, deserialized.tool);
+        assert_eq!(inst.command, deserialized.command);
+    }
+
+    #[test]
+    fn test_instance_serialization_skips_runtime_fields() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.last_error_check = Some(std::time::Instant::now());
+        inst.last_start_time = Some(std::time::Instant::now());
+        inst.last_error = Some("test error".to_string());
+
+        let json = serde_json::to_string(&inst).unwrap();
+
+        // Runtime fields should not appear in JSON
+        assert!(!json.contains("last_error_check"));
+        assert!(!json.contains("last_start_time"));
+        assert!(!json.contains("last_error"));
+    }
+
+    #[test]
+    fn test_instance_with_worktree_info() {
+        let mut inst = Instance::new("Test", "/tmp/worktree");
+        inst.worktree_info = Some(WorktreeInfo {
+            branch: "feature/abc".to_string(),
+            main_repo_path: "/tmp/main".to_string(),
+            managed_by_aoe: true,
+            created_at: Utc::now(),
+            cleanup_on_delete: true,
+        });
+
+        let json = serde_json::to_string(&inst).unwrap();
+        let deserialized: Instance = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.worktree_info.is_some());
+        let wt = deserialized.worktree_info.unwrap();
+        assert_eq!(wt.branch, "feature/abc");
+        assert!(wt.managed_by_aoe);
+    }
+
+    // Tests for fork
+    #[test]
+    fn test_fork_non_claude_tool() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.tool = "opencode".to_string();
+
+        let result = inst.fork("Forked", "group");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("only supported for Claude"));
+    }
+
+    #[test]
+    fn test_fork_without_claude_session_id() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.claude_session_id = None;
+
+        let result = inst.fork("Forked", "group");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No Claude session ID"));
+    }
+
+    #[test]
+    fn test_fork_success() {
+        let mut inst = Instance::new("Original", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.claude_session_id = Some("session123".to_string());
+
+        let forked = inst.fork("Forked Session", "new/group").unwrap();
+
+        assert_eq!(forked.title, "Forked Session");
+        assert_eq!(forked.group_path, "new/group");
+        assert_eq!(forked.project_path, inst.project_path);
+        assert_eq!(forked.tool, "claude");
+        assert!(forked.command.contains("--resume"));
+        assert!(forked.command.contains("session123"));
+        assert_eq!(forked.parent_session_id, Some(inst.id.clone()));
+    }
+
+    // Test generate_id function properties
+    #[test]
+    fn test_generate_id_uniqueness() {
+        let ids: Vec<String> = (0..100).map(|_| Instance::new("t", "/t").id).collect();
+        let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(ids.len(), unique_ids.len());
+    }
+
+    #[test]
+    fn test_generate_id_format() {
+        let inst = Instance::new("test", "/tmp/test");
+        // ID should be 16 hex characters
+        assert_eq!(inst.id.len(), 16);
+        assert!(inst.id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
     #[test]
     fn test_has_terminal_false_by_default() {
         let inst = Instance::new("test", "/tmp/test");

@@ -197,4 +197,27 @@ mod tests {
         assert!(name.contains("My_Project"));
         assert!(name.contains("abc123de"));
     }
+
+    #[test]
+    fn test_generate_name_with_long_title() {
+        let name = Session::generate_name(
+            "abc123",
+            "This is a very long project name that exceeds the limit",
+        );
+        assert!(name.len() < 50);
+        assert!(name.starts_with(SESSION_PREFIX));
+    }
+
+    #[test]
+    fn test_generate_name_with_short_id() {
+        let name = Session::generate_name("abc", "Test");
+        assert!(name.contains("abc"));
+    }
+
+    #[test]
+    fn test_generate_name_consistency() {
+        let name1 = Session::generate_name("test123", "Project");
+        let name2 = Session::generate_name("test123", "Project");
+        assert_eq!(name1, name2);
+    }
 }
