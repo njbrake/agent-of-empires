@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for running Claude (required for --dangerously-skip-permissions)
-RUN useradd -m -s /bin/bash sandbox
+# Use UID 1000 to match typical host user UID for proper file permissions on mounted volumes
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    groupadd -g 1000 sandbox && \
+    useradd -m -s /bin/bash -u 1000 -g 1000 sandbox
 
 # Switch to sandbox user for tool installation
 USER sandbox

@@ -92,6 +92,9 @@ impl DeletionPoller {
         // Tmux kill - non-fatal if session already gone
         let _ = request.instance.kill();
 
+        // Kill paired terminal session if it exists
+        let _ = request.instance.kill_terminal();
+
         DeletionResult {
             session_id: request.session_id.clone(),
             success: errors.is_empty(),
@@ -173,10 +176,15 @@ mod tests {
             delete_sandbox: false,
         });
 
-        std::thread::sleep(Duration::from_millis(100));
-
-        let result = poller.try_recv_result();
-        assert!(result.is_some());
+        let mut result = None;
+        for _ in 0..50 {
+            result = poller.try_recv_result();
+            if result.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(result.is_some(), "Timed out waiting for deletion result");
 
         let result = result.unwrap();
         assert_eq!(result.session_id, session_id);

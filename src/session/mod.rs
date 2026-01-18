@@ -12,7 +12,9 @@ pub use config::{
     SandboxConfig, ThemeConfig, UpdatesConfig, WorktreeConfig,
 };
 pub use groups::{flatten_tree, Group, GroupTree, Item};
-pub use instance::{Instance, SandboxInfo, Status, WorktreeInfo, YOLO_SUPPORTED_TOOLS};
+pub use instance::{
+    Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo, YOLO_SUPPORTED_TOOLS,
+};
 pub use storage::Storage;
 
 use anyhow::Result;

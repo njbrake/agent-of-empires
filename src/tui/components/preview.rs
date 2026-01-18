@@ -9,6 +9,97 @@ use crate::tui::styles::Theme;
 pub struct Preview;
 
 impl Preview {
+    pub fn render_terminal_preview(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        terminal_running: bool,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4), // Minimal info section
+                Constraint::Min(1),    // Output section
+            ])
+            .split(area);
+
+        // Minimal info for terminal view
+        let info_lines = vec![
+            Line::from(vec![
+                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
+                Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
+            ]),
+            Line::from(vec![
+                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    shorten_path(&instance.project_path),
+                    Style::default().fg(theme.text),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    if terminal_running {
+                        "Running"
+                    } else {
+                        "Not started"
+                    },
+                    Style::default().fg(if terminal_running {
+                        theme.running
+                    } else {
+                        theme.dimmed
+                    }),
+                ),
+            ]),
+        ];
+        let paragraph = Paragraph::new(info_lines);
+        frame.render_widget(paragraph, chunks[0]);
+
+        // Output section
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Terminal Output ")
+            .title_style(Style::default().fg(theme.dimmed));
+
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+
+        if !terminal_running {
+            let hint = Paragraph::new("Press Enter to start terminal")
+                .style(Style::default().fg(theme.dimmed))
+                .alignment(Alignment::Center);
+            frame.render_widget(hint, inner);
+        } else if cached_output.is_empty() {
+            let hint = Paragraph::new("No output available")
+                .style(Style::default().fg(theme.dimmed))
+                .alignment(Alignment::Center);
+            frame.render_widget(hint, inner);
+        } else {
+            let output_lines: Vec<Line> = cached_output
+                .lines()
+                .map(|line| Line::from(Span::raw(line)))
+                .collect();
+
+            let line_count = output_lines.len();
+            let visible_height = inner.height as usize;
+
+            let scroll_offset = if line_count > visible_height {
+                (line_count - visible_height) as u16
+            } else {
+                0
+            };
+
+            let paragraph = Paragraph::new(output_lines)
+                .style(Style::default().fg(theme.text))
+                .scroll((scroll_offset, 0));
+
+            frame.render_widget(paragraph, inner);
+        }
+    }
+
     pub fn render_with_cache(
         frame: &mut Frame,
         area: Rect,

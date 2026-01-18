@@ -11,7 +11,8 @@ use super::components::{HelpOverlay, Preview};
 use super::deletion_poller::{DeletionPoller, DeletionRequest};
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, DeleteDialogConfig, DeleteOptions, GroupDeleteOptions,
-    GroupDeleteOptionsDialog, NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    GroupDeleteOptionsDialog, InfoDialog, NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
+    WelcomeDialog,
 };
 use super::status_poller::StatusPoller;
 use super::styles::Theme;
@@ -20,6 +21,14 @@ use crate::session::{
 };
 use crate::tmux::AvailableTools;
 use crate::update::UpdateInfo;
+
+/// View mode for the home screen
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Agent,
+    Terminal,
+}
 
 /// Cached preview content to avoid subprocess calls on every frame
 struct PreviewCache {
@@ -78,6 +87,7 @@ pub struct HomeView {
     cursor: usize,
     selected_session: Option<String>,
     selected_group: Option<String>,
+    view_mode: ViewMode,
 
     // Dialogs
     show_help: bool,
@@ -88,6 +98,7 @@ pub struct HomeView {
     rename_dialog: Option<RenameDialog>,
     welcome_dialog: Option<WelcomeDialog>,
     changelog_dialog: Option<ChangelogDialog>,
+    info_dialog: Option<InfoDialog>,
 
     // Search
     search_active: bool,
@@ -106,6 +117,7 @@ pub struct HomeView {
 
     // Performance: preview caching
     preview_cache: PreviewCache,
+    terminal_preview_cache: PreviewCache,
 }
 
 impl HomeView {
@@ -133,6 +145,7 @@ impl HomeView {
             cursor: 0,
             selected_session: None,
             selected_group: None,
+            view_mode: ViewMode::default(),
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
@@ -141,6 +154,7 @@ impl HomeView {
             rename_dialog: None,
             welcome_dialog: None,
             changelog_dialog: None,
+            info_dialog: None,
             search_active: false,
             search_query: String::new(),
             filtered_items: None,
@@ -149,6 +163,7 @@ impl HomeView {
             pending_status_refresh: false,
             deletion_poller: DeletionPoller::new(),
             preview_cache: PreviewCache::default(),
+            terminal_preview_cache: PreviewCache::default(),
         };
 
         view.update_selected();
@@ -269,6 +284,7 @@ impl HomeView {
             || self.rename_dialog.is_some()
             || self.welcome_dialog.is_some()
             || self.changelog_dialog.is_some()
+            || self.info_dialog.is_some()
     }
 
     pub fn show_welcome(&mut self) {
@@ -307,6 +323,18 @@ impl HomeView {
         }
     }
 
+    pub fn start_terminal_for_instance(&mut self, id: &str) -> anyhow::Result<()> {
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            inst.start_terminal()?;
+        }
+        if let Some(inst) = self.instance_map.get_mut(id) {
+            inst.start_terminal()?;
+        }
+        self.storage
+            .save_with_groups(&self.instances, &self.group_tree)?;
+        Ok(())
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
         // Handle welcome/changelog dialogs first (highest priority)
         if let Some(dialog) = &mut self.welcome_dialog {
@@ -324,6 +352,16 @@ impl HomeView {
                 super::dialogs::DialogResult::Continue => {}
                 super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
                     self.changelog_dialog = None;
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.info_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
+                    self.info_dialog = None;
                 }
             }
             return None;
@@ -473,6 +511,12 @@ impl HomeView {
                     return Some(Action::SwitchProfile(next));
                 }
             }
+            KeyCode::Char('t') => {
+                self.view_mode = match self.view_mode {
+                    ViewMode::Agent => ViewMode::Terminal,
+                    ViewMode::Terminal => ViewMode::Agent,
+                };
+            }
             KeyCode::Char('/') => {
                 self.search_active = true;
                 self.search_query.clear();
@@ -486,6 +530,14 @@ impl HomeView {
                 ));
             }
             KeyCode::Char('d') => {
+                // Deletion only allowed in Agent View
+                if self.view_mode == ViewMode::Terminal {
+                    self.info_dialog = Some(InfoDialog::new(
+                        "Cannot Delete Terminal",
+                        "Terminals cannot be deleted directly. Switch to Agent View (press 't') and delete the agent session instead.",
+                    ));
+                    return None;
+                }
                 if let Some(session_id) = &self.selected_session {
                     if let Some(inst) = self.instance_map.get(session_id) {
                         if inst.status == Status::Deleting {
@@ -574,7 +626,10 @@ impl HomeView {
                             return None;
                         }
                     }
-                    return Some(Action::AttachSession(id.clone()));
+                    return match self.view_mode {
+                        ViewMode::Agent => Some(Action::AttachSession(id.clone())),
+                        ViewMode::Terminal => Some(Action::AttachTerminal(id.clone())),
+                    };
                 } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
                     self.group_tree.toggle_collapsed(path);
                     self.flat_items = flatten_tree(&self.group_tree, &self.instances);
@@ -1022,13 +1077,21 @@ impl HomeView {
         if let Some(dialog) = &self.changelog_dialog {
             dialog.render(frame, area, theme);
         }
+
+        if let Some(dialog) = &self.info_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let title = match self.view_mode {
+            ViewMode::Agent => format!(" Agent of Empires [{}] ", self.storage.profile()),
+            ViewMode::Terminal => format!(" Terminals [{}] ", self.storage.profile()),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
-            .title(format!(" Agent of Empires [{}] ", self.storage.profile()))
+            .title(title)
             .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(area);
@@ -1106,24 +1169,41 @@ impl HomeView {
             }
             Item::Session { id, .. } => {
                 if let Some(inst) = self.instance_map.get(id) {
-                    let icon = match inst.status {
-                        Status::Running => ICON_RUNNING,
-                        Status::Waiting => ICON_WAITING,
-                        Status::Idle => ICON_IDLE,
-                        Status::Error => ICON_ERROR,
-                        Status::Starting => ICON_STARTING,
-                        Status::Deleting => ICON_DELETING,
-                    };
-                    let color = match inst.status {
-                        Status::Running => theme.running,
-                        Status::Waiting => theme.waiting,
-                        Status::Idle => theme.idle,
-                        Status::Error => theme.error,
-                        Status::Starting => theme.dimmed,
-                        Status::Deleting => theme.waiting,
-                    };
-                    let style = Style::default().fg(color);
-                    (icon, Cow::Borrowed(&inst.title), style)
+                    match self.view_mode {
+                        ViewMode::Agent => {
+                            let icon = match inst.status {
+                                Status::Running => ICON_RUNNING,
+                                Status::Waiting => ICON_WAITING,
+                                Status::Idle => ICON_IDLE,
+                                Status::Error => ICON_ERROR,
+                                Status::Starting => ICON_STARTING,
+                                Status::Deleting => ICON_DELETING,
+                            };
+                            let color = match inst.status {
+                                Status::Running => theme.running,
+                                Status::Waiting => theme.waiting,
+                                Status::Idle => theme.idle,
+                                Status::Error => theme.error,
+                                Status::Starting => theme.dimmed,
+                                Status::Deleting => theme.waiting,
+                            };
+                            let style = Style::default().fg(color);
+                            (icon, Cow::Borrowed(&inst.title), style)
+                        }
+                        ViewMode::Terminal => {
+                            let terminal_running = inst
+                                .terminal_tmux_session()
+                                .map(|s| s.exists())
+                                .unwrap_or(false);
+                            let (icon, color) = if terminal_running {
+                                (ICON_RUNNING, theme.running)
+                            } else {
+                                (ICON_IDLE, theme.dimmed)
+                            };
+                            let style = Style::default().fg(color);
+                            (icon, Cow::Borrowed(&inst.title), style)
+                        }
+                    }
                 } else {
                     (
                         "?",
@@ -1195,28 +1275,100 @@ impl HomeView {
         }
     }
 
+    /// Refresh terminal preview cache if needed
+    fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
+        const PREVIEW_REFRESH_MS: u128 = 250;
+
+        let needs_refresh = match &self.selected_session {
+            Some(id) => {
+                self.terminal_preview_cache.session_id.as_ref() != Some(id)
+                    || self.terminal_preview_cache.dimensions != (width, height)
+                    || self
+                        .terminal_preview_cache
+                        .last_refresh
+                        .elapsed()
+                        .as_millis()
+                        > PREVIEW_REFRESH_MS
+            }
+            None => false,
+        };
+
+        if needs_refresh {
+            if let Some(id) = &self.selected_session {
+                if let Some(inst) = self.instance_map.get(id) {
+                    self.terminal_preview_cache.content = inst
+                        .terminal_tmux_session()
+                        .and_then(|s| s.capture_pane(height as usize))
+                        .unwrap_or_default();
+                    self.terminal_preview_cache.session_id = Some(id.clone());
+                    self.terminal_preview_cache.dimensions = (width, height);
+                    self.terminal_preview_cache.last_refresh = Instant::now();
+                }
+            }
+        }
+    }
+
     fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let title = match self.view_mode {
+            ViewMode::Agent => " Preview ",
+            ViewMode::Terminal => " Terminal Preview ",
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
-            .title(" Preview ")
+            .title(title)
             .title_style(Style::default().fg(theme.title));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // Refresh cache before borrowing from instance_map to avoid borrow conflicts
-        self.refresh_preview_cache_if_needed(inner.width, inner.height);
+        match self.view_mode {
+            ViewMode::Agent => {
+                // Refresh cache before borrowing from instance_map to avoid borrow conflicts
+                self.refresh_preview_cache_if_needed(inner.width, inner.height);
 
-        if let Some(id) = &self.selected_session {
-            if let Some(inst) = self.instance_map.get(id) {
-                Preview::render_with_cache(frame, inner, inst, &self.preview_cache.content, theme);
+                if let Some(id) = &self.selected_session {
+                    if let Some(inst) = self.instance_map.get(id) {
+                        Preview::render_with_cache(
+                            frame,
+                            inner,
+                            inst,
+                            &self.preview_cache.content,
+                            theme,
+                        );
+                    }
+                } else {
+                    let hint = Paragraph::new("Select a session to preview")
+                        .style(Style::default().fg(theme.dimmed))
+                        .alignment(Alignment::Center);
+                    frame.render_widget(hint, inner);
+                }
             }
-        } else {
-            let hint = Paragraph::new("Select a session to preview")
-                .style(Style::default().fg(theme.dimmed))
-                .alignment(Alignment::Center);
-            frame.render_widget(hint, inner);
+            ViewMode::Terminal => {
+                self.refresh_terminal_preview_cache_if_needed(inner.width, inner.height);
+
+                if let Some(id) = &self.selected_session {
+                    if let Some(inst) = self.instance_map.get(id) {
+                        let terminal_running = inst
+                            .terminal_tmux_session()
+                            .map(|s| s.exists())
+                            .unwrap_or(false);
+                        Preview::render_terminal_preview(
+                            frame,
+                            inner,
+                            inst,
+                            terminal_running,
+                            &self.terminal_preview_cache.content,
+                            theme,
+                        );
+                    }
+                } else {
+                    let hint = Paragraph::new("Select a session to preview terminal")
+                        .style(Style::default().fg(theme.dimmed))
+                        .alignment(Alignment::Center);
+                    frame.render_widget(hint, inner);
+                }
+            }
         }
     }
 
@@ -1224,22 +1376,30 @@ impl HomeView {
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
+        let mode_style = Style::default().fg(theme.waiting).bold();
+
+        let mode_indicator = match self.view_mode {
+            ViewMode::Agent => "[Agent]",
+            ViewMode::Terminal => "[Term]",
+        };
 
         let spans = vec![
+            Span::styled(format!(" {} ", mode_indicator), mode_style),
+            Span::styled("│", sep_style),
             Span::styled(" j/k", key_style),
-            Span::styled(" Navigate ", desc_style),
+            Span::styled(" Nav ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" Enter", key_style),
             Span::styled(" Attach ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" t", key_style),
+            Span::styled(" View ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" n", key_style),
             Span::styled(" New ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" d", key_style),
-            Span::styled(" Delete ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(" r", key_style),
-            Span::styled(" Rename ", desc_style),
+            Span::styled(" Del ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" /", key_style),
             Span::styled(" Search ", desc_style),
@@ -1901,5 +2061,68 @@ mod tests {
 
         let action = view.handle_key(key(KeyCode::Char('P')));
         assert_eq!(action, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_t_toggles_view_mode() {
+        let env = create_test_env_empty();
+        let mut view = env.view;
+
+        assert_eq!(view.view_mode, ViewMode::Agent);
+
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Terminal);
+
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Agent);
+    }
+
+    #[test]
+    #[serial]
+    fn test_enter_returns_attach_terminal_in_terminal_view() {
+        let env = create_test_env_with_sessions(1);
+        let mut view = env.view;
+
+        // In Agent view, Enter returns AttachSession
+        let action = view.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, Some(Action::AttachSession(_))));
+
+        // Switch to Terminal view
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Terminal);
+
+        // In Terminal view, Enter returns AttachTerminal
+        let action = view.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, Some(Action::AttachTerminal(_))));
+    }
+
+    #[test]
+    #[serial]
+    fn test_d_shows_info_dialog_in_terminal_view() {
+        let env = create_test_env_with_sessions(1);
+        let mut view = env.view;
+
+        // Switch to Terminal view
+        view.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(view.view_mode, ViewMode::Terminal);
+
+        // Press 'd' - should show info dialog, not delete dialog
+        assert!(view.info_dialog.is_none());
+        view.handle_key(key(KeyCode::Char('d')));
+        assert!(view.info_dialog.is_some());
+        assert!(view.unified_delete_dialog.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_has_dialog_includes_info_dialog() {
+        let env = create_test_env_empty();
+        let mut view = env.view;
+
+        assert!(!view.has_dialog());
+
+        view.info_dialog = Some(InfoDialog::new("Test", "Test message"));
+        assert!(view.has_dialog());
     }
 }
