@@ -135,4 +135,3 @@ fn test_config_roundtrip_preserves_auto_cleanup() {
         "sandbox.auto_cleanup should persist as false"
     );
 }
-
