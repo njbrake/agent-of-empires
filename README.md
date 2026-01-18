@@ -6,10 +6,11 @@
 [![GitHub release](https://img.shields.io/github/v/release/njbrake/agent-of-empires)](https://github.com/njbrake/agent-of-empires/releases)
 [![MSRV](https://img.shields.io/badge/MSRV-1.74-blue?logo=rust)](https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html)
 
-A terminal session manager for Linux and macOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
+A coding agent and shell terminal session manager for Linux and macOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
 
 - Git worktree management for easily handling parallel agents in one codebase
 - Easily sandbox your agents in docker containers
+- Quickly toggle between viewing the agents and terminals in their working dirs via the TUI(see demo GIF below)
 - Interact via either TUI or CLI
 
 `aoe` manages cleanup of worktrees and sandboxes once you've completed your session. 
