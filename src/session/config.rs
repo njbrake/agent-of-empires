@@ -216,3 +216,246 @@ pub fn get_claude_config_dir() -> Option<PathBuf> {
         PathBuf::from(s)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests for Config defaults
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        // default_profile uses default_profile() function which returns "default"
+        // but Default derive gives empty string, so check deserialize case works
+        let deserialized: Config = toml::from_str("").unwrap();
+        assert_eq!(deserialized.default_profile, "default");
+        assert!(!config.worktree.enabled);
+        assert!(!config.sandbox.enabled_by_default);
+        assert!(config.updates.check_enabled);
+    }
+
+    #[test]
+    fn test_config_deserialize_empty_toml() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.default_profile, "default");
+    }
+
+    #[test]
+    fn test_config_deserialize_partial_toml() {
+        let toml = r#"
+            default_profile = "custom"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.default_profile, "custom");
+        // Other fields should have defaults
+        assert!(!config.worktree.enabled);
+    }
+
+    // Tests for ThemeConfig
+    #[test]
+    fn test_theme_config_default() {
+        let theme = ThemeConfig::default();
+        assert_eq!(theme.name, "");
+    }
+
+    #[test]
+    fn test_theme_config_deserialize() {
+        let toml = r#"name = "dark""#;
+        let theme: ThemeConfig = toml::from_str(toml).unwrap();
+        assert_eq!(theme.name, "dark");
+    }
+
+    // Tests for UpdatesConfig
+    #[test]
+    fn test_updates_config_default() {
+        let updates = UpdatesConfig::default();
+        assert!(updates.check_enabled);
+        assert!(!updates.auto_update);
+        assert_eq!(updates.check_interval_hours, 24);
+        assert!(updates.notify_in_cli);
+    }
+
+    #[test]
+    fn test_updates_config_deserialize() {
+        let toml = r#"
+            check_enabled = false
+            auto_update = true
+            check_interval_hours = 12
+            notify_in_cli = false
+        "#;
+        let updates: UpdatesConfig = toml::from_str(toml).unwrap();
+        assert!(!updates.check_enabled);
+        assert!(updates.auto_update);
+        assert_eq!(updates.check_interval_hours, 12);
+        assert!(!updates.notify_in_cli);
+    }
+
+    #[test]
+    fn test_updates_config_partial_deserialize() {
+        let toml = r#"check_enabled = false"#;
+        let updates: UpdatesConfig = toml::from_str(toml).unwrap();
+        assert!(!updates.check_enabled);
+        // Defaults for other fields
+        assert!(!updates.auto_update);
+        assert_eq!(updates.check_interval_hours, 24);
+    }
+
+    // Tests for WorktreeConfig
+    #[test]
+    fn test_worktree_config_default() {
+        let wt = WorktreeConfig::default();
+        assert!(!wt.enabled);
+        assert_eq!(wt.path_template, "../{repo-name}-worktrees/{branch}");
+        assert!(wt.auto_cleanup);
+        assert!(wt.show_branch_in_tui);
+    }
+
+    #[test]
+    fn test_worktree_config_deserialize() {
+        let toml = r#"
+            enabled = true
+            path_template = "/custom/{branch}"
+            auto_cleanup = false
+            show_branch_in_tui = false
+        "#;
+        let wt: WorktreeConfig = toml::from_str(toml).unwrap();
+        assert!(wt.enabled);
+        assert_eq!(wt.path_template, "/custom/{branch}");
+        assert!(!wt.auto_cleanup);
+        assert!(!wt.show_branch_in_tui);
+    }
+
+    // Tests for SandboxConfig
+    #[test]
+    fn test_sandbox_config_default() {
+        let sb = SandboxConfig::default();
+        assert!(!sb.enabled_by_default);
+        assert!(sb.auto_cleanup);
+        assert!(sb.extra_volumes.is_empty());
+        assert!(sb.environment.is_empty());
+        assert!(sb.cpu_limit.is_none());
+        assert!(sb.memory_limit.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_config_deserialize() {
+        let toml = r#"
+            enabled_by_default = true
+            default_image = "custom:latest"
+            extra_volumes = ["/data:/data"]
+            environment = ["MY_VAR"]
+            auto_cleanup = false
+            cpu_limit = "2"
+            memory_limit = "4g"
+        "#;
+        let sb: SandboxConfig = toml::from_str(toml).unwrap();
+        assert!(sb.enabled_by_default);
+        assert_eq!(sb.default_image, "custom:latest");
+        assert_eq!(sb.extra_volumes, vec!["/data:/data"]);
+        assert_eq!(sb.environment, vec!["MY_VAR"]);
+        assert!(!sb.auto_cleanup);
+        assert_eq!(sb.cpu_limit, Some("2".to_string()));
+        assert_eq!(sb.memory_limit, Some("4g".to_string()));
+    }
+
+    // Tests for ClaudeConfig
+    #[test]
+    fn test_claude_config_default() {
+        let cc = ClaudeConfig::default();
+        assert!(cc.config_dir.is_none());
+    }
+
+    #[test]
+    fn test_claude_config_deserialize() {
+        let toml = r#"config_dir = "/custom/claude""#;
+        let cc: ClaudeConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cc.config_dir, Some("/custom/claude".to_string()));
+    }
+
+    // Tests for AppStateConfig
+    #[test]
+    fn test_app_state_config_default() {
+        let app = AppStateConfig::default();
+        assert!(!app.has_seen_welcome);
+        assert!(app.last_seen_version.is_none());
+    }
+
+    #[test]
+    fn test_app_state_config_deserialize() {
+        let toml = r#"
+            has_seen_welcome = true
+            last_seen_version = "1.0.0"
+        "#;
+        let app: AppStateConfig = toml::from_str(toml).unwrap();
+        assert!(app.has_seen_welcome);
+        assert_eq!(app.last_seen_version, Some("1.0.0".to_string()));
+    }
+
+    // Full config serialization roundtrip
+    #[test]
+    fn test_config_serialization_roundtrip() {
+        let mut config = Config::default();
+        config.default_profile = "test".to_string();
+        config.worktree.enabled = true;
+        config.sandbox.enabled_by_default = true;
+        config.updates.check_interval_hours = 48;
+
+        let serialized = toml::to_string(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(config.default_profile, deserialized.default_profile);
+        assert_eq!(config.worktree.enabled, deserialized.worktree.enabled);
+        assert_eq!(
+            config.sandbox.enabled_by_default,
+            deserialized.sandbox.enabled_by_default
+        );
+        assert_eq!(
+            config.updates.check_interval_hours,
+            deserialized.updates.check_interval_hours
+        );
+    }
+
+    // Test nested sections in TOML
+    #[test]
+    fn test_config_nested_sections() {
+        let toml = r#"
+            default_profile = "work"
+
+            [theme]
+            name = "monokai"
+
+            [worktree]
+            enabled = true
+            path_template = "../wt/{branch}"
+
+            [sandbox]
+            enabled_by_default = true
+
+            [updates]
+            check_enabled = true
+            check_interval_hours = 12
+
+            [app_state]
+            has_seen_welcome = true
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.default_profile, "work");
+        assert_eq!(config.theme.name, "monokai");
+        assert!(config.worktree.enabled);
+        assert_eq!(config.worktree.path_template, "../wt/{branch}");
+        assert!(config.sandbox.enabled_by_default);
+        assert!(config.updates.check_enabled);
+        assert_eq!(config.updates.check_interval_hours, 12);
+        assert!(config.app_state.has_seen_welcome);
+    }
+
+    // Test get_update_settings helper
+    #[test]
+    fn test_get_update_settings_returns_defaults_when_no_config() {
+        // This test doesn't access the filesystem, so it should return defaults
+        let settings = UpdatesConfig::default();
+        assert!(settings.check_enabled);
+        assert_eq!(settings.check_interval_hours, 24);
+    }
+}

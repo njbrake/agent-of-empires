@@ -584,4 +584,201 @@ mod tests {
             Status::Idle
         );
     }
+
+    // Additional edge case tests for strip_ansi
+    #[test]
+    fn test_strip_ansi_empty_string() {
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn test_strip_ansi_multiple_codes() {
+        assert_eq!(
+            strip_ansi("\x1b[1m\x1b[32mbold green\x1b[0m normal"),
+            "bold green normal"
+        );
+    }
+
+    #[test]
+    fn test_strip_ansi_osc_sequences() {
+        // OSC (Operating System Command) sequences like title setting
+        assert_eq!(strip_ansi("\x1b]0;Window Title\x07text"), "text");
+    }
+
+    #[test]
+    fn test_strip_ansi_nested_sequences() {
+        assert_eq!(strip_ansi("\x1b[38;5;196mred\x1b[0m"), "red");
+    }
+
+    #[test]
+    fn test_strip_ansi_with_256_colors() {
+        assert_eq!(
+            strip_ansi("\x1b[38;2;255;100;50mRGB color\x1b[0m"),
+            "RGB color"
+        );
+    }
+
+    // Additional tests for sanitize_session_name
+    #[test]
+    fn test_sanitize_session_name_special_chars() {
+        assert_eq!(sanitize_session_name("test/path"), "test_path");
+        assert_eq!(sanitize_session_name("test.name"), "test_name");
+        assert_eq!(sanitize_session_name("test@name"), "test_name");
+        assert_eq!(sanitize_session_name("test:name"), "test_name");
+    }
+
+    #[test]
+    fn test_sanitize_session_name_preserves_valid_chars() {
+        assert_eq!(sanitize_session_name("test-name_123"), "test-name_123");
+    }
+
+    #[test]
+    fn test_sanitize_session_name_empty() {
+        assert_eq!(sanitize_session_name(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_session_name_unicode() {
+        // Unicode alphanumeric chars are kept by is_alphanumeric()
+        // Non-alphanumeric unicode like emojis are replaced
+        let result = sanitize_session_name("test😀emoji");
+        assert!(result.starts_with("test"));
+        // Emoji should be replaced with underscore
+        assert!(result.contains('_'));
+        assert!(!result.contains('😀'));
+    }
+
+    // Tests for detect_status_from_content
+    #[test]
+    fn test_detect_status_from_content_auto_detects_claude() {
+        let content = "some output\nesc to interrupt\nclaude code";
+        let status = detect_status_from_content(content, "shell", None);
+        assert_eq!(status, Status::Running);
+    }
+
+    #[test]
+    fn test_detect_status_from_content_auto_detects_opencode() {
+        let content = "Tab switch agent\nesc to interrupt";
+        let status = detect_status_from_content(content, "shell", None);
+        assert_eq!(status, Status::Running);
+    }
+
+    #[test]
+    fn test_detect_status_from_content_falls_back_to_claude() {
+        // Unknown tool falls back to Claude detection
+        let content = "Processing ⠋";
+        let status = detect_status_from_content(content, "unknown_tool", None);
+        assert_eq!(status, Status::Running);
+    }
+
+    // More Claude status detection edge cases
+    #[test]
+    fn test_detect_claude_status_numbered_list_selection() {
+        let content = "Choose an option:\n❯ 1. First option\n  2. Second option\n  3. Third option";
+        assert_eq!(detect_claude_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_claude_status_all_spinner_chars() {
+        for spinner in SPINNER_CHARS {
+            let content = format!("Working... {}", spinner);
+            assert_eq!(
+                detect_claude_status(&content),
+                Status::Running,
+                "Failed for spinner: {}",
+                spinner
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_claude_status_prompt_with_text() {
+        // Input prompt with some text already typed
+        assert_eq!(detect_claude_status("> hello"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_claude_status_yn_variations() {
+        assert_eq!(detect_claude_status("Continue? [Y/n]"), Status::Waiting);
+        assert_eq!(detect_claude_status("Proceed? [y/N]"), Status::Waiting);
+        assert_eq!(detect_claude_status("Confirm (Y/n)"), Status::Waiting);
+        assert_eq!(detect_claude_status("Delete? (y/N)"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_claude_status_allow_prompts() {
+        assert_eq!(detect_claude_status("❯ Yes"), Status::Waiting);
+        assert_eq!(detect_claude_status("❯ No"), Status::Waiting);
+        assert_eq!(detect_claude_status("Allow once"), Status::Waiting);
+        assert_eq!(detect_claude_status("Allow always"), Status::Waiting);
+    }
+
+    // More OpenCode status detection edge cases
+    #[test]
+    fn test_detect_opencode_status_numbered_selection() {
+        let content = "Select:\n❯ 1. Option A\n  2. Option B";
+        assert_eq!(detect_opencode_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_opencode_status_completion_with_prompt() {
+        let content = "Task complete! What else can I help with?\n>";
+        assert_eq!(detect_opencode_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_opencode_status_double_prompt() {
+        assert_eq!(detect_opencode_status("Ready\n>>"), Status::Waiting);
+    }
+
+    // Tests for is_opencode_content and is_claude_code_content
+    #[test]
+    fn test_is_opencode_content_indicators() {
+        assert!(is_opencode_content("tab switch agent"));
+        assert!(is_opencode_content("ctrl+p commands"));
+        assert!(is_opencode_content("/compact"));
+        assert!(is_opencode_content("/status"));
+        assert!(!is_opencode_content("random text"));
+    }
+
+    #[test]
+    fn test_is_claude_code_content_indicators() {
+        assert!(is_claude_code_content("esc to interrupt"));
+        assert!(is_claude_code_content("yes, allow once"));
+        assert!(is_claude_code_content("/ to search"));
+        assert!(is_claude_code_content("? for help"));
+        assert!(!is_claude_code_content("random text"));
+    }
+
+    #[test]
+    fn test_is_claude_code_content_prompt_with_box_chars() {
+        // Prompt indicator with box-drawing characters
+        let content = "│ some content ─\n>";
+        assert!(is_claude_code_content(content));
+    }
+
+    // Test for generate_name edge cases
+    #[test]
+    fn test_generate_name_with_long_title() {
+        let name = Session::generate_name(
+            "abc123",
+            "This is a very long project name that exceeds the limit",
+        );
+        assert!(name.len() < 50); // Should be reasonably bounded
+        assert!(name.starts_with(SESSION_PREFIX));
+    }
+
+    #[test]
+    fn test_generate_name_with_short_id() {
+        let name = Session::generate_name("abc", "Test");
+        assert!(name.contains("abc"));
+    }
+
+    #[test]
+    fn test_generate_name_consistency() {
+        // Same inputs should produce same output
+        let name1 = Session::generate_name("test123", "Project");
+        let name2 = Session::generate_name("test123", "Project");
+        assert_eq!(name1, name2);
+    }
 }
