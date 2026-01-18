@@ -60,6 +60,22 @@ Sleep 50ms
 Type "d"
 Sleep 1000ms
 
+
+# ==== Showcase terminal view ====
+Type "t"
+Sleep 1000ms
+Enter
+Sleep 1000ms
+Type "pwd"
+Enter
+Sleep 1000ms
+Ctrl+b
+Sleep 50ms
+Type "d"
+Sleep 1000ms
+Type "t"
+Sleep 500ms
+
 # === Create second session with claude code and worktree ===
 # Open new session dialog
 Type "n"
@@ -142,7 +158,7 @@ Sleep 100ms
 
 # Submit
 Enter
-Sleep 1000ms
+Sleep 2000ms
 
 # accept warning dialogue if any
 Enter
