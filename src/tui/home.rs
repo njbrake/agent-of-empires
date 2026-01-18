@@ -11,7 +11,8 @@ use super::components::{HelpOverlay, Preview};
 use super::deletion_poller::{DeletionPoller, DeletionRequest};
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, DeleteDialogConfig, DeleteOptions, GroupDeleteOptions,
-    GroupDeleteOptionsDialog, NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    GroupDeleteOptionsDialog, InfoDialog, NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
+    WelcomeDialog,
 };
 use super::status_poller::StatusPoller;
 use super::styles::Theme;
@@ -97,6 +98,7 @@ pub struct HomeView {
     rename_dialog: Option<RenameDialog>,
     welcome_dialog: Option<WelcomeDialog>,
     changelog_dialog: Option<ChangelogDialog>,
+    info_dialog: Option<InfoDialog>,
 
     // Search
     search_active: bool,
@@ -152,6 +154,7 @@ impl HomeView {
             rename_dialog: None,
             welcome_dialog: None,
             changelog_dialog: None,
+            info_dialog: None,
             search_active: false,
             search_query: String::new(),
             filtered_items: None,
@@ -281,6 +284,7 @@ impl HomeView {
             || self.rename_dialog.is_some()
             || self.welcome_dialog.is_some()
             || self.changelog_dialog.is_some()
+            || self.info_dialog.is_some()
     }
 
     pub fn show_welcome(&mut self) {
@@ -348,6 +352,16 @@ impl HomeView {
                 super::dialogs::DialogResult::Continue => {}
                 super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
                     self.changelog_dialog = None;
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.info_dialog {
+            match dialog.handle_key(key) {
+                super::dialogs::DialogResult::Continue => {}
+                super::dialogs::DialogResult::Cancel | super::dialogs::DialogResult::Submit(_) => {
+                    self.info_dialog = None;
                 }
             }
             return None;
@@ -516,6 +530,14 @@ impl HomeView {
                 ));
             }
             KeyCode::Char('d') => {
+                // Deletion only allowed in Agent View
+                if self.view_mode == ViewMode::Terminal {
+                    self.info_dialog = Some(InfoDialog::new(
+                        "Cannot Delete Terminal",
+                        "Terminals cannot be deleted directly. Switch to Agent View (press 't') and delete the agent session instead.",
+                    ));
+                    return None;
+                }
                 if let Some(session_id) = &self.selected_session {
                     if let Some(inst) = self.instance_map.get(session_id) {
                         if inst.status == Status::Deleting {
@@ -1053,6 +1075,10 @@ impl HomeView {
         }
 
         if let Some(dialog) = &self.changelog_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.info_dialog {
             dialog.render(frame, area, theme);
         }
     }

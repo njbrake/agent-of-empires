@@ -37,10 +37,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("f", "Fork session (Claude)"),
             ],
         ),
-        (
-            "Views",
-            vec![("t", "Toggle Agent/Terminal view")],
-        ),
+        ("Views", vec![("t", "Toggle Agent/Terminal view")]),
         (
             "Other",
             vec![
