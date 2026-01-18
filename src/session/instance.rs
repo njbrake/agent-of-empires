@@ -14,6 +14,14 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalInfo {
+    #[serde(default)]
+    pub created: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -83,6 +91,10 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_info: Option<SandboxInfo>,
 
+    // Paired terminal session
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_info: Option<TerminalInfo>,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -115,6 +127,7 @@ impl Instance {
             claude_detected_at: None,
             worktree_info: None,
             sandbox_info: None,
+            terminal_info: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,
@@ -158,6 +171,40 @@ impl Instance {
 
     pub fn tmux_session(&self) -> Result<tmux::Session> {
         tmux::Session::new(&self.id, &self.title)
+    }
+
+    pub fn terminal_tmux_session(&self) -> Result<tmux::TerminalSession> {
+        tmux::TerminalSession::new(&self.id, &self.title)
+    }
+
+    pub fn has_terminal(&self) -> bool {
+        self.terminal_info
+            .as_ref()
+            .map(|t| t.created)
+            .unwrap_or(false)
+    }
+
+    pub fn start_terminal(&mut self) -> Result<()> {
+        let session = self.terminal_tmux_session()?;
+
+        if !session.exists() {
+            session.create(&self.project_path)?;
+        }
+
+        self.terminal_info = Some(TerminalInfo {
+            created: true,
+            created_at: Some(Utc::now()),
+        });
+
+        Ok(())
+    }
+
+    pub fn kill_terminal(&self) -> Result<()> {
+        let session = self.terminal_tmux_session()?;
+        if session.exists() {
+            session.kill()?;
+        }
+        Ok(())
     }
 
     pub fn start(&mut self) -> Result<()> {

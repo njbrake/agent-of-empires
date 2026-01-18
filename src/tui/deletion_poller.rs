@@ -92,6 +92,9 @@ impl DeletionPoller {
         // Tmux kill - non-fatal if session already gone
         let _ = request.instance.kill();
 
+        // Kill paired terminal session if it exists
+        let _ = request.instance.kill_terminal();
+
         DeletionResult {
             session_id: request.session_id.clone(),
             success: errors.is_empty(),

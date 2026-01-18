@@ -10,6 +10,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 pub const SESSION_PREFIX: &str = "aoe_";
+pub const TERMINAL_PREFIX: &str = "aoe_term_";
 
 static SESSION_CACHE: RwLock<SessionCache> = RwLock::new(SessionCache {
     data: None,

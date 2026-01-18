@@ -214,6 +214,9 @@ impl App {
                 Action::AttachSession(id) => {
                     self.attach_session(&id, terminal)?;
                 }
+                Action::AttachTerminal(id) => {
+                    self.attach_terminal(&id, terminal)?;
+                }
                 Action::SwitchProfile(profile) => {
                     let storage = Storage::new(&profile)?;
                     let tools = self.home.available_tools();
@@ -291,12 +294,79 @@ impl App {
 
         Ok(())
     }
+
+    fn attach_terminal(
+        &mut self,
+        session_id: &str,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        let instance = match self.home.get_instance(session_id) {
+            Some(inst) => inst.clone(),
+            None => return Ok(()),
+        };
+
+        let terminal_session = instance.terminal_tmux_session()?;
+
+        if !terminal_session.exists() {
+            // Start the terminal (creates tmux session and updates terminal_info)
+            if let Err(e) = self.home.start_terminal_for_instance(session_id) {
+                self.home
+                    .set_instance_error(session_id, Some(e.to_string()));
+                return Ok(());
+            }
+        }
+
+        // Leave TUI mode completely
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+            crossterm::cursor::Show
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        // Attach to terminal session (this blocks until user detaches with Ctrl+b d)
+        let attach_result = terminal_session.attach();
+
+        // Re-enter TUI mode
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture,
+            crossterm::cursor::Hide
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        // Drain any stale events that accumulated during tmux session
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read();
+        }
+
+        // Force terminal to clear and redraw completely
+        terminal.clear()?;
+        self.needs_redraw = true;
+
+        // Refresh session state since things may have changed
+        crate::tmux::refresh_session_cache();
+        self.home.reload()?;
+        self.home.select_session_by_id(session_id);
+
+        // Log any attach errors but don't fail
+        if let Err(e) = attach_result {
+            tracing::warn!("tmux terminal attach returned error: {}", e);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Quit,
     AttachSession(String),
+    AttachTerminal(String),
     SwitchProfile(String),
 }
 
