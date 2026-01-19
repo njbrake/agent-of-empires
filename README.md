@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/njbrake/agent-of-empires)](https://github.com/njbrake/agent-of-empires/releases)
 [![MSRV](https://img.shields.io/badge/MSRV-1.74-blue?logo=rust)](https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html)
+[![GitHub stars](https://img.shields.io/github/stars/njbrake/agent-of-empires?style=social)](https://github.com/njbrake/agent-of-empires/stargazers)
 
 A coding agent and shell terminal session manager for Linux and macOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
 
@@ -13,7 +14,9 @@ A coding agent and shell terminal session manager for Linux and macOS using tmux
 - Quickly toggle between viewing the agents and terminals in their working dirs via the TUI(see demo GIF below)
 - Interact via either TUI or CLI
 
-`aoe` manages cleanup of worktrees and sandboxes once you've completed your session. 
+`aoe` manages cleanup of worktrees and sandboxes once you've completed your session.
+
+> If you find this project useful, please consider giving it a star on GitHub - it helps others discover the project!
 
 ![Agent of Empires Demo](assets/demo.gif)
 
