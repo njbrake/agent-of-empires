@@ -17,16 +17,21 @@ impl Preview {
         cached_output: &str,
         theme: &Theme,
     ) {
+        let info_height = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
+            5
+        } else {
+            4
+        };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(4), // Minimal info section
-                Constraint::Min(1),    // Output section
+                Constraint::Length(info_height), // Minimal info section
+                Constraint::Min(1),              // Output section
             ])
             .split(area);
 
         // Minimal info for terminal view
-        let info_lines = vec![
+        let mut info_lines = vec![
             Line::from(vec![
                 Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
                 Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
@@ -54,6 +59,14 @@ impl Preview {
                 ),
             ]),
         ];
+        if let Some(sandbox) = &instance.sandbox_info {
+            if sandbox.enabled {
+                info_lines.push(Line::from(vec![
+                    Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
+                    Span::styled(&sandbox.container_name, Style::default().fg(Color::Magenta)),
+                ]));
+            }
+        }
         let paragraph = Paragraph::new(info_lines);
         frame.render_widget(paragraph, chunks[0]);
 

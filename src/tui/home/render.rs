@@ -93,11 +93,15 @@ impl HomeView {
             ViewMode::Agent => format!(" Agent of Empires [{}] ", self.storage.profile()),
             ViewMode::Terminal => format!(" Terminals [{}] ", self.storage.profile()),
         };
+        let (border_color, title_color) = match self.view_mode {
+            ViewMode::Agent => (theme.border, theme.title),
+            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
+            .border_style(Style::default().fg(border_color))
             .title(title)
-            .title_style(Style::default().fg(theme.title).bold());
+            .title_style(Style::default().fg(title_color).bold());
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -235,7 +239,7 @@ impl HomeView {
                         Style::default().fg(Color::Cyan),
                     ));
                 }
-                if inst.is_sandboxed() {
+                if inst.is_sandboxed() && self.view_mode == ViewMode::Agent {
                     line_spans.push(Span::styled(
                         " [sandbox]",
                         Style::default().fg(Color::Magenta),
@@ -318,11 +322,15 @@ impl HomeView {
             ViewMode::Agent => " Preview ",
             ViewMode::Terminal => " Terminal Preview ",
         };
+        let (border_color, title_color) = match self.view_mode {
+            ViewMode::Agent => (theme.border, theme.title),
+            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
+            .border_style(Style::default().fg(border_color))
             .title(title)
-            .title_style(Style::default().fg(theme.title));
+            .title_style(Style::default().fg(title_color));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -381,12 +389,12 @@ impl HomeView {
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
-        let mode_style = Style::default().fg(theme.waiting).bold();
 
-        let mode_indicator = match self.view_mode {
-            ViewMode::Agent => "[Agent]",
-            ViewMode::Terminal => "[Term]",
+        let (mode_indicator, mode_color) = match self.view_mode {
+            ViewMode::Agent => ("[Agent]", theme.waiting),
+            ViewMode::Terminal => ("[Term]", theme.terminal_border),
         };
+        let mode_style = Style::default().fg(mode_color).bold();
 
         let spans = vec![
             Span::styled(format!(" {} ", mode_indicator), mode_style),

@@ -7,6 +7,7 @@ pub struct Theme {
     // Background and borders
     pub background: Color,
     pub border: Color,
+    pub terminal_border: Color,
     pub selection: Color,
     pub session_selection: Color,
 
@@ -39,6 +40,7 @@ impl Theme {
         Self {
             background: Color::Rgb(16, 20, 18),
             border: Color::Rgb(45, 70, 55),
+            terminal_border: Color::Rgb(70, 130, 180),
             selection: Color::Rgb(30, 50, 40),
             session_selection: Color::Rgb(60, 60, 60),
 
@@ -63,6 +65,7 @@ impl Theme {
         Self {
             background: Color::Rgb(26, 27, 38),
             border: Color::Rgb(59, 66, 97),
+            terminal_border: Color::Rgb(97, 76, 81),
             selection: Color::Rgb(41, 46, 66),
             session_selection: Color::Rgb(41, 46, 66),
 
