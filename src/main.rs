@@ -25,6 +25,12 @@ async fn main() -> Result<()> {
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
+        Some(Commands::Tmux { command }) => {
+            use cli::tmux::TmuxCommands;
+            match command {
+                TmuxCommands::Status(args) => cli::tmux::run_status(args),
+            }
+        }
         Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
         None => tui::run(&profile).await,
     }

@@ -28,6 +28,9 @@ pub struct Config {
     pub sandbox: SandboxConfig,
 
     #[serde(default)]
+    pub tmux: TmuxConfig,
+
+    #[serde(default)]
     pub app_state: AppStateConfig,
 }
 
@@ -160,6 +163,50 @@ impl Default for SandboxConfig {
 
 fn default_sandbox_image() -> String {
     crate::docker::default_sandbox_image().to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TmuxStatusBarMode {
+    #[default]
+    Auto,
+    Enabled,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TmuxConfig {
+    #[serde(default)]
+    pub status_bar: TmuxStatusBarMode,
+}
+
+impl Default for TmuxConfig {
+    fn default() -> Self {
+        Self {
+            status_bar: TmuxStatusBarMode::Auto,
+        }
+    }
+}
+
+/// Check if user has a tmux configuration file.
+/// Returns true if ~/.tmux.conf or ~/.config/tmux/tmux.conf exists.
+pub fn user_has_tmux_config() -> bool {
+    if let Some(home) = dirs::home_dir() {
+        let traditional = home.join(".tmux.conf");
+        let xdg = home.join(".config").join("tmux").join("tmux.conf");
+        return traditional.exists() || xdg.exists();
+    }
+    false
+}
+
+/// Determine if status bar styling should be applied based on config and environment.
+pub fn should_apply_tmux_status_bar() -> bool {
+    let config = Config::load().unwrap_or_default();
+    match config.tmux.status_bar {
+        TmuxStatusBarMode::Enabled => true,
+        TmuxStatusBarMode::Disabled => false,
+        TmuxStatusBarMode::Auto => !user_has_tmux_config(),
+    }
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -457,5 +504,60 @@ mod tests {
         let settings = UpdatesConfig::default();
         assert!(settings.check_enabled);
         assert_eq!(settings.check_interval_hours, 24);
+    }
+
+    // Tests for TmuxConfig
+    #[test]
+    fn test_tmux_config_default() {
+        let tmux = TmuxConfig::default();
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_status_bar_mode_default() {
+        let mode = TmuxStatusBarMode::default();
+        assert_eq!(mode, TmuxStatusBarMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_deserialize() {
+        let toml = r#"status_bar = "enabled""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Enabled);
+    }
+
+    #[test]
+    fn test_tmux_config_deserialize_disabled() {
+        let toml = r#"status_bar = "disabled""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Disabled);
+    }
+
+    #[test]
+    fn test_tmux_config_deserialize_auto() {
+        let toml = r#"status_bar = "auto""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_in_full_config() {
+        let toml = r#"
+            [tmux]
+            status_bar = "enabled"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.tmux.status_bar, TmuxStatusBarMode::Enabled);
+    }
+
+    #[test]
+    fn test_tmux_config_serialization_roundtrip() {
+        let mut config = Config::default();
+        config.tmux.status_bar = TmuxStatusBarMode::Disabled;
+
+        let serialized = toml::to_string(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(config.tmux.status_bar, deserialized.tmux.status_bar);
     }
 }

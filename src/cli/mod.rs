@@ -8,6 +8,7 @@ pub mod profile;
 pub mod remove;
 pub mod session;
 pub mod status;
+pub mod tmux;
 pub mod uninstall;
 pub mod worktree;
 

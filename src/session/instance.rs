@@ -237,10 +237,40 @@ impl Instance {
         };
 
         session.create(&self.project_path, cmd.as_deref())?;
+
+        // Apply tmux status bar styling if enabled
+        self.apply_tmux_status_bar();
+
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
 
         Ok(())
+    }
+
+    /// Apply tmux status bar configuration to show session info.
+    fn apply_tmux_status_bar(&self) {
+        use crate::session::config::should_apply_tmux_status_bar;
+        use crate::tmux::status_bar::{apply_status_bar, SandboxDisplay};
+
+        if !should_apply_tmux_status_bar() {
+            return;
+        }
+
+        let session_name = tmux::Session::generate_name(&self.id, &self.title);
+        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
+            if s.enabled {
+                Some(SandboxDisplay {
+                    container_name: s.container_name.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
+        if let Err(e) = apply_status_bar(&session_name, &self.title, branch, sandbox.as_ref()) {
+            tracing::debug!("Failed to apply tmux status bar: {}", e);
+        }
     }
 
     fn ensure_container_running(&mut self) -> Result<()> {

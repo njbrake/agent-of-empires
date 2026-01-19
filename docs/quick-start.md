@@ -112,7 +112,22 @@ Configuration is stored in `~/.agent-of-empires/`:
 | `AGENT_OF_EMPIRES_PROFILE` | Default profile to use |
 | `AGENT_OF_EMPIRES_DEBUG` | Enable debug logging |
 
+## tmux Status Bar
+
+By default, aoe displays session info in the tmux status bar for users without an existing tmux configuration. This shows:
+
+- **Session title** - The name of your aoe session
+- **Git branch** - For worktree sessions
+
+If you have your own `~/.tmux.conf`, aoe won't modify your status bar. You can:
+
+- Set `status_bar = "enabled"` in `~/.agent-of-empires/config.toml` to always show aoe info
+- Or add `#(aoe tmux status)` to your tmux.conf for custom integration
+
+See [tmux Status Bar Guide](guides/tmux-status-bar.md) for details.
+
 ## Next Steps
 
 - See the [CLI Reference](cli/reference.md) for complete command documentation
 - Learn about [Git Worktrees](guides/worktrees.md) for parallel development
+- Customize the [tmux Status Bar](guides/tmux-status-bar.md)
