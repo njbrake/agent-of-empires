@@ -311,12 +311,19 @@ impl NewSessionDialog {
 
     fn current_input_mut(&mut self) -> &mut Input {
         let has_tool_selection = self.available_tools.len() > 1;
+        let has_worktree = !self.worktree_branch.value().is_empty();
+
         let worktree_field = if has_tool_selection { 4 } else { 3 };
+        let new_branch_field = if has_worktree {
+            worktree_field + 1
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if self.docker_available {
-            if has_tool_selection {
-                5
+            if has_worktree {
+                new_branch_field + 1
             } else {
-                4
+                worktree_field + 1
             }
         } else {
             usize::MAX
