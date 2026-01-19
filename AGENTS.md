@@ -34,7 +34,9 @@
 - Prefer “let the tools decide”: keep code `cargo fmt`-clean and `cargo clippy`-clean.
 - Rust naming: `snake_case` for modules/functions, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
 - Keep OS-specific logic in `src/process/{macos,linux}.rs` rather than sprinkling `cfg` checks.
-- Please add code comments if you find them helpful to accomplish your objective. However, please remove any comments you added that describe obvious behavior before finishing your task.
+- Add comments where they aid understanding, but remove obvious ones before finishing:
+  - **Keep**: comments explaining non-obvious formulas, layout structure documentation, or "why" something is done
+  - **Remove**: section headers that just name what the next line does (e.g., `// Render buttons` before `render_buttons()`), or comments restating the code
 
 ## Testing Guidelines
 
