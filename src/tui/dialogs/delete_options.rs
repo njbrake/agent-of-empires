@@ -169,10 +169,11 @@ impl UnifiedDeleteDialog {
         let checkbox_count = (has_worktree as u16) + (has_sandbox as u16);
 
         let dialog_width = 55;
+        // Add extra height for spacing: 1 after message, 1 before buttons, 1 before hints
         let dialog_height = if checkbox_count > 0 {
-            6 + checkbox_count
+            8 + checkbox_count // message + spacer + checkboxes + spacer + buttons + spacer + hints + border
         } else {
-            5
+            7 // message + spacer + buttons + spacer + hints + border
         };
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
@@ -196,16 +197,21 @@ impl UnifiedDeleteDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let mut constraints = vec![Constraint::Length(1)];
+        let mut constraints = vec![
+            Constraint::Length(1), // message
+            Constraint::Length(1), // spacer after message
+        ];
 
         if checkbox_count > 0 {
             for _ in 0..checkbox_count {
-                constraints.push(Constraint::Length(1));
+                constraints.push(Constraint::Length(1)); // each checkbox
             }
+            constraints.push(Constraint::Length(1)); // spacer after checkboxes
         }
 
-        constraints.push(Constraint::Length(1));
-        constraints.push(Constraint::Length(1));
+        constraints.push(Constraint::Length(1)); // buttons
+        constraints.push(Constraint::Length(1)); // spacer before hints
+        constraints.push(Constraint::Length(1)); // hints
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -222,6 +228,7 @@ impl UnifiedDeleteDialog {
             chunks[chunk_idx],
         );
         chunk_idx += 1;
+        chunk_idx += 1; // skip spacer
 
         if checkbox_count > 0 {
             if let Some(branch) = &self.config.worktree_branch {
@@ -251,10 +258,13 @@ impl UnifiedDeleteDialog {
                 );
                 chunk_idx += 1;
             }
+
+            chunk_idx += 1; // skip spacer
         }
 
         self.render_buttons(frame, chunks[chunk_idx], theme);
         chunk_idx += 1;
+        chunk_idx += 1; // skip spacer
 
         self.render_hints(frame, chunks[chunk_idx], theme, checkbox_count > 0);
     }
