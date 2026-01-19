@@ -197,7 +197,6 @@ impl UnifiedDeleteDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        // Build layout with spacing between sections
         let mut constraints = vec![
             Constraint::Length(1), // message
             Constraint::Length(1), // spacer after message
@@ -221,7 +220,6 @@ impl UnifiedDeleteDialog {
 
         let mut chunk_idx = 0;
 
-        // Message
         let message = format!("Delete \"{}\"?", self.session_title);
         frame.render_widget(
             Paragraph::new(message)
@@ -230,11 +228,8 @@ impl UnifiedDeleteDialog {
             chunks[chunk_idx],
         );
         chunk_idx += 1;
+        chunk_idx += 1; // skip spacer
 
-        // Spacer after message
-        chunk_idx += 1;
-
-        // Checkboxes
         if checkbox_count > 0 {
             if let Some(branch) = &self.config.worktree_branch {
                 let focused = self.focus == FocusElement::WorktreeCheckbox;
@@ -264,18 +259,13 @@ impl UnifiedDeleteDialog {
                 chunk_idx += 1;
             }
 
-            // Spacer after checkboxes
-            chunk_idx += 1;
+            chunk_idx += 1; // skip spacer
         }
 
-        // Buttons
         self.render_buttons(frame, chunks[chunk_idx], theme);
         chunk_idx += 1;
+        chunk_idx += 1; // skip spacer
 
-        // Spacer before hints
-        chunk_idx += 1;
-
-        // Hints
         self.render_hints(frame, chunks[chunk_idx], theme, checkbox_count > 0);
     }
 
