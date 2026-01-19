@@ -394,11 +394,22 @@ mod tests {
     // Full config serialization roundtrip
     #[test]
     fn test_config_serialization_roundtrip() {
-        let mut config = Config::default();
-        config.default_profile = "test".to_string();
-        config.worktree.enabled = true;
-        config.sandbox.enabled_by_default = true;
-        config.updates.check_interval_hours = 48;
+        let config = Config {
+            default_profile: "test".to_string(),
+            worktree: WorktreeConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            sandbox: SandboxConfig {
+                enabled_by_default: true,
+                ..Default::default()
+            },
+            updates: UpdatesConfig {
+                check_interval_hours: 48,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let serialized = toml::to_string(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
