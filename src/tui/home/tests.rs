@@ -14,6 +14,12 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+fn setup_test_home(temp: &TempDir) {
+    std::env::set_var("HOME", temp.path());
+    #[cfg(target_os = "linux")]
+    std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+}
+
 struct TestEnv {
     _temp: TempDir,
     view: HomeView,
@@ -21,7 +27,7 @@ struct TestEnv {
 
 fn create_test_env_empty() -> TestEnv {
     let temp = TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
+    setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
     let tools = AvailableTools {
         claude: true,
@@ -33,7 +39,7 @@ fn create_test_env_empty() -> TestEnv {
 
 fn create_test_env_with_sessions(count: usize) -> TestEnv {
     let temp = TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
+    setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
     let mut instances = Vec::new();
     for i in 0..count {
@@ -54,7 +60,7 @@ fn create_test_env_with_sessions(count: usize) -> TestEnv {
 
 fn create_test_env_with_groups() -> TestEnv {
     let temp = TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
+    setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
     let mut instances = Vec::new();
 
@@ -571,7 +577,7 @@ fn test_get_next_profile_single_profile_returns_none() {
 #[serial]
 fn test_get_next_profile_cycles_through_profiles() {
     let temp = TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
+    setup_test_home(&temp);
 
     crate::session::create_profile("alpha").unwrap();
     crate::session::create_profile("beta").unwrap();
@@ -592,7 +598,7 @@ fn test_get_next_profile_cycles_through_profiles() {
 #[serial]
 fn test_get_next_profile_wraps_around() {
     let temp = TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
+    setup_test_home(&temp);
 
     crate::session::create_profile("alpha").unwrap();
     crate::session::create_profile("beta").unwrap();
@@ -613,7 +619,7 @@ fn test_get_next_profile_wraps_around() {
 #[serial]
 fn test_uppercase_p_returns_switch_profile_action() {
     let temp = TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
+    setup_test_home(&temp);
 
     crate::session::create_profile("first").unwrap();
     crate::session::create_profile("second").unwrap();
