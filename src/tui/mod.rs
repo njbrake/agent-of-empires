@@ -19,6 +19,9 @@ use crossterm::{
 use ratatui::prelude::*;
 use std::io;
 
+use crate::session::get_update_settings;
+use crate::update::check_for_update;
+
 pub async fn run(profile: &str) -> Result<()> {
     // Check for tmux
     if !crate::tmux::is_tmux_available() {
@@ -42,6 +45,16 @@ pub async fn run(profile: &str) -> Result<()> {
         eprintln!();
         eprintln!("Install one of these tools and ensure it's in your PATH.");
         std::process::exit(1);
+    }
+
+    // If version changed, refresh the update cache before showing TUI.
+    // This ensures we have release notes for the changelog dialog.
+    if check_version_change()?.is_some() {
+        let settings = get_update_settings();
+        if settings.check_enabled {
+            let current_version = env!("CARGO_PKG_VERSION");
+            let _ = check_for_update(current_version, true).await;
+        }
     }
 
     // Setup terminal

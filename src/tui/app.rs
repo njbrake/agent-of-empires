@@ -20,6 +20,21 @@ pub struct App {
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
 }
 
+/// Check if the app version changed and return the previous version if changelog should be shown.
+/// This is called before App::new to allow async cache refresh.
+pub fn check_version_change() -> Result<Option<String>> {
+    let config = load_config()?.unwrap_or_default();
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    if config.app_state.has_seen_welcome
+        && config.app_state.last_seen_version.as_deref() != Some(current_version)
+    {
+        Ok(config.app_state.last_seen_version)
+    } else {
+        Ok(None)
+    }
+}
+
 impl App {
     pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
         let storage = Storage::new(profile)?;
@@ -36,6 +51,7 @@ impl App {
             config.app_state.last_seen_version = Some(current_version);
             save_config(&config)?;
         } else if config.app_state.last_seen_version.as_deref() != Some(&current_version) {
+            // Cache should already be refreshed by tui::run() before App::new
             home.show_changelog(config.app_state.last_seen_version.clone());
             config.app_state.last_seen_version = Some(current_version);
             save_config(&config)?;
