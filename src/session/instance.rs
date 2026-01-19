@@ -295,6 +295,9 @@ impl Instance {
             return Ok(());
         }
 
+        // Ensure image is available (always pulls to get latest)
+        docker::ensure_image(image)?;
+
         docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
         docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
 

@@ -50,6 +50,14 @@ pub fn pull_image(image: &str) -> Result<()> {
     Ok(())
 }
 
+/// Ensure an image is available locally by pulling it.
+/// Always pulls to ensure we have the latest version of the image.
+/// Docker efficiently caches layers, so this is fast when already up to date.
+pub fn ensure_image(image: &str) -> Result<()> {
+    tracing::info!("Pulling Docker image '{}'", image);
+    pull_image(image)
+}
+
 pub fn ensure_named_volume(name: &str) -> Result<()> {
     let check = Command::new("docker")
         .args(["volume", "inspect", name])
