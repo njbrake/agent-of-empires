@@ -10,6 +10,8 @@ pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32
     let content_lower = content.to_lowercase();
     let effective_tool = if tool == "shell" && is_opencode_content(&content_lower) {
         "opencode"
+    } else if tool == "shell" && is_codex_content(&content_lower) {
+        "codex"
     } else if tool == "shell" && is_claude_code_content(&content_lower) {
         "claude"
     } else {
@@ -19,6 +21,7 @@ pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32
     match effective_tool {
         "claude" => detect_claude_status(content),
         "opencode" => detect_opencode_status(&content_lower),
+        "codex" => detect_codex_status(&content_lower),
         _ => detect_claude_status(content),
     }
 }
@@ -26,6 +29,19 @@ pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32
 fn is_opencode_content(content: &str) -> bool {
     let opencode_indicators = ["tab switch agent", "ctrl+p commands", "/compact", "/status"];
     opencode_indicators.iter().any(|ind| content.contains(ind))
+}
+
+fn is_codex_content(content: &str) -> bool {
+    let codex_indicators = [
+        "openai codex",
+        "codex cli",
+        "/model",
+        "/approvals",
+        "gpt-5",
+        "$skill",
+        "codex>",
+    ];
+    codex_indicators.iter().any(|ind| content.contains(ind))
 }
 
 fn is_claude_code_content(content: &str) -> bool {
@@ -256,6 +272,121 @@ pub fn detect_opencode_status(content: &str) -> Status {
     Status::Idle
 }
 
+pub fn detect_codex_status(content: &str) -> Status {
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: Codex shows "esc to interrupt" or similar when actively processing
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("esc interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+    {
+        return Status::Running;
+    }
+
+    // RUNNING: Spinner characters indicate active processing
+    for line in &lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    // WAITING: Selection menus
+    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+        return Status::Waiting;
+    }
+
+    // WAITING: Approval/permission prompts
+    let permission_prompts = [
+        "(y/n)",
+        "[y/n]",
+        "approve",
+        "allow",
+        "continue?",
+        "proceed?",
+        "confirm",
+    ];
+    for prompt in &permission_prompts {
+        if last_lines_lower.contains(prompt) {
+            return Status::Waiting;
+        }
+    }
+
+    // WAITING: Numbered selection menu
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("❯") && trimmed.len() > 2 {
+            let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
+            if after_cursor.starts_with("1.")
+                || after_cursor.starts_with("2.")
+                || after_cursor.starts_with("3.")
+            {
+                return Status::Waiting;
+            }
+        }
+    }
+
+    // WAITING: Input prompt (> or codex>)
+    for line in non_empty_lines.iter().rev().take(10) {
+        let clean_line = strip_ansi(line).trim().to_string();
+        let clean_lower = clean_line.to_lowercase();
+
+        if clean_line == ">"
+            || clean_line == "> "
+            || clean_lower == "codex>"
+            || clean_lower == "codex> "
+        {
+            return Status::Waiting;
+        }
+        if clean_line.starts_with("> ") && !clean_lower.contains("esc") && clean_line.len() < 100 {
+            return Status::Waiting;
+        }
+    }
+
+    // WAITING: Completion indicators + input prompt nearby
+    let completion_indicators = [
+        "complete",
+        "done",
+        "finished",
+        "ready",
+        "what would you like",
+        "what else",
+        "anything else",
+        "how can i help",
+    ];
+    let has_completion = completion_indicators
+        .iter()
+        .any(|ind| last_lines_lower.contains(ind));
+    if has_completion {
+        for line in non_empty_lines.iter().rev().take(10) {
+            let clean = strip_ansi(line).trim().to_string();
+            let clean_lower = clean.to_lowercase();
+            if clean == ">" || clean == "> " || clean_lower == "codex>" || clean_lower == "codex> "
+            {
+                return Status::Waiting;
+            }
+        }
+    }
+
+    Status::Idle
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,5 +577,63 @@ mod tests {
     fn test_is_claude_code_content_prompt_with_box_chars() {
         let content = "│ some content ─\n>";
         assert!(is_claude_code_content(content));
+    }
+
+    #[test]
+    fn test_detect_codex_status_running() {
+        assert_eq!(
+            detect_codex_status("generating response\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_codex_status("working... ctrl+c to interrupt"),
+            Status::Running
+        );
+        assert_eq!(detect_codex_status("thinking ⠋"), Status::Running);
+        assert_eq!(detect_codex_status("processing ⠹"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_codex_status_waiting() {
+        assert_eq!(
+            detect_codex_status("apply this change? (y/n)"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_codex_status("confirm action? [y/n]"),
+            Status::Waiting
+        );
+        assert_eq!(detect_codex_status("approve the edit"), Status::Waiting);
+        assert_eq!(detect_codex_status("task done.\ncodex>"), Status::Waiting);
+        assert_eq!(detect_codex_status("complete!\n> "), Status::Waiting);
+        assert_eq!(
+            detect_codex_status("finished! what else can i help with?\n>"),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_detect_codex_status_idle() {
+        assert_eq!(detect_codex_status("some random output"), Status::Idle);
+        assert_eq!(
+            detect_codex_status("changes applied successfully"),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_is_codex_content_indicators() {
+        assert!(is_codex_content("openai codex"));
+        assert!(is_codex_content("codex cli"));
+        assert!(is_codex_content("/model"));
+        assert!(is_codex_content("codex>"));
+        assert!(!is_codex_content("random text"));
+    }
+
+    #[test]
+    fn test_detect_status_from_content_auto_detects_codex() {
+        let content = "some output\nesc to interrupt\nopenai codex";
+        let status = detect_status_from_content(content, "shell", None);
+        assert_eq!(status, Status::Running);
     }
 }

@@ -6,7 +6,7 @@ mod terminal_session;
 mod utils;
 
 pub use session::Session;
-pub use status_detection::{detect_claude_status, detect_opencode_status};
+pub use status_detection::{detect_claude_status, detect_codex_status, detect_opencode_status};
 pub use terminal_session::TerminalSession;
 
 use std::collections::HashMap;
@@ -99,10 +99,15 @@ pub fn is_opencode_available() -> bool {
     Command::new("opencode").arg("--version").output().is_ok()
 }
 
+pub fn is_codex_available() -> bool {
+    Command::new("codex").arg("--version").output().is_ok()
+}
+
 #[derive(Debug, Clone)]
 pub struct AvailableTools {
     pub claude: bool,
     pub opencode: bool,
+    pub codex: bool,
 }
 
 impl AvailableTools {
@@ -110,11 +115,12 @@ impl AvailableTools {
         Self {
             claude: is_claude_available(),
             opencode: is_opencode_available(),
+            codex: is_codex_available(),
         }
     }
 
     pub fn any_available(&self) -> bool {
-        self.claude || self.opencode
+        self.claude || self.opencode || self.codex
     }
 
     pub fn available_list(&self) -> Vec<&'static str> {
@@ -124,6 +130,9 @@ impl AvailableTools {
         }
         if self.opencode {
             tools.push("opencode");
+        }
+        if self.codex {
+            tools.push("codex");
         }
         tools
     }

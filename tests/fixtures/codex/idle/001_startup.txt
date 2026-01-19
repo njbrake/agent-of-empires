@@ -1,0 +1,16 @@
+# OpenAI Codex CLI - Idle state after startup
+# Captured: Initial startup screen
+# Key indicators: No active processing, no prompts
+
+╭─────────────────────────────────────────────────────────────────────────────╮
+│                              OpenAI Codex CLI                               │
+│                                  v0.87.0                                    │
+╰─────────────────────────────────────────────────────────────────────────────╯
+
+Welcome to Codex CLI! Type your request below to get started.
+
+Model: GPT-5.2-Codex
+Working directory: /home/user/project
+
+Type /help for available commands, /model to change models.
+

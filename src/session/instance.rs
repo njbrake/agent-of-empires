@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::docker::{
-    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, OPENCODE_AUTH_VOLUME,
+    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME,
+    OPENCODE_AUTH_VOLUME,
 };
 use crate::tmux;
 
@@ -162,6 +163,7 @@ impl Instance {
             match self.tool.as_str() {
                 "claude" => "claude",
                 "opencode" => "opencode",
+                "codex" => "codex",
                 _ => "bash",
             }
         } else {
@@ -217,8 +219,12 @@ impl Instance {
         let cmd = if self.is_sandboxed() {
             self.ensure_container_running()?;
             let sandbox = self.sandbox_info.as_ref().unwrap();
-            let tool_cmd = if self.is_yolo_mode() && self.tool == "claude" {
-                "claude --dangerously-skip-permissions".to_string()
+            let tool_cmd = if self.is_yolo_mode() {
+                match self.tool.as_str() {
+                    "claude" => "claude --dangerously-skip-permissions".to_string(),
+                    "codex" => "codex --yolo".to_string(),
+                    _ => self.get_tool_command().to_string(),
+                }
             } else {
                 self.get_tool_command().to_string()
             };
@@ -227,10 +233,10 @@ impl Instance {
                 sandbox.container_name, tool_cmd
             ))
         } else if self.command.is_empty() {
-            if self.tool == "claude" {
-                Some("claude".to_string())
-            } else {
-                None
+            match self.tool.as_str() {
+                "claude" => Some("claude".to_string()),
+                "codex" => Some("codex".to_string()),
+                _ => None,
             }
         } else {
             Some(self.command.clone())
@@ -267,6 +273,7 @@ impl Instance {
 
         docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
         docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
+        docker::ensure_named_volume(CODEX_AUTH_VOLUME)?;
 
         let config = self.build_container_config()?;
         let container_id = container.create(&config)?;
@@ -333,6 +340,10 @@ impl Instance {
             (
                 OPENCODE_AUTH_VOLUME.to_string(),
                 format!("{}/.local/share/opencode", CONTAINER_HOME),
+            ),
+            (
+                CODEX_AUTH_VOLUME.to_string(),
+                format!("{}/.openai", CONTAINER_HOME),
             ),
         ];
 
@@ -474,9 +485,9 @@ fn generate_id() -> String {
 
 /// Tools that have YOLO mode support configured.
 /// When adding a new tool, add it here and implement YOLO support in:
-/// - `start()` for command construction (Claude uses CLI flag)
+/// - `start()` for command construction (Claude uses CLI flag, Codex uses --yolo flag)
 /// - `build_container_config()` for environment variables (OpenCode uses env var)
-pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode"];
+pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "codex"];
 
 #[cfg(test)]
 mod tests {
@@ -509,6 +520,7 @@ mod tests {
         let available_tools = crate::tmux::AvailableTools {
             claude: true,
             opencode: true,
+            codex: true,
         };
         for tool in available_tools.available_list() {
             assert!(

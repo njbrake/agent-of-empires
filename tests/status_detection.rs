@@ -15,7 +15,7 @@
 //! 4. Re-run tests
 
 use agent_of_empires::session::Status;
-use agent_of_empires::tmux::{detect_claude_status, detect_opencode_status};
+use agent_of_empires::tmux::{detect_claude_status, detect_codex_status, detect_opencode_status};
 use std::fs;
 use std::path::PathBuf;
 
@@ -172,6 +172,43 @@ mod opencode {
             Status::Idle,
             lowercase,
             detect_opencode_status,
+        );
+    }
+}
+
+mod codex {
+    use super::*;
+
+    #[test]
+    fn test_running_state() {
+        test_all_fixtures_in_dir(
+            "codex",
+            "running",
+            Status::Running,
+            lowercase,
+            detect_codex_status,
+        );
+    }
+
+    #[test]
+    fn test_waiting_permission_state() {
+        test_all_fixtures_in_dir(
+            "codex",
+            "waiting_permission",
+            Status::Waiting,
+            lowercase,
+            detect_codex_status,
+        );
+    }
+
+    #[test]
+    fn test_idle_state() {
+        test_all_fixtures_in_dir(
+            "codex",
+            "idle",
+            Status::Idle,
+            lowercase,
+            detect_codex_status,
         );
     }
 }

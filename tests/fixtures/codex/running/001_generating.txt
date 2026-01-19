@@ -1,0 +1,12 @@
+# OpenAI Codex CLI - Running state while generating
+# Captured: Active code generation
+# Key indicators: "esc to interrupt" shown
+
+╭─────────────────────────────────────────────────────────────────────────────╮
+│                              OpenAI Codex CLI                               │
+╰─────────────────────────────────────────────────────────────────────────────╯
+
+User: Add a function to validate email addresses
+
+⠹ Generating response...                                    esc to interrupt
+
