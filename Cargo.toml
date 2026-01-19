@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "0.5.0"
+version = "0.4.5"
 edition = "2021"
 rust-version = "1.74"
 authors = ["Agent of Empires Contributors"]

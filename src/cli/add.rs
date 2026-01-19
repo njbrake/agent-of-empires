@@ -263,6 +263,8 @@ fn detect_tool(cmd: &str) -> String {
         "claude".to_string()
     } else if cmd_lower.contains("opencode") || cmd_lower.contains("open-code") {
         "opencode".to_string()
+    } else if cmd_lower.contains("vibe") || cmd_lower.contains("mistral-vibe") {
+        "vibe".to_string()
     } else if cmd_lower.contains("cursor") {
         "cursor".to_string()
     } else {
