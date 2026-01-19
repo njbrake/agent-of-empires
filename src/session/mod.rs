@@ -33,18 +33,16 @@ pub fn get_app_dir() -> Result<PathBuf> {
 
 fn get_app_dir_path() -> Result<PathBuf> {
     #[cfg(target_os = "linux")]
-    {
-        // Use XDG_CONFIG_HOME (defaults to ~/.config) on Linux
-        let config_dir =
-            dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Cannot find config directory"))?;
-        return Ok(config_dir.join("agent-of-empires"));
-    }
+    let dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find config directory"))?
+        .join("agent-of-empires");
 
     #[cfg(not(target_os = "linux"))]
-    {
-        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
-        Ok(home.join(".agent-of-empires"))
-    }
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
+        .join(".agent-of-empires");
+
+    Ok(dir)
 }
 
 pub fn get_profile_dir(profile: &str) -> Result<PathBuf> {
