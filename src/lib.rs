@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod docker;
 pub mod git;
+pub mod migrations;
 pub mod process;
 pub mod session;
 pub mod tmux;

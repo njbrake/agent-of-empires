@@ -1,6 +1,7 @@
 //! Agent of Empires - Terminal session manager for AI coding agents
 
 use agent_of_empires::cli::{self, Cli, Commands};
+use agent_of_empires::migrations;
 use agent_of_empires::tui;
 use anyhow::Result;
 use clap::Parser;
@@ -12,6 +13,8 @@ async fn main() -> Result<()> {
             .with_env_filter("agent_of_empires=debug")
             .init();
     }
+
+    migrations::run_migrations()?;
 
     let cli = Cli::parse();
     let profile = cli.profile.unwrap_or_default();
