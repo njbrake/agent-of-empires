@@ -326,7 +326,7 @@ impl Instance {
             read_only: false,
         }];
 
-        const CONTAINER_HOME: &str = "/home/sandbox";
+        const CONTAINER_HOME: &str = "/root";
 
         let gitconfig = home.join(".gitconfig");
         if gitconfig.exists() {

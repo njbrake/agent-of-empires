@@ -14,23 +14,23 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-USER sandbox
-WORKDIR /home/sandbox
+# Continue as root (base image sets IS_SANDBOX=1)
+WORKDIR /root
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/home/sandbox/.local/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
 
-ENV NVM_DIR="/home/sandbox/.nvm"
+ENV NVM_DIR="/root/.nvm"
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash \
     && . "$NVM_DIR/nvm.sh" \
     && nvm install --lts \
     && nvm alias default node \
-    && ln -s "$(which node)" /home/sandbox/.local/bin/node \
-    && ln -s "$(which npm)" /home/sandbox/.local/bin/npm \
-    && ln -s "$(which npx)" /home/sandbox/.local/bin/npx
+    && ln -s "$(which node)" /root/.local/bin/node \
+    && ln -s "$(which npm)" /root/.local/bin/npm \
+    && ln -s "$(which npx)" /root/.local/bin/npx
 
 RUN echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc \
     && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc
