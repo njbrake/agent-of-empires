@@ -4,7 +4,7 @@
 //! that uses them, specifically the auto_cleanup settings for worktrees and
 //! sandbox containers.
 
-use agent_of_empires::session::{save_config, Config};
+use agent_of_empires::session::{save_config, Config, SandboxConfig, WorktreeConfig};
 use agent_of_empires::tui::dialogs::{DeleteDialogConfig, UnifiedDeleteDialog};
 use serial_test::serial;
 
@@ -134,4 +134,25 @@ fn test_config_roundtrip_preserves_auto_cleanup() {
         !loaded.sandbox.auto_cleanup,
         "sandbox.auto_cleanup should persist as false"
     );
+}
+
+#[test]
+fn test_all_worktree_config_fields_accessible() {
+    let config = WorktreeConfig::default();
+    let _ = config.enabled;
+    let _ = config.path_template.as_str();
+    let _ = config.auto_cleanup;
+    let _ = config.show_branch_in_tui;
+}
+
+#[test]
+fn test_all_sandbox_config_fields_accessible() {
+    let config = SandboxConfig::default();
+    let _ = config.enabled_by_default;
+    let _ = config.default_image.as_str();
+    let _ = &config.extra_volumes;
+    let _ = &config.environment;
+    let _ = config.auto_cleanup;
+    let _ = &config.cpu_limit;
+    let _ = &config.memory_limit;
 }
