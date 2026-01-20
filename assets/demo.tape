@@ -1,5 +1,5 @@
 # Agent of Empires Demo
-Output assets/demo.gif
+Output docs/assets/demo.gif
 
 Set FontSize 16
 Set Width 1200
