@@ -310,15 +310,25 @@ impl HomeView {
     /// Returns Some(session_id) if creation succeeded and we should attach.
     pub fn apply_creation_results(&mut self) -> Option<String> {
         use super::creation_poller::CreationResult;
+        use crate::session::builder::{self, CreatedWorktree};
+        use std::path::PathBuf;
 
         let result = self.creation_poller.try_recv_result()?;
 
         // Check if the user cancelled while waiting
         if self.creation_cancelled {
             self.creation_cancelled = false;
-            // If creation succeeded but was cancelled, clean up the tmux session
-            if let CreationResult::Success { ref instance, .. } = result {
-                let _ = instance.kill();
+            if let CreationResult::Success {
+                ref instance,
+                ref created_worktree,
+                ..
+            } = result
+            {
+                let worktree = created_worktree.as_ref().map(|wt| CreatedWorktree {
+                    path: PathBuf::from(&wt.path),
+                    main_repo_path: PathBuf::from(&wt.main_repo_path),
+                });
+                builder::cleanup_instance(instance, worktree.as_ref());
             }
             return None;
         }
@@ -327,8 +337,9 @@ impl HomeView {
             CreationResult::Success {
                 session_id,
                 instance,
+                ..
             } => {
-                let instance = *instance; // Unbox
+                let instance = *instance;
                 self.instances.push(instance.clone());
                 self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
                 if !instance.group_path.is_empty() {

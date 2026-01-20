@@ -6,8 +6,7 @@
 use std::sync::mpsc;
 use std::thread;
 
-use anyhow::{bail, Result};
-
+use crate::session::builder::{self, CreatedWorktree, InstanceParams};
 use crate::session::Instance;
 use crate::tui::dialogs::NewSessionData;
 
@@ -22,8 +21,26 @@ pub enum CreationResult {
     Success {
         session_id: String,
         instance: Box<Instance>,
+        /// Worktree created during build, needed for cleanup if cancelled
+        created_worktree: Option<CreatedWorktreeInfo>,
     },
     Error(String),
+}
+
+/// Serializable worktree info for passing across thread boundary
+#[derive(Debug, Clone)]
+pub struct CreatedWorktreeInfo {
+    pub path: String,
+    pub main_repo_path: String,
+}
+
+impl From<&CreatedWorktree> for CreatedWorktreeInfo {
+    fn from(wt: &CreatedWorktree) -> Self {
+        Self {
+            path: wt.path.to_string_lossy().to_string(),
+            main_repo_path: wt.main_repo_path.to_string_lossy().to_string(),
+        }
+    }
 }
 
 pub struct CreationPoller {
@@ -40,13 +57,7 @@ impl CreationPoller {
 
         let handle = thread::spawn(move || {
             while let Ok(request) = request_rx.recv() {
-                let result = match Self::create_instance(request) {
-                    Ok(instance) => CreationResult::Success {
-                        session_id: instance.id.clone(),
-                        instance: Box::new(instance),
-                    },
-                    Err(e) => CreationResult::Error(e.to_string()),
-                };
+                let result = Self::create_instance(request);
                 if result_tx.send(result).is_err() {
                     break;
                 }
@@ -61,136 +72,49 @@ impl CreationPoller {
         }
     }
 
-    /// Create an instance with all setup (worktree, sandbox container, etc.)
-    fn create_instance(request: CreationRequest) -> Result<Instance> {
-        use crate::docker::DockerContainer;
-        use crate::git::GitWorktree;
-        use crate::session::{civilizations, Config, SandboxInfo, WorktreeInfo};
-        use chrono::Utc;
-        use std::path::PathBuf;
-
+    fn create_instance(request: CreationRequest) -> CreationResult {
         let data = request.data;
 
-        // Docker availability check
-        if data.sandbox {
-            if !crate::docker::is_docker_available() {
-                bail!("Docker is not installed. Please install Docker to use sandbox mode.");
-            }
-            if !crate::docker::is_daemon_running() {
-                bail!("Docker daemon is not running. Please start Docker to use sandbox mode.");
-            }
-        }
-
-        let mut final_path = PathBuf::from(&data.path)
-            .canonicalize()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| data.path.clone());
-
-        let mut worktree_info = None;
-
-        // Worktree setup
-        if let Some(branch) = &data.worktree_branch {
-            let path = PathBuf::from(&data.path);
-
-            if !GitWorktree::is_git_repo(&path) {
-                bail!("Path is not in a git repository");
-            }
-
-            let config = Config::load()?;
-            let main_repo_path = GitWorktree::find_main_repo(&path)?;
-            let git_wt = GitWorktree::new(main_repo_path.clone())?;
-
-            if !data.create_new_branch {
-                let existing_worktrees = git_wt.list_worktrees()?;
-                if let Some(existing) = existing_worktrees
-                    .iter()
-                    .find(|wt| wt.branch.as_deref() == Some(branch))
-                {
-                    final_path = existing.path.to_string_lossy().to_string();
-                    worktree_info = Some(WorktreeInfo {
-                        branch: branch.clone(),
-                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                        managed_by_aoe: false,
-                        created_at: Utc::now(),
-                        cleanup_on_delete: false,
-                    });
-                } else {
-                    let session_id = uuid::Uuid::new_v4().to_string();
-                    let template = &config.worktree.path_template;
-                    let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
-
-                    git_wt.create_worktree(branch, &worktree_path, false)?;
-
-                    final_path = worktree_path.to_string_lossy().to_string();
-                    worktree_info = Some(WorktreeInfo {
-                        branch: branch.clone(),
-                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                        managed_by_aoe: true,
-                        created_at: Utc::now(),
-                        cleanup_on_delete: true,
-                    });
-                }
-            } else {
-                let session_id = uuid::Uuid::new_v4().to_string();
-                let template = &config.worktree.path_template;
-                let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
-
-                if worktree_path.exists() {
-                    bail!("Worktree already exists at {}", worktree_path.display());
-                }
-
-                git_wt.create_worktree(branch, &worktree_path, true)?;
-
-                final_path = worktree_path.to_string_lossy().to_string();
-                worktree_info = Some(WorktreeInfo {
-                    branch: branch.clone(),
-                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                    managed_by_aoe: true,
-                    created_at: Utc::now(),
-                    cleanup_on_delete: true,
-                });
-            }
-        }
-
-        // Generate title if empty
         let existing_titles: Vec<&str> = request
             .existing_instances
             .iter()
             .map(|i| i.title.as_str())
             .collect();
-        let final_title = if data.title.is_empty() {
-            civilizations::generate_random_title(&existing_titles)
-        } else {
-            data.title.clone()
+
+        let params = InstanceParams {
+            title: data.title,
+            path: data.path,
+            group: data.group,
+            tool: data.tool,
+            worktree_branch: data.worktree_branch,
+            create_new_branch: data.create_new_branch,
+            sandbox: data.sandbox,
+            sandbox_image: data.sandbox_image,
+            yolo_mode: data.yolo_mode,
         };
 
-        // Create instance
-        let mut instance = Instance::new(&final_title, &final_path);
-        instance.group_path = data.group;
-        instance.tool = data.tool.clone();
-        instance.command = if data.tool == "opencode" {
-            "opencode".to_string()
-        } else {
-            String::new()
+        let build_result = match builder::build_instance(params, &existing_titles) {
+            Ok(r) => r,
+            Err(e) => return CreationResult::Error(e.to_string()),
         };
-        instance.worktree_info = worktree_info;
 
-        // Sandbox setup - this does the slow Docker operations (image pull, container creation)
+        let mut instance = build_result.instance;
+        let created_worktree = build_result.created_worktree;
+
         if data.sandbox {
-            instance.sandbox_info = Some(SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: data.sandbox_image.clone(),
-                container_name: DockerContainer::generate_name(&instance.id),
-                created_at: None,
-                yolo_mode: if data.yolo_mode { Some(true) } else { None },
-            });
-
-            // Start the session - pulls image and creates container
-            instance.start()?;
+            if let Err(e) = instance.start() {
+                builder::cleanup_instance(&instance, created_worktree.as_ref());
+                return CreationResult::Error(e.to_string());
+            }
         }
 
-        Ok(instance)
+        let created_worktree_info = created_worktree.as_ref().map(CreatedWorktreeInfo::from);
+
+        CreationResult::Success {
+            session_id: instance.id.clone(),
+            instance: Box::new(instance),
+            created_worktree: created_worktree_info,
+        }
     }
 
     pub fn request_creation(&mut self, request: CreationRequest) {
