@@ -2,9 +2,16 @@
 
 use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
+use crossterm::terminal;
 use serde::Serialize;
 
 use crate::session::{GroupTree, Storage};
+
+/// Get current terminal size for tmux session creation.
+/// This ensures sessions start at the correct size instead of the 80x24 default.
+fn get_terminal_size() -> Option<(u16, u16)> {
+    terminal::size().ok()
+}
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
@@ -112,7 +119,7 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
-    instances[idx].start()?;
+    instances[idx].start_with_size(get_terminal_size())?;
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
@@ -152,7 +159,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
-    instances[idx].restart()?;
+    instances[idx].restart_with_size(get_terminal_size())?;
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);

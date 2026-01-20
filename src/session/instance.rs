@@ -185,10 +185,14 @@ impl Instance {
     }
 
     pub fn start_terminal(&mut self) -> Result<()> {
+        self.start_terminal_with_size(None)
+    }
+
+    pub fn start_terminal_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         let session = self.terminal_tmux_session()?;
 
         if !session.exists() {
-            session.create(&self.project_path)?;
+            session.create_with_size(&self.project_path, size)?;
         }
 
         self.terminal_info = Some(TerminalInfo {
@@ -208,6 +212,10 @@ impl Instance {
     }
 
     pub fn start(&mut self) -> Result<()> {
+        self.start_with_size(None)
+    }
+
+    pub fn start_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         let session = self.tmux_session()?;
 
         if session.exists() {
@@ -236,7 +244,7 @@ impl Instance {
             Some(self.command.clone())
         };
 
-        session.create(&self.project_path, cmd.as_deref())?;
+        session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply tmux status bar styling if enabled
         self.apply_tmux_status_bar();
@@ -403,6 +411,10 @@ impl Instance {
     }
 
     pub fn restart(&mut self) -> Result<()> {
+        self.restart_with_size(None)
+    }
+
+    pub fn restart_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         let session = self.tmux_session()?;
 
         if session.exists() {
@@ -412,7 +424,7 @@ impl Instance {
         // Small delay to ensure tmux cleanup
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        self.start()
+        self.start_with_size(size)
     }
 
     pub fn kill(&self) -> Result<()> {

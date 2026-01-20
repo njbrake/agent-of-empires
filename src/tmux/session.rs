@@ -39,6 +39,15 @@ impl Session {
     }
 
     pub fn create(&self, working_dir: &str, command: Option<&str>) -> Result<()> {
+        self.create_with_size(working_dir, command, None)
+    }
+
+    pub fn create_with_size(
+        &self,
+        working_dir: &str,
+        command: Option<&str>,
+        size: Option<(u16, u16)>,
+    ) -> Result<()> {
         if self.exists() {
             return Ok(());
         }
@@ -51,6 +60,14 @@ impl Session {
             "-c".to_string(),
             working_dir.to_string(),
         ];
+
+        // Pass terminal size to avoid 80x24 default for detached sessions
+        if let Some((width, height)) = size {
+            args.push("-x".to_string());
+            args.push(width.to_string());
+            args.push("-y".to_string());
+            args.push(height.to_string());
+        }
 
         if let Some(cmd) = command {
             args.push(cmd.to_string());

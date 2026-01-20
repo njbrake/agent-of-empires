@@ -326,12 +326,16 @@ impl HomeView {
         }
     }
 
-    pub fn start_terminal_for_instance(&mut self, id: &str) -> anyhow::Result<()> {
+    pub fn start_terminal_for_instance_with_size(
+        &mut self,
+        id: &str,
+        size: Option<(u16, u16)>,
+    ) -> anyhow::Result<()> {
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_terminal()?;
+            inst.start_terminal_with_size(size)?;
         }
         if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.start_terminal()?;
+            inst.start_terminal_with_size(size)?;
         }
         self.storage
             .save_with_groups(&self.instances, &self.group_tree)?;

@@ -36,11 +36,15 @@ impl TerminalSession {
     }
 
     pub fn create(&self, working_dir: &str) -> Result<()> {
+        self.create_with_size(working_dir, None)
+    }
+
+    pub fn create_with_size(&self, working_dir: &str, size: Option<(u16, u16)>) -> Result<()> {
         if self.exists() {
             return Ok(());
         }
 
-        let args = vec![
+        let mut args = vec![
             "new-session".to_string(),
             "-d".to_string(),
             "-s".to_string(),
@@ -48,6 +52,14 @@ impl TerminalSession {
             "-c".to_string(),
             working_dir.to_string(),
         ];
+
+        // Pass terminal size to avoid 80x24 default for detached sessions
+        if let Some((width, height)) = size {
+            args.push("-x".to_string());
+            args.push(width.to_string());
+            args.push("-y".to_string());
+            args.push(height.to_string());
+        }
 
         let output = Command::new("tmux").args(&args).output()?;
 
