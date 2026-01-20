@@ -17,23 +17,27 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info};
 
+use crate::docker::default_sandbox_image;
+
 static HAS_RUN: AtomicBool = AtomicBool::new(false);
 
 /// Fix ownership of Docker auth volumes to root.
 /// Safe to call multiple times - only runs once per process.
+/// Uses the sandbox image (which is already pulled) to avoid extra image downloads.
 pub fn run_lazy() {
     if HAS_RUN.swap(true, Ordering::SeqCst) {
         return;
     }
 
+    let image = default_sandbox_image();
     for volume in ["aoe-claude-auth", "aoe-opencode-auth"] {
-        if let Err(e) = fix_volume_ownership(volume) {
+        if let Err(e) = fix_volume_ownership(volume, image) {
             debug!("Could not fix ownership for volume {}: {}", volume, e);
         }
     }
 }
 
-fn fix_volume_ownership(volume_name: &str) -> anyhow::Result<()> {
+fn fix_volume_ownership(volume_name: &str, image: &str) -> anyhow::Result<()> {
     let check = Command::new("docker")
         .args(["volume", "inspect", volume_name])
         .output()?;
@@ -57,7 +61,7 @@ fn fix_volume_ownership(volume_name: &str) -> anyhow::Result<()> {
             "--rm",
             "-v",
             &format!("{}:/data", volume_name),
-            "alpine",
+            image,
             "chown",
             "-R",
             "root:root",
