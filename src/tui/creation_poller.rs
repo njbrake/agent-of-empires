@@ -119,7 +119,10 @@ impl CreationPoller {
 
     pub fn request_creation(&mut self, request: CreationRequest) {
         self.pending = true;
-        let _ = self.request_tx.send(request);
+        if self.request_tx.send(request).is_err() {
+            tracing::error!("Failed to send creation request: receiver thread died");
+            self.pending = false;
+        }
     }
 
     pub fn try_recv_result(&mut self) -> Option<CreationResult> {

@@ -153,7 +153,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
     if params.sandbox {
         let image = params
             .sandbox_image
-            .or_else(|| Some(crate::docker::default_sandbox_image().to_string()));
+            .or(Some(crate::docker::default_sandbox_image().to_string()));
         instance.sandbox_info = Some(SandboxInfo {
             enabled: true,
             container_id: None,
