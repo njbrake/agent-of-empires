@@ -396,7 +396,7 @@ impl HomeView {
         };
         let mode_style = Style::default().fg(mode_color).bold();
 
-        let spans = vec![
+        let mut spans = vec![
             Span::styled(format!(" {} ", mode_indicator), mode_style),
             Span::styled("│", sep_style),
             Span::styled(" j/k", key_style),
@@ -410,9 +410,18 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" n", key_style),
             Span::styled(" New ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(" d", key_style),
-            Span::styled(" Del ", desc_style),
+        ];
+
+        // Only show delete option if there are sessions or groups to delete
+        if !self.flat_items.is_empty() {
+            spans.extend([
+                Span::styled("│", sep_style),
+                Span::styled(" d", key_style),
+                Span::styled(" Del ", desc_style),
+            ]);
+        }
+
+        spans.extend([
             Span::styled("│", sep_style),
             Span::styled(" /", key_style),
             Span::styled(" Search ", desc_style),
@@ -422,7 +431,7 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" q", key_style),
             Span::styled(" Quit", desc_style),
-        ];
+        ]);
 
         let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
         frame.render_widget(status, area);
