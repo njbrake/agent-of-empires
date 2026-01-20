@@ -52,7 +52,7 @@ impl Preview {
                         "Not started"
                     },
                     Style::default().fg(if terminal_running {
-                        theme.running
+                        theme.terminal_active
                     } else {
                         theme.dimmed
                     }),

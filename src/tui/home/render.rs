@@ -205,7 +205,7 @@ impl HomeView {
                                 .map(|s| s.exists())
                                 .unwrap_or(false);
                             let (icon, color) = if terminal_running {
-                                (ICON_RUNNING, theme.running)
+                                (ICON_RUNNING, theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
                             };
