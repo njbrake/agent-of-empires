@@ -94,11 +94,19 @@ pub fn is_tmux_available() -> bool {
 }
 
 pub fn is_claude_available() -> bool {
-    Command::new("claude").arg("--version").output().is_ok()
+    Command::new("which")
+        .arg("claude")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 pub fn is_opencode_available() -> bool {
-    Command::new("opencode").arg("--version").output().is_ok()
+    Command::new("which")
+        .arg("opencode")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
