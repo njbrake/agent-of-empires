@@ -3,11 +3,17 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
+use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
 use crate::tui::styles::Theme;
 
 impl NewSessionDialog {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        // If loading, render the loading overlay instead
+        if self.loading {
+            self.render_loading(frame, area, theme);
+            return;
+        }
+
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
         let sandbox_options_visible = has_sandbox && self.sandbox_enabled;
@@ -423,6 +429,59 @@ impl NewSessionDialog {
             Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::styled(" to close", Style::default().fg(theme.dimmed)),
         ]));
+
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let dialog_width: u16 = 50;
+        let dialog_height: u16 = 7;
+
+        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+
+        let dialog_area = Rect {
+            x,
+            y,
+            width: dialog_width.min(area.width),
+            height: dialog_height.min(area.height),
+        };
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(" Creating Session ")
+            .title_style(Style::default().fg(theme.title).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let spinner = SPINNER_FRAMES[self.spinner_frame];
+
+        let loading_text = if self.sandbox_enabled {
+            "Setting up sandbox container..."
+        } else {
+            "Creating session..."
+        };
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} ", spinner),
+                    Style::default().fg(theme.accent).bold(),
+                ),
+                Span::styled(loading_text, Style::default().fg(theme.text)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Press ", Style::default().fg(theme.dimmed)),
+                Span::styled("Esc", Style::default().fg(theme.hint)),
+                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
+            ]),
+        ];
 
         frame.render_widget(Paragraph::new(lines), inner);
     }

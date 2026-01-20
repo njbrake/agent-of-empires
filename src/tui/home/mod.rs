@@ -13,10 +13,11 @@ use std::time::Instant;
 use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Storage};
 use crate::tmux::AvailableTools;
 
+use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
 use super::dialogs::{
-    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, InfoDialog, NewSessionDialog,
-    RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, InfoDialog, NewSessionData,
+    NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
 use super::status_poller::StatusPoller;
 
@@ -113,6 +114,11 @@ pub struct HomeView {
     // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
 
+    // Performance: background session creation (for sandbox)
+    pub(super) creation_poller: CreationPoller,
+    /// Set to true if user cancelled while creation was pending
+    pub(super) creation_cancelled: bool,
+
     // Performance: preview caching
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
@@ -160,6 +166,8 @@ impl HomeView {
             status_poller: StatusPoller::new(),
             pending_status_refresh: false,
             deletion_poller: DeletionPoller::new(),
+            creation_poller: CreationPoller::new(),
+            creation_cancelled: false,
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
         };
@@ -274,6 +282,90 @@ impl HomeView {
             return true;
         }
         false
+    }
+
+    /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
+    pub fn request_creation(&mut self, data: NewSessionData) {
+        if let Some(dialog) = &mut self.new_dialog {
+            dialog.set_loading(true);
+        }
+
+        self.creation_cancelled = false;
+        let request = CreationRequest {
+            data,
+            existing_instances: self.instances.clone(),
+        };
+        self.creation_poller.request_creation(request);
+    }
+
+    /// Mark the current creation operation as cancelled (user pressed Esc)
+    pub fn cancel_creation(&mut self) {
+        if self.creation_poller.is_pending() {
+            self.creation_cancelled = true;
+        }
+        self.new_dialog = None;
+    }
+
+    /// Apply any pending creation results from the background poller.
+    /// Returns Some(session_id) if creation succeeded and we should attach.
+    pub fn apply_creation_results(&mut self) -> Option<String> {
+        use super::creation_poller::CreationResult;
+
+        let result = self.creation_poller.try_recv_result()?;
+
+        // Check if the user cancelled while waiting
+        if self.creation_cancelled {
+            self.creation_cancelled = false;
+            // If creation succeeded but was cancelled, clean up the tmux session
+            if let CreationResult::Success { ref instance, .. } = result {
+                let _ = instance.kill();
+            }
+            return None;
+        }
+
+        match result {
+            CreationResult::Success { session_id, instance } => {
+                let instance = *instance; // Unbox
+                self.instances.push(instance.clone());
+                self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+                if !instance.group_path.is_empty() {
+                    self.group_tree.create_group(&instance.group_path);
+                }
+
+                if let Err(e) = self
+                    .storage
+                    .save_with_groups(&self.instances, &self.group_tree)
+                {
+                    tracing::error!("Failed to save after creation: {}", e);
+                }
+
+                let _ = self.reload();
+                self.new_dialog = None;
+
+                Some(session_id)
+            }
+            CreationResult::Error(error) => {
+                if let Some(dialog) = &mut self.new_dialog {
+                    dialog.set_loading(false);
+                    dialog.set_error(error);
+                }
+                None
+            }
+        }
+    }
+
+    /// Check if there's a pending creation operation
+    pub fn is_creation_pending(&self) -> bool {
+        self.creation_poller.is_pending()
+    }
+
+    /// Tick the dialog spinner animation if loading
+    pub fn tick_dialog(&mut self) {
+        if let Some(dialog) = &mut self.new_dialog {
+            if dialog.is_loading() {
+                dialog.tick();
+            }
+        }
     }
 
     pub fn has_dialog(&self) -> bool {
