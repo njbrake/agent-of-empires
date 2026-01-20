@@ -55,8 +55,9 @@ pub fn apply_status_bar(
     set_session_option(
         session_name,
         "status-left",
-        " #[fg=colour46,bold]#S#[fg=colour252,nobold] ",
+        " #[fg=colour46,bold]#S#[fg=colour252,nobold] │ #[fg=colour245]Ctrl+b d#[fg=colour240] to detach ",
     )?;
+    set_session_option(session_name, "status-left-length", "50")?;
 
     Ok(())
 }
