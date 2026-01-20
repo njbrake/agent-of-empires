@@ -324,7 +324,10 @@ impl HomeView {
         }
 
         match result {
-            CreationResult::Success { session_id, instance } => {
+            CreationResult::Success {
+                session_id,
+                instance,
+            } => {
                 let instance = *instance; // Unbox
                 self.instances.push(instance.clone());
                 self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);

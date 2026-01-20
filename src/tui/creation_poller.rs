@@ -19,7 +19,10 @@ pub struct CreationRequest {
 
 #[derive(Debug)]
 pub enum CreationResult {
-    Success { session_id: String, instance: Box<Instance> },
+    Success {
+        session_id: String,
+        instance: Box<Instance>,
+    },
     Error(String),
 }
 
@@ -150,7 +153,11 @@ impl CreationPoller {
         }
 
         // Generate title if empty
-        let existing_titles: Vec<&str> = request.existing_instances.iter().map(|i| i.title.as_str()).collect();
+        let existing_titles: Vec<&str> = request
+            .existing_instances
+            .iter()
+            .map(|i| i.title.as_str())
+            .collect();
         let final_title = if data.title.is_empty() {
             civilizations::generate_random_title(&existing_titles)
         } else {
