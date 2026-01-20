@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <linearGradient id="copperGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#d97706"/>
+      <stop offset="50%" style="stop-color:#b45309"/>
+      <stop offset="100%" style="stop-color:#92400e"/>
+    </linearGradient>
+    <linearGradient id="bronzeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ca8a04"/>
+      <stop offset="100%" style="stop-color:#a16207"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bgGrad)"/>
+
+  <!-- Subtle grid pattern -->
+  <g opacity="0.05">
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#fff" stroke-width="0.5"/>
+    </pattern>
+    <rect width="1280" height="640" fill="url(#grid)"/>
+  </g>
+
+  <!-- Logo (scaled and positioned) -->
+  <g transform="translate(440, 120) scale(2.5)">
+    <!-- Terminal window frame -->
+    <rect x="4" y="4" width="120" height="120" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+
+    <!-- Terminal header bar -->
+    <rect x="4" y="4" width="120" height="18" rx="8" fill="#0f172a"/>
+    <rect x="4" y="14" width="120" height="8" fill="#0f172a"/>
+
+    <!-- Window controls -->
+    <circle cx="16" cy="13" r="3" fill="#ef4444"/>
+    <circle cx="26" cy="13" r="3" fill="#eab308"/>
+    <circle cx="36" cy="13" r="3" fill="#22c55e"/>
+
+    <!-- Circuit Network Hex -->
+    <g transform="translate(64, 72)">
+      <!-- Background hex -->
+      <polygon points="0,-40 35,-20 35,20 0,40 -35,20 -35,-20"
+               fill="#0f172a" stroke="url(#copperGrad)" stroke-width="2"/>
+
+      <!-- Circuit lines -->
+      <path d="M0,-32 L0,-20 M-25,-10 L-14,-10 M25,-10 L14,-10 M-25,10 L-14,10 M25,10 L14,10 M0,20 L0,32"
+            stroke="#475569" stroke-width="1"/>
+
+      <!-- Circuit junction nodes -->
+      <circle cx="0" cy="-20" r="1.5" fill="#64748b"/>
+      <circle cx="-14" cy="-10" r="1.5" fill="#64748b"/>
+      <circle cx="14" cy="-10" r="1.5" fill="#64748b"/>
+      <circle cx="-14" cy="10" r="1.5" fill="#64748b"/>
+      <circle cx="14" cy="10" r="1.5" fill="#64748b"/>
+      <circle cx="0" cy="20" r="1.5" fill="#64748b"/>
+
+      <!-- Crown -->
+      <path d="M-16,16 L-16,-4 L-8,-12 L0,-4 L8,-12 L16,-4 L16,16 Z"
+            fill="url(#bronzeGrad)" stroke="#a16207" stroke-width="0.5"/>
+
+      <!-- Agent nodes -->
+      <circle cx="0" cy="-46" r="4.5" fill="#0d9488" stroke="#115e59" stroke-width="1"/>
+      <path d="M0,-41.5 L0,-32" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="3,2"/>
+
+      <circle cx="42" cy="0" r="4.5" fill="#0d9488" stroke="#115e59" stroke-width="1"/>
+      <path d="M37.5,0 L25,0" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="3,2"/>
+
+      <circle cx="-42" cy="0" r="4.5" fill="#0d9488" stroke="#115e59" stroke-width="1"/>
+      <path d="M-37.5,0 L-25,0" stroke="#0d9488" stroke-width="1.5" stroke-dasharray="3,2"/>
+
+      <!-- Bottom nodes -->
+      <circle cx="26" cy="38" r="3" fill="#0d9488" stroke="#115e59" stroke-width="0.75"/>
+      <path d="M23.5,35.5 L16,26" stroke="#0d9488" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <circle cx="-26" cy="38" r="3" fill="#0d9488" stroke="#115e59" stroke-width="0.75"/>
+      <path d="M-23.5,35.5 L-16,26" stroke="#0d9488" stroke-width="1" stroke-dasharray="3,2"/>
+    </g>
+  </g>
+
+  <!-- Title text -->
+  <text x="640" y="500" text-anchor="middle" fill="#f8fafc" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="bold">Agent of Empires</text>
+
+  <!-- Subtitle -->
+  <text x="640" y="560" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="28">AI Coding Agent Session Manager</text>
+</svg>

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Agent of Empires" width="128">
+</p>
+
 # Agent of Empires (aoe)
 
 [![Documentation](https://img.shields.io/badge/docs-aoe-blue)](https://njbrake.github.io/agent-of-empires/)
