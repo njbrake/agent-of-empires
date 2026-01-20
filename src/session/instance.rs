@@ -301,6 +301,8 @@ impl Instance {
         docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
         docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
 
+        crate::migrations::run_lazy_docker_migrations();
+
         let config = self.build_container_config()?;
         let container_id = container.create(&config)?;
 
