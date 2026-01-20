@@ -35,12 +35,6 @@ async fn main() -> Result<()> {
             }
         }
         Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
-        None => {
-            if cli.check {
-                tui::check()
-            } else {
-                tui::run(&profile).await
-            }
-        }
+        None => tui::run(&profile).await,
     }
 }

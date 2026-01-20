@@ -80,20 +80,3 @@ pub async fn run(profile: &str) -> Result<()> {
 
     result
 }
-
-/// Run startup checks without entering the TUI.
-///
-/// Used for testing startup performance - runs all the same initialization
-/// as the real TUI but exits before the event loop.
-pub fn check() -> Result<()> {
-    if !crate::tmux::is_tmux_available() {
-        anyhow::bail!("tmux not found");
-    }
-
-    let available_tools = crate::tmux::AvailableTools::detect();
-    if !available_tools.any_available() {
-        anyhow::bail!("No coding tools found");
-    }
-
-    Ok(())
-}

@@ -32,10 +32,6 @@ pub struct Cli {
     #[arg(short = 'p', long, global = true, env = "AGENT_OF_EMPIRES_PROFILE")]
     pub profile: Option<String>,
 
-    /// Run startup checks and exit (for testing startup performance)
-    #[arg(long, hide = true)]
-    pub check: bool,
-
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
