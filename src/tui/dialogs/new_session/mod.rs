@@ -75,6 +75,9 @@ pub struct NewSessionData {
     pub yolo_mode: bool,
 }
 
+/// Spinner frames for loading animation
+pub(super) const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
+
 pub struct NewSessionDialog {
     pub(super) title: Input,
     pub(super) path: Input,
@@ -92,6 +95,10 @@ pub struct NewSessionDialog {
     pub(super) yolo_mode: bool,
     pub(super) error_message: Option<String>,
     pub(super) show_help: bool,
+    /// Whether the dialog is in loading state (creating session in background)
+    pub(super) loading: bool,
+    /// Spinner animation frame counter
+    pub(super) spinner_frame: usize,
 }
 
 impl NewSessionDialog {
@@ -125,7 +132,27 @@ impl NewSessionDialog {
             yolo_mode: false,
             error_message: None,
             show_help: false,
+            loading: false,
+            spinner_frame: 0,
         }
+    }
+
+    /// Set the dialog to loading state
+    pub fn set_loading(&mut self, loading: bool) {
+        self.loading = loading;
+        if loading {
+            self.error_message = None;
+        }
+    }
+
+    /// Check if the dialog is in loading state
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Advance the spinner animation frame. Call this periodically when loading.
+    pub fn tick(&mut self) {
+        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
     }
 
     #[cfg(test)]
@@ -148,6 +175,8 @@ impl NewSessionDialog {
             yolo_mode: false,
             error_message: None,
             show_help: false,
+            loading: false,
+            spinner_frame: 0,
         }
     }
 
@@ -156,6 +185,15 @@ impl NewSessionDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        // When loading, only allow Esc to cancel
+        if self.loading {
+            if matches!(key.code, KeyCode::Esc) {
+                self.loading = false;
+                return DialogResult::Cancel;
+            }
+            return DialogResult::Continue;
+        }
+
         if self.show_help {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
                 self.show_help = false;

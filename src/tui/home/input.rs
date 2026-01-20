@@ -63,20 +63,35 @@ impl HomeView {
             match result {
                 DialogResult::Continue => {}
                 DialogResult::Cancel => {
-                    self.new_dialog = None;
-                }
-                DialogResult::Submit(data) => match self.create_session(data) {
-                    Ok(session_id) => {
+                    // If creation is pending, mark it as cancelled
+                    if self.is_creation_pending() {
+                        self.cancel_creation();
+                    } else {
                         self.new_dialog = None;
-                        return Some(Action::AttachSession(session_id));
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to create session: {}", e);
-                        if let Some(dialog) = &mut self.new_dialog {
-                            dialog.set_error(e.to_string());
+                }
+                DialogResult::Submit(data) => {
+                    // Use background creation for sandbox sessions to avoid blocking UI
+                    if data.sandbox {
+                        self.request_creation(data);
+                        // Don't close dialog - it will show loading state
+                        // Result will be handled by apply_creation_results in event loop
+                    } else {
+                        // Non-sandbox sessions are fast, create synchronously
+                        match self.create_session(data) {
+                            Ok(session_id) => {
+                                self.new_dialog = None;
+                                return Some(Action::AttachSession(session_id));
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to create session: {}", e);
+                                if let Some(dialog) = &mut self.new_dialog {
+                                    dialog.set_error(e.to_string());
+                                }
+                            }
                         }
                     }
-                },
+                }
             }
             return None;
         }

@@ -140,6 +140,19 @@ impl App {
                 refresh_needed = true;
             }
 
+            // Check for and apply creation results (non-blocking)
+            if let Some(session_id) = self.home.apply_creation_results() {
+                // Creation succeeded - attach to the new session
+                self.attach_session(&session_id, terminal)?;
+                refresh_needed = true;
+            }
+
+            // Tick the dialog spinner if loading
+            if self.home.is_creation_pending() {
+                self.home.tick_dialog();
+                refresh_needed = true;
+            }
+
             // Periodic disk refresh to sync with other instances
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;
