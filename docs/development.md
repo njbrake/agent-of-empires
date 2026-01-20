@@ -26,7 +26,7 @@ mkdir -p /tmp/demo-projects/api-server /tmp/demo-projects/web-app
 vhs assets/demo.tape
 ```
 
-This creates `assets/demo.gif`.
+This creates `docs/assets/demo.gif`.
 
 The demo uses `-p demo` to run in a separate profile so it doesn't affect your real sessions.
 

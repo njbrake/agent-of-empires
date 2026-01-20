@@ -22,7 +22,7 @@ A coding agent and shell terminal session manager for Linux and macOS using tmux
 
 > If you find this project useful, please consider giving it a star on GitHub - it helps others discover the project!
 
-![Agent of Empires Demo](assets/demo.gif)
+![Agent of Empires Demo](docs/assets/demo.gif)
 
 ## Prerequisites
 
