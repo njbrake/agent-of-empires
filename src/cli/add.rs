@@ -2,17 +2,10 @@
 
 use anyhow::{bail, Result};
 use clap::Args;
-use crossterm::terminal;
 use std::path::PathBuf;
 
 use crate::docker::{self, DockerContainer};
 use crate::session::{civilizations, Config, GroupTree, Instance, SandboxInfo, Storage};
-
-/// Get current terminal size for tmux session creation.
-/// This ensures sessions start at the correct size instead of the 80x24 default.
-fn get_terminal_size() -> Option<(u16, u16)> {
-    terminal::size().ok()
-}
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -217,7 +210,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             .iter()
             .position(|i| i.id == instance.id)
             .expect("just added instance");
-        instances[idx].start_with_size(get_terminal_size())?;
+        instances[idx].start_with_size(crossterm::terminal::size().ok())?;
         storage.save_with_groups(&instances, &group_tree)?;
 
         let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;

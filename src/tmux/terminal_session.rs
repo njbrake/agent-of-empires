@@ -44,23 +44,7 @@ impl TerminalSession {
             return Ok(());
         }
 
-        let mut args = vec![
-            "new-session".to_string(),
-            "-d".to_string(),
-            "-s".to_string(),
-            self.name.clone(),
-            "-c".to_string(),
-            working_dir.to_string(),
-        ];
-
-        // Pass terminal size to avoid 80x24 default for detached sessions
-        if let Some((width, height)) = size {
-            args.push("-x".to_string());
-            args.push(width.to_string());
-            args.push("-y".to_string());
-            args.push(height.to_string());
-        }
-
+        let args = build_terminal_create_args(&self.name, working_dir, size);
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
@@ -146,6 +130,32 @@ impl TerminalSession {
     }
 }
 
+/// Build the argument list for tmux new-session command (terminal sessions).
+/// Extracted for testability.
+fn build_terminal_create_args(
+    session_name: &str,
+    working_dir: &str,
+    size: Option<(u16, u16)>,
+) -> Vec<String> {
+    let mut args = vec![
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        session_name.to_string(),
+        "-c".to_string(),
+        working_dir.to_string(),
+    ];
+
+    if let Some((width, height)) = size {
+        args.push("-x".to_string());
+        args.push(width.to_string());
+        args.push("-y".to_string());
+        args.push(height.to_string());
+    }
+
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +176,38 @@ mod tests {
         assert_ne!(agent_name, terminal_name);
         assert!(agent_name.starts_with(SESSION_PREFIX));
         assert!(terminal_name.starts_with(TERMINAL_PREFIX));
+    }
+
+    #[test]
+    fn test_build_terminal_create_args_without_size() {
+        let args = build_terminal_create_args("test_terminal", "/tmp/work", None);
+        assert_eq!(
+            args,
+            vec![
+                "new-session",
+                "-d",
+                "-s",
+                "test_terminal",
+                "-c",
+                "/tmp/work"
+            ]
+        );
+        assert!(!args.contains(&"-x".to_string()));
+        assert!(!args.contains(&"-y".to_string()));
+    }
+
+    #[test]
+    fn test_build_terminal_create_args_with_size() {
+        let args = build_terminal_create_args("test_terminal", "/tmp/work", Some((100, 30)));
+        assert!(args.contains(&"-x".to_string()));
+        assert!(args.contains(&"100".to_string()));
+        assert!(args.contains(&"-y".to_string()));
+        assert!(args.contains(&"30".to_string()));
+
+        // Verify order: -x should come before width, -y before height
+        let x_idx = args.iter().position(|a| a == "-x").unwrap();
+        let y_idx = args.iter().position(|a| a == "-y").unwrap();
+        assert_eq!(args[x_idx + 1], "100");
+        assert_eq!(args[y_idx + 1], "30");
     }
 }
