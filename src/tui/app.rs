@@ -259,7 +259,7 @@ impl App {
         if !tmux_session.exists() {
             // Get terminal size to pass to tmux session creation
             // This ensures the session starts at the correct size instead of 80x24 default
-            let size = crossterm::terminal::size().ok();
+            let size = crate::terminal::get_size();
 
             let mut inst = instance.clone();
             if let Err(e) = inst.start_with_size(size) {
@@ -330,7 +330,7 @@ impl App {
         if !terminal_session.exists() {
             // Get terminal size to pass to tmux session creation
             // This ensures the session starts at the correct size instead of 80x24 default
-            let size = crossterm::terminal::size().ok();
+            let size = crate::terminal::get_size();
 
             // Start the terminal (creates tmux session and updates terminal_info)
             if let Err(e) = self

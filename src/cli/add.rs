@@ -210,7 +210,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             .iter()
             .position(|i| i.id == instance.id)
             .expect("just added instance");
-        instances[idx].start_with_size(crossterm::terminal::size().ok())?;
+        instances[idx].start_with_size(crate::terminal::get_size())?;
         storage.save_with_groups(&instances, &group_tree)?;
 
         let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;

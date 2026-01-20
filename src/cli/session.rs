@@ -112,7 +112,7 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
-    instances[idx].start_with_size(crossterm::terminal::size().ok())?;
+    instances[idx].start_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
@@ -152,7 +152,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
-    instances[idx].restart_with_size(crossterm::terminal::size().ok())?;
+    instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
