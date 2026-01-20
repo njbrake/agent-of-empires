@@ -94,7 +94,6 @@ pub fn is_tmux_available() -> bool {
 }
 
 pub fn is_claude_available() -> bool {
-    // Use `which` for fast PATH lookup instead of running the full binary
     Command::new("which")
         .arg("claude")
         .output()
