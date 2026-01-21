@@ -14,8 +14,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version matches tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          TAG_VERSION="${TAG#v}"
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Tag version: $TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch! Cargo.toml has $CARGO_VERSION but tag is $TAG"
+            echo "Please update Cargo.toml to version $TAG_VERSION before releasing."
+            exit 1
+          fi
+          echo "✓ Versions match"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
