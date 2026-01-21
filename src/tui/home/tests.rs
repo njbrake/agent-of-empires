@@ -1074,3 +1074,95 @@ fn test_groups_field_stays_in_sync_with_storage() {
         .collect();
     assert_eq!(reloaded_groups, tree_groups);
 }
+
+#[test]
+#[serial]
+fn test_group_collapsed_state_persists_across_reload() {
+    let mut env = create_test_env_with_groups();
+
+    // Find a group and verify it starts expanded
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("should have a group");
+
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(!collapsed, "group should start expanded");
+    }
+
+    // Move cursor to group and collapse it with Enter
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+    env.view.handle_key(key(KeyCode::Enter));
+
+    // Verify it's collapsed
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(*collapsed, "group should be collapsed after Enter");
+    }
+
+    // Reload (simulates the 5-second periodic refresh)
+    env.view.reload().unwrap();
+
+    // Find the group again (index may change after reload)
+    let group_idx_after = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("should still have a group");
+
+    // Verify it's still collapsed after reload
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx_after] {
+        assert!(*collapsed, "group should remain collapsed after reload");
+    }
+}
+
+#[test]
+#[serial]
+fn test_group_collapsed_state_saved_to_storage() {
+    use crate::session::GroupTree;
+
+    let mut env = create_test_env_with_groups();
+
+    // Find a group
+    let group_path = env
+        .view
+        .flat_items
+        .iter()
+        .find_map(|item| {
+            if let Item::Group { path, .. } = item {
+                Some(path.clone())
+            } else {
+                None
+            }
+        })
+        .expect("should have a group");
+
+    // Move cursor to group and collapse it
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { path, .. } if path == &group_path))
+        .unwrap();
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+    env.view.handle_key(key(KeyCode::Enter));
+
+    // Load fresh from storage to verify persistence
+    let (_, groups) = env.view.storage.load_with_groups().unwrap();
+    let fresh_tree = GroupTree::new_with_groups(&env.view.instances, &groups);
+    let all_groups = fresh_tree.get_all_groups();
+
+    let saved_group = all_groups
+        .iter()
+        .find(|g| g.path == group_path)
+        .expect("group should exist in storage");
+
+    assert!(
+        saved_group.collapsed,
+        "collapsed state should be persisted to storage"
+    );
+}
