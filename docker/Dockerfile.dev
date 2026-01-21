@@ -32,7 +32,13 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | b
     && ln -s "$(which npm)" /root/.local/bin/npm \
     && ln -s "$(which npx)" /root/.local/bin/npx
 
-RUN echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc \
-    && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc
+# Add dev tool paths to profile.d so they're available in all shells (login and non-login)
+RUN echo 'export PATH="/root/.cargo/bin:/root/.local/bin:$PATH"' > /etc/profile.d/dev-tools.sh \
+    && echo 'export NVM_DIR="/root/.nvm"' >> /etc/profile.d/dev-tools.sh \
+    && echo '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' >> /etc/profile.d/dev-tools.sh \
+    && chmod +x /etc/profile.d/dev-tools.sh
+
+# Also set BASH_ENV so non-interactive bash shells source the paths
+ENV BASH_ENV=/etc/profile.d/dev-tools.sh
 
 WORKDIR /workspace
