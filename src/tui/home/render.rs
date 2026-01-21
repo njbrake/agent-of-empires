@@ -401,18 +401,32 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" j/k", key_style),
             Span::styled(" Nav ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(" Enter", key_style),
-            Span::styled(" Attach ", desc_style),
+        ];
+        if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
+            Some(Item::Group {
+                collapsed: true, ..
+            }) => Some(" Expand "),
+            Some(Item::Group {
+                collapsed: false, ..
+            }) => Some(" Collapse "),
+            Some(Item::Session { .. }) => Some(" Attach "),
+            None => None,
+        } {
+            spans.extend([
+                Span::styled("│", sep_style),
+                Span::styled(" Enter", key_style),
+                Span::styled(enter_action_text, desc_style),
+            ])
+        }
+        spans.extend([
             Span::styled("│", sep_style),
             Span::styled(" t", key_style),
             Span::styled(" View ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" n", key_style),
             Span::styled(" New ", desc_style),
-        ];
+        ]);
 
-        // Only show delete option if there are sessions or groups to delete
         if !self.flat_items.is_empty() {
             spans.extend([
                 Span::styled("│", sep_style),
