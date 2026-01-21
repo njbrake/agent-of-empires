@@ -81,7 +81,7 @@ impl HelpOverlay {
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
-            .title(" Keyboard Shortcuts ")
+            .title(format!(" Keyboard Shortcuts (v{}) ", env!("CARGO_PKG_VERSION")))
             .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
