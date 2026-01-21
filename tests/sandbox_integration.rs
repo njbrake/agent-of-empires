@@ -17,7 +17,7 @@ fn test_sandbox_info_serialization() {
     let sandbox_info = SandboxInfo {
         enabled: true,
         container_id: Some("abc123".to_string()),
-        image: Some("ubuntu:latest".to_string()),
+        image: "ubuntu:latest".to_string(),
         container_name: "aoe-sandbox-test1234".to_string(),
         created_at: Some(chrono::Utc::now()),
         yolo_mode: None,
@@ -29,6 +29,7 @@ fn test_sandbox_info_serialization() {
     assert!(deserialized.enabled);
     assert_eq!(deserialized.container_id, Some("abc123".to_string()));
     assert_eq!(deserialized.container_name, "aoe-sandbox-test1234");
+    assert_eq!(deserialized.image, "ubuntu:latest");
 }
 
 #[test]
@@ -39,7 +40,7 @@ fn test_instance_is_sandboxed() {
     inst.sandbox_info = Some(SandboxInfo {
         enabled: true,
         container_id: None,
-        image: None,
+        image: "test-image".to_string(),
         container_name: "aoe-sandbox-test".to_string(),
         created_at: None,
         yolo_mode: None,
@@ -49,7 +50,7 @@ fn test_instance_is_sandboxed() {
     inst.sandbox_info = Some(SandboxInfo {
         enabled: false,
         container_id: None,
-        image: None,
+        image: "test-image".to_string(),
         container_name: "aoe-sandbox-test".to_string(),
         created_at: None,
         yolo_mode: None,
@@ -68,7 +69,7 @@ fn test_sandbox_info_persists_across_save_load() {
     inst.sandbox_info = Some(SandboxInfo {
         enabled: true,
         container_id: Some("container123".to_string()),
-        image: Some("custom:image".to_string()),
+        image: "custom:image".to_string(),
         container_name: "aoe-sandbox-abcd1234".to_string(),
         created_at: Some(chrono::Utc::now()),
         yolo_mode: Some(true),
@@ -85,7 +86,7 @@ fn test_sandbox_info_persists_across_save_load() {
     let sandbox = loaded_inst.sandbox_info.as_ref().unwrap();
     assert!(sandbox.enabled);
     assert_eq!(sandbox.container_id, Some("container123".to_string()));
-    assert_eq!(sandbox.image, Some("custom:image".to_string()));
+    assert_eq!(sandbox.image, "custom:image");
     assert_eq!(sandbox.container_name, "aoe-sandbox-abcd1234");
 }
 
