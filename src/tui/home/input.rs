@@ -324,8 +324,8 @@ impl HomeView {
                         ViewMode::Terminal => Some(Action::AttachTerminal(id.clone())),
                     };
                 } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
-                    self.group_tree.toggle_collapsed(path);
-                    self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+                    let path = path.clone();
+                    self.toggle_group_collapsed(&path);
                 }
             }
             KeyCode::Left | KeyCode::Char('h') => {
@@ -334,8 +334,8 @@ impl HomeView {
                 }) = self.flat_items.get(self.cursor)
                 {
                     if !collapsed {
-                        self.group_tree.toggle_collapsed(path);
-                        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+                        let path = path.clone();
+                        self.toggle_group_collapsed(&path);
                     }
                 }
             }
@@ -345,8 +345,8 @@ impl HomeView {
                 }) = self.flat_items.get(self.cursor)
                 {
                     if *collapsed {
-                        self.group_tree.toggle_collapsed(path);
-                        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+                        let path = path.clone();
+                        self.toggle_group_collapsed(&path);
                     }
                 }
             }
@@ -397,6 +397,17 @@ impl HomeView {
                     }
                 }
             }
+        }
+    }
+
+    fn toggle_group_collapsed(&mut self, path: &str) {
+        self.group_tree.toggle_collapsed(path);
+        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+        if let Err(e) = self
+            .storage
+            .save_with_groups(&self.instances, &self.group_tree)
+        {
+            tracing::error!("Failed to save group state: {}", e);
         }
     }
 
