@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serial_test::serial;
 use tempfile::TempDir;
+use tui_input::Input;
 
 use super::{HomeView, ViewMode};
 use crate::session::{Instance, Item, Storage};
@@ -321,7 +322,7 @@ fn test_slash_enters_search_mode() {
     assert!(!env.view.search_active);
     env.view.handle_key(key(KeyCode::Char('/')));
     assert!(env.view.search_active);
-    assert!(env.view.search_query.is_empty());
+    assert!(env.view.search_query.value().is_empty());
 }
 
 #[test]
@@ -333,7 +334,7 @@ fn test_search_mode_captures_chars() {
     env.view.handle_key(key(KeyCode::Char('e')));
     env.view.handle_key(key(KeyCode::Char('s')));
     env.view.handle_key(key(KeyCode::Char('t')));
-    assert_eq!(env.view.search_query, "test");
+    assert_eq!(env.view.search_query.value(), "test");
 }
 
 #[test]
@@ -344,7 +345,7 @@ fn test_search_mode_backspace() {
     env.view.handle_key(key(KeyCode::Char('a')));
     env.view.handle_key(key(KeyCode::Char('b')));
     env.view.handle_key(key(KeyCode::Backspace));
-    assert_eq!(env.view.search_query, "a");
+    assert_eq!(env.view.search_query.value(), "a");
 }
 
 #[test]
@@ -355,7 +356,7 @@ fn test_search_mode_esc_exits_and_clears() {
     env.view.handle_key(key(KeyCode::Char('x')));
     env.view.handle_key(key(KeyCode::Esc));
     assert!(!env.view.search_active);
-    assert!(env.view.search_query.is_empty());
+    assert!(env.view.search_query.value().is_empty());
     assert!(env.view.filtered_items.is_none());
 }
 
@@ -367,7 +368,7 @@ fn test_search_mode_enter_exits_keeps_filter() {
     env.view.handle_key(key(KeyCode::Char('s')));
     env.view.handle_key(key(KeyCode::Enter));
     assert!(!env.view.search_active);
-    assert_eq!(env.view.search_query, "s");
+    assert_eq!(env.view.search_query.value(), "s");
 }
 
 #[test]
@@ -421,7 +422,7 @@ fn test_selected_group_set_when_on_group() {
 #[serial]
 fn test_filter_matches_session_title() {
     let mut env = create_test_env_with_sessions(5);
-    env.view.search_query = "session2".to_string();
+    env.view.search_query = Input::new("session2".to_string());
     env.view.update_filter();
     assert!(env.view.filtered_items.is_some());
     let filtered = env.view.filtered_items.as_ref().unwrap();
@@ -432,7 +433,7 @@ fn test_filter_matches_session_title() {
 #[serial]
 fn test_filter_case_insensitive() {
     let mut env = create_test_env_with_sessions(5);
-    env.view.search_query = "SESSION2".to_string();
+    env.view.search_query = Input::new("SESSION2".to_string());
     env.view.update_filter();
     assert!(env.view.filtered_items.is_some());
     let filtered = env.view.filtered_items.as_ref().unwrap();
@@ -443,7 +444,7 @@ fn test_filter_case_insensitive() {
 #[serial]
 fn test_filter_matches_path() {
     let mut env = create_test_env_with_sessions(5);
-    env.view.search_query = "/tmp/3".to_string();
+    env.view.search_query = Input::new("/tmp/3".to_string());
     env.view.update_filter();
     assert!(env.view.filtered_items.is_some());
     let filtered = env.view.filtered_items.as_ref().unwrap();
@@ -454,7 +455,7 @@ fn test_filter_matches_path() {
 #[serial]
 fn test_filter_matches_group_name() {
     let mut env = create_test_env_with_groups();
-    env.view.search_query = "work".to_string();
+    env.view.search_query = Input::new("work".to_string());
     env.view.update_filter();
     assert!(env.view.filtered_items.is_some());
     let filtered = env.view.filtered_items.as_ref().unwrap();
@@ -465,11 +466,11 @@ fn test_filter_matches_group_name() {
 #[serial]
 fn test_filter_empty_query_clears_filter() {
     let mut env = create_test_env_with_sessions(5);
-    env.view.search_query = "session".to_string();
+    env.view.search_query = Input::new("session".to_string());
     env.view.update_filter();
     assert!(env.view.filtered_items.is_some());
 
-    env.view.search_query.clear();
+    env.view.search_query = Input::default();
     env.view.update_filter();
     assert!(env.view.filtered_items.is_none());
 }
@@ -479,7 +480,7 @@ fn test_filter_empty_query_clears_filter() {
 fn test_filter_resets_cursor() {
     let mut env = create_test_env_with_sessions(5);
     env.view.cursor = 3;
-    env.view.search_query = "session".to_string();
+    env.view.search_query = Input::new("session".to_string());
     env.view.update_filter();
     assert_eq!(env.view.cursor, 0);
 }
@@ -488,7 +489,7 @@ fn test_filter_resets_cursor() {
 #[serial]
 fn test_filter_no_matches() {
     let mut env = create_test_env_with_sessions(5);
-    env.view.search_query = "nonexistent".to_string();
+    env.view.search_query = Input::new("nonexistent".to_string());
     env.view.update_filter();
     assert!(env.view.filtered_items.is_some());
     let filtered = env.view.filtered_items.as_ref().unwrap();
@@ -499,7 +500,7 @@ fn test_filter_no_matches() {
 #[serial]
 fn test_cursor_moves_within_filtered_list() {
     let mut env = create_test_env_with_sessions(10);
-    env.view.search_query = "session".to_string();
+    env.view.search_query = Input::new("session".to_string());
     env.view.update_filter();
     let filtered_count = env.view.filtered_items.as_ref().unwrap().len();
 

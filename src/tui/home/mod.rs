@@ -10,6 +10,8 @@ mod tests;
 use std::collections::HashMap;
 use std::time::Instant;
 
+use tui_input::Input;
+
 use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Storage};
 use crate::tmux::AvailableTools;
 
@@ -101,7 +103,7 @@ pub struct HomeView {
 
     // Search
     pub(super) search_active: bool,
-    pub(super) search_query: String,
+    pub(super) search_query: Input,
     pub(super) filtered_items: Option<Vec<usize>>,
 
     // Tool availability
@@ -160,7 +162,7 @@ impl HomeView {
             changelog_dialog: None,
             info_dialog: None,
             search_active: false,
-            search_query: String::new(),
+            search_query: Input::default(),
             filtered_items: None,
             available_tools,
             status_poller: StatusPoller::new(),

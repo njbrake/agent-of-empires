@@ -149,9 +149,31 @@ impl HomeView {
                 width: inner.width,
                 height: 1,
             };
-            let search_text = format!("/{}", self.search_query);
-            let search_para = Paragraph::new(search_text).style(Style::default().fg(theme.search));
-            frame.render_widget(search_para, search_area);
+
+            let value = self.search_query.value();
+            let cursor_pos = self.search_query.visual_cursor();
+            let cursor_style = Style::default().fg(theme.background).bg(theme.search);
+            let text_style = Style::default().fg(theme.search);
+
+            // Split value into: before cursor, char at cursor, after cursor
+            let before: String = value.chars().take(cursor_pos).collect();
+            let cursor_char: String = value
+                .chars()
+                .nth(cursor_pos)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            let after: String = value.chars().skip(cursor_pos + 1).collect();
+
+            let mut spans = vec![Span::styled("/", text_style)];
+            if !before.is_empty() {
+                spans.push(Span::styled(before, text_style));
+            }
+            spans.push(Span::styled(cursor_char, cursor_style));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, text_style));
+            }
+
+            frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
         }
     }
 

@@ -1,6 +1,8 @@
 //! Input handling for HomeView
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
 use super::{HomeView, ViewMode};
 use crate::session::{flatten_tree, Item, Status};
@@ -172,21 +174,17 @@ impl HomeView {
             match key.code {
                 KeyCode::Esc => {
                     self.search_active = false;
-                    self.search_query.clear();
+                    self.search_query = Input::default();
                     self.filtered_items = None;
                 }
                 KeyCode::Enter => {
                     self.search_active = false;
                 }
-                KeyCode::Backspace => {
-                    self.search_query.pop();
+                _ => {
+                    self.search_query
+                        .handle_event(&crossterm::event::Event::Key(key));
                     self.update_filter();
                 }
-                KeyCode::Char(c) => {
-                    self.search_query.push(c);
-                    self.update_filter();
-                }
-                _ => {}
             }
             return None;
         }
@@ -210,7 +208,7 @@ impl HomeView {
             }
             KeyCode::Char('/') => {
                 self.search_active = true;
-                self.search_query.clear();
+                self.search_query = Input::default();
             }
             KeyCode::Char('n') => {
                 let existing_titles: Vec<String> =
@@ -412,12 +410,12 @@ impl HomeView {
     }
 
     pub(super) fn update_filter(&mut self) {
-        if self.search_query.is_empty() {
+        if self.search_query.value().is_empty() {
             self.filtered_items = None;
             return;
         }
 
-        let query = self.search_query.to_lowercase();
+        let query = self.search_query.value().to_lowercase();
         let mut matches = Vec::new();
 
         for (idx, item) in self.flat_items.iter().enumerate() {

@@ -3,20 +3,23 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
 use super::DialogResult;
+use crate::tui::components::render_text_field;
 use crate::tui::styles::Theme;
 
 pub struct RenameDialog {
     current_title: String,
-    new_title: String,
+    new_title: Input,
 }
 
 impl RenameDialog {
     pub fn new(current_title: &str) -> Self {
         Self {
             current_title: current_title.to_string(),
-            new_title: String::new(),
+            new_title: Input::default(),
         }
     }
 
@@ -24,21 +27,18 @@ impl RenameDialog {
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
             KeyCode::Enter => {
-                if self.new_title.is_empty() {
+                let value = self.new_title.value();
+                if value.is_empty() {
                     DialogResult::Cancel
                 } else {
-                    DialogResult::Submit(self.new_title.clone())
+                    DialogResult::Submit(value.to_string())
                 }
             }
-            KeyCode::Backspace => {
-                self.new_title.pop();
+            _ => {
+                self.new_title
+                    .handle_event(&crossterm::event::Event::Key(key));
                 DialogResult::Continue
             }
-            KeyCode::Char(c) => {
-                self.new_title.push(c);
-                DialogResult::Continue
-            }
-            _ => DialogResult::Continue,
         }
     }
 
@@ -83,12 +83,15 @@ impl RenameDialog {
         ]);
         frame.render_widget(Paragraph::new(current_line), chunks[0]);
 
-        let new_line = Line::from(vec![
-            Span::styled("New: ", Style::default().fg(theme.dimmed)),
-            Span::styled(&self.new_title, Style::default().fg(theme.accent)),
-            Span::styled("█", Style::default().fg(theme.accent)),
-        ]);
-        frame.render_widget(Paragraph::new(new_line), chunks[1]);
+        render_text_field(
+            frame,
+            chunks[1],
+            "New:",
+            &self.new_title,
+            true, // always focused since it's the only input
+            None,
+            theme,
+        );
 
         let hint = Line::from(vec![
             Span::styled("Enter", Style::default().fg(theme.hint)),
@@ -113,7 +116,7 @@ mod tests {
     fn test_new_dialog() {
         let dialog = RenameDialog::new("Original Title");
         assert_eq!(dialog.current_title, "Original Title");
-        assert_eq!(dialog.new_title, "");
+        assert_eq!(dialog.new_title.value(), "");
     }
 
     #[test]
@@ -149,7 +152,7 @@ mod tests {
         let mut dialog = RenameDialog::new("Test");
         let result = dialog.handle_key(key(KeyCode::Char('a')));
         assert!(matches!(result, DialogResult::Continue));
-        assert_eq!(dialog.new_title, "a");
+        assert_eq!(dialog.new_title.value(), "a");
     }
 
     #[test]
@@ -161,7 +164,7 @@ mod tests {
         dialog.handle_key(key(KeyCode::Char('l')));
         dialog.handle_key(key(KeyCode::Char('o')));
 
-        assert_eq!(dialog.new_title, "Hello");
+        assert_eq!(dialog.new_title.value(), "Hello");
     }
 
     #[test]
@@ -173,7 +176,7 @@ mod tests {
 
         let result = dialog.handle_key(key(KeyCode::Backspace));
         assert!(matches!(result, DialogResult::Continue));
-        assert_eq!(dialog.new_title, "ab");
+        assert_eq!(dialog.new_title.value(), "ab");
     }
 
     #[test]
@@ -181,7 +184,7 @@ mod tests {
         let mut dialog = RenameDialog::new("Test");
         let result = dialog.handle_key(key(KeyCode::Backspace));
         assert!(matches!(result, DialogResult::Continue));
-        assert_eq!(dialog.new_title, "");
+        assert_eq!(dialog.new_title.value(), "");
     }
 
     #[test]
@@ -189,7 +192,7 @@ mod tests {
         let mut dialog = RenameDialog::new("Test");
         let result = dialog.handle_key(key(KeyCode::Tab));
         assert!(matches!(result, DialogResult::Continue));
-        assert_eq!(dialog.new_title, "");
+        assert_eq!(dialog.new_title.value(), "");
     }
 
     #[test]
@@ -225,7 +228,7 @@ mod tests {
         dialog.handle_key(key(KeyCode::Char('2')));
         dialog.handle_key(key(KeyCode::Char('3')));
 
-        assert_eq!(dialog.new_title, "Test 123");
+        assert_eq!(dialog.new_title.value(), "Test 123");
     }
 
     #[test]
@@ -237,7 +240,7 @@ mod tests {
 
         // Original title should be preserved
         assert_eq!(dialog.current_title, "Original");
-        assert_eq!(dialog.new_title, "New");
+        assert_eq!(dialog.new_title.value(), "New");
     }
 
     #[test]
@@ -271,5 +274,20 @@ mod tests {
         // Cancel with Esc
         let result = dialog.handle_key(key(KeyCode::Esc));
         assert!(matches!(result, DialogResult::Cancel));
+    }
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut dialog = RenameDialog::new("Test");
+        // Type "abc"
+        dialog.handle_key(key(KeyCode::Char('a')));
+        dialog.handle_key(key(KeyCode::Char('b')));
+        dialog.handle_key(key(KeyCode::Char('c')));
+
+        // Move cursor left and insert
+        dialog.handle_key(key(KeyCode::Left));
+        dialog.handle_key(key(KeyCode::Char('X')));
+
+        assert_eq!(dialog.new_title.value(), "abXc");
     }
 }

@@ -4,6 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
+use crate::tui::components::render_text_field;
 use crate::tui::styles::Theme;
 
 impl NewSessionDialog {
@@ -75,7 +76,7 @@ impl NewSessionDialog {
         ];
 
         for (idx, (label, input, placeholder)) in text_fields.iter().enumerate() {
-            Self::render_text_field(
+            render_text_field(
                 frame,
                 chunks[idx],
                 label,
@@ -131,7 +132,7 @@ impl NewSessionDialog {
         let worktree_field = if has_tool_selection { 4 } else { 3 };
         let new_branch_field = worktree_field + 1;
 
-        Self::render_text_field(
+        render_text_field(
             frame,
             chunks[4],
             "Worktree Branch:",
@@ -216,7 +217,7 @@ impl NewSessionDialog {
 
             if sandbox_options_visible {
                 let sandbox_image_field = sandbox_field + 1;
-                Self::render_text_field(
+                render_text_field(
                     frame,
                     chunks[next_chunk + 1],
                     "  Image:",
@@ -373,61 +374,6 @@ impl NewSessionDialog {
         ]));
 
         frame.render_widget(Paragraph::new(lines), inner);
-    }
-
-    fn render_text_field(
-        frame: &mut Frame,
-        area: Rect,
-        label: &str,
-        input: &tui_input::Input,
-        is_focused: bool,
-        placeholder: Option<&str>,
-        theme: &Theme,
-    ) {
-        let label_style = if is_focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-        let value_style = if is_focused {
-            Style::default().fg(theme.accent)
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        let value = input.value();
-
-        let mut spans = vec![Span::styled(label, label_style), Span::raw(" ")];
-
-        if value.is_empty() && !is_focused {
-            if let Some(placeholder_text) = placeholder {
-                spans.push(Span::styled(placeholder_text, value_style));
-            }
-        } else if is_focused {
-            let cursor_pos = input.visual_cursor();
-            let cursor_style = Style::default().fg(theme.background).bg(theme.accent);
-
-            // Split value into: before cursor, char at cursor, after cursor
-            let before: String = value.chars().take(cursor_pos).collect();
-            let cursor_char: String = value
-                .chars()
-                .nth(cursor_pos)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            let after: String = value.chars().skip(cursor_pos + 1).collect();
-
-            if !before.is_empty() {
-                spans.push(Span::styled(before, value_style));
-            }
-            spans.push(Span::styled(cursor_char, cursor_style));
-            if !after.is_empty() {
-                spans.push(Span::styled(after, value_style));
-            }
-        } else {
-            spans.push(Span::styled(value, value_style));
-        }
-
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
