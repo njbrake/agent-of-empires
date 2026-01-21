@@ -396,22 +396,38 @@ impl NewSessionDialog {
         };
 
         let value = input.value();
-        let display_value = if value.is_empty() && !is_focused {
-            placeholder.unwrap_or("").to_string()
+
+        let mut spans = vec![Span::styled(label, label_style), Span::raw(" ")];
+
+        if value.is_empty() && !is_focused {
+            if let Some(placeholder_text) = placeholder {
+                spans.push(Span::styled(placeholder_text, value_style));
+            }
         } else if is_focused {
             let cursor_pos = input.visual_cursor();
-            let (before, after) = value.split_at(cursor_pos.min(value.len()));
-            format!("{}█{}", before, after)
+            let cursor_style = Style::default().fg(theme.background).bg(theme.accent);
+
+            // Split value into: before cursor, char at cursor, after cursor
+            let before: String = value.chars().take(cursor_pos).collect();
+            let cursor_char: String = value
+                .chars()
+                .nth(cursor_pos)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            let after: String = value.chars().skip(cursor_pos + 1).collect();
+
+            if !before.is_empty() {
+                spans.push(Span::styled(before, value_style));
+            }
+            spans.push(Span::styled(cursor_char, cursor_style));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, value_style));
+            }
         } else {
-            value.to_string()
-        };
+            spans.push(Span::styled(value, value_style));
+        }
 
-        let line = Line::from(vec![
-            Span::styled(label, label_style),
-            Span::styled(format!(" {}", display_value), value_style),
-        ]);
-
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
