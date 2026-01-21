@@ -90,6 +90,8 @@ pub struct NewSessionDialog {
     pub(super) create_new_branch: bool,
     pub(super) sandbox_enabled: bool,
     pub(super) sandbox_image: Input,
+    /// The default image value at dialog creation time, used for test verification
+    #[allow(dead_code)]
     pub(super) default_sandbox_image: String,
     pub(super) docker_available: bool,
     pub(super) yolo_mode: bool,
@@ -268,7 +270,7 @@ impl NewSessionDialog {
                 };
                 let sandbox_image = if self.sandbox_enabled {
                     let image_val = self.sandbox_image.value().trim().to_string();
-                    if !image_val.is_empty() && image_val != self.default_sandbox_image {
+                    if !image_val.is_empty() {
                         Some(image_val)
                     } else {
                         None

@@ -395,7 +395,7 @@ fn test_submit_with_custom_sandbox_image() {
 }
 
 #[test]
-fn test_submit_with_default_image_returns_none() {
+fn test_submit_with_default_image_returns_image() {
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
@@ -405,6 +405,31 @@ fn test_submit_with_default_image_returns_none() {
     match result {
         DialogResult::Submit(data) => {
             assert!(data.sandbox);
+            // When sandbox is enabled, the image value is always passed through
+            // (even if it matches the default) to ensure the user's configured
+            // default is used rather than the hardcoded fallback
+            assert_eq!(
+                data.sandbox_image,
+                Some(dialog.default_sandbox_image.clone())
+            );
+        }
+        _ => panic!("Expected Submit"),
+    }
+}
+
+#[test]
+fn test_submit_with_empty_image_returns_none() {
+    let mut dialog = multi_tool_dialog();
+    dialog.docker_available = true;
+    dialog.sandbox_enabled = true;
+    dialog.sandbox_image = Input::new("".to_string());
+    dialog.title = Input::new("Test".to_string());
+
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    match result {
+        DialogResult::Submit(data) => {
+            assert!(data.sandbox);
+            // Empty image field results in None, allowing fallback to hardcoded default
             assert_eq!(data.sandbox_image, None);
         }
         _ => panic!("Expected Submit"),
