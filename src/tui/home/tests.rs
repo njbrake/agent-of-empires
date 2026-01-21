@@ -732,7 +732,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
     inst3.sandbox_info = Some(SandboxInfo {
         enabled: true,
         container_id: None,
-        image: Some("ubuntu:latest".to_string()),
+        image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
         created_at: None,
         yolo_mode: None,
@@ -805,7 +805,7 @@ fn test_group_has_containers() {
     inst1.sandbox_info = Some(SandboxInfo {
         enabled: true,
         container_id: None,
-        image: Some("ubuntu:latest".to_string()),
+        image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
         created_at: None,
         yolo_mode: None,
@@ -972,7 +972,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
     inst1.sandbox_info = Some(SandboxInfo {
         enabled: true,
         container_id: None,
-        image: Some("ubuntu:latest".to_string()),
+        image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
         created_at: None,
         yolo_mode: None,

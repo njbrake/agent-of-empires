@@ -169,10 +169,14 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
         } else {
             let container_name = DockerContainer::generate_name(&instance.id);
+            let image = args
+                .sandbox_image
+                .clone()
+                .unwrap_or_else(docker::effective_default_image);
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,
-                image: args.sandbox_image.clone(),
+                image,
                 container_name,
                 created_at: None,
                 yolo_mode: None,

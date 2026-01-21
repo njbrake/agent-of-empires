@@ -23,7 +23,8 @@ pub struct InstanceParams {
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
-    pub sandbox_image: Option<String>,
+    /// The sandbox image to use. Required when sandbox is true.
+    pub sandbox_image: String,
     pub yolo_mode: bool,
 }
 
@@ -151,13 +152,10 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
     instance.worktree_info = worktree_info;
 
     if params.sandbox {
-        let image = params
-            .sandbox_image
-            .or(Some(crate::docker::default_sandbox_image().to_string()));
         instance.sandbox_info = Some(SandboxInfo {
             enabled: true,
             container_id: None,
-            image,
+            image: params.sandbox_image.clone(),
             container_name: DockerContainer::generate_name(&instance.id),
             created_at: None,
             yolo_mode: if params.yolo_mode { Some(true) } else { None },

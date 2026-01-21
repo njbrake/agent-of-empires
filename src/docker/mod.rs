@@ -93,8 +93,17 @@ pub fn ensure_named_volume(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The hardcoded fallback sandbox image.
 pub fn default_sandbox_image() -> &'static str {
     "ghcr.io/njbrake/aoe-sandbox:latest"
+}
+
+/// Returns the effective default sandbox image, checking user config first.
+pub fn effective_default_image() -> String {
+    crate::session::Config::load()
+        .ok()
+        .map(|c| c.sandbox.default_image)
+        .unwrap_or_else(|| default_sandbox_image().to_string())
 }
 
 #[cfg(test)]

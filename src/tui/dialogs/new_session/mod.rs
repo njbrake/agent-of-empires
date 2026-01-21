@@ -71,7 +71,8 @@ pub struct NewSessionData {
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
-    pub sandbox_image: Option<String>,
+    /// The sandbox image to use (always populated from the input field).
+    pub sandbox_image: String,
     pub yolo_mode: bool,
 }
 
@@ -90,9 +91,6 @@ pub struct NewSessionDialog {
     pub(super) create_new_branch: bool,
     pub(super) sandbox_enabled: bool,
     pub(super) sandbox_image: Input,
-    /// The default image value at dialog creation time, used for test verification
-    #[allow(dead_code)]
-    pub(super) default_sandbox_image: String,
     pub(super) docker_available: bool,
     pub(super) yolo_mode: bool,
     pub(super) error_message: Option<String>,
@@ -112,11 +110,6 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
         let docker_available = docker::is_docker_available();
 
-        let default_sandbox_image = crate::session::Config::load()
-            .ok()
-            .map(|c| c.sandbox.default_image)
-            .unwrap_or_else(|| docker::default_sandbox_image().to_string());
-
         Self {
             title: Input::default(),
             path: Input::new(current_dir),
@@ -128,8 +121,7 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
-            sandbox_image: Input::new(default_sandbox_image.clone()),
-            default_sandbox_image,
+            sandbox_image: Input::new(docker::effective_default_image()),
             docker_available,
             yolo_mode: false,
             error_message: None,
@@ -159,7 +151,6 @@ impl NewSessionDialog {
 
     #[cfg(test)]
     pub(super) fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
-        let default_image = docker::default_sandbox_image().to_string();
         Self {
             title: Input::default(),
             path: Input::new(path),
@@ -171,8 +162,7 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
-            sandbox_image: Input::new(default_image.clone()),
-            default_sandbox_image: default_image,
+            sandbox_image: Input::new(docker::effective_default_image()),
             docker_available: false,
             yolo_mode: false,
             error_message: None,
@@ -268,16 +258,6 @@ impl NewSessionDialog {
                 } else {
                     Some(worktree_value.to_string())
                 };
-                let sandbox_image = if self.sandbox_enabled {
-                    let image_val = self.sandbox_image.value().trim().to_string();
-                    if !image_val.is_empty() {
-                        Some(image_val)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
                 DialogResult::Submit(NewSessionData {
                     title: final_title,
                     path: self.path.value().to_string(),
@@ -286,7 +266,7 @@ impl NewSessionDialog {
                     worktree_branch,
                     create_new_branch: self.create_new_branch,
                     sandbox: self.sandbox_enabled,
-                    sandbox_image,
+                    sandbox_image: self.sandbox_image.value().trim().to_string(),
                     yolo_mode: self.sandbox_enabled && self.yolo_mode,
                 })
             }

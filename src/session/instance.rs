@@ -49,8 +49,7 @@ pub struct SandboxInfo {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
+    pub image: String,
     pub container_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
@@ -287,11 +286,7 @@ impl Instance {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Cannot ensure container for non-sandboxed session"))?;
 
-        let image = sandbox
-            .image
-            .as_deref()
-            .unwrap_or(docker::default_sandbox_image());
-
+        let image = &sandbox.image;
         let container = DockerContainer::new(&self.id, image);
 
         if container.is_running()? {
@@ -576,7 +571,7 @@ mod tests {
         inst.sandbox_info = Some(SandboxInfo {
             enabled: true,
             container_id: None,
-            image: None,
+            image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: Some(true),
@@ -603,7 +598,7 @@ mod tests {
         inst.sandbox_info = Some(SandboxInfo {
             enabled: false,
             container_id: None,
-            image: None,
+            image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: None,
@@ -617,7 +612,7 @@ mod tests {
         inst.sandbox_info = Some(SandboxInfo {
             enabled: true,
             container_id: None,
-            image: None,
+            image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: None,
@@ -733,7 +728,7 @@ mod tests {
         let info = SandboxInfo {
             enabled: true,
             container_id: Some("abc123".to_string()),
-            image: Some("myimage:latest".to_string()),
+            image: "myimage:latest".to_string(),
             container_name: "test_container".to_string(),
             created_at: Some(Utc::now()),
             yolo_mode: Some(true),
@@ -751,14 +746,14 @@ mod tests {
 
     #[test]
     fn test_sandbox_info_minimal_serialization() {
-        // Only required fields
-        let json = r#"{"enabled":false,"container_name":"test"}"#;
+        // Required fields: enabled, image, container_name
+        let json = r#"{"enabled":false,"image":"test-image","container_name":"test"}"#;
         let info: SandboxInfo = serde_json::from_str(json).unwrap();
 
         assert!(!info.enabled);
+        assert_eq!(info.image, "test-image");
         assert_eq!(info.container_name, "test");
         assert!(info.container_id.is_none());
-        assert!(info.image.is_none());
         assert!(info.created_at.is_none());
         assert!(info.yolo_mode.is_none());
     }
