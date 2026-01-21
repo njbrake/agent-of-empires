@@ -265,10 +265,12 @@ impl HomeView {
                     if session_count > 0 {
                         let has_managed_worktrees =
                             self.group_has_managed_worktrees(group_path, &prefix);
+                        let has_containers = self.group_has_containers(group_path, &prefix);
                         self.group_delete_options_dialog = Some(GroupDeleteOptionsDialog::new(
                             group_path.clone(),
                             session_count,
                             has_managed_worktrees,
+                            has_containers,
                         ));
                     } else {
                         let message =

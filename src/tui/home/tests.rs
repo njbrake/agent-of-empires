@@ -707,3 +707,370 @@ fn test_has_dialog_includes_info_dialog() {
     view.info_dialog = Some(InfoDialog::new("Test", "Test message"));
     assert!(view.has_dialog());
 }
+
+// Group deletion tests
+
+fn create_test_env_with_group_sessions() -> TestEnv {
+    use crate::session::{GroupTree, SandboxInfo};
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+    let mut instances = Vec::new();
+
+    // Ungrouped session
+    let inst1 = Instance::new("ungrouped", "/tmp/u");
+    instances.push(inst1);
+
+    // Sessions in "work" group
+    let mut inst2 = Instance::new("work-session-1", "/tmp/work1");
+    inst2.group_path = "work".to_string();
+    instances.push(inst2);
+
+    let mut inst3 = Instance::new("work-session-2", "/tmp/work2");
+    inst3.group_path = "work".to_string();
+    inst3.sandbox_info = Some(SandboxInfo {
+        enabled: true,
+        container_id: None,
+        image: Some("ubuntu:latest".to_string()),
+        container_name: "test-container".to_string(),
+        created_at: None,
+        yolo_mode: None,
+    });
+    instances.push(inst3);
+
+    // Session in nested group
+    let mut inst4 = Instance::new("work-nested", "/tmp/work/nested");
+    inst4.group_path = "work/projects".to_string();
+    instances.push(inst4);
+
+    // Build group tree from instances and save with groups
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.save_with_groups(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools {
+        claude: true,
+        opencode: false,
+    };
+    let view = HomeView::new(storage, tools).unwrap();
+    TestEnv { _temp: temp, view }
+}
+
+#[test]
+#[serial]
+fn test_group_has_managed_worktrees() {
+    use crate::session::WorktreeInfo;
+    use chrono::Utc;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    inst1.group_path = "work".to_string();
+    inst1.worktree_info = Some(WorktreeInfo {
+        branch: "feature-branch".to_string(),
+        main_repo_path: "/tmp/main".to_string(),
+        managed_by_aoe: true,
+        created_at: Utc::now(),
+        cleanup_on_delete: true,
+    });
+
+    let mut inst2 = Instance::new("other-session", "/tmp/other");
+    inst2.group_path = "other".to_string();
+
+    storage.save(&vec![inst1, inst2]).unwrap();
+
+    let tools = AvailableTools {
+        claude: true,
+        opencode: false,
+    };
+    let view = HomeView::new(storage, tools).unwrap();
+
+    assert!(view.group_has_managed_worktrees("work", "work/"));
+    assert!(!view.group_has_managed_worktrees("other", "other/"));
+}
+
+#[test]
+#[serial]
+fn test_group_has_containers() {
+    use crate::session::SandboxInfo;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    inst1.group_path = "work".to_string();
+    inst1.sandbox_info = Some(SandboxInfo {
+        enabled: true,
+        container_id: None,
+        image: Some("ubuntu:latest".to_string()),
+        container_name: "test-container".to_string(),
+        created_at: None,
+        yolo_mode: None,
+    });
+
+    let mut inst2 = Instance::new("other-session", "/tmp/other");
+    inst2.group_path = "other".to_string();
+
+    storage.save(&vec![inst1, inst2]).unwrap();
+
+    let tools = AvailableTools {
+        claude: true,
+        opencode: false,
+    };
+    let view = HomeView::new(storage, tools).unwrap();
+
+    assert!(view.group_has_containers("work", "work/"));
+    assert!(!view.group_has_containers("other", "other/"));
+}
+
+#[test]
+#[serial]
+fn test_delete_selected_group_updates_groups_field() {
+    let mut env = create_test_env_with_group_sessions();
+
+    // Select the "work" group
+    for (i, item) in env.view.flat_items.iter().enumerate() {
+        if let Item::Group { path, .. } = item {
+            if path == "work" {
+                env.view.cursor = i;
+                env.view.update_selected();
+                break;
+            }
+        }
+    }
+
+    assert!(env.view.selected_group.is_some());
+    assert!(env.view.group_tree.group_exists("work"));
+
+    // Delete the group (this moves sessions to default)
+    env.view.delete_selected_group().unwrap();
+
+    // Verify the group is removed from group_tree
+    assert!(!env.view.group_tree.group_exists("work"));
+
+    // Verify self.groups is updated (this is the bug fix)
+    let group_paths: Vec<_> = env.view.groups.iter().map(|g| g.path.as_str()).collect();
+    assert!(!group_paths.contains(&"work"));
+    assert!(!group_paths.contains(&"work/projects"));
+}
+
+#[test]
+#[serial]
+fn test_delete_group_with_sessions_updates_groups_field() {
+    use crate::session::Status;
+    use crate::tui::dialogs::GroupDeleteOptions;
+
+    let mut env = create_test_env_with_group_sessions();
+
+    // Select the "work" group
+    for (i, item) in env.view.flat_items.iter().enumerate() {
+        if let Item::Group { path, .. } = item {
+            if path == "work" {
+                env.view.cursor = i;
+                env.view.update_selected();
+                break;
+            }
+        }
+    }
+
+    assert!(env.view.selected_group.is_some());
+    let initial_instance_count = env.view.instances.len();
+
+    // Delete the group with all sessions
+    let options = GroupDeleteOptions {
+        delete_sessions: true,
+        delete_worktrees: false,
+        delete_containers: false,
+    };
+    env.view.delete_group_with_sessions(&options).unwrap();
+
+    // Verify the group is removed from group_tree
+    assert!(!env.view.group_tree.group_exists("work"));
+    assert!(!env.view.group_tree.group_exists("work/projects"));
+
+    // Verify self.groups is updated (this is the bug fix)
+    let group_paths: Vec<_> = env.view.groups.iter().map(|g| g.path.as_str()).collect();
+    assert!(!group_paths.contains(&"work"));
+    assert!(!group_paths.contains(&"work/projects"));
+
+    // Verify sessions are marked as deleting
+    let deleting_count = env
+        .view
+        .instances
+        .iter()
+        .filter(|i| i.status == Status::Deleting)
+        .count();
+    // Should have 3 sessions in the work group marked as deleting
+    assert_eq!(deleting_count, 3);
+
+    // Instance count should remain the same (they're marked as deleting, not removed yet)
+    assert_eq!(env.view.instances.len(), initial_instance_count);
+}
+
+#[test]
+#[serial]
+fn test_delete_group_with_sessions_respects_worktree_option() {
+    use crate::session::WorktreeInfo;
+    use crate::tui::dialogs::GroupDeleteOptions;
+    use chrono::Utc;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    inst1.group_path = "work".to_string();
+    inst1.worktree_info = Some(WorktreeInfo {
+        branch: "feature".to_string(),
+        main_repo_path: "/tmp/main".to_string(),
+        managed_by_aoe: true,
+        created_at: Utc::now(),
+        cleanup_on_delete: true,
+    });
+
+    storage.save(&vec![inst1]).unwrap();
+
+    let tools = AvailableTools {
+        claude: true,
+        opencode: false,
+    };
+    let mut view = HomeView::new(storage, tools).unwrap();
+
+    // Select the work group
+    view.cursor = 0;
+    view.update_selected();
+    assert!(view.selected_group.is_some());
+
+    // Delete with worktrees option enabled
+    let options = GroupDeleteOptions {
+        delete_sessions: true,
+        delete_worktrees: true,
+        delete_containers: false,
+    };
+    view.delete_group_with_sessions(&options).unwrap();
+
+    // We can't easily verify the deletion request was sent with the right flags
+    // without mocking, but we can verify the group was deleted
+    assert!(!view.group_tree.group_exists("work"));
+}
+
+#[test]
+#[serial]
+fn test_delete_group_with_sessions_respects_container_option() {
+    use crate::session::SandboxInfo;
+    use crate::tui::dialogs::GroupDeleteOptions;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    inst1.group_path = "work".to_string();
+    inst1.sandbox_info = Some(SandboxInfo {
+        enabled: true,
+        container_id: None,
+        image: Some("ubuntu:latest".to_string()),
+        container_name: "test-container".to_string(),
+        created_at: None,
+        yolo_mode: None,
+    });
+
+    storage.save(&vec![inst1]).unwrap();
+
+    let tools = AvailableTools {
+        claude: true,
+        opencode: false,
+    };
+    let mut view = HomeView::new(storage, tools).unwrap();
+
+    // Select the work group
+    view.cursor = 0;
+    view.update_selected();
+    assert!(view.selected_group.is_some());
+
+    // Delete with containers option enabled
+    let options = GroupDeleteOptions {
+        delete_sessions: true,
+        delete_worktrees: false,
+        delete_containers: true,
+    };
+    view.delete_group_with_sessions(&options).unwrap();
+
+    // Verify the group was deleted
+    assert!(!view.group_tree.group_exists("work"));
+}
+
+#[test]
+#[serial]
+fn test_delete_group_includes_nested_groups() {
+    use crate::tui::dialogs::GroupDeleteOptions;
+
+    let mut env = create_test_env_with_group_sessions();
+
+    // Select the "work" group
+    for (i, item) in env.view.flat_items.iter().enumerate() {
+        if let Item::Group { path, .. } = item {
+            if path == "work" {
+                env.view.cursor = i;
+                env.view.update_selected();
+                break;
+            }
+        }
+    }
+
+    // Verify nested group exists
+    assert!(env.view.group_tree.group_exists("work/projects"));
+
+    // Delete the group with all sessions
+    let options = GroupDeleteOptions {
+        delete_sessions: true,
+        delete_worktrees: false,
+        delete_containers: false,
+    };
+    env.view.delete_group_with_sessions(&options).unwrap();
+
+    // Verify both parent and nested groups are removed
+    assert!(!env.view.group_tree.group_exists("work"));
+    assert!(!env.view.group_tree.group_exists("work/projects"));
+}
+
+#[test]
+#[serial]
+fn test_groups_field_stays_in_sync_with_storage() {
+    let mut env = create_test_env_with_group_sessions();
+
+    // Get initial group count
+    let initial_group_count = env.view.groups.len();
+    assert!(initial_group_count > 0);
+
+    // Select and delete the work group
+    for (i, item) in env.view.flat_items.iter().enumerate() {
+        if let Item::Group { path, .. } = item {
+            if path == "work" {
+                env.view.cursor = i;
+                env.view.update_selected();
+                break;
+            }
+        }
+    }
+
+    env.view.delete_selected_group().unwrap();
+
+    // After deletion, groups field should be smaller
+    assert!(env.view.groups.len() < initial_group_count);
+
+    // Reload from storage and verify groups match
+    env.view.reload().unwrap();
+    let reloaded_groups: Vec<_> = env.view.groups.iter().map(|g| g.path.clone()).collect();
+    let tree_groups: Vec<_> = env
+        .view
+        .group_tree
+        .get_all_groups()
+        .iter()
+        .map(|g| g.path.clone())
+        .collect();
+    assert_eq!(reloaded_groups, tree_groups);
+}

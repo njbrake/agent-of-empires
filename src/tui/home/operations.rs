@@ -97,11 +97,15 @@ impl HomeView {
                 .collect();
 
             for session_id in sessions_to_delete {
+                // Clear group_path when marking for deletion so these instances
+                // won't cause the group to be recreated during tree rebuilds
                 if let Some(inst) = self.instance_map.get_mut(&session_id) {
                     inst.status = Status::Deleting;
+                    inst.group_path = String::new();
                 }
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == session_id) {
                     inst.status = Status::Deleting;
+                    inst.group_path = String::new();
                 }
 
                 if let Some(inst) = self.instance_map.get(&session_id) {
@@ -110,7 +114,8 @@ impl HomeView {
                             .worktree_info
                             .as_ref()
                             .is_some_and(|wt| wt.managed_by_aoe);
-                    let delete_sandbox = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+                    let delete_sandbox = options.delete_containers
+                        && inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
                     let request = DeletionRequest {
                         session_id: session_id.clone(),
                         instance: inst.clone(),
@@ -122,6 +127,7 @@ impl HomeView {
             }
 
             self.group_tree.delete_group(&group_path);
+            self.groups = self.group_tree.get_all_groups();
             self.storage
                 .save_with_groups(&self.instances, &self.group_tree)?;
             self.flat_items = flatten_tree(&self.group_tree, &self.instances);
@@ -133,6 +139,13 @@ impl HomeView {
         self.instances.iter().any(|i| {
             (i.group_path == group_path || i.group_path.starts_with(prefix))
                 && i.worktree_info.as_ref().is_some_and(|wt| wt.managed_by_aoe)
+        })
+    }
+
+    pub(super) fn group_has_containers(&self, group_path: &str, prefix: &str) -> bool {
+        self.instances.iter().any(|i| {
+            (i.group_path == group_path || i.group_path.starts_with(prefix))
+                && i.sandbox_info.as_ref().is_some_and(|s| s.enabled)
         })
     }
 
