@@ -197,3 +197,59 @@ default_image = "my-sandbox:latest"
 ```bash
 aoe add --sandbox-image my-sandbox:latest .
 ```
+
+## Worktrees and Sandboxing
+
+When using git worktrees with sandboxing, there's an important consideration: worktrees have a `.git` file that points back to the main repository's git directory. If this reference points outside the sandboxed directory, git operations inside the container may fail.
+
+### The Problem
+
+With the default worktree template (`../{repo-name}-worktrees/{branch}`):
+
+```
+/projects/
+  my-repo/
+    .git/                    # Main repo's git directory
+    src/
+  my-repo-worktrees/
+    feature-branch/
+      .git                   # FILE pointing to /projects/my-repo/.git/...
+      src/
+```
+
+When sandboxing `feature-branch/`, the container can't access `/projects/my-repo/.git/`.
+
+### The Solution: Bare Repo Pattern
+
+Use the linked worktree bare repo pattern to keep everything in one directory:
+
+```
+/projects/my-repo/
+  .bare/                     # Bare git repository
+  .git                       # FILE: "gitdir: ./.bare"
+  main/                      # Worktree (main branch)
+  feature/                   # Worktree (feature branch)
+```
+
+Now when sandboxing `feature/`, the container has access to the sibling `.bare/` directory.
+
+AOE automatically detects bare repo setups and uses `./{branch}` as the default worktree path template, keeping new worktrees as siblings.
+
+### Quick Setup
+
+```bash
+# Convert existing repo to bare repo pattern
+cd my-project
+mv .git .bare
+echo "gitdir: ./.bare" > .git
+
+# Or clone fresh as bare
+git clone --bare git@github.com:user/repo.git my-project/.bare
+cd my-project
+echo "gitdir: ./.bare" > .git
+git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git fetch origin
+git worktree add main main
+```
+
+See the [Worktrees Guide](worktrees.md#bare-repo-workflow-recommended-for-sandboxing) for detailed setup instructions.

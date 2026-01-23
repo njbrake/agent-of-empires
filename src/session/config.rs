@@ -101,6 +101,11 @@ pub struct WorktreeConfig {
     #[serde(default = "default_worktree_template")]
     pub path_template: String,
 
+    /// Path template for bare repo setups (linked worktree pattern).
+    /// Defaults to "./{branch}" to keep worktrees as siblings within the repo directory.
+    #[serde(default = "default_bare_repo_template")]
+    pub bare_repo_path_template: String,
+
     #[serde(default = "default_true")]
     pub auto_cleanup: bool,
 
@@ -113,6 +118,7 @@ impl Default for WorktreeConfig {
         Self {
             enabled: false,
             path_template: default_worktree_template(),
+            bare_repo_path_template: default_bare_repo_template(),
             auto_cleanup: true,
             show_branch_in_tui: true,
         }
@@ -121,6 +127,10 @@ impl Default for WorktreeConfig {
 
 fn default_worktree_template() -> String {
     "../{repo-name}-worktrees/{branch}".to_string()
+}
+
+fn default_bare_repo_template() -> String {
+    "./{branch}".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

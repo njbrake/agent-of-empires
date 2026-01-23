@@ -75,6 +75,14 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
+        // Choose appropriate template based on repo type (bare vs regular)
+        let is_bare = GitWorktree::is_bare_repo(&path);
+        let template = if is_bare {
+            &config.worktree.bare_repo_path_template
+        } else {
+            &config.worktree.path_template
+        };
+
         if !params.create_new_branch {
             let existing_worktrees = git_wt.list_worktrees()?;
             if let Some(existing) = existing_worktrees
@@ -91,7 +99,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
                 });
             } else {
                 let session_id = uuid::Uuid::new_v4().to_string();
-                let template = &config.worktree.path_template;
                 let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
 
                 git_wt.create_worktree(branch, &worktree_path, false)?;
@@ -111,7 +118,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             }
         } else {
             let session_id = uuid::Uuid::new_v4().to_string();
-            let template = &config.worktree.path_template;
             let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
 
             if worktree_path.exists() {
