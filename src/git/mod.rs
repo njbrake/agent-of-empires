@@ -388,9 +388,10 @@ mod tests {
         );
 
         let main_repo = result.unwrap();
+        // Canonicalize both paths to handle macOS /var -> /private/var symlink
+        let expected = dir.path().canonicalize().unwrap();
         assert_eq!(
-            main_repo,
-            dir.path().to_path_buf(),
+            main_repo, expected,
             "find_main_repo should return the root directory for bare repo setup"
         );
     }
