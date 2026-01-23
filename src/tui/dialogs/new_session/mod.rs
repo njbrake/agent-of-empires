@@ -245,14 +245,14 @@ impl NewSessionDialog {
             }
             KeyCode::Enter => {
                 self.error_message = None;
-                let title_value = self.title.value();
+                let title_value = self.title.value().trim();
                 let final_title = if title_value.is_empty() {
                     let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
                     civilizations::generate_random_title(&refs)
                 } else {
                     title_value.to_string()
                 };
-                let worktree_value = self.worktree_branch.value();
+                let worktree_value = self.worktree_branch.value().trim();
                 let worktree_branch = if worktree_value.is_empty() {
                     None
                 } else {
@@ -260,8 +260,8 @@ impl NewSessionDialog {
                 };
                 DialogResult::Submit(NewSessionData {
                     title: final_title,
-                    path: self.path.value().to_string(),
-                    group: self.group.value().to_string(),
+                    path: self.path.value().trim().to_string(),
+                    group: self.group.value().trim().to_string(),
                     tool: self.available_tools[self.tool_index].to_string(),
                     worktree_branch,
                     create_new_branch: self.create_new_branch,

@@ -27,7 +27,7 @@ impl RenameDialog {
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
             KeyCode::Enter => {
-                let value = self.new_title.value();
+                let value = self.new_title.value().trim();
                 if value.is_empty() {
                     DialogResult::Cancel
                 } else {

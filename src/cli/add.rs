@@ -63,10 +63,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     let mut worktree_info_opt = None;
 
-    if let Some(branch) = &args.worktree_branch {
+    if let Some(branch_raw) = &args.worktree_branch {
         use crate::git::GitWorktree;
         use crate::session::WorktreeInfo;
         use chrono::Utc;
+
+        let branch = branch_raw.trim();
 
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
@@ -97,7 +99,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         path = worktree_path;
 
         worktree_info_opt = Some(WorktreeInfo {
-            branch: branch.clone(),
+            branch: branch.to_string(),
             main_repo_path: main_repo_path.to_string_lossy().to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
@@ -125,11 +127,15 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     // Generate title
     let final_title = if let Some(title) = &args.title {
-        if is_duplicate_session(&instances, title, path.to_str().unwrap_or("")) {
-            println!("Session already exists with same title and path: {}", title);
+        let trimmed_title = title.trim();
+        if is_duplicate_session(&instances, trimmed_title, path.to_str().unwrap_or("")) {
+            println!(
+                "Session already exists with same title and path: {}",
+                trimmed_title
+            );
             return Ok(());
         }
-        title.clone()
+        trimmed_title.to_string()
     } else {
         let existing_titles: Vec<&str> = instances.iter().map(|i| i.title.as_str()).collect();
         civilizations::generate_random_title(&existing_titles)
@@ -138,7 +144,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let mut instance = Instance::new(&final_title, path.to_str().unwrap_or(""));
 
     if let Some(group) = &group_path {
-        instance.group_path = group.clone();
+        instance.group_path = group.trim().to_string();
     }
 
     if let Some(parent) = parent_id {
@@ -171,7 +177,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             let container_name = DockerContainer::generate_name(&instance.id);
             let image = args
                 .sandbox_image
-                .clone()
+                .as_ref()
+                .map(|s| s.trim().to_string())
                 .unwrap_or_else(docker::effective_default_image);
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
