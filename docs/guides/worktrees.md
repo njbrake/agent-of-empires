@@ -177,15 +177,9 @@ aoe
 - ✅ Use `--keep-worktree` when preserving work
 - ✅ Keep main repo on main/master branch
 
-## Bare Repo Workflow (Recommended for Sandboxing)
+## Bare Repo Workflow
 
-The "linked worktree bare repo" pattern keeps all worktrees as siblings under one directory. This is especially useful when combined with Docker sandboxing, since everything stays in one place.
-
-### Why Use This Pattern?
-
-With the default worktree template (`../{repo-name}-worktrees/{branch}`), worktrees are created outside the main repo. This causes issues with sandboxing because the worktree's `.git` file points back to the main repo, which may be outside the sandbox.
-
-The bare repo pattern solves this by keeping everything together:
+For sandboxed sessions, use a "linked worktree bare repo" to keep all worktrees under one directory. This avoids issues where worktrees reference paths outside the sandbox.
 
 ```
 my-project/
@@ -193,89 +187,19 @@ my-project/
   .git                 # File: "gitdir: ./.bare"
   main/                # Worktree for main branch
   feat-api/            # Worktree for feature branch
-  fix-bug/             # Worktree for bugfix branch
 ```
 
-### Setting Up a Bare Repo
-
-**For a new project:**
+### Setup
 
 ```bash
-# Clone as bare into a .bare directory
 git clone --bare git@github.com:user/repo.git my-project/.bare
-
-# Create the .git file pointing to .bare
 cd my-project
-echo "gitdir: ./.bare" > .git
-
-# Configure the bare repo to work with worktrees
-git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-git fetch origin
-
-# Create your first worktree (e.g., main branch)
-git worktree add main main
-```
-
-**For an existing project:**
-
-```bash
-cd my-project
-
-# Move the existing .git directory to .bare
-mv .git .bare
-
-# Create .git file pointing to .bare
-echo "gitdir: ./.bare" > .git
-
-# Your existing files become the "main" worktree conceptually
-# Create additional worktrees as needed
-git worktree add feat-api feat/api
-```
-
-### AOE Auto-Detection
-
-AOE automatically detects bare repo setups and uses a different default path template:
-
-| Repo Type | Default Template |
-|-----------|------------------|
-| Regular | `../{repo-name}-worktrees/{branch}` |
-| Bare | `./{branch}` |
-
-This means worktrees are created as siblings (e.g., `./feat-api/`) rather than in a separate directory.
-
-### Configuration
-
-You can customize the bare repo template in `~/.agent-of-empires/config.toml`:
-
-```toml
-[worktree]
-path_template = "../{repo-name}-worktrees/{branch}"  # For regular repos
-bare_repo_path_template = "./{branch}"               # For bare repos
-```
-
-### Example Workflow with Sandboxing
-
-```bash
-# Set up bare repo (one-time)
-git clone --bare git@github.com:user/my-app.git my-app/.bare
-cd my-app
 echo "gitdir: ./.bare" > .git
 git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 git fetch origin
 git worktree add main main
-cd main
-
-# Create sandboxed sessions with worktrees
-aoe add --sandbox -w feat/auth -b .
-aoe add --sandbox -w feat/api -b .
-
-# Result:
-# my-app/
-#   .bare/
-#   .git
-#   main/
-#   feat-auth/    # Sandboxed session 1
-#   feat-api/     # Sandboxed session 2
 ```
 
-Each worktree can be sandboxed with access to the shared `.bare` directory, enabling isolated parallel development.
+### Auto-Detection
+
+AOE detects bare repos and uses `./{branch}` instead of `../{repo-name}-worktrees/{branch}`, creating worktrees as siblings. Customize with `bare_repo_path_template` in config.
