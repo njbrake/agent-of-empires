@@ -70,6 +70,13 @@ impl Session {
             return Ok(());
         }
 
+        // Kill the entire process tree first to ensure child processes are terminated.
+        // This handles cases where tools like Claude spawn subprocesses that may
+        // survive tmux's SIGHUP signal.
+        if let Some(pane_pid) = self.get_pane_pid() {
+            process::kill_process_tree(pane_pid);
+        }
+
         let output = Command::new("tmux")
             .args(["kill-session", "-t", &self.name])
             .output()?;
@@ -78,6 +85,8 @@ impl Session {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("Failed to kill tmux session: {}", stderr);
         }
+
+        refresh_session_cache();
 
         Ok(())
     }

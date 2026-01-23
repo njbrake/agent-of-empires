@@ -6,6 +6,7 @@ use std::process::Command;
 use super::utils::sanitize_session_name;
 use super::{refresh_session_cache, session_exists_from_cache, TERMINAL_PREFIX};
 use crate::cli::truncate_id;
+use crate::process;
 
 pub struct TerminalSession {
     name: String,
@@ -62,6 +63,11 @@ impl TerminalSession {
             return Ok(());
         }
 
+        // Kill the entire process tree first to ensure child processes are terminated
+        if let Some(pane_pid) = self.get_pane_pid() {
+            process::kill_process_tree(pane_pid);
+        }
+
         let output = Command::new("tmux")
             .args(["kill-session", "-t", &self.name])
             .output()?;
@@ -71,7 +77,13 @@ impl TerminalSession {
             bail!("Failed to kill terminal session: {}", stderr);
         }
 
+        refresh_session_cache();
+
         Ok(())
+    }
+
+    pub fn get_pane_pid(&self) -> Option<u32> {
+        process::get_pane_pid(&self.name)
     }
 
     pub fn attach(&self) -> Result<()> {
