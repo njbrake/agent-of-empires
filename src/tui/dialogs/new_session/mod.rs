@@ -99,6 +99,8 @@ pub struct NewSessionDialog {
     pub(super) loading: bool,
     /// Spinner animation frame counter
     pub(super) spinner_frame: usize,
+    /// Whether a Docker image pull will be needed (image not present locally)
+    pub(super) needs_image_pull: bool,
 }
 
 impl NewSessionDialog {
@@ -128,6 +130,7 @@ impl NewSessionDialog {
             show_help: false,
             loading: false,
             spinner_frame: 0,
+            needs_image_pull: false,
         }
     }
 
@@ -136,6 +139,11 @@ impl NewSessionDialog {
         self.loading = loading;
         if loading {
             self.error_message = None;
+            // Check if image pull will be needed (only relevant for sandbox sessions)
+            if self.sandbox_enabled {
+                let image = self.sandbox_image.value().trim();
+                self.needs_image_pull = !docker::image_exists_locally(image);
+            }
         }
     }
 
@@ -169,6 +177,7 @@ impl NewSessionDialog {
             show_help: false,
             loading: false,
             spinner_frame: 0,
+            needs_image_pull: false,
         }
     }
 

@@ -377,8 +377,9 @@ impl NewSessionDialog {
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_width: u16 = 50;
-        let dialog_height: u16 = 7;
+        let needs_extra_line = self.sandbox_enabled && self.needs_image_pull;
+        let dialog_width: u16 = if needs_extra_line { 55 } else { 50 };
+        let dialog_height: u16 = if needs_extra_line { 9 } else { 7 };
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -404,12 +405,16 @@ impl NewSessionDialog {
         let spinner = SPINNER_FRAMES[self.spinner_frame];
 
         let loading_text = if self.sandbox_enabled {
-            "Setting up sandbox container..."
+            if self.needs_image_pull {
+                "Pulling sandbox image..."
+            } else {
+                "Setting up sandbox container..."
+            }
         } else {
             "Creating session..."
         };
 
-        let lines = vec![
+        let mut lines = vec![
             Line::from(""),
             Line::from(vec![
                 Span::styled(
@@ -418,13 +423,21 @@ impl NewSessionDialog {
                 ),
                 Span::styled(loading_text, Style::default().fg(theme.text)),
             ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  Press ", Style::default().fg(theme.dimmed)),
-                Span::styled("Esc", Style::default().fg(theme.hint)),
-                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
-            ]),
         ];
+
+        if needs_extra_line {
+            lines.push(Line::from(Span::styled(
+                "    (first time may take a few minutes)",
+                Style::default().fg(theme.dimmed),
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Press ", Style::default().fg(theme.dimmed)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
+        ]));
 
         frame.render_widget(Paragraph::new(lines), inner);
     }
