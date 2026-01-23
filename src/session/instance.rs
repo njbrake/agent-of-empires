@@ -235,18 +235,18 @@ impl Instance {
             } else {
                 self.get_tool_command().to_string()
             };
-            Some(format!(
+            Some(wrap_command_ignore_suspend(&format!(
                 "docker exec -it {} {}",
                 sandbox.container_name, tool_cmd
-            ))
+            )))
         } else if self.command.is_empty() {
             match self.tool.as_str() {
-                "claude" => Some("claude".to_string()),
-                "codex" => Some("codex".to_string()),
+                "claude" => Some(wrap_command_ignore_suspend("claude")),
+                "codex" => Some(wrap_command_ignore_suspend("codex")),
                 _ => None,
             }
         } else {
-            Some(self.command.clone())
+            Some(wrap_command_ignore_suspend(&self.command))
         };
 
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
@@ -523,6 +523,18 @@ impl Instance {
 
 fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
+}
+
+/// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
+///
+/// When running agents directly as tmux session commands (without a parent shell),
+/// pressing Ctrl-Z suspends the process with no way to recover via job control.
+/// This wrapper disables the suspend character at the terminal level before exec'ing
+/// the actual command.
+///
+/// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
+fn wrap_command_ignore_suspend(cmd: &str) -> String {
+    format!("bash -c 'stty susp undef; exec {}'", cmd)
 }
 
 /// Tools that have YOLO mode support configured.
