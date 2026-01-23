@@ -21,7 +21,7 @@ pub struct AddArgs {
     #[arg(short = 'g', long)]
     group: Option<String>,
 
-    /// Command to run (e.g., 'claude', 'opencode')
+    /// Command to run (e.g., 'claude', 'opencode', 'codex')
     #[arg(short = 'c', long = "cmd")]
     command: Option<String>,
 
@@ -267,6 +267,8 @@ fn detect_tool(cmd: &str) -> String {
         "claude".to_string()
     } else if cmd_lower.contains("opencode") || cmd_lower.contains("open-code") {
         "opencode".to_string()
+    } else if cmd_lower.contains("codex") {
+        "codex".to_string()
     } else if cmd_lower.contains("cursor") {
         "cursor".to_string()
     } else {

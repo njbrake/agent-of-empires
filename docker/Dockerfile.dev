@@ -1,7 +1,9 @@
 # aoe-dev-sandbox: Extended sandbox with development tools
 # Includes: Rust, uv (Python), nvm + Node.js, gh (GitHub CLI)
+# Note: Claude Code, OpenCode, and Codex CLI are inherited from the base image
 
-FROM ghcr.io/njbrake/aoe-sandbox:latest
+ARG BASE_IMAGE=ghcr.io/njbrake/aoe-sandbox:latest
+FROM ${BASE_IMAGE}
 
 USER root
 

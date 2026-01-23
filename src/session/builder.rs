@@ -144,10 +144,10 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
     let mut instance = Instance::new(&final_title, &final_path);
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
-    instance.command = if params.tool == "opencode" {
-        "opencode".to_string()
-    } else {
-        String::new()
+    instance.command = match params.tool.as_str() {
+        "opencode" => "opencode".to_string(),
+        "codex" => "codex".to_string(),
+        _ => String::new(),
     };
     instance.worktree_info = worktree_info;
 

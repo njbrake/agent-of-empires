@@ -1,5 +1,5 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
-# This image provides Claude Code and OpenCode in an isolated environment
+# This image provides Claude Code, OpenCode, and Codex CLI in an isolated environment
 
 FROM ubuntu:24.04
 
@@ -16,6 +16,11 @@ RUN apt-get update && apt-get install -y \
     fzf \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Node.js (required for Codex CLI)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Run as root - IS_SANDBOX=1 allows Claude Code to use --dangerously-skip-permissions
 WORKDIR /root
 
@@ -27,10 +32,14 @@ ENV PATH="/root/.local/bin:${PATH}"
 RUN curl -fsSL https://opencode.ai/install | bash
 ENV PATH="/root/.opencode/bin:${PATH}"
 
+# Install Codex CLI (OpenAI)
+RUN npm install -g @openai/codex
+
 # Create directories for credential mounts
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \
     /root/.local/share/opencode \
+    /root/.codex \
     /root/.ssh
 
 # Allow Claude Code to use --dangerously-skip-permissions as root

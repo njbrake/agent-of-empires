@@ -33,6 +33,7 @@ fn create_test_env_empty() -> TestEnv {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -54,6 +55,7 @@ fn create_test_env_with_sessions(count: usize) -> TestEnv {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -81,6 +83,7 @@ fn create_test_env_with_groups() -> TestEnv {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -163,6 +166,7 @@ fn test_has_dialog_returns_true_for_new_dialog() {
         AvailableTools {
             claude: true,
             opencode: false,
+            codex: false,
         },
         Vec::new(),
     ));
@@ -588,6 +592,7 @@ fn test_get_next_profile_cycles_through_profiles() {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -609,6 +614,7 @@ fn test_get_next_profile_wraps_around() {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -629,6 +635,7 @@ fn test_uppercase_p_returns_switch_profile_action() {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let mut view = HomeView::new(storage, tools).unwrap();
 
@@ -752,6 +759,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -785,6 +793,7 @@ fn test_group_has_managed_worktrees() {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -820,6 +829,7 @@ fn test_group_has_containers() {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -937,6 +947,7 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let mut view = HomeView::new(storage, tools).unwrap();
 
@@ -984,6 +995,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
     let tools = AvailableTools {
         claude: true,
         opencode: false,
+        codex: false,
     };
     let mut view = HomeView::new(storage, tools).unwrap();
 
