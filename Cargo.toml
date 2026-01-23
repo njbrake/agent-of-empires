@@ -75,6 +75,9 @@ nix = { version = "0.29", features = ["signal", "process"] }
 # Unicode width
 unicode-width = "0.2"
 
+# Regex
+regex = "1.10"
+
 # Git operations
 git2 = { version = "0.19", features = ["vendored-openssl"] }
 
