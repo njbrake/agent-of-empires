@@ -5,6 +5,7 @@ use std::path::Path;
 
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
+use tracing::debug;
 
 /// Kill a process and all its descendants
 /// Uses SIGTERM first, then SIGKILL after a short delay for stragglers
@@ -13,17 +14,24 @@ pub fn kill_process_tree(pid: u32) {
     let mut pids_to_kill = vec![pid];
     collect_descendants(pid, &mut pids_to_kill);
 
+    debug!(
+        pid,
+        descendants = ?pids_to_kill,
+        "Killing process tree"
+    );
+
     // Kill in reverse order (children first, then parent) with SIGTERM
     for &p in pids_to_kill.iter().rev() {
         let _ = kill(Pid::from_raw(p as i32), Signal::SIGTERM);
     }
 
-    // Brief pause to let processes handle SIGTERM
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Brief pause to let processes handle SIGTERM gracefully
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     // SIGKILL any survivors
     for &p in pids_to_kill.iter().rev() {
         if process_exists(p) {
+            debug!(pid = p, "Process survived SIGTERM, sending SIGKILL");
             let _ = kill(Pid::from_raw(p as i32), Signal::SIGKILL);
         }
     }
