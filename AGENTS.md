@@ -31,7 +31,11 @@
 
 ## Coding Style & Naming Conventions
 
-- Prefer “let the tools decide”: keep code `cargo fmt`-clean and `cargo clippy`-clean.
+- Prefer "let the tools decide": keep code `cargo fmt`-clean and `cargo clippy`-clean.
+- **Never use emdashes (—)** in documentation or comments. Use alternatives instead:
+  - For parenthetical thoughts: use commas, parentheses, or break into separate sentences
+  - For lists/definitions: use colons (e.g., `* `add`: Add a new session`)
+  - For ranges: use "to" (e.g., "5 to 10" not "5—10")
 - Rust naming: `snake_case` for modules/functions, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
 - Keep OS-specific logic in `src/process/{macos,linux}.rs` rather than sprinkling `cfg` checks.
 - Do not be concerned about maintaining backwards compatibility. You should not assume that it needs to be backwards compatible, but you should mention when you make a change that breaks backwards compatibility.

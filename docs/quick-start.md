@@ -116,8 +116,8 @@ Configuration is stored in `~/.agent-of-empires/`:
 
 By default, aoe displays session info in the tmux status bar for users without an existing tmux configuration. This shows:
 
-- **Session title** - The name of your aoe session
-- **Git branch** - For worktree sessions
+- **Session title**: The name of your aoe session
+- **Git branch**: For worktree sessions
 
 If you have your own `~/.tmux.conf`, aoe won't modify your status bar. You can:
 

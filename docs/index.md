@@ -6,13 +6,13 @@ A terminal session manager for Linux and macOS using tmux to aid in management a
 
 ## Features
 
-- **TUI Dashboard** - Visual interface to manage all your AI coding sessions
-- **Session Management** - Create, attach, detach, and delete sessions
-- **Group Organization** - Organize sessions into hierarchical folders
-- **Status Detection** - Automatic status detection for Claude Code and OpenCode
-- **tmux Integration** - Sessions persist in tmux for reliability
-- **Multi-profile Support** - Separate workspaces for different projects
-- **Git Worktrees** - Run parallel agents on different branches of the same repo
+- **TUI Dashboard**: Visual interface to manage all your AI coding sessions
+- **Session Management**: Create, attach, detach, and delete sessions
+- **Group Organization**: Organize sessions into hierarchical folders
+- **Status Detection**: Automatic status detection for Claude Code and OpenCode
+- **tmux Integration**: Sessions persist in tmux for reliability
+- **Multi-profile Support**: Separate workspaces for different projects
+- **Git Worktrees**: Run parallel agents on different branches of the same repo
 
 ## How It Works
 
@@ -30,7 +30,7 @@ If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and ret
 
 ## Quick Links
 
-- [Installation](installation.md) - Get started with Agent of Empires
-- [Quick Start](quick-start.md) - Basic usage tutorial
-- [CLI Reference](cli/reference.md) - Complete command documentation
-- [Git Worktrees Guide](guides/worktrees.md) - Parallel development with worktrees
+- [Installation](installation.md): Get started with Agent of Empires
+- [Quick Start](quick-start.md): Basic usage tutorial
+- [CLI Reference](cli/reference.md): Complete command documentation
+- [Git Worktrees Guide](guides/worktrees.md): Parallel development with worktrees

@@ -1,9 +1,9 @@
 # tmux Status Bar
 
 Agent of Empires can display session information in your tmux status bar, showing:
-- **Session title** - The name of your aoe session
-- **Git branch** - For worktree sessions
-- **Container name** - For sandboxed (Docker) sessions
+- **Session title**: The name of your aoe session
+- **Git branch**: For worktree sessions
+- **Container name**: For sandboxed (Docker) sessions
 
 ## How It Works
 

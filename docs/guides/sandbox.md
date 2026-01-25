@@ -1,4 +1,4 @@
-# Docker Sandbox - Quick Reference
+# Docker Sandbox: Quick Reference
 
 ## Overview
 
