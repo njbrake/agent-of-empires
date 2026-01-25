@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph},
     Frame,
 };
+use tui_input::Input;
 
 use super::{FieldValue, SettingsFocus, SettingsScope, SettingsView};
 use crate::tui::styles::Theme;
@@ -315,32 +316,78 @@ impl SettingsView {
             height: 1,
         };
 
-        let is_editing = self.editing_text.is_some() && index == self.selected_field;
-        let display_value = if is_editing {
-            self.editing_text.as_deref().unwrap_or("")
-        } else {
-            value
-        };
+        let is_editing = self.editing_input.is_some() && index == self.selected_field;
 
-        let style = if is_editing {
-            Style::default().fg(theme.text).bg(theme.selection)
-        } else if is_selected {
-            Style::default().fg(theme.accent)
+        if is_editing {
+            // Render with inverse-video cursor
+            let input = self.editing_input.as_ref().unwrap();
+            self.render_input_with_cursor(frame, value_area, input, theme);
         } else {
-            Style::default().fg(theme.dimmed)
-        };
+            let style = if is_selected {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
 
-        let display = if display_value.is_empty() {
-            "(empty)".to_string()
-        } else {
-            display_value.to_string()
-        };
+            let display = if value.is_empty() {
+                "(empty)".to_string()
+            } else {
+                value.to_string()
+            };
 
-        let cursor = if is_editing { "_" } else { "" };
-        frame.render_widget(
-            Paragraph::new(format!("{}{}", display, cursor)).style(style),
-            value_area,
-        );
+            frame.render_widget(Paragraph::new(display).style(style), value_area);
+        }
+    }
+
+    /// Build spans for text with an inverse-video cursor at the given position
+    fn build_cursor_spans(value: &str, cursor_pos: usize, theme: &Theme) -> Vec<Span<'static>> {
+        let value_style = Style::default().fg(theme.accent);
+        let cursor_style = Style::default().fg(theme.background).bg(theme.accent);
+
+        let before: String = value.chars().take(cursor_pos).collect();
+        let cursor_char: String = value
+            .chars()
+            .nth(cursor_pos)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| " ".to_string());
+        let after: String = value.chars().skip(cursor_pos + 1).collect();
+
+        let mut spans = Vec::new();
+        if !before.is_empty() {
+            spans.push(Span::styled(before, value_style));
+        }
+        spans.push(Span::styled(cursor_char, cursor_style));
+        if !after.is_empty() {
+            spans.push(Span::styled(after, value_style));
+        }
+        spans
+    }
+
+    /// Render an Input with inverse-video cursor styling
+    fn render_input_with_cursor(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        input: &Input,
+        theme: &Theme,
+    ) {
+        let spans = Self::build_cursor_spans(input.value(), input.visual_cursor(), theme);
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    /// Render a list item with prefix and inverse-video cursor
+    fn render_list_item_with_cursor(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        prefix: &str,
+        input: &Input,
+        theme: &Theme,
+    ) {
+        let value_style = Style::default().fg(theme.accent);
+        let mut spans = vec![Span::styled(prefix.to_string(), value_style)];
+        spans.extend(Self::build_cursor_spans(input.value(), input.visual_cursor(), theme));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_number_field(
@@ -359,28 +406,21 @@ impl SettingsView {
             height: 1,
         };
 
-        let is_editing = self.editing_text.is_some() && index == self.selected_field;
-        let display_value = if is_editing {
-            self.editing_text.as_deref().unwrap_or("")
-        } else {
-            ""
-        };
+        let is_editing = self.editing_input.is_some() && index == self.selected_field;
 
-        let style = if is_editing {
-            Style::default().fg(theme.text).bg(theme.selection)
-        } else if is_selected {
-            Style::default().fg(theme.accent)
+        if is_editing {
+            // Render with inverse-video cursor
+            let input = self.editing_input.as_ref().unwrap();
+            self.render_input_with_cursor(frame, value_area, input, theme);
         } else {
-            Style::default().fg(theme.dimmed)
-        };
+            let style = if is_selected {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
 
-        let display = if is_editing {
-            format!("{}_", display_value)
-        } else {
-            value.to_string()
-        };
-
-        frame.render_widget(Paragraph::new(display).style(style), value_area);
+            frame.render_widget(Paragraph::new(value.to_string()).style(style), value_area);
+        }
     }
 
     fn render_select_field(
@@ -494,19 +534,14 @@ impl SettingsView {
                     "  "
                 };
 
-                // If editing this item
-                let display = if list_state.editing_item.is_some() && i == list_state.selected_index
-                {
-                    format!(
-                        "{}{}_",
-                        prefix,
-                        list_state.editing_item.as_deref().unwrap_or("")
-                    )
+                // If editing this item, render with cursor
+                if list_state.editing_item.is_some() && i == list_state.selected_index {
+                    let input = list_state.editing_item.as_ref().unwrap();
+                    self.render_list_item_with_cursor(frame, item_area, prefix, input, theme);
                 } else {
-                    format!("{}{}", prefix, item)
-                };
-
-                frame.render_widget(Paragraph::new(display).style(style), item_area);
+                    let display = format!("{}{}", prefix, item);
+                    frame.render_widget(Paragraph::new(display).style(style), item_area);
+                }
             }
 
             // Show add prompt if adding new
@@ -520,9 +555,9 @@ impl SettingsView {
                         height: 1,
                     };
 
-                    let style = Style::default().fg(theme.accent);
-                    let text = format!("> {}_", list_state.editing_item.as_deref().unwrap_or(""));
-                    frame.render_widget(Paragraph::new(text).style(style), add_area);
+                    if let Some(input) = &list_state.editing_item {
+                        self.render_list_item_with_cursor(frame, add_area, "> ", input, theme);
+                    }
                 }
             }
         }
@@ -536,7 +571,7 @@ impl SettingsView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let help_text = if self.editing_text.is_some() {
+        let help_text = if self.editing_input.is_some() {
             "Enter: confirm | Esc: cancel"
         } else if self.list_edit_state.is_some() {
             "a: add | d: delete | Enter: edit | Esc: close list"

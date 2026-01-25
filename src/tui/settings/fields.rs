@@ -26,6 +26,74 @@ impl SettingsCategory {
     }
 }
 
+/// Type-safe field identifiers (prevents typos in string matching)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKey {
+    // Updates
+    CheckEnabled,
+    CheckIntervalHours,
+    NotifyInCli,
+    // Worktree
+    PathTemplate,
+    BareRepoPathTemplate,
+    WorktreeAutoCleanup,
+    // Sandbox
+    DefaultImage,
+    Environment,
+    SandboxAutoCleanup,
+    CpuLimit,
+    MemoryLimit,
+    // Tmux
+    StatusBar,
+}
+
+/// Resolve a field value from global config and optional profile override.
+/// Returns (value, has_override).
+fn resolve_value<T: Clone>(scope: SettingsScope, global: T, profile: Option<T>) -> (T, bool) {
+    match scope {
+        SettingsScope::Global => (global, false),
+        SettingsScope::Profile => {
+            let has_override = profile.is_some();
+            let value = profile.unwrap_or(global);
+            (value, has_override)
+        }
+    }
+}
+
+/// Resolve an optional field (Option<T>) where both global and profile values are Option<T>.
+/// The `has_explicit_override` flag indicates if the profile explicitly set this field.
+fn resolve_optional<T: Clone>(
+    scope: SettingsScope,
+    global: Option<T>,
+    profile: Option<T>,
+    has_explicit_override: bool,
+) -> (Option<T>, bool) {
+    match scope {
+        SettingsScope::Global => (global, false),
+        SettingsScope::Profile => {
+            let value = profile.or(global);
+            (value, has_explicit_override)
+        }
+    }
+}
+
+/// Helper to set or clear a profile override based on whether value matches global.
+fn set_or_clear_override<T, S, F>(new_value: T, global_value: &T, section: &mut Option<S>, set_field: F)
+where
+    T: Clone + PartialEq,
+    S: Default,
+    F: FnOnce(&mut S, Option<T>),
+{
+    if new_value == *global_value {
+        if let Some(ref mut s) = section {
+            set_field(s, None);
+        }
+    } else {
+        let s = section.get_or_insert_with(S::default);
+        set_field(s, Some(new_value));
+    }
+}
+
 /// Value types for settings fields
 #[derive(Debug, Clone)]
 pub enum FieldValue {
@@ -43,7 +111,7 @@ pub enum FieldValue {
 /// A setting field with metadata
 #[derive(Debug, Clone)]
 pub struct SettingField {
-    pub key: &'static str,
+    pub key: FieldKey,
     pub label: &'static str,
     pub description: &'static str,
     pub value: FieldValue,
@@ -54,17 +122,13 @@ pub struct SettingField {
 
 impl SettingField {
     pub fn validate(&self) -> Result<(), String> {
-        match &self.value {
-            FieldValue::OptionalText(Some(s)) => {
-                if self.key == "memory_limit" {
-                    validate_memory_limit(s)?;
-                }
+        match (&self.key, &self.value) {
+            (FieldKey::MemoryLimit, FieldValue::OptionalText(Some(s))) => {
+                validate_memory_limit(s)?;
                 Ok(())
             }
-            FieldValue::Number(n) => {
-                if self.key == "check_interval_hours" {
-                    validate_check_interval(*n)?;
-                }
+            (FieldKey::CheckIntervalHours, FieldValue::Number(n)) => {
+                validate_check_interval(*n)?;
                 Ok(())
             }
             _ => Ok(()),
@@ -92,81 +156,48 @@ fn build_updates_fields(
     global: &Config,
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
-    let (check_enabled, check_enabled_override) = match scope {
-        SettingsScope::Global => (global.updates.check_enabled, false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .updates
-                .as_ref()
-                .and_then(|u| u.check_enabled)
-                .is_some();
-            let value = profile
-                .updates
-                .as_ref()
-                .and_then(|u| u.check_enabled)
-                .unwrap_or(global.updates.check_enabled);
-            (value, has_override)
-        }
-    };
+    let updates = profile.updates.as_ref();
 
-    let (check_interval, check_interval_override) = match scope {
-        SettingsScope::Global => (global.updates.check_interval_hours, false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .updates
-                .as_ref()
-                .and_then(|u| u.check_interval_hours)
-                .is_some();
-            let value = profile
-                .updates
-                .as_ref()
-                .and_then(|u| u.check_interval_hours)
-                .unwrap_or(global.updates.check_interval_hours);
-            (value, has_override)
-        }
-    };
-
-    let (notify_in_cli, notify_in_cli_override) = match scope {
-        SettingsScope::Global => (global.updates.notify_in_cli, false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .updates
-                .as_ref()
-                .and_then(|u| u.notify_in_cli)
-                .is_some();
-            let value = profile
-                .updates
-                .as_ref()
-                .and_then(|u| u.notify_in_cli)
-                .unwrap_or(global.updates.notify_in_cli);
-            (value, has_override)
-        }
-    };
+    let (check_enabled, o1) = resolve_value(
+        scope,
+        global.updates.check_enabled,
+        updates.and_then(|u| u.check_enabled),
+    );
+    let (check_interval, o2) = resolve_value(
+        scope,
+        global.updates.check_interval_hours,
+        updates.and_then(|u| u.check_interval_hours),
+    );
+    let (notify_in_cli, o3) = resolve_value(
+        scope,
+        global.updates.notify_in_cli,
+        updates.and_then(|u| u.notify_in_cli),
+    );
 
     vec![
         SettingField {
-            key: "check_enabled",
+            key: FieldKey::CheckEnabled,
             label: "Check for Updates",
             description: "Automatically check for updates on startup",
             value: FieldValue::Bool(check_enabled),
             category: SettingsCategory::Updates,
-            has_override: check_enabled_override,
+            has_override: o1,
         },
         SettingField {
-            key: "check_interval_hours",
+            key: FieldKey::CheckIntervalHours,
             label: "Check Interval (hours)",
             description: "How often to check for updates",
             value: FieldValue::Number(check_interval),
             category: SettingsCategory::Updates,
-            has_override: check_interval_override,
+            has_override: o2,
         },
         SettingField {
-            key: "notify_in_cli",
+            key: FieldKey::NotifyInCli,
             label: "Notify in CLI",
             description: "Show update notifications in CLI output",
             value: FieldValue::Bool(notify_in_cli),
             category: SettingsCategory::Updates,
-            has_override: notify_in_cli_override,
+            has_override: o3,
         },
     ]
 }
@@ -176,81 +207,48 @@ fn build_worktree_fields(
     global: &Config,
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
-    let (path_template, path_template_override) = match scope {
-        SettingsScope::Global => (global.worktree.path_template.clone(), false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .worktree
-                .as_ref()
-                .and_then(|w| w.path_template.as_ref())
-                .is_some();
-            let value = profile
-                .worktree
-                .as_ref()
-                .and_then(|w| w.path_template.clone())
-                .unwrap_or_else(|| global.worktree.path_template.clone());
-            (value, has_override)
-        }
-    };
+    let wt = profile.worktree.as_ref();
 
-    let (bare_repo_template, bare_repo_template_override) = match scope {
-        SettingsScope::Global => (global.worktree.bare_repo_path_template.clone(), false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .worktree
-                .as_ref()
-                .and_then(|w| w.bare_repo_path_template.as_ref())
-                .is_some();
-            let value = profile
-                .worktree
-                .as_ref()
-                .and_then(|w| w.bare_repo_path_template.clone())
-                .unwrap_or_else(|| global.worktree.bare_repo_path_template.clone());
-            (value, has_override)
-        }
-    };
-
-    let (auto_cleanup, auto_cleanup_override) = match scope {
-        SettingsScope::Global => (global.worktree.auto_cleanup, false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .worktree
-                .as_ref()
-                .and_then(|w| w.auto_cleanup)
-                .is_some();
-            let value = profile
-                .worktree
-                .as_ref()
-                .and_then(|w| w.auto_cleanup)
-                .unwrap_or(global.worktree.auto_cleanup);
-            (value, has_override)
-        }
-    };
+    let (path_template, o1) = resolve_value(
+        scope,
+        global.worktree.path_template.clone(),
+        wt.and_then(|w| w.path_template.clone()),
+    );
+    let (bare_repo_template, o2) = resolve_value(
+        scope,
+        global.worktree.bare_repo_path_template.clone(),
+        wt.and_then(|w| w.bare_repo_path_template.clone()),
+    );
+    let (auto_cleanup, o3) = resolve_value(
+        scope,
+        global.worktree.auto_cleanup,
+        wt.and_then(|w| w.auto_cleanup),
+    );
 
     vec![
         SettingField {
-            key: "path_template",
+            key: FieldKey::PathTemplate,
             label: "Path Template",
             description: "Template for worktree paths ({repo-name}, {branch})",
             value: FieldValue::Text(path_template),
             category: SettingsCategory::Worktree,
-            has_override: path_template_override,
+            has_override: o1,
         },
         SettingField {
-            key: "bare_repo_path_template",
+            key: FieldKey::BareRepoPathTemplate,
             label: "Bare Repo Template",
             description: "Template for bare repo worktree paths",
             value: FieldValue::Text(bare_repo_template),
             category: SettingsCategory::Worktree,
-            has_override: bare_repo_template_override,
+            has_override: o2,
         },
         SettingField {
-            key: "auto_cleanup",
+            key: FieldKey::WorktreeAutoCleanup,
             label: "Auto Cleanup",
             description: "Automatically clean up worktrees on session delete",
             value: FieldValue::Bool(auto_cleanup),
             category: SettingsCategory::Worktree,
-            has_override: auto_cleanup_override,
+            has_override: o3,
         },
     ]
 }
@@ -260,131 +258,77 @@ fn build_sandbox_fields(
     global: &Config,
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
-    let (default_image, default_image_override) = match scope {
-        SettingsScope::Global => (global.sandbox.default_image.clone(), false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.default_image.as_ref())
-                .is_some();
-            let value = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.default_image.clone())
-                .unwrap_or_else(|| global.sandbox.default_image.clone());
-            (value, has_override)
-        }
-    };
+    let sb = profile.sandbox.as_ref();
 
-    let (environment, environment_override) = match scope {
-        SettingsScope::Global => (global.sandbox.environment.clone(), false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.environment.as_ref())
-                .is_some();
-            let value = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.environment.clone())
-                .unwrap_or_else(|| global.sandbox.environment.clone());
-            (value, has_override)
-        }
-    };
-
-    let (auto_cleanup, auto_cleanup_override) = match scope {
-        SettingsScope::Global => (global.sandbox.auto_cleanup, false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.auto_cleanup)
-                .is_some();
-            let value = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.auto_cleanup)
-                .unwrap_or(global.sandbox.auto_cleanup);
-            (value, has_override)
-        }
-    };
-
-    let (cpu_limit, cpu_limit_override) = match scope {
-        SettingsScope::Global => (global.sandbox.cpu_limit.clone(), false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.cpu_limit.as_ref())
-                .is_some();
-            let value = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.cpu_limit.clone())
-                .or_else(|| global.sandbox.cpu_limit.clone());
-            (value, has_override)
-        }
-    };
-
-    let (memory_limit, memory_limit_override) = match scope {
-        SettingsScope::Global => (global.sandbox.memory_limit.clone(), false),
-        SettingsScope::Profile => {
-            let has_override = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.memory_limit.as_ref())
-                .is_some();
-            let value = profile
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.memory_limit.clone())
-                .or_else(|| global.sandbox.memory_limit.clone());
-            (value, has_override)
-        }
-    };
+    let (default_image, o1) = resolve_value(
+        scope,
+        global.sandbox.default_image.clone(),
+        sb.and_then(|s| s.default_image.clone()),
+    );
+    let (environment, o2) = resolve_value(
+        scope,
+        global.sandbox.environment.clone(),
+        sb.and_then(|s| s.environment.clone()),
+    );
+    let (auto_cleanup, o3) = resolve_value(
+        scope,
+        global.sandbox.auto_cleanup,
+        sb.and_then(|s| s.auto_cleanup),
+    );
+    // For optional fields, we need special handling: profile override OR global (both Option<T>)
+    let (cpu_limit, o4) = resolve_optional(
+        scope,
+        global.sandbox.cpu_limit.clone(),
+        sb.and_then(|s| s.cpu_limit.clone()),
+        sb.map(|s| s.cpu_limit.is_some()).unwrap_or(false),
+    );
+    let (memory_limit, o5) = resolve_optional(
+        scope,
+        global.sandbox.memory_limit.clone(),
+        sb.and_then(|s| s.memory_limit.clone()),
+        sb.map(|s| s.memory_limit.is_some()).unwrap_or(false),
+    );
 
     vec![
         SettingField {
-            key: "default_image",
+            key: FieldKey::DefaultImage,
             label: "Default Image",
             description: "Docker image to use for sandboxes",
             value: FieldValue::Text(default_image),
             category: SettingsCategory::Sandbox,
-            has_override: default_image_override,
+            has_override: o1,
         },
         SettingField {
-            key: "environment",
+            key: FieldKey::Environment,
             label: "Environment Variables",
             description: "Environment variables to pass to container",
             value: FieldValue::List(environment),
             category: SettingsCategory::Sandbox,
-            has_override: environment_override,
+            has_override: o2,
         },
         SettingField {
-            key: "auto_cleanup",
+            key: FieldKey::SandboxAutoCleanup,
             label: "Auto Cleanup",
             description: "Remove containers when sessions are deleted",
             value: FieldValue::Bool(auto_cleanup),
             category: SettingsCategory::Sandbox,
-            has_override: auto_cleanup_override,
+            has_override: o3,
         },
         SettingField {
-            key: "cpu_limit",
+            key: FieldKey::CpuLimit,
             label: "CPU Limit",
             description: "CPU limit for containers (e.g., '2' for 2 cores)",
             value: FieldValue::OptionalText(cpu_limit),
             category: SettingsCategory::Sandbox,
-            has_override: cpu_limit_override,
+            has_override: o4,
         },
         SettingField {
-            key: "memory_limit",
+            key: FieldKey::MemoryLimit,
             label: "Memory Limit",
             description: "Memory limit for containers (e.g., '2g', '512m')",
             value: FieldValue::OptionalText(memory_limit),
             category: SettingsCategory::Sandbox,
-            has_override: memory_limit_override,
+            has_override: o5,
         },
     ]
 }
@@ -394,35 +338,30 @@ fn build_tmux_fields(
     global: &Config,
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
-    let (status_bar, status_bar_override) = match scope {
-        SettingsScope::Global => (global.tmux.status_bar, false),
-        SettingsScope::Profile => {
-            let has_override = profile.tmux.as_ref().and_then(|t| t.status_bar).is_some();
-            let value = profile
-                .tmux
-                .as_ref()
-                .and_then(|t| t.status_bar)
-                .unwrap_or(global.tmux.status_bar);
-            (value, has_override)
-        }
-    };
+    let tmux = profile.tmux.as_ref();
 
-    let (selected, options) = match status_bar {
-        TmuxStatusBarMode::Auto => (0, vec!["Auto", "Enabled", "Disabled"]),
-        TmuxStatusBarMode::Enabled => (1, vec!["Auto", "Enabled", "Disabled"]),
-        TmuxStatusBarMode::Disabled => (2, vec!["Auto", "Enabled", "Disabled"]),
+    let (status_bar, has_override) = resolve_value(
+        scope,
+        global.tmux.status_bar,
+        tmux.and_then(|t| t.status_bar),
+    );
+
+    let selected = match status_bar {
+        TmuxStatusBarMode::Auto => 0,
+        TmuxStatusBarMode::Enabled => 1,
+        TmuxStatusBarMode::Disabled => 2,
     };
 
     vec![SettingField {
-        key: "status_bar",
+        key: FieldKey::StatusBar,
         label: "Status Bar",
         description: "Control tmux status bar styling (Auto respects your tmux config)",
         value: FieldValue::Select {
             selected,
-            options: options.into_iter().map(String::from).collect(),
+            options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
         },
         category: SettingsCategory::Tmux,
-        has_override: status_bar_override,
+        has_override,
     }]
 }
 
@@ -441,275 +380,157 @@ pub fn apply_field_to_config(
 }
 
 fn apply_field_to_global(field: &SettingField, config: &mut Config) {
-    match field.category {
-        SettingsCategory::Updates => match field.key {
-            "check_enabled" => {
-                if let FieldValue::Bool(v) = field.value {
-                    config.updates.check_enabled = v;
-                }
-            }
-            "check_interval_hours" => {
-                if let FieldValue::Number(v) = field.value {
-                    config.updates.check_interval_hours = v;
-                }
-            }
-            "notify_in_cli" => {
-                if let FieldValue::Bool(v) = field.value {
-                    config.updates.notify_in_cli = v;
-                }
-            }
-            _ => {}
-        },
-        SettingsCategory::Worktree => match field.key {
-            "path_template" => {
-                if let FieldValue::Text(ref v) = field.value {
-                    config.worktree.path_template = v.clone();
-                }
-            }
-            "bare_repo_path_template" => {
-                if let FieldValue::Text(ref v) = field.value {
-                    config.worktree.bare_repo_path_template = v.clone();
-                }
-            }
-            "auto_cleanup" => {
-                if let FieldValue::Bool(v) = field.value {
-                    config.worktree.auto_cleanup = v;
-                }
-            }
-            _ => {}
-        },
-        SettingsCategory::Sandbox => match field.key {
-            "default_image" => {
-                if let FieldValue::Text(ref v) = field.value {
-                    config.sandbox.default_image = v.clone();
-                }
-            }
-            "environment" => {
-                if let FieldValue::List(ref v) = field.value {
-                    config.sandbox.environment = v.clone();
-                }
-            }
-            "auto_cleanup" => {
-                if let FieldValue::Bool(v) = field.value {
-                    config.sandbox.auto_cleanup = v;
-                }
-            }
-            "cpu_limit" => {
-                if let FieldValue::OptionalText(ref v) = field.value {
-                    config.sandbox.cpu_limit = v.clone();
-                }
-            }
-            "memory_limit" => {
-                if let FieldValue::OptionalText(ref v) = field.value {
-                    config.sandbox.memory_limit = v.clone();
-                }
-            }
-            _ => {}
-        },
-        SettingsCategory::Tmux => {
-            if field.key == "status_bar" {
-                if let FieldValue::Select { selected, .. } = field.value {
-                    config.tmux.status_bar = match selected {
-                        0 => TmuxStatusBarMode::Auto,
-                        1 => TmuxStatusBarMode::Enabled,
-                        _ => TmuxStatusBarMode::Disabled,
-                    };
-                }
-            }
+    match (&field.key, &field.value) {
+        // Updates
+        (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
+        (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
+            config.updates.check_interval_hours = *v
         }
+        (FieldKey::NotifyInCli, FieldValue::Bool(v)) => config.updates.notify_in_cli = *v,
+        // Worktree
+        (FieldKey::PathTemplate, FieldValue::Text(v)) => {
+            config.worktree.path_template = v.clone()
+        }
+        (FieldKey::BareRepoPathTemplate, FieldValue::Text(v)) => {
+            config.worktree.bare_repo_path_template = v.clone()
+        }
+        (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => config.worktree.auto_cleanup = *v,
+        // Sandbox
+        (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
+        (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
+        (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
+        (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => config.sandbox.cpu_limit = v.clone(),
+        (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
+            config.sandbox.memory_limit = v.clone()
+        }
+        // Tmux
+        (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
+            config.tmux.status_bar = match selected {
+                0 => TmuxStatusBarMode::Auto,
+                1 => TmuxStatusBarMode::Enabled,
+                _ => TmuxStatusBarMode::Disabled,
+            };
+        }
+        _ => {}
     }
 }
 
 /// Apply a field to the profile config.
 /// If the value matches the global config, the override is cleared instead of set.
 fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut ProfileConfig) {
-    use crate::session::{
-        SandboxConfigOverride, TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
-    };
+    use crate::session::SandboxConfigOverride;
 
-    match field.category {
-        SettingsCategory::Updates => match field.key {
-            "check_enabled" => {
-                if let FieldValue::Bool(v) = field.value {
-                    if v == global.updates.check_enabled {
-                        if let Some(ref mut updates) = config.updates {
-                            updates.check_enabled = None;
-                        }
-                    } else {
-                        let updates = config
-                            .updates
-                            .get_or_insert_with(UpdatesConfigOverride::default);
-                        updates.check_enabled = Some(v);
-                    }
+    match (&field.key, &field.value) {
+        // Updates
+        (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
+            set_or_clear_override(*v, &global.updates.check_enabled, &mut config.updates, |s, val| {
+                s.check_enabled = val
+            });
+        }
+        (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.updates.check_interval_hours,
+                &mut config.updates,
+                |s, val| s.check_interval_hours = val,
+            );
+        }
+        (FieldKey::NotifyInCli, FieldValue::Bool(v)) => {
+            set_or_clear_override(*v, &global.updates.notify_in_cli, &mut config.updates, |s, val| {
+                s.notify_in_cli = val
+            });
+        }
+        // Worktree
+        (FieldKey::PathTemplate, FieldValue::Text(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.worktree.path_template,
+                &mut config.worktree,
+                |s, val| s.path_template = val,
+            );
+        }
+        (FieldKey::BareRepoPathTemplate, FieldValue::Text(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.worktree.bare_repo_path_template,
+                &mut config.worktree,
+                |s, val| s.bare_repo_path_template = val,
+            );
+        }
+        (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.worktree.auto_cleanup,
+                &mut config.worktree,
+                |s, val| s.auto_cleanup = val,
+            );
+        }
+        // Sandbox
+        (FieldKey::DefaultImage, FieldValue::Text(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.sandbox.default_image,
+                &mut config.sandbox,
+                |s, val| s.default_image = val,
+            );
+        }
+        (FieldKey::Environment, FieldValue::List(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.sandbox.environment,
+                &mut config.sandbox,
+                |s, val| s.environment = val,
+            );
+        }
+        (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.sandbox.auto_cleanup,
+                &mut config.sandbox,
+                |s, val| s.auto_cleanup = val,
+            );
+        }
+        (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => {
+            // For optional fields, flatten Option<Option<T>> to Option<T>
+            let flat_value = v.clone().unwrap_or_default();
+            let flat_global = global.sandbox.cpu_limit.clone().unwrap_or_default();
+            if flat_value == flat_global {
+                if let Some(ref mut sb) = config.sandbox {
+                    sb.cpu_limit = None;
                 }
-            }
-            "check_interval_hours" => {
-                if let FieldValue::Number(v) = field.value {
-                    if v == global.updates.check_interval_hours {
-                        if let Some(ref mut updates) = config.updates {
-                            updates.check_interval_hours = None;
-                        }
-                    } else {
-                        let updates = config
-                            .updates
-                            .get_or_insert_with(UpdatesConfigOverride::default);
-                        updates.check_interval_hours = Some(v);
-                    }
-                }
-            }
-            "notify_in_cli" => {
-                if let FieldValue::Bool(v) = field.value {
-                    if v == global.updates.notify_in_cli {
-                        if let Some(ref mut updates) = config.updates {
-                            updates.notify_in_cli = None;
-                        }
-                    } else {
-                        let updates = config
-                            .updates
-                            .get_or_insert_with(UpdatesConfigOverride::default);
-                        updates.notify_in_cli = Some(v);
-                    }
-                }
-            }
-            _ => {}
-        },
-        SettingsCategory::Worktree => match field.key {
-            "path_template" => {
-                if let FieldValue::Text(ref v) = field.value {
-                    if v == &global.worktree.path_template {
-                        if let Some(ref mut wt) = config.worktree {
-                            wt.path_template = None;
-                        }
-                    } else {
-                        let wt = config
-                            .worktree
-                            .get_or_insert_with(WorktreeConfigOverride::default);
-                        wt.path_template = Some(v.clone());
-                    }
-                }
-            }
-            "bare_repo_path_template" => {
-                if let FieldValue::Text(ref v) = field.value {
-                    if v == &global.worktree.bare_repo_path_template {
-                        if let Some(ref mut wt) = config.worktree {
-                            wt.bare_repo_path_template = None;
-                        }
-                    } else {
-                        let wt = config
-                            .worktree
-                            .get_or_insert_with(WorktreeConfigOverride::default);
-                        wt.bare_repo_path_template = Some(v.clone());
-                    }
-                }
-            }
-            "auto_cleanup" => {
-                if let FieldValue::Bool(v) = field.value {
-                    if v == global.worktree.auto_cleanup {
-                        if let Some(ref mut wt) = config.worktree {
-                            wt.auto_cleanup = None;
-                        }
-                    } else {
-                        let wt = config
-                            .worktree
-                            .get_or_insert_with(WorktreeConfigOverride::default);
-                        wt.auto_cleanup = Some(v);
-                    }
-                }
-            }
-            _ => {}
-        },
-        SettingsCategory::Sandbox => match field.key {
-            "default_image" => {
-                if let FieldValue::Text(ref v) = field.value {
-                    if v == &global.sandbox.default_image {
-                        if let Some(ref mut sb) = config.sandbox {
-                            sb.default_image = None;
-                        }
-                    } else {
-                        let sb = config
-                            .sandbox
-                            .get_or_insert_with(SandboxConfigOverride::default);
-                        sb.default_image = Some(v.clone());
-                    }
-                }
-            }
-            "environment" => {
-                if let FieldValue::List(ref v) = field.value {
-                    if v == &global.sandbox.environment {
-                        if let Some(ref mut sb) = config.sandbox {
-                            sb.environment = None;
-                        }
-                    } else {
-                        let sb = config
-                            .sandbox
-                            .get_or_insert_with(SandboxConfigOverride::default);
-                        sb.environment = Some(v.clone());
-                    }
-                }
-            }
-            "auto_cleanup" => {
-                if let FieldValue::Bool(v) = field.value {
-                    if v == global.sandbox.auto_cleanup {
-                        if let Some(ref mut sb) = config.sandbox {
-                            sb.auto_cleanup = None;
-                        }
-                    } else {
-                        let sb = config
-                            .sandbox
-                            .get_or_insert_with(SandboxConfigOverride::default);
-                        sb.auto_cleanup = Some(v);
-                    }
-                }
-            }
-            "cpu_limit" => {
-                if let FieldValue::OptionalText(ref v) = field.value {
-                    if v == &global.sandbox.cpu_limit {
-                        if let Some(ref mut sb) = config.sandbox {
-                            sb.cpu_limit = None;
-                        }
-                    } else if let Some(ref val) = v {
-                        let sb = config
-                            .sandbox
-                            .get_or_insert_with(SandboxConfigOverride::default);
-                        sb.cpu_limit = Some(val.clone());
-                    }
-                }
-            }
-            "memory_limit" => {
-                if let FieldValue::OptionalText(ref v) = field.value {
-                    if v == &global.sandbox.memory_limit {
-                        if let Some(ref mut sb) = config.sandbox {
-                            sb.memory_limit = None;
-                        }
-                    } else if let Some(ref val) = v {
-                        let sb = config
-                            .sandbox
-                            .get_or_insert_with(SandboxConfigOverride::default);
-                        sb.memory_limit = Some(val.clone());
-                    }
-                }
-            }
-            _ => {}
-        },
-        SettingsCategory::Tmux => {
-            if field.key == "status_bar" {
-                if let FieldValue::Select { selected, .. } = field.value {
-                    let mode = match selected {
-                        0 => TmuxStatusBarMode::Auto,
-                        1 => TmuxStatusBarMode::Enabled,
-                        _ => TmuxStatusBarMode::Disabled,
-                    };
-                    if mode == global.tmux.status_bar {
-                        if let Some(ref mut tmux) = config.tmux {
-                            tmux.status_bar = None;
-                        }
-                    } else {
-                        let tmux = config.tmux.get_or_insert_with(TmuxConfigOverride::default);
-                        tmux.status_bar = Some(mode);
-                    }
-                }
+            } else if let Some(val) = v {
+                let sb = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                sb.cpu_limit = Some(val.clone());
             }
         }
+        (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
+            let flat_value = v.clone().unwrap_or_default();
+            let flat_global = global.sandbox.memory_limit.clone().unwrap_or_default();
+            if flat_value == flat_global {
+                if let Some(ref mut sb) = config.sandbox {
+                    sb.memory_limit = None;
+                }
+            } else if let Some(val) = v {
+                let sb = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                sb.memory_limit = Some(val.clone());
+            }
+        }
+        // Tmux
+        (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
+            let mode = match selected {
+                0 => TmuxStatusBarMode::Auto,
+                1 => TmuxStatusBarMode::Enabled,
+                _ => TmuxStatusBarMode::Disabled,
+            };
+            set_or_clear_override(mode, &global.tmux.status_bar, &mut config.tmux, |s, val| {
+                s.status_bar = val
+            });
+        }
+        _ => {}
     }
 }
 
@@ -732,7 +553,10 @@ mod tests {
             &profile,
         );
 
-        let check_enabled_field = fields.iter().find(|f| f.key == "check_enabled").unwrap();
+        let check_enabled_field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::CheckEnabled)
+            .unwrap();
         assert!(
             !check_enabled_field.has_override,
             "Profile should not show override initially"
@@ -749,7 +573,10 @@ mod tests {
             &profile,
         );
 
-        let check_enabled_field = fields.iter().find(|f| f.key == "check_enabled").unwrap();
+        let check_enabled_field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::CheckEnabled)
+            .unwrap();
         assert!(
             !check_enabled_field.has_override,
             "Profile should NOT show override after global change - it should inherit"
@@ -768,7 +595,10 @@ mod tests {
             &global,
             &profile,
         );
-        let check_enabled_field = fields.iter().find(|f| f.key == "check_enabled").unwrap();
+        let check_enabled_field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::CheckEnabled)
+            .unwrap();
         assert!(!check_enabled_field.has_override);
 
         // Set a profile override
@@ -784,7 +614,10 @@ mod tests {
             &global,
             &profile,
         );
-        let check_enabled_field = fields.iter().find(|f| f.key == "check_enabled").unwrap();
+        let check_enabled_field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::CheckEnabled)
+            .unwrap();
         assert!(
             check_enabled_field.has_override,
             "Profile SHOULD show override after explicit profile change"

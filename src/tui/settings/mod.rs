@@ -4,11 +4,13 @@ mod fields;
 mod input;
 mod render;
 
+use tui_input::Input;
+
 use crate::session::{
     load_profile_config, save_config, save_profile_config, Config, ProfileConfig,
 };
 
-pub use fields::{FieldValue, SettingField, SettingsCategory};
+pub use fields::{FieldKey, FieldValue, SettingField, SettingsCategory};
 pub use input::SettingsAction;
 
 /// Which scope of settings is being edited
@@ -31,7 +33,7 @@ pub enum SettingsFocus {
 #[derive(Debug, Clone, Default)]
 pub struct ListEditState {
     pub selected_index: usize,
-    pub editing_item: Option<String>,
+    pub editing_item: Option<Input>,
     pub adding_new: bool,
 }
 
@@ -64,8 +66,8 @@ pub struct SettingsView {
     /// Profile config being edited (overrides)
     pub(super) profile_config: ProfileConfig,
 
-    /// Whether we're currently editing a text/number field
-    pub(super) editing_text: Option<String>,
+    /// Text input when editing a text/number field
+    pub(super) editing_input: Option<Input>,
 
     /// State for list editing
     pub(super) list_edit_state: Option<ListEditState>,
@@ -102,7 +104,7 @@ impl SettingsView {
             selected_field: 0,
             global_config,
             profile_config,
-            editing_text: None,
+            editing_input: None,
             list_edit_state: None,
             has_changes: false,
             error_message: None,
@@ -175,6 +177,6 @@ impl SettingsView {
 
     /// Check if currently in an editing state (text field, list, etc.)
     pub fn is_editing(&self) -> bool {
-        self.editing_text.is_some() || self.list_edit_state.is_some()
+        self.editing_input.is_some() || self.list_edit_state.is_some()
     }
 }

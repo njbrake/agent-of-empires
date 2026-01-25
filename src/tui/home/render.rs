@@ -24,6 +24,12 @@ impl HomeView {
         // Settings view takes over the whole screen
         if let Some(ref settings) = self.settings_view {
             settings.render(frame, area, theme);
+            // Render unsaved changes confirmation dialog over settings
+            if self.settings_close_confirm {
+                if let Some(dialog) = &self.confirm_dialog {
+                    dialog.render(frame, area, theme);
+                }
+            }
             return;
         }
 

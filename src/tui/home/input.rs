@@ -15,7 +15,32 @@ use crate::tui::settings::{SettingsAction, SettingsView};
 
 impl HomeView {
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
-        // Handle settings view first (full-screen takeover)
+        // Handle unsaved changes confirmation for settings (shown over settings view)
+        if self.settings_close_confirm {
+            if let Some(dialog) = &mut self.confirm_dialog {
+                match dialog.handle_key(key) {
+                    DialogResult::Continue => return None,
+                    DialogResult::Cancel => {
+                        // User chose not to discard, go back to settings
+                        self.confirm_dialog = None;
+                        self.settings_close_confirm = false;
+                        return None;
+                    }
+                    DialogResult::Submit(_) => {
+                        // User chose to discard changes
+                        if let Some(ref mut settings) = self.settings_view {
+                            settings.force_close();
+                        }
+                        self.settings_view = None;
+                        self.confirm_dialog = None;
+                        self.settings_close_confirm = false;
+                        return None;
+                    }
+                }
+            }
+        }
+
+        // Handle settings view (full-screen takeover)
         if let Some(ref mut settings) = self.settings_view {
             match settings.handle_key(key) {
                 SettingsAction::Continue => return None,
@@ -24,10 +49,13 @@ impl HomeView {
                     return None;
                 }
                 SettingsAction::UnsavedChangesWarning => {
-                    // For now, just discard changes and close
-                    // In the future, could show a confirmation dialog
-                    settings.force_close();
-                    self.settings_view = None;
+                    // Show confirmation dialog
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Unsaved Changes",
+                        "You have unsaved changes. Discard them?",
+                        "discard_settings",
+                    ));
+                    self.settings_close_confirm = true;
                     return None;
                 }
             }

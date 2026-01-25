@@ -1,8 +1,10 @@
 //! Input handling for the settings view
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
-use super::{FieldValue, ListEditState, SettingsFocus, SettingsScope, SettingsView};
+use super::{FieldKey, FieldValue, ListEditState, SettingsFocus, SettingsScope, SettingsView};
 
 /// Result of handling a key event in the settings view
 pub enum SettingsAction {
@@ -20,7 +22,7 @@ impl SettingsView {
         self.success_message = None;
 
         // Handle text editing mode
-        if self.editing_text.is_some() {
+        if self.editing_input.is_some() {
             return self.handle_text_edit_key(key);
         }
 
@@ -126,13 +128,14 @@ impl SettingsView {
                             self.apply_field_to_config(self.selected_field);
                         }
                         FieldValue::Text(value) => {
-                            self.editing_text = Some(value.clone());
+                            self.editing_input = Some(Input::new(value.clone()));
                         }
                         FieldValue::OptionalText(value) => {
-                            self.editing_text = Some(value.clone().unwrap_or_default());
+                            self.editing_input =
+                                Some(Input::new(value.clone().unwrap_or_default()));
                         }
                         FieldValue::Number(value) => {
-                            self.editing_text = Some(value.to_string());
+                            self.editing_input = Some(Input::new(value.to_string()));
                         }
                         FieldValue::Select { selected, options } => {
                             // Cycle through options
@@ -174,11 +177,12 @@ impl SettingsView {
     fn handle_text_edit_key(&mut self, key: KeyEvent) -> SettingsAction {
         match key.code {
             KeyCode::Esc => {
-                self.editing_text = None;
+                self.editing_input = None;
                 self.error_message = None;
             }
             KeyCode::Enter => {
-                if let Some(text) = self.editing_text.take() {
+                if let Some(input) = self.editing_input.take() {
+                    let text = input.value().to_string();
                     let field = &mut self.fields[self.selected_field];
 
                     // Apply the new value
@@ -194,7 +198,7 @@ impl SettingsView {
                                 *v = n;
                             } else {
                                 self.error_message = Some("Invalid number".to_string());
-                                self.editing_text = Some(text);
+                                self.editing_input = Some(Input::new(text));
                                 return SettingsAction::Continue;
                             }
                         }
@@ -205,10 +209,12 @@ impl SettingsView {
                     if let Err(e) = field.validate() {
                         self.error_message = Some(e);
                         // Revert to editing
-                        self.editing_text = match &field.value {
-                            FieldValue::Text(v) => Some(v.clone()),
-                            FieldValue::OptionalText(v) => Some(v.clone().unwrap_or_default()),
-                            FieldValue::Number(v) => Some(v.to_string()),
+                        self.editing_input = match &field.value {
+                            FieldValue::Text(v) => Some(Input::new(v.clone())),
+                            FieldValue::OptionalText(v) => {
+                                Some(Input::new(v.clone().unwrap_or_default()))
+                            }
+                            FieldValue::Number(v) => Some(Input::new(v.to_string())),
                             _ => None,
                         };
                         return SettingsAction::Continue;
@@ -218,17 +224,12 @@ impl SettingsView {
                     self.error_message = None;
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(ref mut text) = self.editing_text {
-                    text.pop();
+            _ => {
+                // Delegate all other key events to tui_input
+                if let Some(ref mut input) = self.editing_input {
+                    input.handle_event(&crossterm::event::Event::Key(key));
                 }
             }
-            KeyCode::Char(c) => {
-                if let Some(ref mut text) = self.editing_text {
-                    text.push(c);
-                }
-            }
-            _ => {}
         }
         SettingsAction::Continue
     }
@@ -263,7 +264,7 @@ impl SettingsView {
             KeyCode::Char('a') => {
                 // Add new item
                 state.adding_new = true;
-                state.editing_item = Some(String::new());
+                state.editing_item = Some(Input::default());
             }
             KeyCode::Char('d') => {
                 // Delete selected item - capture index before borrowing fields
@@ -289,7 +290,7 @@ impl SettingsView {
                 // Edit selected item
                 if let FieldValue::List(items) = &self.fields[self.selected_field].value {
                     if !items.is_empty() && state.selected_index < items.len() {
-                        state.editing_item = Some(items[state.selected_index].clone());
+                        state.editing_item = Some(Input::new(items[state.selected_index].clone()));
                     }
                 }
             }
@@ -310,13 +311,14 @@ impl SettingsView {
                 state.adding_new = false;
             }
             KeyCode::Enter => {
-                // Take the text and flags out to avoid borrow conflict
-                let text = state.editing_item.take();
+                // Take the input and flags out to avoid borrow conflict
+                let input = state.editing_item.take();
                 let adding_new = state.adding_new;
                 let selected_idx = state.selected_index;
                 state.adding_new = false;
 
-                if let Some(text) = text {
+                if let Some(input) = input {
+                    let text = input.value().to_string();
                     if !text.is_empty() {
                         if let FieldValue::List(ref mut items) =
                             self.fields[self.selected_field].value
@@ -334,70 +336,86 @@ impl SettingsView {
                     }
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(ref mut text) = state.editing_item {
-                    text.pop();
+            _ => {
+                // Delegate all other key events to tui_input
+                if let Some(ref mut input) = state.editing_item {
+                    input.handle_event(&crossterm::event::Event::Key(key));
                 }
             }
-            KeyCode::Char(c) => {
-                if let Some(ref mut text) = state.editing_item {
-                    text.push(c);
-                }
-            }
-            _ => {}
         }
         SettingsAction::Continue
     }
 
     fn clear_profile_override(&mut self, field_index: usize) {
-        use super::SettingsCategory;
-
         if field_index >= self.fields.len() {
             return;
         }
 
-        let field = &self.fields[field_index];
-        let key = field.key;
-        let category = field.category;
+        let key = self.fields[field_index].key;
 
-        match category {
-            SettingsCategory::Updates => {
-                if let Some(ref mut updates) = self.profile_config.updates {
-                    match key {
-                        "check_enabled" => updates.check_enabled = None,
-                        "check_interval_hours" => updates.check_interval_hours = None,
-                        "notify_in_cli" => updates.notify_in_cli = None,
-                        _ => {}
-                    }
+        match key {
+            // Updates
+            FieldKey::CheckEnabled => {
+                if let Some(ref mut u) = self.profile_config.updates {
+                    u.check_enabled = None;
                 }
             }
-            SettingsCategory::Worktree => {
-                if let Some(ref mut worktree) = self.profile_config.worktree {
-                    match key {
-                        "path_template" => worktree.path_template = None,
-                        "bare_repo_path_template" => worktree.bare_repo_path_template = None,
-                        "auto_cleanup" => worktree.auto_cleanup = None,
-                        _ => {}
-                    }
+            FieldKey::CheckIntervalHours => {
+                if let Some(ref mut u) = self.profile_config.updates {
+                    u.check_interval_hours = None;
                 }
             }
-            SettingsCategory::Sandbox => {
-                if let Some(ref mut sandbox) = self.profile_config.sandbox {
-                    match key {
-                        "default_image" => sandbox.default_image = None,
-                        "environment" => sandbox.environment = None,
-                        "auto_cleanup" => sandbox.auto_cleanup = None,
-                        "cpu_limit" => sandbox.cpu_limit = None,
-                        "memory_limit" => sandbox.memory_limit = None,
-                        _ => {}
-                    }
+            FieldKey::NotifyInCli => {
+                if let Some(ref mut u) = self.profile_config.updates {
+                    u.notify_in_cli = None;
                 }
             }
-            SettingsCategory::Tmux => {
-                if let Some(ref mut tmux) = self.profile_config.tmux {
-                    if key == "status_bar" {
-                        tmux.status_bar = None;
-                    }
+            // Worktree
+            FieldKey::PathTemplate => {
+                if let Some(ref mut w) = self.profile_config.worktree {
+                    w.path_template = None;
+                }
+            }
+            FieldKey::BareRepoPathTemplate => {
+                if let Some(ref mut w) = self.profile_config.worktree {
+                    w.bare_repo_path_template = None;
+                }
+            }
+            FieldKey::WorktreeAutoCleanup => {
+                if let Some(ref mut w) = self.profile_config.worktree {
+                    w.auto_cleanup = None;
+                }
+            }
+            // Sandbox
+            FieldKey::DefaultImage => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.default_image = None;
+                }
+            }
+            FieldKey::Environment => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.environment = None;
+                }
+            }
+            FieldKey::SandboxAutoCleanup => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.auto_cleanup = None;
+                }
+            }
+            FieldKey::CpuLimit => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.cpu_limit = None;
+                }
+            }
+            FieldKey::MemoryLimit => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.memory_limit = None;
+                }
+            }
+            // Tmux
+            FieldKey::StatusBar => {
+                if let Some(ref mut t) = self.profile_config.tmux {
+                    t.status_bar = None;
                 }
             }
         }

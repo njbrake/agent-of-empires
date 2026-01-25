@@ -128,6 +128,8 @@ pub struct HomeView {
 
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
+    /// Flag to indicate we're confirming settings close (unsaved changes)
+    pub(super) settings_close_confirm: bool,
 }
 
 impl HomeView {
@@ -177,6 +179,7 @@ impl HomeView {
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             settings_view: None,
+            settings_close_confirm: false,
         };
 
         view.update_selected();
