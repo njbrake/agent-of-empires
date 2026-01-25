@@ -31,6 +31,9 @@ pub struct Config {
     pub tmux: TmuxConfig,
 
     #[serde(default)]
+    pub session: SessionConfig,
+
+    #[serde(default)]
     pub app_state: AppStateConfig,
 }
 
@@ -41,6 +44,15 @@ pub struct AppStateConfig {
 
     #[serde(default)]
     pub last_seen_version: Option<String>,
+}
+
+/// Session-related configuration defaults
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// Default coding tool for new sessions (claude, opencode, codex)
+    /// If not set or tool is unavailable, falls back to first available tool
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tool: Option<String>,
 }
 
 fn default_profile() -> String {
@@ -138,6 +150,10 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub enabled_by_default: bool,
 
+    /// When sandbox is enabled, default YOLO mode to true (skip permission prompts)
+    #[serde(default)]
+    pub yolo_mode_default: bool,
+
     #[serde(default = "default_sandbox_image")]
     pub default_image: String,
 
@@ -161,6 +177,7 @@ impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
             enabled_by_default: false,
+            yolo_mode_default: false,
             default_image: default_sandbox_image(),
             extra_volumes: Vec::new(),
             environment: Vec::new(),

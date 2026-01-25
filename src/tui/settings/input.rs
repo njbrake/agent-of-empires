@@ -402,20 +402,27 @@ impl SettingsView {
                     s.auto_cleanup = None;
                 }
             }
-            FieldKey::CpuLimit => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
-                    s.cpu_limit = None;
-                }
-            }
-            FieldKey::MemoryLimit => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
-                    s.memory_limit = None;
-                }
-            }
             // Tmux
             FieldKey::StatusBar => {
                 if let Some(ref mut t) = self.profile_config.tmux {
                     t.status_bar = None;
+                }
+            }
+            // Session
+            FieldKey::DefaultTool => {
+                if let Some(ref mut s) = self.profile_config.session {
+                    s.default_tool = None;
+                }
+            }
+            // New sandbox settings
+            FieldKey::SandboxEnabledByDefault => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.enabled_by_default = None;
+                }
+            }
+            FieldKey::YoloModeDefault => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.yolo_mode_default = None;
                 }
             }
         }
