@@ -539,8 +539,11 @@ impl SettingsView {
                 };
 
                 // If editing this item, render with cursor
-                if list_state.editing_item.is_some() && i == list_state.selected_index {
-                    let input = list_state.editing_item.as_ref().unwrap();
+                if let Some(input) = list_state
+                    .editing_item
+                    .as_ref()
+                    .filter(|_| i == list_state.selected_index)
+                {
                     self.render_list_item_with_cursor(frame, item_area, prefix, input, theme);
                 } else {
                     let display = format!("{}{}", prefix, item);
