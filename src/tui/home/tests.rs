@@ -811,7 +811,7 @@ fn test_group_has_managed_worktrees() {
     let mut inst2 = Instance::new("other-session", "/tmp/other");
     inst2.group_path = "other".to_string();
 
-    storage.save(&vec![inst1, inst2]).unwrap();
+    storage.save(&[inst1, inst2]).unwrap();
 
     let tools = AvailableTools {
         claude: true,
@@ -847,7 +847,7 @@ fn test_group_has_containers() {
     let mut inst2 = Instance::new("other-session", "/tmp/other");
     inst2.group_path = "other".to_string();
 
-    storage.save(&vec![inst1, inst2]).unwrap();
+    storage.save(&[inst1, inst2]).unwrap();
 
     let tools = AvailableTools {
         claude: true,
@@ -965,7 +965,7 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
         cleanup_on_delete: true,
     });
 
-    storage.save(&vec![inst1]).unwrap();
+    storage.save(&[inst1]).unwrap();
 
     let tools = AvailableTools {
         claude: true,
@@ -1013,7 +1013,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
         yolo_mode: None,
     });
 
-    storage.save(&vec![inst1]).unwrap();
+    storage.save(&[inst1]).unwrap();
 
     let tools = AvailableTools {
         claude: true,

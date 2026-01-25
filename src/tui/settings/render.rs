@@ -386,7 +386,11 @@ impl SettingsView {
     ) {
         let value_style = Style::default().fg(theme.accent);
         let mut spans = vec![Span::styled(prefix.to_string(), value_style)];
-        spans.extend(Self::build_cursor_spans(input.value(), input.visual_cursor(), theme));
+        spans.extend(Self::build_cursor_spans(
+            input.value(),
+            input.visual_cursor(),
+            theme,
+        ));
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 

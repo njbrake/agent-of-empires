@@ -78,8 +78,12 @@ fn resolve_optional<T: Clone>(
 }
 
 /// Helper to set or clear a profile override based on whether value matches global.
-fn set_or_clear_override<T, S, F>(new_value: T, global_value: &T, section: &mut Option<S>, set_field: F)
-where
+fn set_or_clear_override<T, S, F>(
+    new_value: T,
+    global_value: &T,
+    section: &mut Option<S>,
+    set_field: F,
+) where
     T: Clone + PartialEq,
     S: Default,
     F: FnOnce(&mut S, Option<T>),
@@ -388,9 +392,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::NotifyInCli, FieldValue::Bool(v)) => config.updates.notify_in_cli = *v,
         // Worktree
-        (FieldKey::PathTemplate, FieldValue::Text(v)) => {
-            config.worktree.path_template = v.clone()
-        }
+        (FieldKey::PathTemplate, FieldValue::Text(v)) => config.worktree.path_template = v.clone(),
         (FieldKey::BareRepoPathTemplate, FieldValue::Text(v)) => {
             config.worktree.bare_repo_path_template = v.clone()
         }
@@ -423,9 +425,12 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
     match (&field.key, &field.value) {
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
-            set_or_clear_override(*v, &global.updates.check_enabled, &mut config.updates, |s, val| {
-                s.check_enabled = val
-            });
+            set_or_clear_override(
+                *v,
+                &global.updates.check_enabled,
+                &mut config.updates,
+                |s, val| s.check_enabled = val,
+            );
         }
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
             set_or_clear_override(
@@ -436,9 +441,12 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             );
         }
         (FieldKey::NotifyInCli, FieldValue::Bool(v)) => {
-            set_or_clear_override(*v, &global.updates.notify_in_cli, &mut config.updates, |s, val| {
-                s.notify_in_cli = val
-            });
+            set_or_clear_override(
+                *v,
+                &global.updates.notify_in_cli,
+                &mut config.updates,
+                |s, val| s.notify_in_cli = val,
+            );
         }
         // Worktree
         (FieldKey::PathTemplate, FieldValue::Text(v)) => {

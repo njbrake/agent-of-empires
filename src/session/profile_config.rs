@@ -326,11 +326,13 @@ mod tests {
 
     #[test]
     fn test_profile_config_serialization_partial() {
-        let mut config = ProfileConfig::default();
-        config.updates = Some(UpdatesConfigOverride {
-            check_enabled: Some(false),
+        let config = ProfileConfig {
+            updates: Some(UpdatesConfigOverride {
+                check_enabled: Some(false),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
 
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("[updates]"));
@@ -373,16 +375,18 @@ mod tests {
     #[test]
     fn test_merge_configs_with_overrides() {
         let global = Config::default();
-        let mut profile = ProfileConfig::default();
-        profile.updates = Some(UpdatesConfigOverride {
-            check_enabled: Some(false),
-            check_interval_hours: Some(48),
+        let profile = ProfileConfig {
+            updates: Some(UpdatesConfigOverride {
+                check_enabled: Some(false),
+                check_interval_hours: Some(48),
+                ..Default::default()
+            }),
+            worktree: Some(WorktreeConfigOverride {
+                enabled: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
-        profile.worktree = Some(WorktreeConfigOverride {
-            enabled: Some(true),
-            ..Default::default()
-        });
+        };
 
         let merged = merge_configs(global, &profile);
 
@@ -398,10 +402,12 @@ mod tests {
         let empty = ProfileConfig::default();
         assert!(!profile_has_overrides(&empty));
 
-        let mut with_override = ProfileConfig::default();
-        with_override.theme = Some(ThemeConfigOverride {
-            name: Some("dark".to_string()),
-        });
+        let with_override = ProfileConfig {
+            theme: Some(ThemeConfigOverride {
+                name: Some("dark".to_string()),
+            }),
+            ..Default::default()
+        };
         assert!(profile_has_overrides(&with_override));
     }
 
