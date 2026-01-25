@@ -11,9 +11,28 @@ use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, InfoDialog,
     NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
 };
+use crate::tui::settings::{SettingsAction, SettingsView};
 
 impl HomeView {
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+        // Handle settings view first (full-screen takeover)
+        if let Some(ref mut settings) = self.settings_view {
+            match settings.handle_key(key) {
+                SettingsAction::Continue => return None,
+                SettingsAction::Close => {
+                    self.settings_view = None;
+                    return None;
+                }
+                SettingsAction::UnsavedChangesWarning => {
+                    // For now, just discard changes and close
+                    // In the future, could show a confirmation dialog
+                    settings.force_close();
+                    self.settings_view = None;
+                    return None;
+                }
+            }
+        }
+
         // Handle welcome/changelog dialogs first (highest priority)
         if let Some(dialog) = &mut self.welcome_dialog {
             match dialog.handle_key(key) {
@@ -217,6 +236,19 @@ impl HomeView {
                     self.available_tools.clone(),
                     existing_titles,
                 ));
+            }
+            KeyCode::Char('s') => {
+                // Open settings view
+                match SettingsView::new(self.storage.profile()) {
+                    Ok(view) => self.settings_view = Some(view),
+                    Err(e) => {
+                        tracing::error!("Failed to open settings: {}", e);
+                        self.info_dialog = Some(InfoDialog::new(
+                            "Error",
+                            &format!("Failed to open settings: {}", e),
+                        ));
+                    }
+                }
             }
             KeyCode::Char('d') => {
                 // Deletion only allowed in Agent View

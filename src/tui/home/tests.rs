@@ -716,6 +716,29 @@ fn test_has_dialog_includes_info_dialog() {
     assert!(view.has_dialog());
 }
 
+#[test]
+#[serial]
+fn test_has_dialog_includes_settings_view() {
+    use crate::tui::settings::SettingsView;
+
+    let env = create_test_env_empty();
+    let mut view = env.view;
+
+    assert!(!view.has_dialog());
+
+    view.settings_view = Some(SettingsView::new("test").unwrap());
+    assert!(view.has_dialog());
+}
+
+#[test]
+#[serial]
+fn test_s_opens_settings_view() {
+    let mut env = create_test_env_empty();
+    assert!(env.view.settings_view.is_none());
+    env.view.handle_key(key(KeyCode::Char('s')));
+    assert!(env.view.settings_view.is_some());
+}
+
 // Group deletion tests
 
 fn create_test_env_with_group_sessions() -> TestEnv {

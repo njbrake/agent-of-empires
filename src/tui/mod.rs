@@ -6,6 +6,7 @@ mod creation_poller;
 mod deletion_poller;
 pub mod dialogs;
 mod home;
+pub mod settings;
 mod status_poller;
 mod styles;
 

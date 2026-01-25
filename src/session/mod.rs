@@ -6,15 +6,22 @@ pub mod claude;
 pub mod config;
 mod groups;
 mod instance;
+pub mod profile_config;
 mod storage;
 
 pub use config::{
     get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
-    SandboxConfig, ThemeConfig, UpdatesConfig, WorktreeConfig,
+    SandboxConfig, ThemeConfig, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
 pub use groups::{flatten_tree, Group, GroupTree, Item};
 pub use instance::{
     Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo, YOLO_SUPPORTED_TOOLS,
+};
+pub use profile_config::{
+    load_profile_config, merge_configs, resolve_config, save_profile_config,
+    validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
+    ClaudeConfigOverride, ProfileConfig, SandboxConfigOverride, ThemeConfigOverride,
+    TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
 pub use storage::Storage;
 
