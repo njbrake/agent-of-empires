@@ -125,7 +125,7 @@ impl RenameDialog {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
-            .title(" Rename Session ")
+            .title(" Edit Session ")
             .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
