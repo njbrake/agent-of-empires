@@ -77,6 +77,36 @@ fn set_session_option(session_name: &str, option: &str, value: &str) -> Result<(
     Ok(())
 }
 
+/// Apply mouse support option to a tmux session.
+/// When enabled, scrolling with the mouse wheel enters copy mode.
+pub fn apply_mouse_option(session_name: &str, enabled: bool) -> Result<()> {
+    let value = if enabled { "on" } else { "off" };
+    set_session_option(session_name, "mouse", value)
+}
+
+/// Apply all configured tmux options to a session.
+/// This is a unified entry point that applies status bar styling and mouse settings.
+pub fn apply_all_tmux_options(
+    session_name: &str,
+    title: &str,
+    branch: Option<&str>,
+    sandbox: Option<&SandboxDisplay>,
+) {
+    use crate::session::config::{should_apply_tmux_mouse, should_apply_tmux_status_bar};
+
+    if should_apply_tmux_status_bar() {
+        if let Err(e) = apply_status_bar(session_name, title, branch, sandbox) {
+            tracing::debug!("Failed to apply tmux status bar: {}", e);
+        }
+    }
+
+    if let Some(mouse_enabled) = should_apply_tmux_mouse() {
+        if let Err(e) = apply_mouse_option(session_name, mouse_enabled) {
+            tracing::debug!("Failed to apply tmux mouse option: {}", e);
+        }
+    }
+}
+
 /// Session info retrieved from tmux user options.
 pub struct SessionInfo {
     pub title: String,

@@ -1,6 +1,8 @@
 //! Setting field definitions and config mapping
 
-use crate::session::{validate_check_interval, Config, ProfileConfig, TmuxStatusBarMode};
+use crate::session::{
+    validate_check_interval, Config, ProfileConfig, TmuxMouseMode, TmuxStatusBarMode,
+};
 
 use super::SettingsScope;
 
@@ -45,6 +47,7 @@ pub enum FieldKey {
     SandboxAutoCleanup,
     // Tmux
     StatusBar,
+    Mouse,
     // Session
     DefaultTool,
 }
@@ -340,29 +343,51 @@ fn build_tmux_fields(
 ) -> Vec<SettingField> {
     let tmux = profile.tmux.as_ref();
 
-    let (status_bar, has_override) = resolve_value(
+    let (status_bar, status_bar_override) = resolve_value(
         scope,
         global.tmux.status_bar,
         tmux.and_then(|t| t.status_bar),
     );
 
-    let selected = match status_bar {
+    let (mouse, mouse_override) =
+        resolve_value(scope, global.tmux.mouse, tmux.and_then(|t| t.mouse));
+
+    let status_bar_selected = match status_bar {
         TmuxStatusBarMode::Auto => 0,
         TmuxStatusBarMode::Enabled => 1,
         TmuxStatusBarMode::Disabled => 2,
     };
 
-    vec![SettingField {
-        key: FieldKey::StatusBar,
-        label: "Status Bar",
-        description: "Control tmux status bar styling (Auto respects your tmux config)",
-        value: FieldValue::Select {
-            selected,
-            options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+    let mouse_selected = match mouse {
+        TmuxMouseMode::Auto => 0,
+        TmuxMouseMode::Enabled => 1,
+        TmuxMouseMode::Disabled => 2,
+    };
+
+    vec![
+        SettingField {
+            key: FieldKey::StatusBar,
+            label: "Status Bar",
+            description: "Control tmux status bar styling (Auto respects your tmux config)",
+            value: FieldValue::Select {
+                selected: status_bar_selected,
+                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+            },
+            category: SettingsCategory::Tmux,
+            has_override: status_bar_override,
         },
-        category: SettingsCategory::Tmux,
-        has_override,
-    }]
+        SettingField {
+            key: FieldKey::Mouse,
+            label: "Mouse Support",
+            description: "Control mouse scrolling (Auto respects your tmux config)",
+            value: FieldValue::Select {
+                selected: mouse_selected,
+                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+            },
+            category: SettingsCategory::Tmux,
+            has_override: mouse_override,
+        },
+    ]
 }
 
 fn build_session_fields(
@@ -447,6 +472,13 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 0 => TmuxStatusBarMode::Auto,
                 1 => TmuxStatusBarMode::Enabled,
                 _ => TmuxStatusBarMode::Disabled,
+            };
+        }
+        (FieldKey::Mouse, FieldValue::Select { selected, .. }) => {
+            config.tmux.mouse = match selected {
+                0 => TmuxMouseMode::Auto,
+                1 => TmuxMouseMode::Enabled,
+                _ => TmuxMouseMode::Disabled,
             };
         }
         // Session
@@ -566,6 +598,16 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             };
             set_or_clear_override(mode, &global.tmux.status_bar, &mut config.tmux, |s, val| {
                 s.status_bar = val
+            });
+        }
+        (FieldKey::Mouse, FieldValue::Select { selected, .. }) => {
+            let mode = match selected {
+                0 => TmuxMouseMode::Auto,
+                1 => TmuxMouseMode::Enabled,
+                _ => TmuxMouseMode::Disabled,
+            };
+            set_or_clear_override(mode, &global.tmux.mouse, &mut config.tmux, |s, val| {
+                s.mouse = val
             });
         }
         // Session

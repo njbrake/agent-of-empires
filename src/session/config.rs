@@ -201,16 +201,33 @@ pub enum TmuxStatusBarMode {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TmuxMouseMode {
+    /// Only enable mouse if user doesn't have their own tmux config
+    #[default]
+    Auto,
+    /// Always enable mouse for aoe sessions
+    Enabled,
+    /// Never enable mouse for aoe sessions (explicitly disable)
+    Disabled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TmuxConfig {
     #[serde(default)]
     pub status_bar: TmuxStatusBarMode,
+
+    /// Mouse support mode (auto, enabled, disabled)
+    #[serde(default)]
+    pub mouse: TmuxMouseMode,
 }
 
 impl Default for TmuxConfig {
     fn default() -> Self {
         Self {
             status_bar: TmuxStatusBarMode::Auto,
+            mouse: TmuxMouseMode::Auto,
         }
     }
 }
@@ -233,6 +250,24 @@ pub fn should_apply_tmux_status_bar() -> bool {
         TmuxStatusBarMode::Enabled => true,
         TmuxStatusBarMode::Disabled => false,
         TmuxStatusBarMode::Auto => !user_has_tmux_config(),
+    }
+}
+
+/// Determine if mouse support should be enabled based on config and environment.
+/// Returns Some(true) to enable, Some(false) to disable, None to not touch the setting.
+pub fn should_apply_tmux_mouse() -> Option<bool> {
+    let config = Config::load().unwrap_or_default();
+    match config.tmux.mouse {
+        TmuxMouseMode::Enabled => Some(true),
+        TmuxMouseMode::Disabled => Some(false),
+        TmuxMouseMode::Auto => {
+            // In auto mode, only enable mouse if user doesn't have their own tmux config
+            if user_has_tmux_config() {
+                None // Don't touch - let user's config apply
+            } else {
+                Some(true) // Enable mouse for users without custom config
+            }
+        }
     }
 }
 
@@ -549,6 +584,7 @@ mod tests {
     fn test_tmux_config_default() {
         let tmux = TmuxConfig::default();
         assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
+        assert_eq!(tmux.mouse, TmuxMouseMode::Auto);
     }
 
     #[test]
@@ -597,5 +633,56 @@ mod tests {
         let deserialized: Config = toml::from_str(&serialized).unwrap();
 
         assert_eq!(config.tmux.status_bar, deserialized.tmux.status_bar);
+    }
+
+    #[test]
+    fn test_tmux_config_mouse_deserialize() {
+        let toml = r#"mouse = "enabled""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.mouse, TmuxMouseMode::Enabled);
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_mouse_default_auto() {
+        let toml = r#""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.mouse, TmuxMouseMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_mouse_disabled() {
+        let toml = r#"mouse = "disabled""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.mouse, TmuxMouseMode::Disabled);
+    }
+
+    #[test]
+    fn test_tmux_mouse_mode_default() {
+        let mode = TmuxMouseMode::default();
+        assert_eq!(mode, TmuxMouseMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_with_both_settings() {
+        let toml = r#"
+            status_bar = "enabled"
+            mouse = "enabled"
+        "#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Enabled);
+        assert_eq!(tmux.mouse, TmuxMouseMode::Enabled);
+    }
+
+    #[test]
+    fn test_tmux_config_in_full_config_with_mouse() {
+        let toml = r#"
+            [tmux]
+            status_bar = "enabled"
+            mouse = "enabled"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.tmux.status_bar, TmuxStatusBarMode::Enabled);
+        assert_eq!(config.tmux.mouse, TmuxMouseMode::Enabled);
     }
 }
