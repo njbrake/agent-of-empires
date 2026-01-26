@@ -1,13 +1,16 @@
-name: Deploy Documentation
+name: Deploy Website
 
 on:
   push:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'website/**'
+      - 'assets/**'
       - 'book.toml'
       - 'src/**'
       - 'xtask/**'
+      - 'scripts/install.sh'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -37,13 +40,37 @@ jobs:
       - name: Generate CLI documentation
         run: cargo xtask gen-docs
 
+      - name: Create dist directory
+        run: mkdir -p dist
+
+      - name: Build landing page
+        run: cp website/index.html dist/
+
+      - name: Copy assets
+        run: |
+          mkdir -p dist/assets
+          cp assets/logo.png dist/assets/
+          cp assets/logo.svg dist/assets/
+          cp assets/social-preview.png dist/assets/
+          cp theme/favicon.png dist/assets/
+          # Copy demo.gif if it exists (generated separately)
+          if [ -f docs/assets/demo.gif ]; then
+            cp docs/assets/demo.gif dist/assets/
+          fi
+
+      - name: Copy install script
+        run: cp scripts/install.sh dist/install.sh
+
       - name: Build documentation
         run: mdbook build
+
+      - name: Move docs to dist/docs
+        run: mv book dist/docs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: book/
+          path: dist/
 
   deploy:
     environment:

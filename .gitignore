@@ -5,6 +5,9 @@ Cargo.lock
 # Documentation build output
 /book/
 
+# Website build output
+/dist/
+
 # Binaries
 *.exe
 *.exe~
