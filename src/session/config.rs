@@ -205,12 +205,17 @@ pub enum TmuxStatusBarMode {
 pub struct TmuxConfig {
     #[serde(default)]
     pub status_bar: TmuxStatusBarMode,
+
+    /// Enable mouse support (scroll enters copy mode)
+    #[serde(default)]
+    pub mouse: bool,
 }
 
 impl Default for TmuxConfig {
     fn default() -> Self {
         Self {
             status_bar: TmuxStatusBarMode::Auto,
+            mouse: false,
         }
     }
 }
@@ -234,6 +239,12 @@ pub fn should_apply_tmux_status_bar() -> bool {
         TmuxStatusBarMode::Disabled => false,
         TmuxStatusBarMode::Auto => !user_has_tmux_config(),
     }
+}
+
+/// Determine if mouse support should be enabled based on config.
+pub fn should_apply_tmux_mouse() -> bool {
+    let config = Config::load().unwrap_or_default();
+    config.tmux.mouse
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -549,6 +560,7 @@ mod tests {
     fn test_tmux_config_default() {
         let tmux = TmuxConfig::default();
         assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
+        assert!(!tmux.mouse);
     }
 
     #[test]
@@ -597,5 +609,43 @@ mod tests {
         let deserialized: Config = toml::from_str(&serialized).unwrap();
 
         assert_eq!(config.tmux.status_bar, deserialized.tmux.status_bar);
+    }
+
+    #[test]
+    fn test_tmux_config_mouse_deserialize() {
+        let toml = r#"mouse = true"#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert!(tmux.mouse);
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_mouse_default_false() {
+        let toml = r#""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert!(!tmux.mouse);
+    }
+
+    #[test]
+    fn test_tmux_config_with_both_settings() {
+        let toml = r#"
+            status_bar = "enabled"
+            mouse = true
+        "#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.status_bar, TmuxStatusBarMode::Enabled);
+        assert!(tmux.mouse);
+    }
+
+    #[test]
+    fn test_tmux_config_in_full_config_with_mouse() {
+        let toml = r#"
+            [tmux]
+            status_bar = "enabled"
+            mouse = true
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.tmux.status_bar, TmuxStatusBarMode::Enabled);
+        assert!(config.tmux.mouse);
     }
 }

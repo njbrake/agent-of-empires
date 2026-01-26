@@ -408,6 +408,11 @@ impl SettingsView {
                     t.status_bar = None;
                 }
             }
+            FieldKey::Mouse => {
+                if let Some(ref mut t) = self.profile_config.tmux {
+                    t.mouse = None;
+                }
+            }
             // Session
             FieldKey::DefaultTool => {
                 if let Some(ref mut s) = self.profile_config.session {

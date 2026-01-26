@@ -45,6 +45,7 @@ pub enum FieldKey {
     SandboxAutoCleanup,
     // Tmux
     StatusBar,
+    Mouse,
     // Session
     DefaultTool,
 }
@@ -340,11 +341,14 @@ fn build_tmux_fields(
 ) -> Vec<SettingField> {
     let tmux = profile.tmux.as_ref();
 
-    let (status_bar, has_override) = resolve_value(
+    let (status_bar, status_bar_override) = resolve_value(
         scope,
         global.tmux.status_bar,
         tmux.and_then(|t| t.status_bar),
     );
+
+    let (mouse, mouse_override) =
+        resolve_value(scope, global.tmux.mouse, tmux.and_then(|t| t.mouse));
 
     let selected = match status_bar {
         TmuxStatusBarMode::Auto => 0,
@@ -352,17 +356,27 @@ fn build_tmux_fields(
         TmuxStatusBarMode::Disabled => 2,
     };
 
-    vec![SettingField {
-        key: FieldKey::StatusBar,
-        label: "Status Bar",
-        description: "Control tmux status bar styling (Auto respects your tmux config)",
-        value: FieldValue::Select {
-            selected,
-            options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+    vec![
+        SettingField {
+            key: FieldKey::StatusBar,
+            label: "Status Bar",
+            description: "Control tmux status bar styling (Auto respects your tmux config)",
+            value: FieldValue::Select {
+                selected,
+                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+            },
+            category: SettingsCategory::Tmux,
+            has_override: status_bar_override,
         },
-        category: SettingsCategory::Tmux,
-        has_override,
-    }]
+        SettingField {
+            key: FieldKey::Mouse,
+            label: "Mouse Support",
+            description: "Enable mouse scrolling to enter copy mode",
+            value: FieldValue::Bool(mouse),
+            category: SettingsCategory::Tmux,
+            has_override: mouse_override,
+        },
+    ]
 }
 
 fn build_session_fields(
@@ -449,6 +463,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => TmuxStatusBarMode::Disabled,
             };
         }
+        (FieldKey::Mouse, FieldValue::Bool(v)) => config.tmux.mouse = *v,
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool = match selected {
@@ -566,6 +581,11 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             };
             set_or_clear_override(mode, &global.tmux.status_bar, &mut config.tmux, |s, val| {
                 s.status_bar = val
+            });
+        }
+        (FieldKey::Mouse, FieldValue::Bool(v)) => {
+            set_or_clear_override(*v, &global.tmux.mouse, &mut config.tmux, |s, val| {
+                s.mouse = val
             });
         }
         // Session
