@@ -1,6 +1,8 @@
 //! Setting field definitions and config mapping
 
-use crate::session::{validate_check_interval, Config, ProfileConfig, TmuxStatusBarMode};
+use crate::session::{
+    validate_check_interval, Config, ProfileConfig, TmuxMouseMode, TmuxStatusBarMode,
+};
 
 use super::SettingsScope;
 
@@ -350,10 +352,16 @@ fn build_tmux_fields(
     let (mouse, mouse_override) =
         resolve_value(scope, global.tmux.mouse, tmux.and_then(|t| t.mouse));
 
-    let selected = match status_bar {
+    let status_bar_selected = match status_bar {
         TmuxStatusBarMode::Auto => 0,
         TmuxStatusBarMode::Enabled => 1,
         TmuxStatusBarMode::Disabled => 2,
+    };
+
+    let mouse_selected = match mouse {
+        TmuxMouseMode::Auto => 0,
+        TmuxMouseMode::Enabled => 1,
+        TmuxMouseMode::Disabled => 2,
     };
 
     vec![
@@ -362,7 +370,7 @@ fn build_tmux_fields(
             label: "Status Bar",
             description: "Control tmux status bar styling (Auto respects your tmux config)",
             value: FieldValue::Select {
-                selected,
+                selected: status_bar_selected,
                 options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
             },
             category: SettingsCategory::Tmux,
@@ -371,8 +379,11 @@ fn build_tmux_fields(
         SettingField {
             key: FieldKey::Mouse,
             label: "Mouse Support",
-            description: "Enable mouse scrolling to enter copy mode",
-            value: FieldValue::Bool(mouse),
+            description: "Control mouse scrolling (Auto respects your tmux config)",
+            value: FieldValue::Select {
+                selected: mouse_selected,
+                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+            },
             category: SettingsCategory::Tmux,
             has_override: mouse_override,
         },
@@ -463,7 +474,13 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => TmuxStatusBarMode::Disabled,
             };
         }
-        (FieldKey::Mouse, FieldValue::Bool(v)) => config.tmux.mouse = *v,
+        (FieldKey::Mouse, FieldValue::Select { selected, .. }) => {
+            config.tmux.mouse = match selected {
+                0 => TmuxMouseMode::Auto,
+                1 => TmuxMouseMode::Enabled,
+                _ => TmuxMouseMode::Disabled,
+            };
+        }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool = match selected {
@@ -583,8 +600,13 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 s.status_bar = val
             });
         }
-        (FieldKey::Mouse, FieldValue::Bool(v)) => {
-            set_or_clear_override(*v, &global.tmux.mouse, &mut config.tmux, |s, val| {
+        (FieldKey::Mouse, FieldValue::Select { selected, .. }) => {
+            let mode = match selected {
+                0 => TmuxMouseMode::Auto,
+                1 => TmuxMouseMode::Enabled,
+                _ => TmuxMouseMode::Disabled,
+            };
+            set_or_clear_override(mode, &global.tmux.mouse, &mut config.tmux, |s, val| {
                 s.mouse = val
             });
         }

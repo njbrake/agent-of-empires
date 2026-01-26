@@ -11,7 +11,8 @@ mod storage;
 
 pub use config::{
     get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
-    SandboxConfig, SessionConfig, ThemeConfig, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
+    SandboxConfig, SessionConfig, ThemeConfig, TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig,
+    WorktreeConfig,
 };
 pub use groups::{flatten_tree, Group, GroupTree, Item};
 pub use instance::{

@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use super::config::{Config, TmuxStatusBarMode};
+use super::config::{Config, TmuxMouseMode, TmuxStatusBarMode};
 use super::get_profile_dir;
 
 /// Profile-specific settings. All fields are Option<T> - None means "inherit from global"
@@ -113,7 +113,7 @@ pub struct TmuxConfigOverride {
     pub status_bar: Option<TmuxStatusBarMode>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mouse: Option<bool>,
+    pub mouse: Option<TmuxMouseMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -470,24 +470,24 @@ mod tests {
     #[test]
     fn test_merge_configs_with_tmux_mouse_override() {
         let global = Config::default();
-        assert!(!global.tmux.mouse);
+        assert_eq!(global.tmux.mouse, TmuxMouseMode::Auto);
 
         let profile = ProfileConfig {
             tmux: Some(TmuxConfigOverride {
-                mouse: Some(true),
+                mouse: Some(TmuxMouseMode::Enabled),
                 ..Default::default()
             }),
             ..Default::default()
         };
 
         let merged = merge_configs(global, &profile);
-        assert!(merged.tmux.mouse);
+        assert_eq!(merged.tmux.mouse, TmuxMouseMode::Enabled);
     }
 
     #[test]
     fn test_merge_configs_tmux_mouse_inherits_when_not_overridden() {
         let mut global = Config::default();
-        global.tmux.mouse = true;
+        global.tmux.mouse = TmuxMouseMode::Enabled;
 
         let profile = ProfileConfig {
             tmux: Some(TmuxConfigOverride {
@@ -498,8 +498,25 @@ mod tests {
         };
 
         let merged = merge_configs(global, &profile);
-        assert!(merged.tmux.mouse); // Should inherit from global
+        assert_eq!(merged.tmux.mouse, TmuxMouseMode::Enabled); // Should inherit from global
         assert_eq!(merged.tmux.status_bar, TmuxStatusBarMode::Enabled);
+    }
+
+    #[test]
+    fn test_merge_configs_tmux_mouse_disabled_override() {
+        let mut global = Config::default();
+        global.tmux.mouse = TmuxMouseMode::Enabled;
+
+        let profile = ProfileConfig {
+            tmux: Some(TmuxConfigOverride {
+                mouse: Some(TmuxMouseMode::Disabled),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(merged.tmux.mouse, TmuxMouseMode::Disabled);
     }
 
     #[test]
@@ -507,16 +524,19 @@ mod tests {
         let config = ProfileConfig {
             tmux: Some(TmuxConfigOverride {
                 status_bar: Some(TmuxStatusBarMode::Enabled),
-                mouse: Some(true),
+                mouse: Some(TmuxMouseMode::Enabled),
             }),
             ..Default::default()
         };
 
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("[tmux]"));
-        assert!(serialized.contains("mouse = true"));
+        assert!(serialized.contains(r#"mouse = "enabled""#));
 
         let deserialized: ProfileConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.tmux.as_ref().unwrap().mouse, Some(true));
+        assert_eq!(
+            deserialized.tmux.as_ref().unwrap().mouse,
+            Some(TmuxMouseMode::Enabled)
+        );
     }
 }

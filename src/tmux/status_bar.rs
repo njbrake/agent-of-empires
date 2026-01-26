@@ -100,8 +100,8 @@ pub fn apply_all_tmux_options(
         }
     }
 
-    if should_apply_tmux_mouse() {
-        if let Err(e) = apply_mouse_option(session_name, true) {
+    if let Some(mouse_enabled) = should_apply_tmux_mouse() {
+        if let Err(e) = apply_mouse_option(session_name, mouse_enabled) {
             tracing::debug!("Failed to apply tmux mouse option: {}", e);
         }
     }
