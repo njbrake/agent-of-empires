@@ -12,6 +12,7 @@
 - `src/docker/`: Docker sandboxing and container management.
 - `src/git/`: git worktree operations and template resolution.
 - `src/update/`: version checking against GitHub releases.
+- `src/migrations/`: versioned data migrations for breaking changes (see below).
 - `tests/`: integration tests (`tests/*.rs`).
 - `docs/`: user-facing documentation and guides.
 - `scripts/`: installation and utility scripts.
@@ -30,10 +31,14 @@
 
 ## Coding Style & Naming Conventions
 
-- Prefer “let the tools decide”: keep code `cargo fmt`-clean and `cargo clippy`-clean.
+- Prefer "let the tools decide": keep code `cargo fmt`-clean and `cargo clippy`-clean.
+- **Never use emdashes (—)** in documentation or comments.
 - Rust naming: `snake_case` for modules/functions, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
 - Keep OS-specific logic in `src/process/{macos,linux}.rs` rather than sprinkling `cfg` checks.
-- Please add code comments if you find them helpful to accomplish your objective. However, please remove any comments you added that describe obvious behavior before finishing your task.
+- Do not be concerned about maintaining backwards compatibility. You should not assume that it needs to be backwards compatible, but you should mention when you make a change that breaks backwards compatibility.
+- Add comments where they aid understanding, but remove obvious ones before finishing:
+  - **Keep**: comments explaining non-obvious formulas, layout structure documentation, or "why" something is done
+  - **Remove**: section headers that just name what the next line does (e.g., `// Render buttons` before `render_buttons()`), or comments restating the code
 
 ## Testing Guidelines
 
@@ -49,4 +54,48 @@
 
 ## Local Data & Configuration Tips
 
-- Runtime config/data lives in `~/.agent-of-empires/`; keep it out of commits. For repo-local experiments, use ignored paths like `./.agent-of-empires/`, `.env`, and `.mcp.json`.
+- Runtime config/data location:
+  - **Linux**: `$XDG_CONFIG_HOME/agent-of-empires/` (defaults to `~/.config/agent-of-empires/`)
+  - **macOS/Windows**: `~/.agent-of-empires/`
+- Keep user data out of commits. For repo-local experiments, use ignored paths like `./.agent-of-empires/`, `.env`, and `.mcp.json`.
+
+## Data Migrations
+
+When making breaking changes to stored data (file locations, config schema, etc.), use the migration system in `src/migrations/` instead of adding fallback/compatibility logic to the main code.
+
+**Why**: Keeps the main codebase clean. Legacy transition logic is isolated and clearly marked as such.
+
+**How it works**:
+1. A `.schema_version` file in the app directory tracks the current version
+2. On startup, `migrations::run_migrations()` runs any pending migrations in order
+3. Each migration bumps the version after completion
+
+**Adding a new migration**:
+
+1. Create `src/migrations/vNNN_description.rs`:
+   ```rust
+   use anyhow::Result;
+
+   pub fn run() -> Result<()> {
+       // Migration logic here
+       Ok(())
+   }
+   ```
+
+2. Update `src/migrations/mod.rs`:
+   ```rust
+   mod vNNN_description;
+
+   const CURRENT_VERSION: u32 = NNN;  // bump this
+
+   const MIGRATIONS: &[Migration] = &[
+       // ... existing migrations ...
+       Migration { version: NNN, name: "description", run: vNNN_description::run },
+   ];
+   ```
+
+**Guidelines**:
+- Migrations must be idempotent (safe to run multiple times)
+- Use `tracing::info!` to log what's happening
+- Platform-specific migrations should use `#[cfg(target_os = "...")]`
+- Test migrations by creating the old state manually and verifying the transition

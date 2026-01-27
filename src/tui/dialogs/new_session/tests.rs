@@ -334,9 +334,14 @@ fn test_sandbox_disabled_by_default() {
 }
 
 #[test]
-fn test_sandbox_image_initialized_with_default() {
+fn test_sandbox_image_initialized_with_effective_default() {
+    use crate::docker;
     let dialog = multi_tool_dialog();
-    assert_eq!(dialog.sandbox_image.value(), dialog.default_sandbox_image);
+    // The sandbox image input is initialized with the effective default
+    assert_eq!(
+        dialog.sandbox_image.value(),
+        docker::effective_default_image()
+    );
 }
 
 #[test]
@@ -388,14 +393,15 @@ fn test_submit_with_custom_sandbox_image() {
     match result {
         DialogResult::Submit(data) => {
             assert!(data.sandbox);
-            assert_eq!(data.sandbox_image, Some("custom/image:tag".to_string()));
+            assert_eq!(data.sandbox_image, "custom/image:tag");
         }
         _ => panic!("Expected Submit"),
     }
 }
 
 #[test]
-fn test_submit_with_default_image_returns_none() {
+fn test_submit_with_default_image_passes_through() {
+    use crate::docker;
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
@@ -405,14 +411,34 @@ fn test_submit_with_default_image_returns_none() {
     match result {
         DialogResult::Submit(data) => {
             assert!(data.sandbox);
-            assert_eq!(data.sandbox_image, None);
+            // The image value from the input field is always passed through
+            assert_eq!(data.sandbox_image, docker::effective_default_image());
         }
         _ => panic!("Expected Submit"),
     }
 }
 
 #[test]
-fn test_submit_with_sandbox_disabled_no_image() {
+fn test_submit_with_empty_image() {
+    let mut dialog = multi_tool_dialog();
+    dialog.docker_available = true;
+    dialog.sandbox_enabled = true;
+    dialog.sandbox_image = Input::new("".to_string());
+    dialog.title = Input::new("Test".to_string());
+
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    match result {
+        DialogResult::Submit(data) => {
+            assert!(data.sandbox);
+            // Empty string is passed through as-is
+            assert_eq!(data.sandbox_image, "");
+        }
+        _ => panic!("Expected Submit"),
+    }
+}
+
+#[test]
+fn test_submit_sandbox_image_always_included() {
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = false;
@@ -423,7 +449,8 @@ fn test_submit_with_sandbox_disabled_no_image() {
     match result {
         DialogResult::Submit(data) => {
             assert!(!data.sandbox);
-            assert_eq!(data.sandbox_image, None);
+            // sandbox_image is always included (it's a String, not Option)
+            assert_eq!(data.sandbox_image, "custom/image:tag");
         }
         _ => panic!("Expected Submit"),
     }
@@ -431,6 +458,7 @@ fn test_submit_with_sandbox_disabled_no_image() {
 
 #[test]
 fn test_sandbox_image_input_works() {
+    use crate::docker;
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
@@ -440,7 +468,7 @@ fn test_sandbox_image_input_works() {
     dialog.handle_key(key(KeyCode::Char('b')));
     dialog.handle_key(key(KeyCode::Char('c')));
 
-    let expected = format!("{}abc", dialog.default_sandbox_image);
+    let expected = format!("{}abc", docker::effective_default_image());
     assert_eq!(dialog.sandbox_image.value(), expected);
 }
 

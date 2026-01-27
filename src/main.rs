@@ -1,6 +1,7 @@
 //! Agent of Empires - Terminal session manager for AI coding agents
 
 use agent_of_empires::cli::{self, Cli, Commands};
+use agent_of_empires::migrations;
 use agent_of_empires::tui;
 use anyhow::Result;
 use clap::Parser;
@@ -12,6 +13,8 @@ async fn main() -> Result<()> {
             .with_env_filter("agent_of_empires=debug")
             .init();
     }
+
+    migrations::run_migrations()?;
 
     let cli = Cli::parse();
     let profile = cli.profile.unwrap_or_default();
@@ -25,6 +28,12 @@ async fn main() -> Result<()> {
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
+        Some(Commands::Tmux { command }) => {
+            use cli::tmux::TmuxCommands;
+            match command {
+                TmuxCommands::Status(args) => cli::tmux::run_status(args),
+            }
+        }
         Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
         None => tui::run(&profile).await,
     }

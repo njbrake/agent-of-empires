@@ -8,59 +8,14 @@ const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 
 pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
     let content_lower = content.to_lowercase();
-    let effective_tool = if tool == "shell" && is_opencode_content(&content_lower) {
-        "opencode"
-    } else if tool == "shell" && is_vibe_content(&content_lower) {
-        "vibe"
-    } else if tool == "shell" && is_claude_code_content(&content_lower) {
-        "claude"
-    } else {
-        tool
-    };
 
-    match effective_tool {
+    match tool {
         "claude" => detect_claude_status(content),
         "opencode" => detect_opencode_status(&content_lower),
         "vibe" => detect_vibe_status(&content_lower),
+        "codex" => detect_codex_status(&content_lower),
         _ => detect_claude_status(content),
     }
-}
-
-fn is_opencode_content(content: &str) -> bool {
-    let opencode_indicators = ["tab switch agent", "ctrl+p commands", "/compact", "/status"];
-    opencode_indicators.iter().any(|ind| content.contains(ind))
-}
-
-fn is_vibe_content(content: &str) -> bool {
-    let vibe_indicators = ["mistral", "devstral", "shift+tab", "vibe", "mistral-vibe"];
-    vibe_indicators.iter().any(|ind| content.contains(ind))
-}
-
-fn is_claude_code_content(content: &str) -> bool {
-    let claude_indicators = [
-        "esc to interrupt",
-        "yes, allow once",
-        "yes, allow always",
-        "do you trust the files",
-        "claude code",
-        "anthropic",
-        "/ to search",
-        "? for help",
-    ];
-    if claude_indicators.iter().any(|ind| content.contains(ind)) {
-        return true;
-    }
-    let lines: Vec<&str> = content.lines().collect();
-    if let Some(last_line) = lines.iter().rev().find(|l| !l.trim().is_empty()) {
-        let trimmed = last_line.trim();
-        if trimmed == ">" || trimmed == "> " {
-            let has_box_chars = content.contains('─') || content.contains('│');
-            if has_box_chars {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 pub fn detect_claude_status(content: &str) -> Status {
@@ -282,8 +237,103 @@ pub fn detect_vibe_status(content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: Vibe shows "esc to interrupt" when busy (similar to other agents)
-    if last_lines_lower.contains("esc to interrupt") || last_lines_lower.contains("ctrl+c") {
+    // Vibe uses Textual TUI framework with its own spinners: |, /, -, \
+    // and displays "Generating" (or easter eggs like "Vibing", "Réflexion") while working
+    let vibe_spinners = ['|', '/', '\\'];
+    for line in non_empty_lines.iter().rev().take(5) {
+        let trimmed = line.trim();
+        // Check for Vibe's loading messages with timer (e.g., "Generating... 5s")
+        if (trimmed.contains("enerating")
+            || trimmed.contains("ibing")
+            || trimmed.contains("éflexion"))
+            && trimmed.ends_with('s')
+            && trimmed
+                .chars()
+                .rev()
+                .nth(1)
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+        {
+            return Status::Running;
+        }
+        // Check for Vibe's line spinners
+        for spinner in vibe_spinners {
+            if trimmed.starts_with(spinner) || trimmed.ends_with(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    // Also check braille spinners in case Vibe uses them in some contexts
+    for line in &lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    // WAITING: Vibe's approval prompts show navigation hints
+    // Pattern: "↑↓ navigate  Enter select  ESC reject"
+    if last_lines_lower.contains("↑↓ navigate")
+        || last_lines_lower.contains("enter select")
+        || last_lines_lower.contains("esc reject")
+    {
+        return Status::Waiting;
+    }
+
+    // WAITING: Tool approval warning (shows "⚠ {tool_name} command")
+    if last_lines.contains("⚠") && last_lines_lower.contains("command") {
+        return Status::Waiting;
+    }
+
+    // WAITING: Approval options shown by Vibe
+    let approval_options = [
+        "yes and always allow",
+        "no and tell the agent",
+        "› yes", // Selected option indicator
+    ];
+    for option in &approval_options {
+        if last_lines_lower.contains(option) {
+            return Status::Waiting;
+        }
+    }
+
+    // WAITING: Generic selection cursor
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("›") && trimmed.len() > 2 {
+            return Status::Waiting;
+        }
+    }
+
+    Status::Idle
+}
+
+pub fn detect_codex_status(content: &str) -> Status {
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: Codex shows "esc to interrupt" or similar when processing
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+        || last_lines_lower.contains("working")
+        || last_lines_lower.contains("thinking")
+    {
         return Status::Running;
     }
 
@@ -295,28 +345,29 @@ pub fn detect_vibe_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Selection menus
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
-        return Status::Waiting;
-    }
-
-    // WAITING: Permission/confirmation prompts (Vibe uses similar patterns)
-    let permission_prompts = [
+    // WAITING: Approval prompts (Codex uses ask-for-approval modes)
+    let approval_prompts = [
+        "approve",
+        "allow",
         "(y/n)",
         "[y/n]",
         "continue?",
         "proceed?",
-        "approve",
-        "allow",
-        "confirm",
+        "execute?",
+        "run command?",
     ];
-    for prompt in &permission_prompts {
+    for prompt in &approval_prompts {
         if last_lines_lower.contains(prompt) {
             return Status::Waiting;
         }
     }
 
-    // WAITING: Selection cursor
+    // WAITING: Selection menus
+    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+        return Status::Waiting;
+    }
+
+    // WAITING: Numbered selection
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
@@ -330,11 +381,10 @@ pub fn detect_vibe_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Input prompt
+    // WAITING: Input prompt ready
     for line in non_empty_lines.iter().rev().take(10) {
         let clean_line = strip_ansi(line).trim().to_string();
-
-        if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
+        if clean_line == ">" || clean_line == "> " || clean_line == "codex>" {
             return Status::Waiting;
         }
         if clean_line.starts_with("> ")
@@ -342,29 +392,6 @@ pub fn detect_vibe_status(content: &str) -> Status {
             && clean_line.len() < 100
         {
             return Status::Waiting;
-        }
-    }
-
-    // WAITING: Completion indicators + input prompt nearby
-    let completion_indicators = [
-        "complete",
-        "done",
-        "finished",
-        "ready",
-        "what would you like",
-        "what else",
-        "anything else",
-        "how can i help",
-    ];
-    let has_completion = completion_indicators
-        .iter()
-        .any(|ind| last_lines_lower.contains(ind));
-    if has_completion {
-        for line in non_empty_lines.iter().rev().take(10) {
-            let clean = strip_ansi(line).trim().to_string();
-            if clean == ">" || clean == "> " || clean == ">>" {
-                return Status::Waiting;
-            }
         }
     }
 
@@ -462,20 +489,6 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_status_from_content_auto_detects_claude() {
-        let content = "some output\nesc to interrupt\nclaude code";
-        let status = detect_status_from_content(content, "shell", None);
-        assert_eq!(status, Status::Running);
-    }
-
-    #[test]
-    fn test_detect_status_from_content_auto_detects_opencode() {
-        let content = "Tab switch agent\nesc to interrupt";
-        let status = detect_status_from_content(content, "shell", None);
-        assert_eq!(status, Status::Running);
-    }
-
-    #[test]
     fn test_detect_status_from_content_falls_back_to_claude() {
         let content = "Processing ⠋";
         let status = detect_status_from_content(content, "unknown_tool", None);
@@ -540,51 +553,31 @@ mod tests {
     }
 
     #[test]
-    fn test_is_opencode_content_indicators() {
-        assert!(is_opencode_content("tab switch agent"));
-        assert!(is_opencode_content("ctrl+p commands"));
-        assert!(is_opencode_content("/compact"));
-        assert!(is_opencode_content("/status"));
-        assert!(!is_opencode_content("random text"));
-    }
-
-    #[test]
-    fn test_is_claude_code_content_indicators() {
-        assert!(is_claude_code_content("esc to interrupt"));
-        assert!(is_claude_code_content("yes, allow once"));
-        assert!(is_claude_code_content("/ to search"));
-        assert!(is_claude_code_content("? for help"));
-        assert!(!is_claude_code_content("random text"));
-    }
-
-    #[test]
-    fn test_is_claude_code_content_prompt_with_box_chars() {
-        let content = "│ some content ─\n>";
-        assert!(is_claude_code_content(content));
-    }
-
-    #[test]
     fn test_detect_vibe_status_running() {
-        assert_eq!(
-            detect_vibe_status("processing your request\nesc to interrupt"),
-            Status::Running
-        );
-        assert_eq!(detect_vibe_status("generating ⠋"), Status::Running);
-        assert_eq!(detect_vibe_status("loading ⠹"), Status::Running);
+        // Vibe shows "Generating... Xs" with a timer while working
+        assert_eq!(detect_vibe_status("Generating... 5s"), Status::Running);
+        assert_eq!(detect_vibe_status("Vibing... 12s"), Status::Running);
+        // Braille spinners should also work
+        assert_eq!(detect_vibe_status("processing ⠋"), Status::Running);
     }
 
     #[test]
     fn test_detect_vibe_status_waiting() {
+        // Vibe's approval prompt navigation hints
         assert_eq!(
-            detect_vibe_status("allow this action? [y/n]"),
+            detect_vibe_status("↑↓ navigate  Enter select  ESC reject"),
             Status::Waiting
         );
-        assert_eq!(detect_vibe_status("continue? (y/n)"), Status::Waiting);
-        assert_eq!(detect_vibe_status("approve changes"), Status::Waiting);
-        assert_eq!(detect_vibe_status("task complete.\n>"), Status::Waiting);
-        assert_eq!(detect_vibe_status("ready for input\n> "), Status::Waiting);
+        // Tool approval warning
         assert_eq!(
-            detect_vibe_status("done! what else can i help with?\n>"),
+            detect_vibe_status("⚠ bash command\nExecute this?"),
+            Status::Waiting
+        );
+        // Approval options
+        assert_eq!(
+            detect_vibe_status(
+                "› Yes\n  Yes and always allow bash for this session\n  No and tell the agent"
+            ),
             Status::Waiting
         );
     }
@@ -593,22 +586,42 @@ mod tests {
     fn test_detect_vibe_status_idle() {
         assert_eq!(detect_vibe_status("some random output"), Status::Idle);
         assert_eq!(detect_vibe_status("file saved successfully"), Status::Idle);
+        // Just "Generating" without timer is not enough
+        assert_eq!(detect_vibe_status("Generating code"), Status::Idle);
     }
 
     #[test]
-    fn test_is_vibe_content_indicators() {
-        assert!(is_vibe_content("mistral"));
-        assert!(is_vibe_content("devstral"));
-        assert!(is_vibe_content("shift+tab"));
-        assert!(is_vibe_content("vibe"));
-        assert!(is_vibe_content("mistral-vibe"));
-        assert!(!is_vibe_content("random text"));
+    fn test_detect_codex_status_running() {
+        assert_eq!(
+            detect_codex_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_codex_status("thinking about your request"),
+            Status::Running
+        );
+        assert_eq!(detect_codex_status("working on task"), Status::Running);
+        assert_eq!(detect_codex_status("generating ⠋"), Status::Running);
     }
 
     #[test]
-    fn test_detect_status_from_content_auto_detects_vibe() {
-        let content = "some output\nesc to interrupt\nmistral";
-        let status = detect_status_from_content(content, "shell", None);
-        assert_eq!(status, Status::Running);
+    fn test_detect_codex_status_waiting() {
+        assert_eq!(
+            detect_codex_status("run this command? (y/n)"),
+            Status::Waiting
+        );
+        assert_eq!(detect_codex_status("approve changes?"), Status::Waiting);
+        assert_eq!(
+            detect_codex_status("execute this action? [y/n]"),
+            Status::Waiting
+        );
+        assert_eq!(detect_codex_status("ready\ncodex>"), Status::Waiting);
+        assert_eq!(detect_codex_status("done\n>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_idle() {
+        assert_eq!(detect_codex_status("file saved"), Status::Idle);
+        assert_eq!(detect_codex_status("random output text"), Status::Idle);
     }
 }

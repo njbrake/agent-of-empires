@@ -11,32 +11,64 @@ use crate::tui::styles::Theme;
 pub struct GroupDeleteOptions {
     pub delete_sessions: bool,
     pub delete_worktrees: bool,
+    pub delete_containers: bool,
 }
 
 pub struct GroupDeleteOptionsDialog {
     group_path: String,
     session_count: usize,
     has_managed_worktrees: bool,
+    has_containers: bool,
     options: GroupDeleteOptions,
     focused_field: usize,
 }
 
 impl GroupDeleteOptionsDialog {
-    pub fn new(group_path: String, session_count: usize, has_managed_worktrees: bool) -> Self {
+    pub fn new(
+        group_path: String,
+        session_count: usize,
+        has_managed_worktrees: bool,
+        has_containers: bool,
+    ) -> Self {
         Self {
             group_path,
             session_count,
             has_managed_worktrees,
+            has_containers,
             options: GroupDeleteOptions::default(),
             focused_field: 0,
         }
     }
 
     fn max_field(&self) -> usize {
+        if !self.options.delete_sessions {
+            return 2; // move(0), delete(1)
+        }
+        let mut count = 2; // move(0), delete(1)
+        if self.has_managed_worktrees {
+            count += 1; // worktree checkbox
+        }
+        if self.has_containers {
+            count += 1; // container checkbox
+        }
+        count
+    }
+
+    fn worktree_field_index(&self) -> Option<usize> {
         if self.options.delete_sessions && self.has_managed_worktrees {
-            3 // move(0), delete(1), worktree checkbox(2)
+            Some(2)
         } else {
-            2 // move(0), delete(1)
+            None
+        }
+    }
+
+    fn container_field_index(&self) -> Option<usize> {
+        if self.options.delete_sessions && self.has_containers {
+            let base = 2;
+            let offset = if self.has_managed_worktrees { 1 } else { 0 };
+            Some(base + offset)
+        } else {
+            None
         }
     }
 
@@ -62,12 +94,16 @@ impl GroupDeleteOptionsDialog {
                     0 => {
                         self.options.delete_sessions = false;
                         self.options.delete_worktrees = false;
+                        self.options.delete_containers = false;
                     }
                     1 => {
                         self.options.delete_sessions = true;
                     }
-                    2 if self.options.delete_sessions && self.has_managed_worktrees => {
+                    f if Some(f) == self.worktree_field_index() => {
                         self.options.delete_worktrees = !self.options.delete_worktrees;
+                    }
+                    f if Some(f) == self.container_field_index() => {
+                        self.options.delete_containers = !self.options.delete_containers;
                     }
                     _ => {}
                 }
@@ -92,8 +128,15 @@ impl GroupDeleteOptionsDialog {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let show_worktree_option = self.options.delete_sessions && self.has_managed_worktrees;
+        let show_container_option = self.options.delete_sessions && self.has_containers;
         let dialog_width = 50;
-        let dialog_height = if show_worktree_option { 12 } else { 11 };
+        let mut dialog_height = 11; // Base height
+        if show_worktree_option {
+            dialog_height += 1;
+        }
+        if show_container_option {
+            dialog_height += 1;
+        }
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -124,6 +167,9 @@ impl GroupDeleteOptionsDialog {
         ];
         if show_worktree_option {
             constraints.push(Constraint::Length(1)); // Worktree checkbox
+        }
+        if show_container_option {
+            constraints.push(Constraint::Length(1)); // Container checkbox
         }
         constraints.push(Constraint::Min(1)); // Hints
 
@@ -186,9 +232,12 @@ impl GroupDeleteOptionsDialog {
         ]);
         frame.render_widget(Paragraph::new(delete_line), chunks[3]);
 
+        // Track current chunk index for optional checkboxes
+        let mut next_chunk = 4;
+
         // Worktree checkbox (only shown when delete is selected and has managed worktrees)
-        let hint_chunk = if show_worktree_option {
-            let wt_focused = self.focused_field == 2;
+        if show_worktree_option {
+            let wt_focused = Some(self.focused_field) == self.worktree_field_index();
             let wt_checkbox = if self.options.delete_worktrees {
                 "[x]"
             } else {
@@ -206,11 +255,33 @@ impl GroupDeleteOptionsDialog {
                 Span::styled(wt_checkbox, wt_style),
                 Span::styled(" Also delete managed worktrees", wt_style),
             ]);
-            frame.render_widget(Paragraph::new(wt_line), chunks[4]);
-            5
-        } else {
-            4
-        };
+            frame.render_widget(Paragraph::new(wt_line), chunks[next_chunk]);
+            next_chunk += 1;
+        }
+
+        // Container checkbox (only shown when delete is selected and has containers)
+        if show_container_option {
+            let ct_focused = Some(self.focused_field) == self.container_field_index();
+            let ct_checkbox = if self.options.delete_containers {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let ct_style = if ct_focused {
+                Style::default().fg(theme.error).underlined()
+            } else if self.options.delete_containers {
+                Style::default().fg(theme.error)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let ct_line = Line::from(vec![
+                Span::raw("    "),
+                Span::styled(ct_checkbox, ct_style),
+                Span::styled(" Also delete containers", ct_style),
+            ]);
+            frame.render_widget(Paragraph::new(ct_line), chunks[next_chunk]);
+            next_chunk += 1;
+        }
 
         // Hints
         let hints = Line::from(vec![
@@ -223,7 +294,7 @@ impl GroupDeleteOptionsDialog {
             Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
-        frame.render_widget(Paragraph::new(hints), chunks[hint_chunk]);
+        frame.render_widget(Paragraph::new(hints), chunks[next_chunk]);
     }
 }
 
@@ -241,11 +312,19 @@ mod tests {
     }
 
     fn dialog() -> GroupDeleteOptionsDialog {
-        GroupDeleteOptionsDialog::new("work".to_string(), 3, false)
+        GroupDeleteOptionsDialog::new("work".to_string(), 3, false, false)
     }
 
     fn dialog_with_worktrees() -> GroupDeleteOptionsDialog {
-        GroupDeleteOptionsDialog::new("work".to_string(), 3, true)
+        GroupDeleteOptionsDialog::new("work".to_string(), 3, true, false)
+    }
+
+    fn dialog_with_containers() -> GroupDeleteOptionsDialog {
+        GroupDeleteOptionsDialog::new("work".to_string(), 3, false, true)
+    }
+
+    fn dialog_with_both() -> GroupDeleteOptionsDialog {
+        GroupDeleteOptionsDialog::new("work".to_string(), 3, true, true)
     }
 
     #[test]
@@ -253,6 +332,7 @@ mod tests {
         let options = GroupDeleteOptions::default();
         assert!(!options.delete_sessions);
         assert!(!options.delete_worktrees);
+        assert!(!options.delete_containers);
     }
 
     #[test]
@@ -411,5 +491,138 @@ mod tests {
         dialog.handle_key(key(KeyCode::Char(' ')));
         assert!(!dialog.options.delete_sessions);
         assert!(!dialog.options.delete_worktrees);
+    }
+
+    #[test]
+    fn test_selecting_move_clears_delete_containers() {
+        let mut dialog = dialog_with_containers();
+        dialog.options.delete_sessions = true;
+        dialog.options.delete_containers = true;
+        dialog.focused_field = 0;
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.delete_sessions);
+        assert!(!dialog.options.delete_containers);
+    }
+
+    #[test]
+    fn test_container_checkbox_appears_when_delete_selected() {
+        let mut dialog = dialog_with_containers();
+        assert_eq!(dialog.max_field(), 2); // No container option yet
+
+        dialog.options.delete_sessions = true;
+        assert_eq!(dialog.max_field(), 3); // Now container option is available
+    }
+
+    #[test]
+    fn test_container_checkbox_toggle() {
+        let mut dialog = dialog_with_containers();
+        dialog.options.delete_sessions = true;
+        dialog.focused_field = 2; // Container is at index 2 when no worktrees
+        assert!(!dialog.options.delete_containers);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(dialog.options.delete_containers);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.delete_containers);
+    }
+
+    #[test]
+    fn test_tab_includes_container_when_delete_selected() {
+        let mut dialog = dialog_with_containers();
+        dialog.options.delete_sessions = true;
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 1);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 2); // Container checkbox
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 0);
+    }
+
+    #[test]
+    fn test_both_checkboxes_when_delete_selected() {
+        let mut dialog = dialog_with_both();
+        assert_eq!(dialog.max_field(), 2); // No checkboxes yet
+
+        dialog.options.delete_sessions = true;
+        assert_eq!(dialog.max_field(), 4); // Both checkboxes available
+    }
+
+    #[test]
+    fn test_tab_includes_both_checkboxes() {
+        let mut dialog = dialog_with_both();
+        dialog.options.delete_sessions = true;
+        assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 1); // Delete option
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 2); // Worktree checkbox
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 3); // Container checkbox
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 0); // Wrap around
+    }
+
+    #[test]
+    fn test_container_checkbox_at_correct_index_with_worktrees() {
+        let mut dialog = dialog_with_both();
+        dialog.options.delete_sessions = true;
+
+        // Worktree is at index 2
+        assert_eq!(dialog.worktree_field_index(), Some(2));
+        // Container is at index 3 (after worktree)
+        assert_eq!(dialog.container_field_index(), Some(3));
+    }
+
+    #[test]
+    fn test_container_checkbox_at_correct_index_without_worktrees() {
+        let mut dialog = dialog_with_containers();
+        dialog.options.delete_sessions = true;
+
+        // No worktree
+        assert_eq!(dialog.worktree_field_index(), None);
+        // Container is at index 2
+        assert_eq!(dialog.container_field_index(), Some(2));
+    }
+
+    #[test]
+    fn test_submit_with_all_options() {
+        let mut dialog = dialog_with_both();
+        dialog.options.delete_sessions = true;
+        dialog.options.delete_worktrees = true;
+        dialog.options.delete_containers = true;
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        match result {
+            DialogResult::Submit(opts) => {
+                assert!(opts.delete_sessions);
+                assert!(opts.delete_worktrees);
+                assert!(opts.delete_containers);
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_selecting_move_clears_all_options() {
+        let mut dialog = dialog_with_both();
+        dialog.options.delete_sessions = true;
+        dialog.options.delete_worktrees = true;
+        dialog.options.delete_containers = true;
+        dialog.focused_field = 0;
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.delete_sessions);
+        assert!(!dialog.options.delete_worktrees);
+        assert!(!dialog.options.delete_containers);
     }
 }

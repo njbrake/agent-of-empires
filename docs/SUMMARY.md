@@ -16,6 +16,7 @@
 - [Git Worktrees](guides/worktrees.md)
 - [Two-Terminal Workflow](guides/two-terminal-workflow.md)
 - [Docker Sandbox](guides/sandbox.md)
+- [tmux Status Bar](guides/tmux-status-bar.md)
 
 # Contributing
 

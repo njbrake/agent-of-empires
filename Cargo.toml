@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "0.4.5"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.74"
 authors = ["Agent of Empires Contributors"]
@@ -74,6 +74,9 @@ nix = { version = "0.29", features = ["signal", "process"] }
 
 # Unicode width
 unicode-width = "0.2"
+
+# Regex
+regex = "1.10"
 
 # Git operations
 git2 = { version = "0.19", features = ["vendored-openssl"] }

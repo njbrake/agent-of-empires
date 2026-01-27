@@ -21,6 +21,18 @@ impl HomeView {
         theme: &Theme,
         update_info: Option<&UpdateInfo>,
     ) {
+        // Settings view takes over the whole screen
+        if let Some(ref settings) = self.settings_view {
+            settings.render(frame, area, theme);
+            // Render unsaved changes confirmation dialog over settings
+            if self.settings_close_confirm {
+                if let Some(dialog) = &self.confirm_dialog {
+                    dialog.render(frame, area, theme);
+                }
+            }
+            return;
+        }
+
         // Layout: main area + status bar + optional update bar at bottom
         let constraints = if update_info.is_some() {
             vec![
@@ -93,11 +105,15 @@ impl HomeView {
             ViewMode::Agent => format!(" Agent of Empires [{}] ", self.storage.profile()),
             ViewMode::Terminal => format!(" Terminals [{}] ", self.storage.profile()),
         };
+        let (border_color, title_color) = match self.view_mode {
+            ViewMode::Agent => (theme.border, theme.title),
+            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
+            .border_style(Style::default().fg(border_color))
             .title(title)
-            .title_style(Style::default().fg(theme.title).bold());
+            .title_style(Style::default().fg(title_color).bold());
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -145,9 +161,31 @@ impl HomeView {
                 width: inner.width,
                 height: 1,
             };
-            let search_text = format!("/{}", self.search_query);
-            let search_para = Paragraph::new(search_text).style(Style::default().fg(theme.search));
-            frame.render_widget(search_para, search_area);
+
+            let value = self.search_query.value();
+            let cursor_pos = self.search_query.visual_cursor();
+            let cursor_style = Style::default().fg(theme.background).bg(theme.search);
+            let text_style = Style::default().fg(theme.search);
+
+            // Split value into: before cursor, char at cursor, after cursor
+            let before: String = value.chars().take(cursor_pos).collect();
+            let cursor_char: String = value
+                .chars()
+                .nth(cursor_pos)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            let after: String = value.chars().skip(cursor_pos + 1).collect();
+
+            let mut spans = vec![Span::styled("/", text_style)];
+            if !before.is_empty() {
+                spans.push(Span::styled(before, text_style));
+            }
+            spans.push(Span::styled(cursor_char, cursor_style));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, text_style));
+            }
+
+            frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
         }
     }
 
@@ -201,7 +239,7 @@ impl HomeView {
                                 .map(|s| s.exists())
                                 .unwrap_or(false);
                             let (icon, color) = if terminal_running {
-                                (ICON_RUNNING, theme.running)
+                                (ICON_RUNNING, theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
                             };
@@ -235,7 +273,7 @@ impl HomeView {
                         Style::default().fg(Color::Cyan),
                     ));
                 }
-                if inst.is_sandboxed() {
+                if inst.is_sandboxed() && self.view_mode == ViewMode::Agent {
                     line_spans.push(Span::styled(
                         " [sandbox]",
                         Style::default().fg(Color::Magenta),
@@ -318,11 +356,15 @@ impl HomeView {
             ViewMode::Agent => " Preview ",
             ViewMode::Terminal => " Terminal Preview ",
         };
+        let (border_color, title_color) = match self.view_mode {
+            ViewMode::Agent => (theme.border, theme.title),
+            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
+            .border_style(Style::default().fg(border_color))
             .title(title)
-            .title_style(Style::default().fg(theme.title));
+            .title_style(Style::default().fg(title_color));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -381,30 +423,53 @@ impl HomeView {
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
-        let mode_style = Style::default().fg(theme.waiting).bold();
 
-        let mode_indicator = match self.view_mode {
-            ViewMode::Agent => "[Agent]",
-            ViewMode::Terminal => "[Term]",
+        let (mode_indicator, mode_color) = match self.view_mode {
+            ViewMode::Agent => ("[Agent]", theme.waiting),
+            ViewMode::Terminal => ("[Term]", theme.terminal_border),
         };
+        let mode_style = Style::default().fg(mode_color).bold();
 
-        let spans = vec![
+        let mut spans = vec![
             Span::styled(format!(" {} ", mode_indicator), mode_style),
             Span::styled("│", sep_style),
             Span::styled(" j/k", key_style),
             Span::styled(" Nav ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(" Enter", key_style),
-            Span::styled(" Attach ", desc_style),
+        ];
+        if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
+            Some(Item::Group {
+                collapsed: true, ..
+            }) => Some(" Expand "),
+            Some(Item::Group {
+                collapsed: false, ..
+            }) => Some(" Collapse "),
+            Some(Item::Session { .. }) => Some(" Attach "),
+            None => None,
+        } {
+            spans.extend([
+                Span::styled("│", sep_style),
+                Span::styled(" Enter", key_style),
+                Span::styled(enter_action_text, desc_style),
+            ])
+        }
+        spans.extend([
             Span::styled("│", sep_style),
             Span::styled(" t", key_style),
             Span::styled(" View ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" n", key_style),
             Span::styled(" New ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(" d", key_style),
-            Span::styled(" Del ", desc_style),
+        ]);
+
+        if !self.flat_items.is_empty() {
+            spans.extend([
+                Span::styled("│", sep_style),
+                Span::styled(" d", key_style),
+                Span::styled(" Del ", desc_style),
+            ]);
+        }
+
+        spans.extend([
             Span::styled("│", sep_style),
             Span::styled(" /", key_style),
             Span::styled(" Search ", desc_style),
@@ -414,7 +479,7 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" q", key_style),
             Span::styled(" Quit", desc_style),
-        ];
+        ]);
 
         let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
         frame.render_widget(status, area);

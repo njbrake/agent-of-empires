@@ -43,19 +43,19 @@ Run without arguments to launch the TUI dashboard.
 
 ###### **Subcommands:**
 
-* `add` — Add a new session
-* `list` — List all sessions
-* `remove` — Remove a session
-* `status` — Show session status summary
-* `session` — Manage session lifecycle (start, stop, attach, etc.)
-* `group` — Manage groups for organizing sessions
-* `profile` — Manage profiles (separate workspaces)
-* `worktree` — Manage git worktrees for parallel development
-* `uninstall` — Uninstall Agent of Empires
+* `add`:Add a new session
+* `list`:List all sessions
+* `remove`:Remove a session
+* `status`:Show session status summary
+* `session`:Manage session lifecycle (start, stop, attach, etc.)
+* `group`:Manage groups for organizing sessions
+* `profile`:Manage profiles (separate workspaces)
+* `worktree`:Manage git worktrees for parallel development
+* `uninstall`:Uninstall Agent of Empires
 
 ###### **Options:**
 
-* `-p`, `--profile <PROFILE>` — Profile to use (separate workspace with its own sessions)
+* `-p`, `--profile <PROFILE>`:Profile to use (separate workspace with its own sessions)
 
 
 
@@ -67,19 +67,19 @@ Add a new session
 
 ###### **Arguments:**
 
-* `<PATH>` — Project directory (defaults to current directory)
+* `<PATH>`:Project directory (defaults to current directory)
 
   Default value: `.`
 
 ###### **Options:**
 
-* `-t`, `--title <TITLE>` — Session title (defaults to folder name)
-* `-g`, `--group <GROUP>` — Group path (defaults to parent folder)
-* `-c`, `--cmd <COMMAND>` — Command to run (e.g., 'claude', 'opencode')
-* `-P`, `--parent <PARENT>` — Parent session (creates sub-session, inherits group)
-* `-l`, `--launch` — Launch the session immediately after creating
-* `-w`, `--worktree <WORKTREE_BRANCH>` — Create session in a git worktree for the specified branch
-* `-b`, `--new-branch` — Create a new branch (use with --worktree)
+* `-t`, `--title <TITLE>`:Session title (defaults to folder name)
+* `-g`, `--group <GROUP>`:Group path (defaults to parent folder)
+* `-c`, `--cmd <COMMAND>`:Command to run (e.g., 'claude', 'opencode')
+* `-P`, `--parent <PARENT>`:Parent session (creates sub-session, inherits group)
+* `-l`, `--launch`:Launch the session immediately after creating
+* `-w`, `--worktree <WORKTREE_BRANCH>`:Create session in a git worktree for the specified branch
+* `-b`, `--new-branch`:Create a new branch (use with --worktree)
 
 
 
@@ -91,8 +91,8 @@ List all sessions
 
 ###### **Options:**
 
-* `--json` — Output as JSON
-* `--all` — List sessions from all profiles
+* `--json`:Output as JSON
+* `--all`:List sessions from all profiles
 
 
 
@@ -104,11 +104,11 @@ Remove a session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title to remove
+* `<IDENTIFIER>`:Session ID or title to remove
 
 ###### **Options:**
 
-* `-k`, `--keep-worktree` — Keep worktree directory (don't delete it)
+* `-k`, `--keep-worktree`:Keep worktree directory (don't delete it)
 
 
 
@@ -120,9 +120,9 @@ Show session status summary
 
 ###### **Options:**
 
-* `-v`, `--verbose` — Show detailed session list
-* `-q`, `--quiet` — Only output waiting count (for scripts)
-* `--json` — Output as JSON
+* `-v`, `--verbose`:Show detailed session list
+* `-q`, `--quiet`:Only output waiting count (for scripts)
+* `--json`:Output as JSON
 
 
 
@@ -134,13 +134,13 @@ Manage session lifecycle (start, stop, attach, etc.)
 
 ###### **Subcommands:**
 
-* `start` — Start a session's tmux process
-* `stop` — Stop session process
-* `restart` — Restart session
-* `fork` — Fork Claude session with context
-* `attach` — Attach to session interactively
-* `show` — Show session details
-* `current` — Auto-detect current session
+* `start`:Start a session's tmux process
+* `stop`:Stop session process
+* `restart`:Restart session
+* `fork`:Fork Claude session with context
+* `attach`:Attach to session interactively
+* `show`:Show session details
+* `current`:Auto-detect current session
 
 
 
@@ -152,7 +152,7 @@ Start a session's tmux process
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>`:Session ID or title
 
 
 
@@ -164,7 +164,7 @@ Stop session process
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>`:Session ID or title
 
 
 
@@ -176,7 +176,7 @@ Restart session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>`:Session ID or title
 
 
 
@@ -188,12 +188,12 @@ Fork Claude session with context
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title to fork
+* `<IDENTIFIER>`:Session ID or title to fork
 
 ###### **Options:**
 
-* `-t`, `--title <TITLE>` — Custom title for forked session
-* `-g`, `--group <GROUP>` — Target group for forked session
+* `-t`, `--title <TITLE>`:Custom title for forked session
+* `-g`, `--group <GROUP>`:Target group for forked session
 
 
 
@@ -205,7 +205,7 @@ Attach to session interactively
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>`:Session ID or title
 
 
 
@@ -217,11 +217,11 @@ Show session details
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title (optional, auto-detects in tmux)
+* `<IDENTIFIER>`:Session ID or title (optional, auto-detects in tmux)
 
 ###### **Options:**
 
-* `--json` — Output as JSON
+* `--json`:Output as JSON
 
 
 
@@ -233,8 +233,8 @@ Auto-detect current session
 
 ###### **Options:**
 
-* `-q`, `--quiet` — Just session name (for scripting)
-* `--json` — Output as JSON
+* `-q`, `--quiet`:Just session name (for scripting)
+* `--json`:Output as JSON
 
 
 
@@ -246,10 +246,10 @@ Manage groups for organizing sessions
 
 ###### **Subcommands:**
 
-* `list` — List all groups
-* `create` — Create a new group
-* `delete` — Delete a group
-* `move` — Move session to group
+* `list`:List all groups
+* `create`:Create a new group
+* `delete`:Delete a group
+* `move`:Move session to group
 
 
 
@@ -261,7 +261,7 @@ List all groups
 
 ###### **Options:**
 
-* `--json` — Output as JSON
+* `--json`:Output as JSON
 
 
 
@@ -273,11 +273,11 @@ Create a new group
 
 ###### **Arguments:**
 
-* `<NAME>` — Group name
+* `<NAME>`:Group name
 
 ###### **Options:**
 
-* `--parent <PARENT>` — Parent group for creating subgroups
+* `--parent <PARENT>`:Parent group for creating subgroups
 
 
 
@@ -289,11 +289,11 @@ Delete a group
 
 ###### **Arguments:**
 
-* `<NAME>` — Group name
+* `<NAME>`:Group name
 
 ###### **Options:**
 
-* `--force` — Force delete by moving sessions to default group
+* `--force`:Force delete by moving sessions to default group
 
 
 
@@ -305,8 +305,8 @@ Move session to group
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
-* `<GROUP>` — Target group
+* `<IDENTIFIER>`:Session ID or title
+* `<GROUP>`:Target group
 
 
 
@@ -318,10 +318,10 @@ Manage profiles (separate workspaces)
 
 ###### **Subcommands:**
 
-* `list` — List all profiles
-* `create` — Create a new profile
-* `delete` — Delete a profile
-* `default` — Show or set default profile
+* `list`:List all profiles
+* `create`:Create a new profile
+* `delete`:Delete a profile
+* `default`:Show or set default profile
 
 
 
@@ -341,7 +341,7 @@ Create a new profile
 
 ###### **Arguments:**
 
-* `<NAME>` — Profile name
+* `<NAME>`:Profile name
 
 
 
@@ -353,7 +353,7 @@ Delete a profile
 
 ###### **Arguments:**
 
-* `<NAME>` — Profile name
+* `<NAME>`:Profile name
 
 
 
@@ -365,7 +365,7 @@ Show or set default profile
 
 ###### **Arguments:**
 
-* `<NAME>` — Profile name (optional, shows current if not provided)
+* `<NAME>`:Profile name (optional, shows current if not provided)
 
 
 
@@ -377,9 +377,9 @@ Manage git worktrees for parallel development
 
 ###### **Subcommands:**
 
-* `list` — List all worktrees in current repository
-* `info` — Show worktree information for a session
-* `cleanup` — Cleanup orphaned worktrees
+* `list`:List all worktrees in current repository
+* `info`:Show worktree information for a session
+* `cleanup`:Cleanup orphaned worktrees
 
 
 
@@ -399,7 +399,7 @@ Show worktree information for a session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>`:Session ID or title
 
 
 
@@ -411,7 +411,7 @@ Cleanup orphaned worktrees
 
 ###### **Options:**
 
-* `-f`, `--force` — Actually remove worktrees (default is dry-run)
+* `-f`, `--force`:Actually remove worktrees (default is dry-run)
 
 
 
@@ -423,10 +423,10 @@ Uninstall Agent of Empires
 
 ###### **Options:**
 
-* `--keep-data` — Keep ~/.agent-of-empires/ (sessions, config, logs)
-* `--keep-tmux-config` — Keep tmux configuration
-* `--dry-run` — Show what would be removed without removing
-* `-y` — Skip confirmation prompts
+* `--keep-data`:Keep ~/.agent-of-empires/ (sessions, config, logs)
+* `--keep-tmux-config`:Keep tmux configuration
+* `--dry-run`:Show what would be removed without removing
+* `-y`:Skip confirmation prompts
 
 
 

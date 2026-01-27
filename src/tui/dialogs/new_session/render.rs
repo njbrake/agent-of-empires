@@ -3,11 +3,18 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
+use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
+use crate::tui::components::render_text_field;
 use crate::tui::styles::Theme;
 
 impl NewSessionDialog {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        // If loading, render the loading overlay instead
+        if self.loading {
+            self.render_loading(frame, area, theme);
+            return;
+        }
+
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
         let sandbox_options_visible = has_sandbox && self.sandbox_enabled;
@@ -62,43 +69,22 @@ impl NewSessionDialog {
             .constraints(constraints)
             .split(inner);
 
-        let text_fields: [(&str, &tui_input::Input); 3] = [
-            ("Title:", &self.title),
-            ("Path:", &self.path),
-            ("Group:", &self.group),
+        let text_fields: [(&str, &tui_input::Input, Option<&str>); 3] = [
+            ("Title:", &self.title, Some("(random civ)")),
+            ("Path:", &self.path, None),
+            ("Group:", &self.group, None),
         ];
 
-        for (idx, (label, input)) in text_fields.iter().enumerate() {
-            let is_focused = idx == self.focused_field;
-            let label_style = if is_focused {
-                Style::default().fg(theme.accent).underlined()
-            } else {
-                Style::default().fg(theme.text)
-            };
-            let value_style = if is_focused {
-                Style::default().fg(theme.accent)
-            } else {
-                Style::default().fg(theme.text)
-            };
-
-            let value = input.value();
-            let cursor_pos = input.visual_cursor();
-
-            let display_value = if value.is_empty() && idx == 0 {
-                "(random civ)".to_string()
-            } else if is_focused {
-                let (before, after) = value.split_at(cursor_pos.min(value.len()));
-                format!("{}█{}", before, after)
-            } else {
-                value.to_string()
-            };
-
-            let line = Line::from(vec![
-                Span::styled(*label, label_style),
-                Span::styled(format!(" {}", display_value), value_style),
-            ]);
-
-            frame.render_widget(Paragraph::new(line), chunks[idx]);
+        for (idx, (label, input, placeholder)) in text_fields.iter().enumerate() {
+            render_text_field(
+                frame,
+                chunks[idx],
+                label,
+                input,
+                idx == self.focused_field,
+                *placeholder,
+                theme,
+            );
         }
 
         let is_tool_focused = self.focused_field == 3;
@@ -146,35 +132,17 @@ impl NewSessionDialog {
         let worktree_field = if has_tool_selection { 4 } else { 3 };
         let new_branch_field = worktree_field + 1;
 
-        let is_wt_focused = self.focused_field == worktree_field;
-        let wt_label_style = if is_wt_focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-        let wt_value_style = if is_wt_focused {
-            Style::default().fg(theme.accent)
-        } else {
-            Style::default().fg(theme.text)
-        };
+        render_text_field(
+            frame,
+            chunks[4],
+            "Worktree Branch:",
+            &self.worktree_branch,
+            self.focused_field == worktree_field,
+            Some("(leave empty to skip worktree)"),
+            theme,
+        );
 
-        let wt_value = self.worktree_branch.value();
-        let wt_cursor_pos = self.worktree_branch.visual_cursor();
-        let wt_display = if wt_value.is_empty() && !is_wt_focused {
-            "(leave empty to skip worktree)".to_string()
-        } else if is_wt_focused {
-            let (before, after) = wt_value.split_at(wt_cursor_pos.min(wt_value.len()));
-            format!("{}█{}", before, after)
-        } else {
-            wt_value.to_string()
-        };
-        let wt_line = Line::from(vec![
-            Span::styled("Worktree Branch:", wt_label_style),
-            Span::styled(format!(" {}", wt_display), wt_value_style),
-        ]);
-        frame.render_widget(Paragraph::new(wt_line), chunks[4]);
-
-        let has_worktree = !wt_value.is_empty();
+        let has_worktree = !self.worktree_branch.value().is_empty();
         let next_chunk = if has_worktree {
             let is_nb_focused = self.focused_field == new_branch_field;
             let nb_label_style = if is_nb_focused {
@@ -249,34 +217,15 @@ impl NewSessionDialog {
 
             if sandbox_options_visible {
                 let sandbox_image_field = sandbox_field + 1;
-                let is_image_focused = self.focused_field == sandbox_image_field;
-                let image_label_style = if is_image_focused {
-                    Style::default().fg(theme.accent).underlined()
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                let image_value_style = if is_image_focused {
-                    Style::default().fg(theme.accent)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-
-                let image_value = self.sandbox_image.value();
-                let image_cursor_pos = self.sandbox_image.visual_cursor();
-
-                let image_display = if is_image_focused {
-                    let (before, after) =
-                        image_value.split_at(image_cursor_pos.min(image_value.len()));
-                    format!("{}█{}", before, after)
-                } else {
-                    image_value.to_string()
-                };
-
-                let image_line = Line::from(vec![
-                    Span::styled("  Image:", image_label_style),
-                    Span::styled(format!(" {}", image_display), image_value_style),
-                ]);
-                frame.render_widget(Paragraph::new(image_line), chunks[next_chunk + 1]);
+                render_text_field(
+                    frame,
+                    chunks[next_chunk + 1],
+                    "  Image:",
+                    &self.sandbox_image,
+                    self.focused_field == sandbox_image_field,
+                    None,
+                    theme,
+                );
 
                 let yolo_mode_field = sandbox_image_field + 1;
                 let is_yolo_focused = self.focused_field == yolo_mode_field;
@@ -422,6 +371,72 @@ impl NewSessionDialog {
             Span::styled(" or ", Style::default().fg(theme.dimmed)),
             Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::styled(" to close", Style::default().fg(theme.dimmed)),
+        ]));
+
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let needs_extra_line = self.sandbox_enabled && self.needs_image_pull;
+        let dialog_width: u16 = if needs_extra_line { 55 } else { 50 };
+        let dialog_height: u16 = if needs_extra_line { 9 } else { 7 };
+
+        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+
+        let dialog_area = Rect {
+            x,
+            y,
+            width: dialog_width.min(area.width),
+            height: dialog_height.min(area.height),
+        };
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(" Creating Session ")
+            .title_style(Style::default().fg(theme.title).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let spinner = SPINNER_FRAMES[self.spinner_frame];
+
+        let loading_text = if self.sandbox_enabled {
+            if self.needs_image_pull {
+                "Pulling sandbox image..."
+            } else {
+                "Setting up sandbox container..."
+            }
+        } else {
+            "Creating session..."
+        };
+
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} ", spinner),
+                    Style::default().fg(theme.accent).bold(),
+                ),
+                Span::styled(loading_text, Style::default().fg(theme.text)),
+            ]),
+        ];
+
+        if needs_extra_line {
+            lines.push(Line::from(Span::styled(
+                "    (first time may take a few minutes)",
+                Style::default().fg(theme.dimmed),
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Press ", Style::default().fg(theme.dimmed)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
         ]));
 
         frame.render_widget(Paragraph::new(lines), inner);

@@ -41,3 +41,23 @@ pub fn get_foreground_pid(shell_pid: u32) -> Option<u32> {
         None
     }
 }
+
+/// Kill a process and all its descendants
+/// Sends SIGTERM first, then SIGKILL to any survivors
+pub fn kill_process_tree(pid: u32) {
+    #[cfg(target_os = "linux")]
+    {
+        linux::kill_process_tree(pid);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::kill_process_tree(pid);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        // No-op on unsupported platforms, fall back to tmux kill-session only
+    }
+}

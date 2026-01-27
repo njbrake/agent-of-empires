@@ -1,4 +1,4 @@
-# Git Worktree - Quick Reference
+# Git Worktree: Quick Reference
 
 ## CLI vs TUI Behavior
 
@@ -58,9 +58,9 @@ show_branch_in_tui = true
 
 ## Template Variables
 
-- `{repo-name}` - Repository folder name
-- `{branch}` - Branch name (slashes → hyphens)
-- `{session-id}` - First 8 chars of UUID
+- `{repo-name}`: Repository folder name
+- `{branch}`: Branch name (slashes → hyphens)
+- `{session-id}`: First 8 chars of UUID
 
 ## Common Path Templates
 

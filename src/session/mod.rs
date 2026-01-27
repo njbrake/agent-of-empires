@@ -1,19 +1,29 @@
 //! Session management module
 
+pub mod builder;
 pub mod civilizations;
 pub mod claude;
 pub mod config;
 mod groups;
 mod instance;
+pub mod profile_config;
 mod storage;
 
 pub use config::{
     get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
-    SandboxConfig, ThemeConfig, UpdatesConfig, WorktreeConfig,
+    SandboxConfig, SessionConfig, ThemeConfig, TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig,
+    WorktreeConfig,
 };
 pub use groups::{flatten_tree, Group, GroupTree, Item};
 pub use instance::{
-    Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo, YOLO_SUPPORTED_TOOLS,
+    Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo, SUPPORTED_TOOLS,
+    YOLO_SUPPORTED_TOOLS,
+};
+pub use profile_config::{
+    load_profile_config, merge_configs, resolve_config, save_profile_config,
+    validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
+    ClaudeConfigOverride, ProfileConfig, SandboxConfigOverride, SessionConfigOverride,
+    ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
 pub use storage::Storage;
 
@@ -24,11 +34,24 @@ use std::path::PathBuf;
 pub const DEFAULT_PROFILE: &str = "default";
 
 pub fn get_app_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
-    let dir = home.join(".agent-of-empires");
+    let dir = get_app_dir_path()?;
     if !dir.exists() {
         fs::create_dir_all(&dir)?;
     }
+    Ok(dir)
+}
+
+fn get_app_dir_path() -> Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find config directory"))?
+        .join("agent-of-empires");
+
+    #[cfg(not(target_os = "linux"))]
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
+        .join(".agent-of-empires");
+
     Ok(dir)
 }
 

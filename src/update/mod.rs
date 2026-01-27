@@ -68,7 +68,11 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
             let age = chrono::Utc::now() - cache.checked_at;
             let max_age = chrono::Duration::hours(settings.check_interval_hours as i64);
 
-            if age < max_age {
+            // Invalidate cache if current version is newer than cached latest
+            // (user upgraded and cache is stale)
+            let current_is_newer = is_newer_version(current_version, &cache.latest_version);
+
+            if age < max_age && !current_is_newer {
                 let available = is_newer_version(&cache.latest_version, current_version);
                 return Ok(UpdateInfo {
                     available,
@@ -100,10 +104,16 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         let release: GitHubRelease = response.json().await?;
         let version = release.tag_name.trim_start_matches('v').to_string();
 
+        let release_info = ReleaseInfo {
+            version: version.clone(),
+            body: release.body.unwrap_or_default(),
+            published_at: release.published_at,
+        };
+
         let cache = UpdateCache {
             checked_at: chrono::Utc::now(),
             latest_version: version.clone(),
-            releases: vec![],
+            releases: vec![release_info],
         };
         if let Err(e) = save_cache(&cache) {
             warn!("Failed to save update cache: {}", e);
@@ -225,6 +235,30 @@ mod tests {
         assert!(is_newer_version("2.0.0", "1.9.9"));
         assert!(!is_newer_version("1.0.0", "1.0.0"));
         assert!(!is_newer_version("1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn test_cache_should_invalidate_when_current_newer_than_cached() {
+        // When user upgrades to a version newer than cached latest,
+        // the cache should be invalidated to fetch fresh release notes.
+        // This test documents the version comparison used for cache invalidation.
+        let cached_latest = "0.4.5";
+        let current_version = "0.5.0";
+
+        // current > cached means cache is stale
+        let current_is_newer = is_newer_version(current_version, cached_latest);
+        assert!(current_is_newer, "0.5.0 should be newer than 0.4.5");
+
+        // Same version means cache is valid
+        let same_version = is_newer_version("0.4.5", "0.4.5");
+        assert!(
+            !same_version,
+            "same version should not trigger invalidation"
+        );
+
+        // Older current version (downgrade) should not invalidate
+        let downgrade = is_newer_version("0.4.0", "0.4.5");
+        assert!(!downgrade, "downgrade should not trigger invalidation");
     }
 
     fn make_release(version: &str) -> ReleaseInfo {

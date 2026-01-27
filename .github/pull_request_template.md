@@ -1,6 +1,6 @@
 ## Description
-
 <!-- Describe your changes and the problem they solve -->
+
 
 ## PR Type
 
@@ -10,16 +10,11 @@
 - [ ] Documentation
 - [ ] Infrastructure / CI
 
-## Related Issues
-
-<!-- Link any related issues: Fixes #123, Relates to #456 -->
-
 ## Checklist
+<!-- If you delete this checklist, your PR will be immediately closed -->
 
 - [ ] I understand the code I am submitting
-- [ ] I have tested this locally (`cargo test`, manual TUI checks if applicable)
 - [ ] New and existing tests pass
-- [ ] I ran `cargo fmt` and `cargo clippy`
 - [ ] Documentation was updated where necessary
 - [ ] For UI changes: included screenshot or recording
 
@@ -33,4 +28,9 @@
 <!-- If AI was used, please share details -->
 **AI Model/Tool used:**
 
-<!-- Note: When responding to reviewer questions, please respond yourself rather than copy/pasting reviewer comments into an AI and pasting back its answer. We want to discuss with you, not your AI. -->
+
+**Any Additional AI Details you'd like to share:**
+
+
+**NOTE:**
+When responding to reviewer questions, please respond yourself rather than copy/pasting reviewer comments into an AI and pasting back its answer. We want to discuss with you, not your AI :) 

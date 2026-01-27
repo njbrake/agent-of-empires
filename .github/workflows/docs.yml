@@ -1,11 +1,15 @@
-name: Deploy Documentation
+name: Deploy Website
 
 on:
   push:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'website/**'
+      - 'assets/**'
       - 'book.toml'
+      - 'scripts/build-site.sh'
+      - 'scripts/install.sh'
       - 'src/**'
       - 'xtask/**'
       - '.github/workflows/docs.yml'
@@ -25,23 +29,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify LFS files
+        run: |
+          echo "Checking LFS files..."
+          git lfs ls-files
+          ls -lh docs/assets/demo.gif || echo "demo.gif not found"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install mdBook
-        run: cargo install mdbook
+      - name: Install mdbook
+        run: |
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          sudo mv mdbook /usr/local/bin/
 
       - name: Generate CLI documentation
         run: cargo xtask gen-docs
 
-      - name: Build documentation
-        run: mdbook build
+      - name: Build site
+        run: ./scripts/build-site.sh
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: book/
+          path: dist
 
   deploy:
     environment:

@@ -12,6 +12,7 @@ use super::profile::ProfileCommands;
 use super::remove::RemoveArgs;
 use super::session::SessionCommands;
 use super::status::StatusArgs;
+use super::tmux::TmuxCommands;
 use super::uninstall::UninstallArgs;
 use super::worktree::WorktreeCommands;
 
@@ -73,6 +74,12 @@ pub enum Commands {
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommands,
+    },
+
+    /// tmux integration utilities
+    Tmux {
+        #[command(subcommand)]
+        command: TmuxCommands,
     },
 
     /// Uninstall Agent of Empires

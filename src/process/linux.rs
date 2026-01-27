@@ -3,6 +3,81 @@
 use std::fs;
 use std::path::Path;
 
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
+use tracing::debug;
+
+/// Kill a process and all its descendants
+/// Uses SIGTERM first, then SIGKILL after a short delay for stragglers
+pub fn kill_process_tree(pid: u32) {
+    // Collect all descendant PIDs first (children, grandchildren, etc.)
+    let mut pids_to_kill = vec![pid];
+    collect_descendants(pid, &mut pids_to_kill);
+
+    debug!(
+        pid,
+        descendants = ?pids_to_kill,
+        "Killing process tree"
+    );
+
+    // Kill in reverse order (children first, then parent) with SIGTERM
+    for &p in pids_to_kill.iter().rev() {
+        let _ = kill(Pid::from_raw(p as i32), Signal::SIGTERM);
+    }
+
+    // Brief pause to let processes handle SIGTERM gracefully
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // SIGKILL any survivors
+    for &p in pids_to_kill.iter().rev() {
+        if process_exists(p) {
+            debug!(pid = p, "Process survived SIGTERM, sending SIGKILL");
+            let _ = kill(Pid::from_raw(p as i32), Signal::SIGKILL);
+        }
+    }
+}
+
+/// Recursively collect all descendant PIDs of a process
+fn collect_descendants(pid: u32, pids: &mut Vec<u32>) {
+    let proc_dir = Path::new("/proc");
+    if !proc_dir.exists() {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(proc_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Skip non-numeric entries
+        let Ok(child_pid) = name_str.parse::<u32>() else {
+            continue;
+        };
+
+        // Read the process's parent PID
+        let stat_path = entry.path().join("stat");
+        let Ok(content) = fs::read_to_string(&stat_path) else {
+            continue;
+        };
+
+        if let Some(ppid) = parse_stat_field(&content, 3) {
+            if ppid as u32 == pid {
+                pids.push(child_pid);
+                // Recurse to find grandchildren
+                collect_descendants(child_pid, pids);
+            }
+        }
+    }
+}
+
+/// Check if a process still exists
+fn process_exists(pid: u32) -> bool {
+    Path::new(&format!("/proc/{}", pid)).exists()
+}
+
 /// Get the foreground process group leader for a shell PID
 /// Walks the process tree to find the actual foreground process
 pub fn get_foreground_pid(shell_pid: u32) -> Option<u32> {

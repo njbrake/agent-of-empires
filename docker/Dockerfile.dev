@@ -1,7 +1,9 @@
 # aoe-dev-sandbox: Extended sandbox with development tools
 # Includes: Rust, uv (Python), nvm + Node.js, gh (GitHub CLI)
+# Note: Claude Code, OpenCode, and Codex CLI are inherited from the base image
 
-FROM ghcr.io/njbrake/aoe-sandbox:latest
+ARG BASE_IMAGE=ghcr.io/njbrake/aoe-sandbox:latest
+FROM ${BASE_IMAGE}
 
 USER root
 
@@ -14,25 +16,31 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-USER sandbox
-WORKDIR /home/sandbox
+# Continue as root (base image sets IS_SANDBOX=1)
+WORKDIR /root
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/home/sandbox/.local/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
 
-ENV NVM_DIR="/home/sandbox/.nvm"
+ENV NVM_DIR="/root/.nvm"
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash \
     && . "$NVM_DIR/nvm.sh" \
     && nvm install --lts \
     && nvm alias default node \
-    && ln -s "$(which node)" /home/sandbox/.local/bin/node \
-    && ln -s "$(which npm)" /home/sandbox/.local/bin/npm \
-    && ln -s "$(which npx)" /home/sandbox/.local/bin/npx
+    && ln -s "$(which node)" /root/.local/bin/node \
+    && ln -s "$(which npm)" /root/.local/bin/npm \
+    && ln -s "$(which npx)" /root/.local/bin/npx
 
-RUN echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc \
-    && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc
+# Add dev tool paths to profile.d so they're available in all shells (login and non-login)
+RUN echo 'export PATH="/root/.cargo/bin:/root/.local/bin:$PATH"' > /etc/profile.d/dev-tools.sh \
+    && echo 'export NVM_DIR="/root/.nvm"' >> /etc/profile.d/dev-tools.sh \
+    && echo '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' >> /etc/profile.d/dev-tools.sh \
+    && chmod +x /etc/profile.d/dev-tools.sh
+
+# Also set BASH_ENV so non-interactive bash shells source the paths
+ENV BASH_ENV=/etc/profile.d/dev-tools.sh
 
 WORKDIR /workspace

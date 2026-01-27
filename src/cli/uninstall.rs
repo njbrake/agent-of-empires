@@ -9,7 +9,7 @@ use std::process::Command;
 
 #[derive(Args)]
 pub struct UninstallArgs {
-    /// Keep ~/.agent-of-empires/ (sessions, config, logs)
+    /// Keep data directory (sessions, config, logs)
     #[arg(long)]
     keep_data: bool,
 
@@ -43,7 +43,18 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
     }
 
     let home_dir = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
-    let data_dir = home_dir.join(".agent-of-empires");
+
+    // Collect all possible data directory locations
+    #[cfg(target_os = "linux")]
+    let data_dirs = {
+        let mut dirs = vec![home_dir.join(".agent-of-empires")];
+        if let Some(config_dir) = dirs::config_dir() {
+            dirs.push(config_dir.join("agent-of-empires"));
+        }
+        dirs
+    };
+    #[cfg(not(target_os = "linux"))]
+    let data_dirs = vec![home_dir.join(".agent-of-empires")];
 
     let mut found_items: Vec<FoundItem> = Vec::new();
 
@@ -91,34 +102,36 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
         }
     }
 
-    // Check for data directory
-    if data_dir.is_dir() {
-        let mut session_count = 0;
-        let mut profile_count = 0;
-        let profiles_dir = data_dir.join("profiles");
-        if profiles_dir.is_dir() {
-            if let Ok(entries) = fs::read_dir(&profiles_dir) {
-                for entry in entries.flatten() {
-                    if entry.path().is_dir() {
-                        profile_count += 1;
-                        let sessions_file = entry.path().join("sessions.json");
-                        if let Ok(content) = fs::read_to_string(&sessions_file) {
-                            session_count += content.matches("\"id\"").count();
+    // Check for data directories
+    for data_dir in &data_dirs {
+        if data_dir.is_dir() {
+            let mut session_count = 0;
+            let mut profile_count = 0;
+            let profiles_dir = data_dir.join("profiles");
+            if profiles_dir.is_dir() {
+                if let Ok(entries) = fs::read_dir(&profiles_dir) {
+                    for entry in entries.flatten() {
+                        if entry.path().is_dir() {
+                            profile_count += 1;
+                            let sessions_file = entry.path().join("sessions.json");
+                            if let Ok(content) = fs::read_to_string(&sessions_file) {
+                                session_count += content.matches("\"id\"").count();
+                            }
                         }
                     }
                 }
             }
-        }
 
-        found_items.push(FoundItem {
-            item_type: "data".to_string(),
-            path: data_dir.clone(),
-        });
-        println!("Found: Data directory at {}", data_dir.display());
-        println!(
-            "       {} profiles, {} sessions",
-            profile_count, session_count
-        );
+            found_items.push(FoundItem {
+                item_type: "data".to_string(),
+                path: data_dir.clone(),
+            });
+            println!("Found: Data directory at {}", data_dir.display());
+            println!(
+                "       {} profiles, {} sessions",
+                profile_count, session_count
+            );
+        }
     }
 
     // Check for tmux config
@@ -254,8 +267,13 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
     println!();
 
     if args.keep_data {
-        println!("Note: Data directory preserved at {}", data_dir.display());
-        println!("      Remove manually with: rm -rf ~/.agent-of-empires");
+        let preserved: Vec<_> = found_items
+            .iter()
+            .filter(|i| i.item_type == "data")
+            .collect();
+        for item in preserved {
+            println!("Note: Data directory preserved at {}", item.path.display());
+        }
     }
 
     if args.keep_tmux_config {

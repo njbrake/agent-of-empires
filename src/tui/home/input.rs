@@ -1,6 +1,8 @@
 //! Input handling for HomeView
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
 use super::{HomeView, ViewMode};
 use crate::session::{flatten_tree, Item, Status};
@@ -9,9 +11,56 @@ use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, InfoDialog,
     NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
 };
+use crate::tui::settings::{SettingsAction, SettingsView};
 
 impl HomeView {
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+        // Handle unsaved changes confirmation for settings (shown over settings view)
+        if self.settings_close_confirm {
+            if let Some(dialog) = &mut self.confirm_dialog {
+                match dialog.handle_key(key) {
+                    DialogResult::Continue => return None,
+                    DialogResult::Cancel => {
+                        // User chose not to discard, go back to settings
+                        self.confirm_dialog = None;
+                        self.settings_close_confirm = false;
+                        return None;
+                    }
+                    DialogResult::Submit(_) => {
+                        // User chose to discard changes
+                        if let Some(ref mut settings) = self.settings_view {
+                            settings.force_close();
+                        }
+                        self.settings_view = None;
+                        self.confirm_dialog = None;
+                        self.settings_close_confirm = false;
+                        return None;
+                    }
+                }
+            }
+        }
+
+        // Handle settings view (full-screen takeover)
+        if let Some(ref mut settings) = self.settings_view {
+            match settings.handle_key(key) {
+                SettingsAction::Continue => return None,
+                SettingsAction::Close => {
+                    self.settings_view = None;
+                    return None;
+                }
+                SettingsAction::UnsavedChangesWarning => {
+                    // Show confirmation dialog
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Unsaved Changes",
+                        "You have unsaved changes. Discard them?",
+                        "discard_settings",
+                    ));
+                    self.settings_close_confirm = true;
+                    return None;
+                }
+            }
+        }
+
         // Handle welcome/changelog dialogs first (highest priority)
         if let Some(dialog) = &mut self.welcome_dialog {
             match dialog.handle_key(key) {
@@ -63,20 +112,35 @@ impl HomeView {
             match result {
                 DialogResult::Continue => {}
                 DialogResult::Cancel => {
-                    self.new_dialog = None;
-                }
-                DialogResult::Submit(data) => match self.create_session(data) {
-                    Ok(session_id) => {
+                    // If creation is pending, mark it as cancelled
+                    if self.is_creation_pending() {
+                        self.cancel_creation();
+                    } else {
                         self.new_dialog = None;
-                        return Some(Action::AttachSession(session_id));
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to create session: {}", e);
-                        if let Some(dialog) = &mut self.new_dialog {
-                            dialog.set_error(e.to_string());
+                }
+                DialogResult::Submit(data) => {
+                    // Use background creation for sandbox sessions to avoid blocking UI
+                    if data.sandbox {
+                        self.request_creation(data);
+                        // Don't close dialog - it will show loading state
+                        // Result will be handled by apply_creation_results in event loop
+                    } else {
+                        // Non-sandbox sessions are fast, create synchronously
+                        match self.create_session(data) {
+                            Ok(session_id) => {
+                                self.new_dialog = None;
+                                return Some(Action::AttachSession(session_id));
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to create session: {}", e);
+                                if let Some(dialog) = &mut self.new_dialog {
+                                    dialog.set_error(e.to_string());
+                                }
+                            }
                         }
                     }
-                },
+                }
             }
             return None;
         }
@@ -142,9 +206,9 @@ impl HomeView {
                 DialogResult::Cancel => {
                     self.rename_dialog = None;
                 }
-                DialogResult::Submit(new_title) => {
+                DialogResult::Submit(data) => {
                     self.rename_dialog = None;
-                    if let Err(e) = self.rename_selected(&new_title) {
+                    if let Err(e) = self.rename_selected(&data.title, data.group.as_deref()) {
                         tracing::error!("Failed to rename session: {}", e);
                     }
                 }
@@ -157,21 +221,17 @@ impl HomeView {
             match key.code {
                 KeyCode::Esc => {
                     self.search_active = false;
-                    self.search_query.clear();
+                    self.search_query = Input::default();
                     self.filtered_items = None;
                 }
                 KeyCode::Enter => {
                     self.search_active = false;
                 }
-                KeyCode::Backspace => {
-                    self.search_query.pop();
+                _ => {
+                    self.search_query
+                        .handle_event(&crossterm::event::Event::Key(key));
                     self.update_filter();
                 }
-                KeyCode::Char(c) => {
-                    self.search_query.push(c);
-                    self.update_filter();
-                }
-                _ => {}
             }
             return None;
         }
@@ -195,7 +255,7 @@ impl HomeView {
             }
             KeyCode::Char('/') => {
                 self.search_active = true;
-                self.search_query.clear();
+                self.search_query = Input::default();
             }
             KeyCode::Char('n') => {
                 let existing_titles: Vec<String> =
@@ -204,6 +264,19 @@ impl HomeView {
                     self.available_tools.clone(),
                     existing_titles,
                 ));
+            }
+            KeyCode::Char('s') => {
+                // Open settings view
+                match SettingsView::new(self.storage.profile()) {
+                    Ok(view) => self.settings_view = Some(view),
+                    Err(e) => {
+                        tracing::error!("Failed to open settings: {}", e);
+                        self.info_dialog = Some(InfoDialog::new(
+                            "Error",
+                            &format!("Failed to open settings: {}", e),
+                        ));
+                    }
+                }
             }
             KeyCode::Char('d') => {
                 // Deletion only allowed in Agent View
@@ -250,10 +323,12 @@ impl HomeView {
                     if session_count > 0 {
                         let has_managed_worktrees =
                             self.group_has_managed_worktrees(group_path, &prefix);
+                        let has_containers = self.group_has_containers(group_path, &prefix);
                         self.group_delete_options_dialog = Some(GroupDeleteOptionsDialog::new(
                             group_path.clone(),
                             session_count,
                             has_managed_worktrees,
+                            has_containers,
                         ));
                     } else {
                         let message =
@@ -269,7 +344,7 @@ impl HomeView {
                         if inst.status == Status::Deleting {
                             return None;
                         }
-                        self.rename_dialog = Some(RenameDialog::new(&inst.title));
+                        self.rename_dialog = Some(RenameDialog::new(&inst.title, &inst.group_path));
                     }
                 }
             }
@@ -307,8 +382,8 @@ impl HomeView {
                         ViewMode::Terminal => Some(Action::AttachTerminal(id.clone())),
                     };
                 } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
-                    self.group_tree.toggle_collapsed(path);
-                    self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+                    let path = path.clone();
+                    self.toggle_group_collapsed(&path);
                 }
             }
             KeyCode::Left | KeyCode::Char('h') => {
@@ -317,8 +392,8 @@ impl HomeView {
                 }) = self.flat_items.get(self.cursor)
                 {
                     if !collapsed {
-                        self.group_tree.toggle_collapsed(path);
-                        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+                        let path = path.clone();
+                        self.toggle_group_collapsed(&path);
                     }
                 }
             }
@@ -328,8 +403,8 @@ impl HomeView {
                 }) = self.flat_items.get(self.cursor)
                 {
                     if *collapsed {
-                        self.group_tree.toggle_collapsed(path);
-                        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+                        let path = path.clone();
+                        self.toggle_group_collapsed(&path);
                     }
                 }
             }
@@ -383,13 +458,24 @@ impl HomeView {
         }
     }
 
+    fn toggle_group_collapsed(&mut self, path: &str) {
+        self.group_tree.toggle_collapsed(path);
+        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+        if let Err(e) = self
+            .storage
+            .save_with_groups(&self.instances, &self.group_tree)
+        {
+            tracing::error!("Failed to save group state: {}", e);
+        }
+    }
+
     pub(super) fn update_filter(&mut self) {
-        if self.search_query.is_empty() {
+        if self.search_query.value().is_empty() {
             self.filtered_items = None;
             return;
         }
 
-        let query = self.search_query.to_lowercase();
+        let query = self.search_query.value().to_lowercase();
         let mut matches = Vec::new();
 
         for (idx, item) in self.flat_items.iter().enumerate() {

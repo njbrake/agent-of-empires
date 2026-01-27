@@ -1,10 +1,15 @@
-# Agent of Empires (aoe)
-
-[![Documentation](https://img.shields.io/badge/docs-aoe-blue)](https://njbrake.github.io/agent-of-empires/)
-[![CI](https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml/badge.svg)](https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![GitHub release](https://img.shields.io/github/v/release/njbrake/agent-of-empires)](https://github.com/njbrake/agent-of-empires/releases)
-[![MSRV](https://img.shields.io/badge/MSRV-1.74-blue?logo=rust)](https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html)
+<p align="center">
+  <img src="assets/logo.png" alt="Agent of Empires" width="128">
+  <h1 align="center">Agent of Empires (AoE)</h1>
+  <p align="center">
+    <a href="https://njbrake.github.io/agent-of-empires/"><img src="https://img.shields.io/badge/docs-aoe-blue" alt="Documentation"></a>
+    <a href="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml"><img src="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+    <a href="https://github.com/njbrake/agent-of-empires/releases"><img src="https://img.shields.io/github/v/release/njbrake/agent-of-empires" alt="GitHub release"></a>
+    <a href="https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html"><img src="https://img.shields.io/badge/MSRV-1.74-blue?logo=rust" alt="MSRV"></a>
+    <a href="https://github.com/njbrake/agent-of-empires/stargazers"><img src="https://img.shields.io/github/stars/njbrake/agent-of-empires?style=social" alt="GitHub stars"></a>
+  </p>
+</p>
 
 A coding agent and shell terminal session manager for Linux and macOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
 
@@ -13,9 +18,11 @@ A coding agent and shell terminal session manager for Linux and macOS using tmux
 - Quickly toggle between viewing the agents and terminals in their working dirs via the TUI(see demo GIF below)
 - Interact via either TUI or CLI
 
-`aoe` manages cleanup of worktrees and sandboxes once you've completed your session. 
+`aoe` manages cleanup of worktrees and sandboxes once you've completed your session.
 
-![Agent of Empires Demo](assets/demo.gif)
+> If you find this project useful, please consider giving it a star on GitHub: it helps others discover the project!
+
+![Agent of Empires Demo](docs/assets/demo.gif)
 
 ## Prerequisites
 
@@ -64,12 +71,12 @@ If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and ret
 
 ## Features
 
-- **TUI Dashboard** - Visual interface to manage all your AI coding sessions
-- **Session Management** - Create, attach, detach, and delete sessions
-- **Group Organization** - Organize sessions into hierarchical folders
-- **Status Detection** - Automatic status detection for Claude Code and OpenCode
-- **tmux Integration** - Sessions persist in tmux for reliability
-- **Multi-profile Support** - Separate workspaces for different projects
+- **TUI Dashboard**: Visual interface to manage all your AI coding sessions
+- **Session Management**: Create, attach, detach, and delete sessions
+- **Group Organization**: Organize sessions into hierarchical folders
+- **Status Detection**: Automatic status detection for Claude Code and OpenCode
+- **tmux Integration**: Sessions persist in tmux for reliability
+- **Multi-profile Support**: Separate workspaces for different projects
 
 ## Quick Start
 
@@ -85,7 +92,7 @@ aoe add /path/to/project
 
 ### Profiles
 
-Profiles let you maintain separate workspaces with their own sessions and groups. This is useful when you want to keep different contexts isolated—for example, work projects vs personal projects, or different client engagements.
+Profiles let you maintain separate workspaces with their own sessions and groups. This is useful when you want to keep different contexts isolated (e.g., work projects vs personal projects, or different client engagements).
 
 ```bash
 aoe                 # Uses "default" profile
@@ -142,7 +149,7 @@ cargo build --release
 
 ### What happens when I close aoe?
 
-Nothing! Your sessions keep running. Since aoe is just a frontend for tmux, all your agent sessions are actually tmux sessions running independently in the background. You can freely open and close aoe as often as you like—your sessions will still be there when you come back.
+Nothing! Your sessions keep running. Since aoe is just a frontend for tmux, all your agent sessions are actually tmux sessions running independently in the background. You can freely open and close aoe as often as you like. Your sessions will still be there when you come back.
 
 Sessions are never deleted automatically. They only get removed when you explicitly delete them (either through aoe's interface or with tmux commands like `tmux kill-session`).
 

@@ -11,7 +11,7 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::docker;
-use crate::session::civilizations;
+use crate::session::{civilizations, Config};
 use crate::tmux::AvailableTools;
 
 pub(super) struct FieldHelp {
@@ -71,9 +71,13 @@ pub struct NewSessionData {
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
-    pub sandbox_image: Option<String>,
+    /// The sandbox image to use (always populated from the input field).
+    pub sandbox_image: String,
     pub yolo_mode: bool,
 }
+
+/// Spinner frames for loading animation
+pub(super) const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
 
 pub struct NewSessionDialog {
     pub(super) title: Input,
@@ -87,11 +91,16 @@ pub struct NewSessionDialog {
     pub(super) create_new_branch: bool,
     pub(super) sandbox_enabled: bool,
     pub(super) sandbox_image: Input,
-    pub(super) default_sandbox_image: String,
     pub(super) docker_available: bool,
     pub(super) yolo_mode: bool,
     pub(super) error_message: Option<String>,
     pub(super) show_help: bool,
+    /// Whether the dialog is in loading state (creating session in background)
+    pub(super) loading: bool,
+    /// Spinner animation frame counter
+    pub(super) spinner_frame: usize,
+    /// Whether a Docker image pull will be needed (image not present locally)
+    pub(super) needs_image_pull: bool,
 }
 
 impl NewSessionDialog {
@@ -103,34 +112,70 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
         let docker_available = docker::is_docker_available();
 
-        let default_sandbox_image = crate::session::Config::load()
-            .ok()
-            .map(|c| c.sandbox.default_image)
-            .unwrap_or_else(|| docker::default_sandbox_image().to_string());
+        // Load config to get defaults
+        let config = Config::load().unwrap_or_default();
+
+        // Determine default tool index based on config
+        let tool_index = if let Some(ref default_tool) = config.session.default_tool {
+            available_tools
+                .iter()
+                .position(|&t| t == default_tool.as_str())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Apply sandbox defaults from config
+        let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
+        let yolo_mode = sandbox_enabled && config.sandbox.yolo_mode_default;
 
         Self {
             title: Input::default(),
             path: Input::new(current_dir),
             group: Input::default(),
-            tool_index: 0,
+            tool_index,
             focused_field: 0,
             available_tools,
             existing_titles,
             worktree_branch: Input::default(),
             create_new_branch: true,
-            sandbox_enabled: false,
-            sandbox_image: Input::new(default_sandbox_image.clone()),
-            default_sandbox_image,
+            sandbox_enabled,
+            sandbox_image: Input::new(docker::effective_default_image()),
             docker_available,
-            yolo_mode: false,
+            yolo_mode,
             error_message: None,
             show_help: false,
+            loading: false,
+            spinner_frame: 0,
+            needs_image_pull: false,
         }
+    }
+
+    /// Set the dialog to loading state
+    pub fn set_loading(&mut self, loading: bool) {
+        self.loading = loading;
+        if loading {
+            self.error_message = None;
+            // Check if image pull will be needed (only relevant for sandbox sessions)
+            if self.sandbox_enabled {
+                let image = self.sandbox_image.value().trim();
+                self.needs_image_pull = !docker::image_exists_locally(image);
+            }
+        }
+    }
+
+    /// Check if the dialog is in loading state
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Advance the spinner animation frame. Call this periodically when loading.
+    pub fn tick(&mut self) {
+        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
     }
 
     #[cfg(test)]
     pub(super) fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
-        let default_image = docker::default_sandbox_image().to_string();
         Self {
             title: Input::default(),
             path: Input::new(path),
@@ -142,12 +187,14 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
-            sandbox_image: Input::new(default_image.clone()),
-            default_sandbox_image: default_image,
+            sandbox_image: Input::new(docker::effective_default_image()),
             docker_available: false,
             yolo_mode: false,
             error_message: None,
             show_help: false,
+            loading: false,
+            spinner_frame: 0,
+            needs_image_pull: false,
         }
     }
 
@@ -156,6 +203,15 @@ impl NewSessionDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        // When loading, only allow Esc to cancel
+        if self.loading {
+            if matches!(key.code, KeyCode::Esc) {
+                self.loading = false;
+                return DialogResult::Cancel;
+            }
+            return DialogResult::Continue;
+        }
+
         if self.show_help {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
                 self.show_help = false;
@@ -215,38 +271,28 @@ impl NewSessionDialog {
             }
             KeyCode::Enter => {
                 self.error_message = None;
-                let title_value = self.title.value();
+                let title_value = self.title.value().trim();
                 let final_title = if title_value.is_empty() {
                     let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
                     civilizations::generate_random_title(&refs)
                 } else {
                     title_value.to_string()
                 };
-                let worktree_value = self.worktree_branch.value();
+                let worktree_value = self.worktree_branch.value().trim();
                 let worktree_branch = if worktree_value.is_empty() {
                     None
                 } else {
                     Some(worktree_value.to_string())
                 };
-                let sandbox_image = if self.sandbox_enabled {
-                    let image_val = self.sandbox_image.value().trim().to_string();
-                    if !image_val.is_empty() && image_val != self.default_sandbox_image {
-                        Some(image_val)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
                 DialogResult::Submit(NewSessionData {
                     title: final_title,
-                    path: self.path.value().to_string(),
-                    group: self.group.value().to_string(),
+                    path: self.path.value().trim().to_string(),
+                    group: self.group.value().trim().to_string(),
                     tool: self.available_tools[self.tool_index].to_string(),
                     worktree_branch,
                     create_new_branch: self.create_new_branch,
                     sandbox: self.sandbox_enabled,
-                    sandbox_image,
+                    sandbox_image: self.sandbox_image.value().trim().to_string(),
                     yolo_mode: self.sandbox_enabled && self.yolo_mode,
                 })
             }
@@ -280,7 +326,11 @@ impl NewSessionDialog {
                 if self.focused_field == sandbox_field =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
-                if !self.sandbox_enabled {
+                if self.sandbox_enabled {
+                    // Apply yolo_mode_default when enabling sandbox
+                    let config = Config::load().unwrap_or_default();
+                    self.yolo_mode = config.sandbox.yolo_mode_default;
+                } else {
                     self.yolo_mode = false;
                     if self.focused_field > sandbox_field {
                         self.focused_field = sandbox_field;
@@ -311,12 +361,19 @@ impl NewSessionDialog {
 
     fn current_input_mut(&mut self) -> &mut Input {
         let has_tool_selection = self.available_tools.len() > 1;
+        let has_worktree = !self.worktree_branch.value().is_empty();
+
         let worktree_field = if has_tool_selection { 4 } else { 3 };
+        let new_branch_field = if has_worktree {
+            worktree_field + 1
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if self.docker_available {
-            if has_tool_selection {
-                5
+            if has_worktree {
+                new_branch_field + 1
             } else {
-                4
+                worktree_field + 1
             }
         } else {
             usize::MAX

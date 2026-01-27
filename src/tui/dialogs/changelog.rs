@@ -87,8 +87,9 @@ impl ChangelogDialog {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_width = 76;
-        let dialog_height = 24;
+        // Use 80% of terminal width/height, with min/max bounds
+        let dialog_width = (area.width * 80 / 100).clamp(60, 100);
+        let dialog_height = (area.height * 80 / 100).clamp(16, 40);
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -135,7 +136,7 @@ impl ChangelogDialog {
             })
             .collect();
 
-        let paragraph = Paragraph::new(styled_lines);
+        let paragraph = Paragraph::new(styled_lines).wrap(Wrap { trim: false });
         frame.render_widget(paragraph, content_area);
 
         let button = Line::from(vec![

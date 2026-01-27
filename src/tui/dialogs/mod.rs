@@ -15,7 +15,7 @@ pub use delete_options::{DeleteDialogConfig, DeleteOptions, UnifiedDeleteDialog}
 pub use group_delete_options::{GroupDeleteOptions, GroupDeleteOptionsDialog};
 pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
-pub use rename::RenameDialog;
+pub use rename::{RenameData, RenameDialog};
 pub use welcome::WelcomeDialog;
 
 pub enum DialogResult<T> {

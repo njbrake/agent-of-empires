@@ -53,10 +53,10 @@ RUST_LOG=agent_of_empires=debug cargo run
 ### Branch Naming
 
 Use descriptive branch names with prefixes:
-- `feature/...` - New features
-- `fix/...` - Bug fixes
-- `docs/...` - Documentation changes
-- `refactor/...` - Code refactoring
+- `feature/...`: New features
+- `fix/...`: Bug fixes
+- `docs/...`: Documentation changes
+- `refactor/...`: Code refactoring
 
 ### Code Style
 
@@ -70,12 +70,12 @@ See [CLAUDE.md](CLAUDE.md) for detailed coding guidelines and project structure.
 ### Commit Messages
 
 Use conventional commit prefixes:
-- `feat:` - New features
-- `fix:` - Bug fixes
-- `docs:` - Documentation
-- `refactor:` - Code refactoring
-- `test:` - Test changes
-- `chore:` - Build/tooling changes
+- `feat:`: New features
+- `fix:`: Bug fixes
+- `docs:`: Documentation
+- `refactor:`: Code refactoring
+- `test:`: Test changes
+- `chore:`: Build/tooling changes
 
 Example: `feat: add session export command`
 

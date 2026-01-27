@@ -19,82 +19,58 @@ if [ -z "$RELEASES" ] || [ "$RELEASES" = "[]" ]; then
     exit 1
 fi
 
+# Check for API errors
+if echo "$RELEASES" | jq -e '.message' >/dev/null 2>&1; then
+    echo "GitHub API error: $(echo "$RELEASES" | jq -r '.message')"
+    exit 1
+fi
+
 # Create temp files
 TEMP_DIR=$(mktemp -d)
-RAW_FILE="$TEMP_DIR/raw.json"
 VERSIONS_FILE="$TEMP_DIR/versions.txt"
 ASSETS_FILE="$TEMP_DIR/assets.txt"
 
-# Save and normalize JSON - put each key:value on separate line
-echo "$RELEASES" | tr ',' '\n' | tr -d '[]' > "$RAW_FILE"
+# Extract version info using jq
+echo "$RELEASES" | jq -r '.[] | "\(.tag_name)|\(.published_at | split("T")[0])"' > "$VERSIONS_FILE"
 
-# Extract all versions with their dates
-grep -B50 '"assets"' "$RAW_FILE" | while read -r line; do
-    if [[ "$line" =~ \"tag_name\".*:.*\"([^\"]+)\" ]]; then
-        current_version="${BASH_REMATCH[1]}"
-    fi
-    if [[ "$line" =~ \"published_at\".*:.*\"([^T]+) ]]; then
-        current_date="${BASH_REMATCH[1]}"
-        [ -n "$current_version" ] && echo "${current_version}|${current_date}" >> "$VERSIONS_FILE.tmp"
-    fi
-done
-
-# Extract all assets with download counts
-# Look for asset blocks - identified by having both "name" with .tar.gz/.zip and "download_count"
-current_version=""
-while IFS= read -r line; do
-    # New release starts with tag_name
-    if [[ "$line" =~ \"tag_name\".*:.*\"([^\"]+)\" ]]; then
-        current_version="${BASH_REMATCH[1]}"
-    fi
-
-    # Asset name (filter for actual release assets)
-    if [[ "$line" =~ \"name\".*:.*\"([^\"]+\.(tar\.gz|zip|exe|sha256))\" ]]; then
-        current_asset="${BASH_REMATCH[1]}"
-    fi
-
-    # Download count - capture it
-    if [[ "$line" =~ \"download_count\".*:.*([0-9]+) ]]; then
-        dl_count="${BASH_REMATCH[1]}"
-        if [ -n "$current_asset" ] && [ -n "$current_version" ]; then
-            echo "${dl_count}|${current_asset}|${current_version}" >> "$ASSETS_FILE"
-            current_asset=""
-        fi
-    fi
-done < "$RAW_FILE"
-
-# Build versions file with totals
-if [ -f "$VERSIONS_FILE.tmp" ]; then
-    sort -u "$VERSIONS_FILE.tmp" | while IFS='|' read -r ver date; do
-        total=$(grep "|${ver}$" "$ASSETS_FILE" 2>/dev/null | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
-        echo "${ver}|${date}|${total}"
-    done > "$VERSIONS_FILE"
-fi
-
-# Order versions file by date (most recent first)
-if [ -f "$VERSIONS_FILE" ]; then
-    sort -t'|' -k2 -r "$VERSIONS_FILE" > "$VERSIONS_FILE.sorted"
-    mv "$VERSIONS_FILE.sorted" "$VERSIONS_FILE"
-fi
+# Extract all assets with download counts (excluding .sha256 checksum files)
+# Format: download_count|asset_name|version
+echo "$RELEASES" | jq -r '
+    .[] |
+    .tag_name as $ver |
+    .assets[] |
+    select(.name | test("\\.(sha256|sha512|md5|asc|sig)$") | not) |
+    "\(.download_count)|\(.name)|\($ver)"
+' > "$ASSETS_FILE"
 
 # Calculate totals
-TOTAL_RELEASES=$(wc -l < "$VERSIONS_FILE" 2>/dev/null | tr -d ' ')
+TOTAL_RELEASES=$(wc -l < "$VERSIONS_FILE" | tr -d ' ')
 TOTAL_RELEASES=${TOTAL_RELEASES:-0}
 
-# Filter out .sha256 files from download counts (they're checksums, not actual downloads)
-TOTAL_DOWNLOADS=$(grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
+TOTAL_DOWNLOADS=$(cut -d'|' -f1 "$ASSETS_FILE" 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
 TOTAL_DOWNLOADS=${TOTAL_DOWNLOADS:-0}
 
-# Platform calculations (excluding sha256 files)
-MACOS_DL=$(grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | grep -iE 'darwin|macos|apple' | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
-LINUX_DL=$(grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | grep -i 'linux' | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
-WINDOWS_DL=$(grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | grep -iE 'windows|\.exe' | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
+# Add download totals to versions
+> "$VERSIONS_FILE.final"
+while IFS='|' read -r ver date; do
+    total=$(grep "|${ver}$" "$ASSETS_FILE" 2>/dev/null | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
+    echo "${ver}|${date}|${total}" >> "$VERSIONS_FILE.final"
+done < "$VERSIONS_FILE"
+
+# Sort by date (most recent first)
+sort -t'|' -k2 -r "$VERSIONS_FILE.final" > "$VERSIONS_FILE.sorted"
+mv "$VERSIONS_FILE.sorted" "$VERSIONS_FILE.final"
+
+# Platform calculations
+MACOS_DL=$(grep -iE 'darwin|macos|apple|\.dmg' "$ASSETS_FILE" 2>/dev/null | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
+LINUX_DL=$(grep -iE 'linux|\.deb|\.rpm|\.appimage' "$ASSETS_FILE" 2>/dev/null | grep -iv 'darwin' | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
+WINDOWS_DL=$(grep -iE 'windows|\.exe|\.msi' "$ASSETS_FILE" 2>/dev/null | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
 OTHER_PLAT_DL=$((TOTAL_DOWNLOADS - MACOS_DL - LINUX_DL - WINDOWS_DL))
 [ "$OTHER_PLAT_DL" -lt 0 ] && OTHER_PLAT_DL=0
 
-# Architecture calculations (excluding sha256 files)
-ARM64_DL=$(grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | grep -iE 'arm64|aarch64' | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
-X86_DL=$(grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | grep -iE 'amd64|x86_64|x64' | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
+# Architecture calculations
+ARM64_DL=$(grep -iE 'arm64|aarch64' "$ASSETS_FILE" 2>/dev/null | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
+X86_DL=$(grep -iE 'amd64|x86_64|x64' "$ASSETS_FILE" 2>/dev/null | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
 OTHER_ARCH_DL=$((TOTAL_DOWNLOADS - ARM64_DL - X86_DL))
 [ "$OTHER_ARCH_DL" -lt 0 ] && OTHER_ARCH_DL=0
 
@@ -184,13 +160,6 @@ echo "----------------------------------------------------------------------"
 printf "  %-12s %-12s %10s  %s\n" "Version" "Date" "Downloads" "Bar"
 echo "  --------------------------------------------------------"
 
-# Recalculate version totals excluding sha256
-> "$VERSIONS_FILE.final"
-while IFS='|' read -r ver date _; do
-    total=$(grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | grep "|${ver}$" | cut -d'|' -f1 | awk '{sum+=$1} END {print sum+0}')
-    echo "${ver}|${date}|${total}" >> "$VERSIONS_FILE.final"
-done < "$VERSIONS_FILE"
-
 # Get max downloads for bar scaling
 MAX_DL=$(cut -d'|' -f3 "$VERSIONS_FILE.final" 2>/dev/null | sort -rn | head -1)
 MAX_DL=${MAX_DL:-1}
@@ -228,14 +197,14 @@ echo "----------------------------------------------------------------------"
 printf "  %-45s %-10s %10s\n" "Asset Name" "Version" "Downloads"
 echo "  -------------------------------------------------------------------"
 
-# Sort assets by downloads and show top 10 (excluding sha256)
-grep -v '\.sha256|' "$ASSETS_FILE" 2>/dev/null | sort -t'|' -k1 -rn | head -10 | while IFS='|' read -r downloads name version; do
+# Sort assets by downloads and show top 10
+sort -t'|' -k1 -rn "$ASSETS_FILE" | head -10 | while IFS='|' read -r downloads name version; do
     [ -z "$name" ] && continue
     [ "$downloads" -eq 0 ] 2>/dev/null && continue
 
     # Truncate long names
     if [ ${#name} -gt 44 ]; then
-        name="${name:0:44}"
+        name="${name:0:41}..."
     fi
 
     printf "  %-45s %-10s %10d\n" "$name" "$version" "$downloads"

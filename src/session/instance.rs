@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::docker::{
-    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, OPENCODE_AUTH_VOLUME,
-    VIBE_AUTH_VOLUME,
+    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME,
+    OPENCODE_AUTH_VOLUME, VIBE_AUTH_VOLUME,
 };
 use crate::tmux;
 
@@ -50,8 +50,7 @@ pub struct SandboxInfo {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
+    pub image: String,
     pub container_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
@@ -164,6 +163,7 @@ impl Instance {
                 "claude" => "claude",
                 "opencode" => "opencode",
                 "vibe" => "vibe",
+                "codex" => "codex",
                 _ => "bash",
             }
         } else {
@@ -187,10 +187,20 @@ impl Instance {
     }
 
     pub fn start_terminal(&mut self) -> Result<()> {
+        self.start_terminal_with_size(None)
+    }
+
+    pub fn start_terminal_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         let session = self.terminal_tmux_session()?;
 
-        if !session.exists() {
-            session.create(&self.project_path)?;
+        let is_new = !session.exists();
+        if is_new {
+            session.create_with_size(&self.project_path, size)?;
+        }
+
+        // Apply all configured tmux options to terminal sessions too
+        if is_new {
+            self.apply_terminal_tmux_options();
         }
 
         self.terminal_info = Some(TerminalInfo {
@@ -210,6 +220,10 @@ impl Instance {
     }
 
     pub fn start(&mut self) -> Result<()> {
+        self.start_with_size(None)
+    }
+
+    pub fn start_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         let session = self.tmux_session()?;
 
         if session.exists() {
@@ -223,30 +237,75 @@ impl Instance {
                 match self.tool.as_str() {
                     "claude" => "claude --dangerously-skip-permissions".to_string(),
                     "vibe" => "vibe --auto-approve".to_string(),
+                    "codex" => "codex --dangerously-bypass-approvals-and-sandbox".to_string(),
                     _ => self.get_tool_command().to_string(),
                 }
             } else {
                 self.get_tool_command().to_string()
             };
-            Some(format!(
+            Some(wrap_command_ignore_suspend(&format!(
                 "docker exec -it {} {}",
                 sandbox.container_name, tool_cmd
-            ))
+            )))
         } else if self.command.is_empty() {
             match self.tool.as_str() {
-                "claude" => Some("claude".to_string()),
-                "vibe" => Some("vibe".to_string()),
+                "claude" => Some(wrap_command_ignore_suspend("claude")),
+                "vibe" => Some(wrap_command_ignore_suspend("vibe")),
+                "codex" => Some(wrap_command_ignore_suspend("codex")),
                 _ => None,
             }
         } else {
-            Some(self.command.clone())
+            Some(wrap_command_ignore_suspend(&self.command))
         };
 
-        session.create(&self.project_path, cmd.as_deref())?;
+        session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
+
+        // Apply all configured tmux options (status bar, mouse, etc.)
+        self.apply_tmux_options();
+
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
 
         Ok(())
+    }
+
+    /// Apply all configured tmux options (status bar, mouse, etc.) to the agent session.
+    fn apply_tmux_options(&self) {
+        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
+
+        let session_name = tmux::Session::generate_name(&self.id, &self.title);
+        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
+            if s.enabled {
+                Some(SandboxDisplay {
+                    container_name: s.container_name.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
+        apply_all_tmux_options(&session_name, &self.title, branch, sandbox.as_ref());
+    }
+
+    /// Apply all configured tmux options to the terminal session.
+    fn apply_terminal_tmux_options(&self) {
+        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
+
+        let session_name = tmux::TerminalSession::generate_name(&self.id, &self.title);
+        let terminal_title = format!("{} (terminal)", self.title);
+        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
+            if s.enabled {
+                Some(SandboxDisplay {
+                    container_name: s.container_name.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
+        apply_all_tmux_options(&session_name, &terminal_title, branch, sandbox.as_ref());
     }
 
     fn ensure_container_running(&mut self) -> Result<()> {
@@ -255,11 +314,7 @@ impl Instance {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Cannot ensure container for non-sandboxed session"))?;
 
-        let image = sandbox
-            .image
-            .as_deref()
-            .unwrap_or(docker::default_sandbox_image());
-
+        let image = &sandbox.image;
         let container = DockerContainer::new(&self.id, image);
 
         if container.is_running()? {
@@ -271,9 +326,15 @@ impl Instance {
             return Ok(());
         }
 
+        // Ensure image is available (always pulls to get latest)
+        docker::ensure_image(image)?;
+
         docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
         docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
         docker::ensure_named_volume(VIBE_AUTH_VOLUME)?;
+        docker::ensure_named_volume(CODEX_AUTH_VOLUME)?;
+
+        crate::migrations::run_lazy_docker_migrations();
 
         let config = self.build_container_config()?;
         let container_id = container.create(&config)?;
@@ -303,7 +364,7 @@ impl Instance {
             read_only: false,
         }];
 
-        const CONTAINER_HOME: &str = "/home/sandbox";
+        const CONTAINER_HOME: &str = "/root";
 
         let gitconfig = home.join(".gitconfig");
         if gitconfig.exists() {
@@ -354,6 +415,10 @@ impl Instance {
                 VIBE_AUTH_VOLUME.to_string(),
                 format!("{}/.vibe", CONTAINER_HOME),
             ),
+            (
+                CODEX_AUTH_VOLUME.to_string(),
+                format!("{}/.codex", CONTAINER_HOME),
+            ),
         ];
 
         let sandbox_config = super::config::Config::load()
@@ -390,6 +455,10 @@ impl Instance {
     }
 
     pub fn restart(&mut self) -> Result<()> {
+        self.restart_with_size(None)
+    }
+
+    pub fn restart_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         let session = self.tmux_session()?;
 
         if session.exists() {
@@ -399,7 +468,7 @@ impl Instance {
         // Small delay to ensure tmux cleanup
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        self.start()
+        self.start_with_size(size)
     }
 
     pub fn kill(&self) -> Result<()> {
@@ -492,11 +561,32 @@ fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
 }
 
+/// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
+///
+/// When running agents directly as tmux session commands (without a parent shell),
+/// pressing Ctrl-Z suspends the process with no way to recover via job control.
+/// This wrapper disables the suspend character at the terminal level before exec'ing
+/// the actual command.
+///
+/// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
+fn wrap_command_ignore_suspend(cmd: &str) -> String {
+    format!("bash -c 'stty susp undef; exec {}'", cmd)
+}
+
+/// All supported coding tools.
+/// When adding a new tool, update:
+/// - This constant
+/// - `detect_tool()` in cli/add.rs
+/// - `detect_status_from_content()` in tmux/status_detection.rs
+/// - `default_tool_fields()` in tui/settings/fields.rs (options list and match statements)
+/// - `apply_field_to_global()` and `apply_field_to_profile()` in tui/settings/fields.rs
+pub const SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex"];
+
 /// Tools that have YOLO mode support configured.
 /// When adding a new tool, add it here and implement YOLO support in:
-/// - `start()` for command construction (Claude uses CLI flag, Vibe uses --auto-approve)
+/// - `start()` for command construction (Claude uses CLI flag, Vibe uses --auto-approve, Codex uses CLI flag)
 /// - `build_container_config()` for environment variables (OpenCode uses env var)
-pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe"];
+pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex"];
 
 #[cfg(test)]
 mod tests {
@@ -530,6 +620,7 @@ mod tests {
             claude: true,
             opencode: true,
             vibe: true,
+            codex: true,
         };
         for tool in available_tools.available_list() {
             assert!(
@@ -550,7 +641,7 @@ mod tests {
         inst.sandbox_info = Some(SandboxInfo {
             enabled: true,
             container_id: None,
-            image: None,
+            image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: Some(true),
@@ -577,7 +668,7 @@ mod tests {
         inst.sandbox_info = Some(SandboxInfo {
             enabled: false,
             container_id: None,
-            image: None,
+            image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: None,
@@ -591,7 +682,7 @@ mod tests {
         inst.sandbox_info = Some(SandboxInfo {
             enabled: true,
             container_id: None,
-            image: None,
+            image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: None,
@@ -612,6 +703,13 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "opencode".to_string();
         assert_eq!(inst.get_tool_command(), "opencode");
+    }
+
+    #[test]
+    fn test_get_tool_command_codex() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "codex".to_string();
+        assert_eq!(inst.get_tool_command(), "codex");
     }
 
     #[test]
@@ -707,7 +805,7 @@ mod tests {
         let info = SandboxInfo {
             enabled: true,
             container_id: Some("abc123".to_string()),
-            image: Some("myimage:latest".to_string()),
+            image: "myimage:latest".to_string(),
             container_name: "test_container".to_string(),
             created_at: Some(Utc::now()),
             yolo_mode: Some(true),
@@ -725,14 +823,14 @@ mod tests {
 
     #[test]
     fn test_sandbox_info_minimal_serialization() {
-        // Only required fields
-        let json = r#"{"enabled":false,"container_name":"test"}"#;
+        // Required fields: enabled, image, container_name
+        let json = r#"{"enabled":false,"image":"test-image","container_name":"test"}"#;
         let info: SandboxInfo = serde_json::from_str(json).unwrap();
 
         assert!(!info.enabled);
+        assert_eq!(info.image, "test-image");
         assert_eq!(info.container_name, "test");
         assert!(info.container_id.is_none());
-        assert!(info.image.is_none());
         assert!(info.created_at.is_none());
         assert!(info.yolo_mode.is_none());
     }

@@ -10,14 +10,18 @@ mod tests;
 use std::collections::HashMap;
 use std::time::Instant;
 
+use tui_input::Input;
+
 use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Storage};
 use crate::tmux::AvailableTools;
 
+use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
 use super::dialogs::{
-    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, InfoDialog, NewSessionDialog,
-    RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, InfoDialog, NewSessionData,
+    NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
+use super::settings::SettingsView;
 use super::status_poller::StatusPoller;
 
 /// View mode for the home screen
@@ -100,7 +104,7 @@ pub struct HomeView {
 
     // Search
     pub(super) search_active: bool,
-    pub(super) search_query: String,
+    pub(super) search_query: Input,
     pub(super) filtered_items: Option<Vec<usize>>,
 
     // Tool availability
@@ -113,9 +117,19 @@ pub struct HomeView {
     // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
 
+    // Performance: background session creation (for sandbox)
+    pub(super) creation_poller: CreationPoller,
+    /// Set to true if user cancelled while creation was pending
+    pub(super) creation_cancelled: bool,
+
     // Performance: preview caching
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
+
+    // Settings view
+    pub(super) settings_view: Option<SettingsView>,
+    /// Flag to indicate we're confirming settings close (unsaved changes)
+    pub(super) settings_close_confirm: bool,
 }
 
 impl HomeView {
@@ -154,14 +168,18 @@ impl HomeView {
             changelog_dialog: None,
             info_dialog: None,
             search_active: false,
-            search_query: String::new(),
+            search_query: Input::default(),
             filtered_items: None,
             available_tools,
             status_poller: StatusPoller::new(),
             pending_status_refresh: false,
             deletion_poller: DeletionPoller::new(),
+            creation_poller: CreationPoller::new(),
+            creation_cancelled: false,
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
+            settings_view: None,
+            settings_close_confirm: false,
         };
 
         view.update_selected();
@@ -276,6 +294,104 @@ impl HomeView {
         false
     }
 
+    /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
+    pub fn request_creation(&mut self, data: NewSessionData) {
+        if let Some(dialog) = &mut self.new_dialog {
+            dialog.set_loading(true);
+        }
+
+        self.creation_cancelled = false;
+        let request = CreationRequest {
+            data,
+            existing_instances: self.instances.clone(),
+        };
+        self.creation_poller.request_creation(request);
+    }
+
+    /// Mark the current creation operation as cancelled (user pressed Esc)
+    pub fn cancel_creation(&mut self) {
+        if self.creation_poller.is_pending() {
+            self.creation_cancelled = true;
+        }
+        self.new_dialog = None;
+    }
+
+    /// Apply any pending creation results from the background poller.
+    /// Returns Some(session_id) if creation succeeded and we should attach.
+    pub fn apply_creation_results(&mut self) -> Option<String> {
+        use super::creation_poller::CreationResult;
+        use crate::session::builder::{self, CreatedWorktree};
+        use std::path::PathBuf;
+
+        let result = self.creation_poller.try_recv_result()?;
+
+        // Check if the user cancelled while waiting
+        if self.creation_cancelled {
+            self.creation_cancelled = false;
+            if let CreationResult::Success {
+                ref instance,
+                ref created_worktree,
+                ..
+            } = result
+            {
+                let worktree = created_worktree.as_ref().map(|wt| CreatedWorktree {
+                    path: PathBuf::from(&wt.path),
+                    main_repo_path: PathBuf::from(&wt.main_repo_path),
+                });
+                builder::cleanup_instance(instance, worktree.as_ref());
+            }
+            return None;
+        }
+
+        match result {
+            CreationResult::Success {
+                session_id,
+                instance,
+                ..
+            } => {
+                let instance = *instance;
+                self.instances.push(instance.clone());
+                self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+                if !instance.group_path.is_empty() {
+                    self.group_tree.create_group(&instance.group_path);
+                }
+
+                if let Err(e) = self
+                    .storage
+                    .save_with_groups(&self.instances, &self.group_tree)
+                {
+                    tracing::error!("Failed to save after creation: {}", e);
+                }
+
+                let _ = self.reload();
+                self.new_dialog = None;
+
+                Some(session_id)
+            }
+            CreationResult::Error(error) => {
+                if let Some(dialog) = &mut self.new_dialog {
+                    dialog.set_loading(false);
+                    dialog.set_error(error);
+                }
+                None
+            }
+        }
+    }
+
+    /// Check if there's a pending creation operation
+    pub fn is_creation_pending(&self) -> bool {
+        self.creation_poller.is_pending()
+    }
+
+    /// Tick the dialog spinner animation if loading
+    pub fn tick_dialog(&mut self) {
+        if let Some(dialog) = &mut self.new_dialog {
+            if dialog.is_loading() {
+                dialog.tick();
+            }
+        }
+    }
+
     pub fn has_dialog(&self) -> bool {
         self.show_help
             || self.new_dialog.is_some()
@@ -286,6 +402,7 @@ impl HomeView {
             || self.welcome_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
+            || self.settings_view.is_some()
     }
 
     pub fn show_welcome(&mut self) {
@@ -326,12 +443,16 @@ impl HomeView {
         }
     }
 
-    pub fn start_terminal_for_instance(&mut self, id: &str) -> anyhow::Result<()> {
+    pub fn start_terminal_for_instance_with_size(
+        &mut self,
+        id: &str,
+        size: Option<(u16, u16)>,
+    ) -> anyhow::Result<()> {
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_terminal()?;
+            inst.start_terminal_with_size(size)?;
         }
         if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.start_terminal()?;
+            inst.start_terminal_with_size(size)?;
         }
         self.storage
             .save_with_groups(&self.instances, &self.group_tree)?;

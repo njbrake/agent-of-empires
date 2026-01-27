@@ -21,7 +21,7 @@ pub struct AddArgs {
     #[arg(short = 'g', long)]
     group: Option<String>,
 
-    /// Command to run (e.g., 'claude', 'opencode')
+    /// Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex')
     #[arg(short = 'c', long = "cmd")]
     command: Option<String>,
 
@@ -63,10 +63,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     let mut worktree_info_opt = None;
 
-    if let Some(branch) = &args.worktree_branch {
+    if let Some(branch_raw) = &args.worktree_branch {
         use crate::git::GitWorktree;
         use crate::session::WorktreeInfo;
         use chrono::Utc;
+
+        let branch = branch_raw.trim();
 
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
@@ -80,7 +82,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         let session_id = uuid::Uuid::new_v4().to_string();
         let session_id_short = &session_id[..8];
 
-        let template = &config.worktree.path_template;
+        // Choose appropriate template based on repo type (bare vs regular)
+        let template = if GitWorktree::is_bare_repo(&path) {
+            &config.worktree.bare_repo_path_template
+        } else {
+            &config.worktree.path_template
+        };
         let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
 
         if worktree_path.exists() {
@@ -97,7 +104,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         path = worktree_path;
 
         worktree_info_opt = Some(WorktreeInfo {
-            branch: branch.clone(),
+            branch: branch.to_string(),
             main_repo_path: main_repo_path.to_string_lossy().to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
@@ -125,11 +132,15 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     // Generate title
     let final_title = if let Some(title) = &args.title {
-        if is_duplicate_session(&instances, title, path.to_str().unwrap_or("")) {
-            println!("Session already exists with same title and path: {}", title);
+        let trimmed_title = title.trim();
+        if is_duplicate_session(&instances, trimmed_title, path.to_str().unwrap_or("")) {
+            println!(
+                "Session already exists with same title and path: {}",
+                trimmed_title
+            );
             return Ok(());
         }
-        title.clone()
+        trimmed_title.to_string()
     } else {
         let existing_titles: Vec<&str> = instances.iter().map(|i| i.title.as_str()).collect();
         civilizations::generate_random_title(&existing_titles)
@@ -138,7 +149,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let mut instance = Instance::new(&final_title, path.to_str().unwrap_or(""));
 
     if let Some(group) = &group_path {
-        instance.group_path = group.clone();
+        instance.group_path = group.trim().to_string();
     }
 
     if let Some(parent) = parent_id {
@@ -147,7 +158,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(cmd) = &args.command {
         instance.command = cmd.clone();
-        instance.tool = detect_tool(cmd);
+        instance.tool = detect_tool(cmd)?;
     }
 
     if let Some(worktree_info) = worktree_info_opt {
@@ -169,10 +180,15 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
         } else {
             let container_name = DockerContainer::generate_name(&instance.id);
+            let image = args
+                .sandbox_image
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(docker::effective_default_image);
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,
-                image: args.sandbox_image.clone(),
+                image,
                 container_name,
                 created_at: None,
                 yolo_mode: None,
@@ -210,7 +226,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             .iter()
             .position(|i| i.id == instance.id)
             .expect("just added instance");
-        instances[idx].start()?;
+        instances[idx].start_with_size(crate::terminal::get_size())?;
         storage.save_with_groups(&instances, &group_tree)?;
 
         let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;
@@ -257,17 +273,22 @@ pub fn generate_unique_title(instances: &[Instance], base_title: &str, path: &st
     format!("{} ({})", base_title, chrono::Utc::now().timestamp())
 }
 
-fn detect_tool(cmd: &str) -> String {
+fn detect_tool(cmd: &str) -> Result<String> {
     let cmd_lower = cmd.to_lowercase();
     if cmd_lower.is_empty() || cmd_lower.contains("claude") {
-        "claude".to_string()
+        Ok("claude".to_string())
     } else if cmd_lower.contains("opencode") || cmd_lower.contains("open-code") {
-        "opencode".to_string()
+        Ok("opencode".to_string())
     } else if cmd_lower.contains("vibe") || cmd_lower.contains("mistral-vibe") {
-        "vibe".to_string()
-    } else if cmd_lower.contains("cursor") {
-        "cursor".to_string()
+        Ok("vibe".to_string())
+    } else if cmd_lower.contains("codex") {
+        Ok("codex".to_string())
     } else {
-        "shell".to_string()
+        bail!(
+            "Unknown tool in command: {}\n\
+             Supported tools: claude, opencode, vibe, codex\n\
+             Tip: Command must contain one of the supported tool names",
+            cmd
+        )
     }
 }

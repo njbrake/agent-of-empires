@@ -1,6 +1,7 @@
 //! Session operations for HomeView (create, delete, rename)
 
-use crate::session::{flatten_tree, GroupTree, Instance, Status};
+use crate::session::builder::{self, InstanceParams};
+use crate::session::{flatten_tree, GroupTree, Status};
 use crate::tui::deletion_poller::DeletionRequest;
 use crate::tui::dialogs::{DeleteOptions, GroupDeleteOptions, NewSessionData};
 
@@ -8,122 +9,22 @@ use super::HomeView;
 
 impl HomeView {
     pub(super) fn create_session(&mut self, data: NewSessionData) -> anyhow::Result<String> {
-        use crate::git::GitWorktree;
-        use crate::session::{Config, WorktreeInfo};
-        use chrono::Utc;
-        use std::path::PathBuf;
+        let existing_titles: Vec<&str> = self.instances.iter().map(|i| i.title.as_str()).collect();
 
-        if data.sandbox {
-            if !crate::docker::is_docker_available() {
-                anyhow::bail!(
-                    "Docker is not installed. Please install Docker to use sandbox mode."
-                );
-            }
-            if !crate::docker::is_daemon_running() {
-                anyhow::bail!(
-                    "Docker daemon is not running. Please start Docker to use sandbox mode."
-                );
-            }
-        }
-
-        let mut final_path = PathBuf::from(&data.path)
-            .canonicalize()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| data.path.clone());
-        let mut worktree_info_opt = None;
-
-        if let Some(branch) = &data.worktree_branch {
-            let path = PathBuf::from(&data.path);
-
-            if !GitWorktree::is_git_repo(&path) {
-                anyhow::bail!("Path is not in a git repository");
-            }
-
-            let config = Config::load()?;
-            let main_repo_path = GitWorktree::find_main_repo(&path)?;
-            let git_wt = GitWorktree::new(main_repo_path.clone())?;
-
-            if !data.create_new_branch {
-                let existing_worktrees = git_wt.list_worktrees()?;
-                if let Some(existing) = existing_worktrees
-                    .iter()
-                    .find(|wt| wt.branch.as_deref() == Some(branch))
-                {
-                    final_path = existing.path.to_string_lossy().to_string();
-                    worktree_info_opt = Some(WorktreeInfo {
-                        branch: branch.clone(),
-                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                        managed_by_aoe: false,
-                        created_at: Utc::now(),
-                        cleanup_on_delete: false,
-                    });
-                } else {
-                    let session_id = uuid::Uuid::new_v4().to_string();
-                    let session_id_short = &session_id[..8];
-                    let template = &config.worktree.path_template;
-                    let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
-
-                    git_wt.create_worktree(branch, &worktree_path, false)?;
-
-                    final_path = worktree_path.to_string_lossy().to_string();
-                    worktree_info_opt = Some(WorktreeInfo {
-                        branch: branch.clone(),
-                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                        managed_by_aoe: true,
-                        created_at: Utc::now(),
-                        cleanup_on_delete: true,
-                    });
-                }
-            } else {
-                let session_id = uuid::Uuid::new_v4().to_string();
-                let session_id_short = &session_id[..8];
-                let template = &config.worktree.path_template;
-                let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
-
-                if worktree_path.exists() {
-                    anyhow::bail!("Worktree already exists at {}", worktree_path.display());
-                }
-
-                git_wt.create_worktree(branch, &worktree_path, true)?;
-
-                final_path = worktree_path.to_string_lossy().to_string();
-                worktree_info_opt = Some(WorktreeInfo {
-                    branch: branch.clone(),
-                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                    managed_by_aoe: true,
-                    created_at: Utc::now(),
-                    cleanup_on_delete: true,
-                });
-            }
-        }
-
-        let mut instance = Instance::new(&data.title, &final_path);
-        instance.group_path = data.group;
-        instance.tool = data.tool.clone();
-        instance.command = if data.tool == "opencode" {
-            "opencode".to_string()
-        } else {
-            String::new()
+        let params = InstanceParams {
+            title: data.title,
+            path: data.path,
+            group: data.group,
+            tool: data.tool,
+            worktree_branch: data.worktree_branch,
+            create_new_branch: data.create_new_branch,
+            sandbox: data.sandbox,
+            sandbox_image: data.sandbox_image,
+            yolo_mode: data.yolo_mode,
         };
 
-        if let Some(worktree_info) = worktree_info_opt {
-            instance.worktree_info = Some(worktree_info);
-        }
-
-        if data.sandbox {
-            use crate::docker::DockerContainer;
-            use crate::session::SandboxInfo;
-
-            let container_name = DockerContainer::generate_name(&instance.id);
-            instance.sandbox_info = Some(SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: data.sandbox_image,
-                container_name,
-                created_at: None,
-                yolo_mode: if data.yolo_mode { Some(true) } else { None },
-            });
-        }
+        let build_result = builder::build_instance(params, &existing_titles)?;
+        let instance = build_result.instance;
 
         let session_id = instance.id.clone();
         self.instances.push(instance.clone());
@@ -196,11 +97,15 @@ impl HomeView {
                 .collect();
 
             for session_id in sessions_to_delete {
+                // Clear group_path when marking for deletion so these instances
+                // won't cause the group to be recreated during tree rebuilds
                 if let Some(inst) = self.instance_map.get_mut(&session_id) {
                     inst.status = Status::Deleting;
+                    inst.group_path = String::new();
                 }
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == session_id) {
                     inst.status = Status::Deleting;
+                    inst.group_path = String::new();
                 }
 
                 if let Some(inst) = self.instance_map.get(&session_id) {
@@ -209,7 +114,8 @@ impl HomeView {
                             .worktree_info
                             .as_ref()
                             .is_some_and(|wt| wt.managed_by_aoe);
-                    let delete_sandbox = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+                    let delete_sandbox = options.delete_containers
+                        && inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
                     let request = DeletionRequest {
                         session_id: session_id.clone(),
                         instance: inst.clone(),
@@ -221,6 +127,7 @@ impl HomeView {
             }
 
             self.group_tree.delete_group(&group_path);
+            self.groups = self.group_tree.get_all_groups();
             self.storage
                 .save_with_groups(&self.instances, &self.group_tree)?;
             self.flat_items = flatten_tree(&self.group_tree, &self.instances);
@@ -235,19 +142,54 @@ impl HomeView {
         })
     }
 
-    pub(super) fn rename_selected(&mut self, new_title: &str) -> anyhow::Result<()> {
+    pub(super) fn group_has_containers(&self, group_path: &str, prefix: &str) -> bool {
+        self.instances.iter().any(|i| {
+            (i.group_path == group_path || i.group_path.starts_with(prefix))
+                && i.sandbox_info.as_ref().is_some_and(|s| s.enabled)
+        })
+    }
+
+    pub(super) fn rename_selected(
+        &mut self,
+        new_title: &str,
+        new_group: Option<&str>,
+    ) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 
+            // Get current values for comparison
+            let (current_title, current_group) = self
+                .instance_map
+                .get(&id)
+                .map(|i| (i.title.clone(), i.group_path.clone()))
+                .unwrap_or_default();
+
+            // Determine effective title (keep current if empty)
+            let effective_title = if new_title.is_empty() {
+                current_title.clone()
+            } else {
+                new_title.to_string()
+            };
+
+            // Determine effective group
+            let effective_group = match new_group {
+                None => current_group.clone(), // Keep current
+                Some(g) => g.to_string(),      // Set new (empty string means ungroup)
+            };
+
+            // Update instances list
             if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-                inst.title = new_title.to_string();
+                inst.title = effective_title.clone();
+                inst.group_path = effective_group.clone();
             }
 
+            // Handle tmux rename if title changed
             if let Some(inst) = self.instance_map.get(&id) {
-                if inst.title != new_title {
+                if inst.title != effective_title {
                     let tmux_session = inst.tmux_session()?;
                     if tmux_session.exists() {
-                        let new_tmux_name = crate::tmux::Session::generate_name(&id, new_title);
+                        let new_tmux_name =
+                            crate::tmux::Session::generate_name(&id, &effective_title);
                         if let Err(e) = tmux_session.rename(&new_tmux_name) {
                             tracing::warn!("Failed to rename tmux session: {}", e);
                         } else {
@@ -257,7 +199,11 @@ impl HomeView {
                 }
             }
 
+            // Rebuild group tree and create group if needed
             self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+            if !effective_group.is_empty() {
+                self.group_tree.create_group(&effective_group);
+            }
             self.storage
                 .save_with_groups(&self.instances, &self.group_tree)?;
 

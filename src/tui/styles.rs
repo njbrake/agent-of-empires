@@ -7,6 +7,7 @@ pub struct Theme {
     // Background and borders
     pub background: Color,
     pub border: Color,
+    pub terminal_border: Color,
     pub selection: Color,
     pub session_selection: Color,
 
@@ -21,6 +22,7 @@ pub struct Theme {
     pub waiting: Color,
     pub idle: Color,
     pub error: Color,
+    pub terminal_active: Color,
 
     // UI elements
     pub group: Color,
@@ -39,6 +41,7 @@ impl Theme {
         Self {
             background: Color::Rgb(16, 20, 18),
             border: Color::Rgb(45, 70, 55),
+            terminal_border: Color::Rgb(70, 130, 180),
             selection: Color::Rgb(30, 50, 40),
             session_selection: Color::Rgb(60, 60, 60),
 
@@ -51,6 +54,7 @@ impl Theme {
             waiting: Color::Rgb(255, 180, 60),
             idle: Color::Rgb(60, 100, 70),
             error: Color::Rgb(255, 100, 80),
+            terminal_active: Color::Rgb(130, 170, 255),
 
             group: Color::Rgb(100, 220, 160),
             search: Color::Rgb(180, 255, 200),
@@ -63,6 +67,7 @@ impl Theme {
         Self {
             background: Color::Rgb(26, 27, 38),
             border: Color::Rgb(59, 66, 97),
+            terminal_border: Color::Rgb(97, 76, 81),
             selection: Color::Rgb(41, 46, 66),
             session_selection: Color::Rgb(41, 46, 66),
 
@@ -75,6 +80,7 @@ impl Theme {
             waiting: Color::Rgb(224, 175, 104),
             idle: Color::Rgb(86, 95, 137),
             error: Color::Rgb(247, 118, 142),
+            terminal_active: Color::Rgb(122, 162, 247),
 
             group: Color::Rgb(187, 154, 247),
             search: Color::Rgb(125, 207, 255),

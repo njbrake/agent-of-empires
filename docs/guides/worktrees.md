@@ -1,4 +1,4 @@
-# Git Worktree - Quick Reference
+# Git Worktree: Quick Reference
 
 ## CLI vs TUI Behavior
 
@@ -52,15 +52,16 @@ aoe remove <session> --keep-worktree
 [worktree]
 enabled = false
 path_template = "../{repo-name}-worktrees/{branch}"
+bare_repo_path_template = "./{branch}"  # Used for bare repo setups
 auto_cleanup = true
 show_branch_in_tui = true
 ```
 
 ## Template Variables
 
-- `{repo-name}` - Repository folder name
-- `{branch}` - Branch name (slashes → hyphens)
-- `{session-id}` - First 8 chars of UUID
+- `{repo-name}`: Repository folder name
+- `{branch}`: Branch name (slashes → hyphens)
+- `{session-id}`: First 8 chars of UUID
 
 ## Common Path Templates
 
@@ -175,3 +176,30 @@ aoe
 - ✅ Run `aoe worktree cleanup` periodically
 - ✅ Use `--keep-worktree` when preserving work
 - ✅ Keep main repo on main/master branch
+
+## Bare Repo Workflow
+
+For sandboxed sessions, use a "linked worktree bare repo" to keep all worktrees under one directory. This avoids issues where worktrees reference paths outside the sandbox.
+
+```
+my-project/
+  .bare/               # Bare git repository
+  .git                 # File: "gitdir: ./.bare"
+  main/                # Worktree for main branch
+  feat-api/            # Worktree for feature branch
+```
+
+### Setup
+
+```bash
+git clone --bare git@github.com:user/repo.git my-project/.bare
+cd my-project
+echo "gitdir: ./.bare" > .git
+git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git fetch origin
+git worktree add main main
+```
+
+### Auto-Detection
+
+AOE detects bare repos and uses `./{branch}` instead of `../{repo-name}-worktrees/{branch}`, creating worktrees as siblings. Customize with `bare_repo_path_template` in config.

@@ -4,21 +4,6 @@
 
 Agent of Empires requires [tmux](https://github.com/tmux/tmux/wiki) to be installed on your system.
 
-**macOS:**
-```bash
-brew install tmux
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install tmux
-```
-
-**Fedora:**
-```bash
-sudo dnf install tmux
-```
-
 ## Install Agent of Empires
 
 ### Quick Install (Recommended)

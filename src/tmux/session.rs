@@ -3,13 +3,10 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::utils::strip_ansi;
-use super::{session_exists_from_cache, SESSION_PREFIX};
+use super::{refresh_session_cache, session_exists_from_cache, SESSION_PREFIX};
 use crate::cli::truncate_id;
 use crate::process;
 use crate::session::Status;
-
-const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub struct Session {
     name: String,
@@ -40,23 +37,20 @@ impl Session {
     }
 
     pub fn create(&self, working_dir: &str, command: Option<&str>) -> Result<()> {
+        self.create_with_size(working_dir, command, None)
+    }
+
+    pub fn create_with_size(
+        &self,
+        working_dir: &str,
+        command: Option<&str>,
+        size: Option<(u16, u16)>,
+    ) -> Result<()> {
         if self.exists() {
             return Ok(());
         }
 
-        let mut args = vec![
-            "new-session".to_string(),
-            "-d".to_string(),
-            "-s".to_string(),
-            self.name.clone(),
-            "-c".to_string(),
-            working_dir.to_string(),
-        ];
-
-        if let Some(cmd) = command {
-            args.push(cmd.to_string());
-        }
-
+        let args = build_create_args(&self.name, working_dir, command, size);
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
@@ -74,6 +68,13 @@ impl Session {
             return Ok(());
         }
 
+        // Kill the entire process tree first to ensure child processes are terminated.
+        // This handles cases where tools like Claude spawn subprocesses that may
+        // survive tmux's SIGHUP signal.
+        if let Some(pane_pid) = self.get_pane_pid() {
+            process::kill_process_tree(pane_pid);
+        }
+
         let output = Command::new("tmux")
             .args(["kill-session", "-t", &self.name])
             .output()?;
@@ -82,6 +83,8 @@ impl Session {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("Failed to kill tmux session: {}", stderr);
         }
+
+        refresh_session_cache();
 
         Ok(())
     }
@@ -183,7 +186,9 @@ impl Session {
     pub fn detect_status(&self, tool: &str) -> Result<Status> {
         let content = self.capture_pane(50)?;
         let fg_pid = self.get_foreground_pid();
-        Ok(detect_status_from_content(&content, tool, fg_pid))
+        Ok(super::status_detection::detect_status_from_content(
+            &content, tool, fg_pid,
+        ))
     }
 }
 
@@ -200,369 +205,35 @@ fn sanitize_session_name(name: &str) -> String {
         .collect()
 }
 
-fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
-    let content_lower = content.to_lowercase();
-    let effective_tool = if tool == "shell" && is_opencode_content(&content_lower) {
-        "opencode"
-    } else if tool == "shell" && is_vibe_content(&content_lower) {
-        "vibe"
-    } else if tool == "shell" && is_claude_code_content(&content_lower) {
-        "claude"
-    } else {
-        tool
-    };
-
-    match effective_tool {
-        "claude" => detect_claude_status(content),
-        "opencode" => detect_opencode_status(&content_lower),
-        "vibe" => detect_vibe_status(&content_lower),
-        _ => detect_claude_status(content),
-    }
-}
-
-fn is_opencode_content(content: &str) -> bool {
-    let opencode_indicators = ["tab switch agent", "ctrl+p commands", "/compact", "/status"];
-    opencode_indicators.iter().any(|ind| content.contains(ind))
-}
-
-fn is_vibe_content(content: &str) -> bool {
-    let vibe_indicators = ["mistral", "devstral", "shift+tab", "vibe", "mistral-vibe"];
-    vibe_indicators.iter().any(|ind| content.contains(ind))
-}
-
-fn is_claude_code_content(content: &str) -> bool {
-    let claude_indicators = [
-        "esc to interrupt",
-        "yes, allow once",
-        "yes, allow always",
-        "do you trust the files",
-        "claude code",
-        "anthropic",
-        "/ to search",
-        "? for help",
+/// Build the argument list for tmux new-session command.
+/// Extracted for testability.
+fn build_create_args(
+    session_name: &str,
+    working_dir: &str,
+    command: Option<&str>,
+    size: Option<(u16, u16)>,
+) -> Vec<String> {
+    let mut args = vec![
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        session_name.to_string(),
+        "-c".to_string(),
+        working_dir.to_string(),
     ];
-    if claude_indicators.iter().any(|ind| content.contains(ind)) {
-        return true;
-    }
-    let lines: Vec<&str> = content.lines().collect();
-    if let Some(last_line) = lines.iter().rev().find(|l| !l.trim().is_empty()) {
-        let trimmed = last_line.trim();
-        if trimmed == ">" || trimmed == "> " {
-            let has_box_chars = content.contains('─') || content.contains('│');
-            if has_box_chars {
-                return true;
-            }
-        }
-    }
-    false
-}
 
-pub fn detect_claude_status(content: &str) -> Status {
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    let last_lines: String = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
-    if last_lines_lower.contains("esc to interrupt")
-        || last_lines_lower.contains("ctrl+c to interrupt")
-    {
-        return Status::Running;
+    if let Some((width, height)) = size {
+        args.push("-x".to_string());
+        args.push(width.to_string());
+        args.push("-y".to_string());
+        args.push(height.to_string());
     }
 
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
+    if let Some(cmd) = command {
+        args.push(cmd.to_string());
     }
 
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
-        return Status::Waiting;
-    }
-
-    let permission_prompts = [
-        "Yes, allow once",
-        "Yes, allow always",
-        "Allow once",
-        "Allow always",
-        "❯ Yes",
-        "❯ No",
-        "Do you trust the files in this folder?",
-    ];
-    for prompt in &permission_prompts {
-        if last_lines.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
-            let rest = &trimmed[3..].trim_start();
-            if rest.starts_with("1.") || rest.starts_with("2.") || rest.starts_with("3.") {
-                return Status::Waiting;
-            }
-        }
-    }
-
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Y/N confirmation prompts
-    // Only check in last lines
-    let question_prompts = ["(Y/n)", "(y/N)", "[Y/n]", "[y/N]"];
-    for prompt in &question_prompts {
-        if last_lines.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    Status::Idle
-}
-
-pub fn detect_opencode_status(content: &str) -> Status {
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    // Get last 30 lines for UI status checks (to avoid matching code/comments in terminal output)
-    let last_lines: String = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
-    // RUNNING: OpenCode shows "esc to interrupt" when busy (same as Claude Code)
-    // Only check in last lines to avoid matching comments/code in terminal output
-    if last_lines_lower.contains("esc to interrupt") || last_lines_lower.contains("esc interrupt") {
-        return Status::Running;
-    }
-
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
-    }
-
-    // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
-    // Only check in last lines to avoid matching comments/code
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
-        return Status::Waiting;
-    }
-
-    // WAITING: Permission/confirmation prompts
-    // Only check in last lines
-    let permission_prompts = [
-        "(y/n)",
-        "[y/n]",
-        "continue?",
-        "proceed?",
-        "approve",
-        "allow",
-    ];
-    for prompt in &permission_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
-            let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
-            if after_cursor.starts_with("1.")
-                || after_cursor.starts_with("2.")
-                || after_cursor.starts_with("3.")
-            {
-                return Status::Waiting;
-            }
-        }
-    }
-    if lines.iter().any(|line| {
-        line.contains("❯") && (line.contains(" 1.") || line.contains(" 2.") || line.contains(" 3."))
-    }) {
-        return Status::Waiting;
-    }
-
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-
-        if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING - Completion indicators + input prompt nearby
-    // Only check in last lines
-    let completion_indicators = [
-        "complete",
-        "done",
-        "finished",
-        "ready",
-        "what would you like",
-        "what else",
-        "anything else",
-        "how can i help",
-        "let me know",
-    ];
-    let has_completion = completion_indicators
-        .iter()
-        .any(|ind| last_lines_lower.contains(ind));
-    if has_completion {
-        for line in non_empty_lines.iter().rev().take(10) {
-            let clean = strip_ansi(line).trim().to_string();
-            if clean == ">" || clean == "> " || clean == ">>" {
-                return Status::Waiting;
-            }
-        }
-    }
-
-    Status::Idle
-}
-
-pub fn detect_vibe_status(content: &str) -> Status {
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    let last_lines: String = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
-    // RUNNING: Vibe shows "esc to interrupt" when busy (similar to other agents)
-    if last_lines_lower.contains("esc to interrupt") || last_lines_lower.contains("ctrl+c") {
-        return Status::Running;
-    }
-
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
-    }
-
-    // WAITING: Selection menus
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
-        return Status::Waiting;
-    }
-
-    // WAITING: Permission/confirmation prompts (Vibe uses similar patterns)
-    let permission_prompts = [
-        "(y/n)",
-        "[y/n]",
-        "continue?",
-        "proceed?",
-        "approve",
-        "allow",
-        "confirm",
-    ];
-    for prompt in &permission_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Selection cursor
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
-            let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
-            if after_cursor.starts_with("1.")
-                || after_cursor.starts_with("2.")
-                || after_cursor.starts_with("3.")
-            {
-                return Status::Waiting;
-            }
-        }
-    }
-
-    // WAITING: Input prompt
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-
-        if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Completion indicators + input prompt nearby
-    let completion_indicators = [
-        "complete",
-        "done",
-        "finished",
-        "ready",
-        "what would you like",
-        "what else",
-        "anything else",
-        "how can i help",
-    ];
-    let has_completion = completion_indicators
-        .iter()
-        .any(|ind| last_lines_lower.contains(ind));
-    if has_completion {
-        for line in non_empty_lines.iter().rev().take(10) {
-            let clean = strip_ansi(line).trim().to_string();
-            if clean == ">" || clean == "> " || clean == ">>" {
-                return Status::Waiting;
-            }
-        }
-    }
-
-    Status::Idle
+    args
 }
 
 #[cfg(test)]
@@ -585,121 +256,48 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_claude_status_running() {
-        // "esc to interrupt" indicates Claude is actively working
+    fn test_build_create_args_without_size() {
+        let args = build_create_args("test_session", "/tmp/work", None, None);
         assert_eq!(
-            detect_claude_status("Working on your request (esc to interrupt)"),
-            Status::Running
+            args,
+            vec!["new-session", "-d", "-s", "test_session", "-c", "/tmp/work"]
         );
-        assert_eq!(
-            detect_claude_status("Thinking... · esc to interrupt"),
-            Status::Running
-        );
-        assert_eq!(
-            detect_claude_status("✶ Hashing… (ctrl+c to interrupt)"),
-            Status::Running
-        );
-        assert_eq!(detect_claude_status("Processing ⠋"), Status::Running);
-        assert_eq!(detect_claude_status("Loading ⠹"), Status::Running);
+        assert!(!args.contains(&"-x".to_string()));
+        assert!(!args.contains(&"-y".to_string()));
     }
 
     #[test]
-    fn test_detect_claude_status_waiting() {
-        assert_eq!(detect_claude_status("Yes, allow once"), Status::Waiting);
-        assert_eq!(
-            detect_claude_status("Do you trust the files in this folder?"),
-            Status::Waiting
-        );
-        assert_eq!(detect_claude_status("Task complete.\n>"), Status::Waiting);
-        assert_eq!(detect_claude_status("Done!\n> "), Status::Waiting);
-        assert_eq!(detect_claude_status("Continue? (Y/n)"), Status::Waiting);
-        assert_eq!(
-            detect_claude_status("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"),
-            Status::Waiting
-        );
-        assert_eq!(
-            detect_claude_status("❯ 1. Planned activities\n  2. Spontaneous"),
-            Status::Waiting
-        );
+    fn test_build_create_args_with_size() {
+        let args = build_create_args("test_session", "/tmp/work", None, Some((120, 40)));
+        assert!(args.contains(&"-x".to_string()));
+        assert!(args.contains(&"120".to_string()));
+        assert!(args.contains(&"-y".to_string()));
+        assert!(args.contains(&"40".to_string()));
+
+        // Verify order: -x should come before width, -y before height
+        let x_idx = args.iter().position(|a| a == "-x").unwrap();
+        let y_idx = args.iter().position(|a| a == "-y").unwrap();
+        assert_eq!(args[x_idx + 1], "120");
+        assert_eq!(args[y_idx + 1], "40");
     }
 
     #[test]
-    fn test_detect_claude_status_idle() {
-        assert_eq!(detect_claude_status("completed the task"), Status::Idle);
-        assert_eq!(detect_claude_status("some random output"), Status::Idle);
+    fn test_build_create_args_with_command() {
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None);
+        assert_eq!(args.last().unwrap(), "claude");
     }
 
     #[test]
-    fn test_detect_opencode_status_running() {
-        assert_eq!(
-            detect_opencode_status("Processing your request\nesc to interrupt"),
-            Status::Running
-        );
-        assert_eq!(
-            detect_opencode_status("Working... esc interrupt"),
-            Status::Running
-        );
-        assert_eq!(detect_opencode_status("Generating ⠋"), Status::Running);
-        assert_eq!(detect_opencode_status("Loading ⠹"), Status::Running);
-    }
+    fn test_build_create_args_with_size_and_command() {
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), Some((80, 24)));
 
-    #[test]
-    fn test_detect_opencode_status_waiting() {
-        assert_eq!(
-            detect_opencode_status("allow this action? [y/n]"),
-            Status::Waiting
-        );
-        assert_eq!(detect_opencode_status("continue? (y/n)"), Status::Waiting);
-        assert_eq!(detect_opencode_status("approve changes"), Status::Waiting);
-        assert_eq!(detect_opencode_status("task complete.\n>"), Status::Waiting);
-        assert_eq!(
-            detect_opencode_status("ready for input\n> "),
-            Status::Waiting
-        );
-        assert_eq!(
-            detect_opencode_status("done! what else can i help with?\n>"),
-            Status::Waiting
-        );
-    }
+        // Size args should be present
+        assert!(args.contains(&"-x".to_string()));
+        assert!(args.contains(&"80".to_string()));
+        assert!(args.contains(&"-y".to_string()));
+        assert!(args.contains(&"24".to_string()));
 
-    #[test]
-    fn test_detect_opencode_status_idle() {
-        assert_eq!(detect_opencode_status("some random output"), Status::Idle);
-        assert_eq!(
-            detect_opencode_status("file saved successfully"),
-            Status::Idle
-        );
-    }
-
-    #[test]
-    fn test_detect_vibe_status_running() {
-        assert_eq!(
-            detect_vibe_status("processing your request\nesc to interrupt"),
-            Status::Running
-        );
-        assert_eq!(detect_vibe_status("generating ⠋"), Status::Running);
-        assert_eq!(detect_vibe_status("loading ⠹"), Status::Running);
-    }
-
-    #[test]
-    fn test_detect_vibe_status_waiting() {
-        assert_eq!(
-            detect_vibe_status("allow this action? [y/n]"),
-            Status::Waiting
-        );
-        assert_eq!(detect_vibe_status("continue? (y/n)"), Status::Waiting);
-        assert_eq!(detect_vibe_status("approve changes"), Status::Waiting);
-        assert_eq!(detect_vibe_status("task complete.\n>"), Status::Waiting);
-        assert_eq!(detect_vibe_status("ready for input\n> "), Status::Waiting);
-        assert_eq!(
-            detect_vibe_status("done! what else can i help with?\n>"),
-            Status::Waiting
-        );
-    }
-
-    #[test]
-    fn test_detect_vibe_status_idle() {
-        assert_eq!(detect_vibe_status("some random output"), Status::Idle);
-        assert_eq!(detect_vibe_status("file saved successfully"), Status::Idle);
+        // Command should be last
+        assert_eq!(args.last().unwrap(), "claude");
     }
 }

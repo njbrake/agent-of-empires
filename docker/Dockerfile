@@ -1,5 +1,5 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
-# This image provides Claude Code, OpenCode, and Mistral Vibe in an isolated environment
+# This image provides Claude Code, OpenCode, Mistral Vibe, and Codex CLI in an isolated environment
 
 FROM ubuntu:24.04
 
@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     curl \
     git \
+    git-lfs \
     build-essential \
     ca-certificates \
     gnupg \
@@ -16,34 +17,42 @@ RUN apt-get update && apt-get install -y \
     fzf \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for running Claude (required for --dangerously-skip-permissions)
-# Use UID 1000 to match typical host user UID for proper file permissions on mounted volumes
-RUN userdel -r ubuntu 2>/dev/null || true && \
-    groupadd -g 1000 sandbox && \
-    useradd -m -s /bin/bash -u 1000 -g 1000 sandbox
+# Set up Git LFS hooks globally
+RUN git lfs install
 
-# Switch to sandbox user for tool installation
-USER sandbox
-WORKDIR /home/sandbox
+# Install Node.js (required for Codex CLI)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Run as root - IS_SANDBOX=1 allows Claude Code to use --dangerously-skip-permissions
+WORKDIR /root
 
 # Install Claude Code CLI (official installer)
 RUN curl -fsSL https://claude.ai/install.sh | bash
-ENV PATH="/home/sandbox/.local/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
 
 # Install OpenCode
 RUN curl -fsSL https://opencode.ai/install | bash
-ENV PATH="/home/sandbox/.opencode/bin:${PATH}"
+ENV PATH="/root/.opencode/bin:${PATH}"
+
+# Install Codex CLI (OpenAI)
+RUN npm install -g @openai/codex
 
 # Install Mistral Vibe
 RUN curl -LsSf https://mistral.ai/vibe/install.sh | bash
-ENV PATH="/home/sandbox/.vibe/bin:${PATH}"
+ENV PATH="/root/.vibe/bin:${PATH}"
 
 # Create directories for credential mounts
-RUN mkdir -p /home/sandbox/.claude \
-    /home/sandbox/.config/opencode \
-    /home/sandbox/.local/share/opencode \
-    /home/sandbox/.vibe \
-    /home/sandbox/.ssh
+RUN mkdir -p /root/.claude \
+    /root/.config/opencode \
+    /root/.local/share/opencode \
+    /root/.vibe \
+    /root/.codex \
+    /root/.ssh
+
+# Allow Claude Code to use --dangerously-skip-permissions as root
+ENV IS_SANDBOX=1
 
 # Set working directory
 WORKDIR /workspace
