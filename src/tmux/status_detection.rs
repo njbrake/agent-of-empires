@@ -237,41 +237,19 @@ pub fn detect_vibe_status(content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // Vibe uses Textual TUI framework with its own spinners: |, /, -, \
-    // and displays "Generating" (or easter eggs like "Vibing", "Réflexion") while working
-    let vibe_spinners = ['|', '/', '\\'];
-    for line in non_empty_lines.iter().rev().take(5) {
-        let trimmed = line.trim();
-        // Check for Vibe's loading messages with timer (e.g., "Generating... 5s")
-        if (trimmed.contains("enerating")
-            || trimmed.contains("ibing")
-            || trimmed.contains("éflexion"))
-            && trimmed.ends_with('s')
-            && trimmed
-                .chars()
-                .rev()
-                .nth(1)
-                .map(|c| c.is_ascii_digit())
-                .unwrap_or(false)
-        {
-            return Status::Running;
-        }
-        // Check for Vibe's line spinners
-        for spinner in vibe_spinners {
-            if trimmed.starts_with(spinner) || trimmed.ends_with(spinner) {
-                return Status::Running;
-            }
-        }
-    }
+    // Vibe uses Textual TUI which can render text vertically (one char per line).
+    // Join recent single-char lines to reconstruct words for detection.
+    let recent_text: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(50)
+        .rev()
+        .map(|l| l.trim())
+        .collect::<Vec<&str>>()
+        .join("");
+    let recent_text_lower = recent_text.to_lowercase();
 
-    // Also check braille spinners in case Vibe uses them in some contexts
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
-    }
+    // WAITING checks come first - they're more specific than Running indicators
 
     // WAITING: Vibe's approval prompts show navigation hints
     // Pattern: "↑↓ navigate  Enter select  ESC reject"
@@ -291,7 +269,9 @@ pub fn detect_vibe_status(content: &str) -> Status {
     let approval_options = [
         "yes and always allow",
         "no and tell the agent",
-        "› yes", // Selected option indicator
+        "› 1.", // Selected numbered option
+        "› 2.",
+        "› 3.",
     ];
     for option in &approval_options {
         if last_lines_lower.contains(option) {
@@ -299,12 +279,41 @@ pub fn detect_vibe_status(content: &str) -> Status {
         }
     }
 
-    // WAITING: Generic selection cursor
+    // WAITING: Generic selection cursor (› followed by text)
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("›") && trimmed.len() > 2 {
             return Status::Waiting;
         }
+    }
+
+    // RUNNING: Check for braille spinners anywhere in recent content
+    // Vibe renders vertically so spinner may be on its own line
+    for spinner in SPINNER_CHARS {
+        if recent_text.contains(spinner) {
+            return Status::Running;
+        }
+    }
+
+    // RUNNING: Activity indicators (may be rendered vertically)
+    let activity_indicators = [
+        "running",
+        "reading",
+        "writing",
+        "executing",
+        "processing",
+        "generating",
+        "thinking",
+    ];
+    for indicator in &activity_indicators {
+        if recent_text_lower.contains(indicator) {
+            return Status::Running;
+        }
+    }
+
+    // RUNNING: Ellipsis at end often indicates ongoing activity
+    if recent_text.ends_with("…") || recent_text.ends_with("...") {
+        return Status::Running;
     }
 
     Status::Idle
@@ -554,11 +563,25 @@ mod tests {
 
     #[test]
     fn test_detect_vibe_status_running() {
-        // Vibe shows "Generating... Xs" with a timer while working
-        assert_eq!(detect_vibe_status("Generating... 5s"), Status::Running);
-        assert_eq!(detect_vibe_status("Vibing... 12s"), Status::Running);
-        // Braille spinners should also work
+        // Braille spinners
         assert_eq!(detect_vibe_status("processing ⠋"), Status::Running);
+        assert_eq!(detect_vibe_status("⠹"), Status::Running);
+
+        // Activity indicators
+        assert_eq!(detect_vibe_status("Running bash"), Status::Running);
+        assert_eq!(detect_vibe_status("Reading file"), Status::Running);
+        assert_eq!(detect_vibe_status("Writing changes"), Status::Running);
+        assert_eq!(detect_vibe_status("Generating code"), Status::Running);
+
+        // Vertical text (Vibe's Textual TUI renders one char per line)
+        assert_eq!(
+            detect_vibe_status("⠋\nR\nu\nn\nn\ni\nn\ng\nb\na\ns\nh\n…"),
+            Status::Running
+        );
+
+        // Ellipsis indicates ongoing activity
+        assert_eq!(detect_vibe_status("Working…"), Status::Running);
+        assert_eq!(detect_vibe_status("Loading..."), Status::Running);
     }
 
     #[test]
@@ -586,8 +609,7 @@ mod tests {
     fn test_detect_vibe_status_idle() {
         assert_eq!(detect_vibe_status("some random output"), Status::Idle);
         assert_eq!(detect_vibe_status("file saved successfully"), Status::Idle);
-        // Just "Generating" without timer is not enough
-        assert_eq!(detect_vibe_status("Generating code"), Status::Idle);
+        assert_eq!(detect_vibe_status("Done!"), Status::Idle);
     }
 
     #[test]

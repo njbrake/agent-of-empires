@@ -74,7 +74,7 @@ If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and ret
 - **TUI Dashboard**: Visual interface to manage all your AI coding sessions
 - **Session Management**: Create, attach, detach, and delete sessions
 - **Group Organization**: Organize sessions into hierarchical folders
-- **Status Detection**: Automatic status detection for Claude Code and OpenCode
+- **Status Detection**: Automatic status detection for Claude Code, OpenCode, Mistral Vibe, and Codex CLI
 - **tmux Integration**: Sessions persist in tmux for reliability
 - **Multi-profile Support**: Separate workspaces for different projects
 
