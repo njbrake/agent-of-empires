@@ -88,9 +88,10 @@ impl SettingsView {
         let profile_config = load_profile_config(profile)?;
 
         let categories = vec![
-            SettingsCategory::Updates,
-            SettingsCategory::Worktree,
+            SettingsCategory::Session,
             SettingsCategory::Sandbox,
+            SettingsCategory::Worktree,
+            SettingsCategory::Updates,
             SettingsCategory::Tmux,
         ];
 

@@ -149,19 +149,47 @@ impl HomeView {
         })
     }
 
-    pub(super) fn rename_selected(&mut self, new_title: &str) -> anyhow::Result<()> {
+    pub(super) fn rename_selected(
+        &mut self,
+        new_title: &str,
+        new_group: Option<&str>,
+    ) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 
+            // Get current values for comparison
+            let (current_title, current_group) = self
+                .instance_map
+                .get(&id)
+                .map(|i| (i.title.clone(), i.group_path.clone()))
+                .unwrap_or_default();
+
+            // Determine effective title (keep current if empty)
+            let effective_title = if new_title.is_empty() {
+                current_title.clone()
+            } else {
+                new_title.to_string()
+            };
+
+            // Determine effective group
+            let effective_group = match new_group {
+                None => current_group.clone(), // Keep current
+                Some(g) => g.to_string(),      // Set new (empty string means ungroup)
+            };
+
+            // Update instances list
             if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-                inst.title = new_title.to_string();
+                inst.title = effective_title.clone();
+                inst.group_path = effective_group.clone();
             }
 
+            // Handle tmux rename if title changed
             if let Some(inst) = self.instance_map.get(&id) {
-                if inst.title != new_title {
+                if inst.title != effective_title {
                     let tmux_session = inst.tmux_session()?;
                     if tmux_session.exists() {
-                        let new_tmux_name = crate::tmux::Session::generate_name(&id, new_title);
+                        let new_tmux_name =
+                            crate::tmux::Session::generate_name(&id, &effective_title);
                         if let Err(e) = tmux_session.rename(&new_tmux_name) {
                             tracing::warn!("Failed to rename tmux session: {}", e);
                         } else {
@@ -171,7 +199,11 @@ impl HomeView {
                 }
             }
 
+            // Rebuild group tree and create group if needed
             self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+            if !effective_group.is_empty() {
+                self.group_tree.create_group(&effective_group);
+            }
             self.storage
                 .save_with_groups(&self.instances, &self.group_tree)?;
 

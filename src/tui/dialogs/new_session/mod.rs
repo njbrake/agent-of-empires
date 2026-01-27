@@ -11,7 +11,7 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::docker;
-use crate::session::civilizations;
+use crate::session::{civilizations, Config};
 use crate::tmux::AvailableTools;
 
 pub(super) struct FieldHelp {
@@ -112,20 +112,37 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
         let docker_available = docker::is_docker_available();
 
+        // Load config to get defaults
+        let config = Config::load().unwrap_or_default();
+
+        // Determine default tool index based on config
+        let tool_index = if let Some(ref default_tool) = config.session.default_tool {
+            available_tools
+                .iter()
+                .position(|&t| t == default_tool.as_str())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Apply sandbox defaults from config
+        let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
+        let yolo_mode = sandbox_enabled && config.sandbox.yolo_mode_default;
+
         Self {
             title: Input::default(),
             path: Input::new(current_dir),
             group: Input::default(),
-            tool_index: 0,
+            tool_index,
             focused_field: 0,
             available_tools,
             existing_titles,
             worktree_branch: Input::default(),
             create_new_branch: true,
-            sandbox_enabled: false,
+            sandbox_enabled,
             sandbox_image: Input::new(docker::effective_default_image()),
             docker_available,
-            yolo_mode: false,
+            yolo_mode,
             error_message: None,
             show_help: false,
             loading: false,
@@ -309,7 +326,11 @@ impl NewSessionDialog {
                 if self.focused_field == sandbox_field =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
-                if !self.sandbox_enabled {
+                if self.sandbox_enabled {
+                    // Apply yolo_mode_default when enabling sandbox
+                    let config = Config::load().unwrap_or_default();
+                    self.yolo_mode = config.sandbox.yolo_mode_default;
+                } else {
                     self.yolo_mode = false;
                     if self.focused_field > sandbox_field {
                         self.focused_field = sandbox_field;

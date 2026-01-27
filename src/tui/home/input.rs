@@ -206,9 +206,9 @@ impl HomeView {
                 DialogResult::Cancel => {
                     self.rename_dialog = None;
                 }
-                DialogResult::Submit(new_title) => {
+                DialogResult::Submit(data) => {
                     self.rename_dialog = None;
-                    if let Err(e) = self.rename_selected(&new_title) {
+                    if let Err(e) = self.rename_selected(&data.title, data.group.as_deref()) {
                         tracing::error!("Failed to rename session: {}", e);
                     }
                 }
@@ -344,7 +344,7 @@ impl HomeView {
                         if inst.status == Status::Deleting {
                             return None;
                         }
-                        self.rename_dialog = Some(RenameDialog::new(&inst.title));
+                        self.rename_dialog = Some(RenameDialog::new(&inst.title, &inst.group_path));
                     }
                 }
             }

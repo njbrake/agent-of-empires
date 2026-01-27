@@ -11,7 +11,8 @@ mod storage;
 
 pub use config::{
     get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
-    SandboxConfig, ThemeConfig, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
+    SandboxConfig, SessionConfig, ThemeConfig, TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig,
+    WorktreeConfig,
 };
 pub use groups::{flatten_tree, Group, GroupTree, Item};
 pub use instance::{
@@ -20,8 +21,8 @@ pub use instance::{
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,
     validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
-    ClaudeConfigOverride, ProfileConfig, SandboxConfigOverride, ThemeConfigOverride,
-    TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
+    ClaudeConfigOverride, ProfileConfig, SandboxConfigOverride, SessionConfigOverride,
+    ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
 pub use storage::Storage;
 
