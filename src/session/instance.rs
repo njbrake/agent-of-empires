@@ -192,8 +192,14 @@ impl Instance {
     pub fn start_terminal_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         let session = self.terminal_tmux_session()?;
 
-        if !session.exists() {
+        let is_new = !session.exists();
+        if is_new {
             session.create_with_size(&self.project_path, size)?;
+        }
+
+        // Apply all configured tmux options to terminal sessions too
+        if is_new {
+            self.apply_terminal_tmux_options();
         }
 
         self.terminal_info = Some(TerminalInfo {
@@ -251,8 +257,8 @@ impl Instance {
 
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
-        // Apply tmux status bar styling if enabled
-        self.apply_tmux_status_bar();
+        // Apply all configured tmux options (status bar, mouse, etc.)
+        self.apply_tmux_options();
 
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
@@ -260,14 +266,9 @@ impl Instance {
         Ok(())
     }
 
-    /// Apply tmux status bar configuration to show session info.
-    fn apply_tmux_status_bar(&self) {
-        use crate::session::config::should_apply_tmux_status_bar;
-        use crate::tmux::status_bar::{apply_status_bar, SandboxDisplay};
-
-        if !should_apply_tmux_status_bar() {
-            return;
-        }
+    /// Apply all configured tmux options (status bar, mouse, etc.) to the agent session.
+    fn apply_tmux_options(&self) {
+        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
 
         let session_name = tmux::Session::generate_name(&self.id, &self.title);
         let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
@@ -281,9 +282,27 @@ impl Instance {
             }
         });
 
-        if let Err(e) = apply_status_bar(&session_name, &self.title, branch, sandbox.as_ref()) {
-            tracing::debug!("Failed to apply tmux status bar: {}", e);
-        }
+        apply_all_tmux_options(&session_name, &self.title, branch, sandbox.as_ref());
+    }
+
+    /// Apply all configured tmux options to the terminal session.
+    fn apply_terminal_tmux_options(&self) {
+        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
+
+        let session_name = tmux::TerminalSession::generate_name(&self.id, &self.title);
+        let terminal_title = format!("{} (terminal)", self.title);
+        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
+            if s.enabled {
+                Some(SandboxDisplay {
+                    container_name: s.container_name.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
+        apply_all_tmux_options(&session_name, &terminal_title, branch, sandbox.as_ref());
     }
 
     fn ensure_container_running(&mut self) -> Result<()> {

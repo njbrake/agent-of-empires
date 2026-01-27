@@ -1,7 +1,7 @@
 //! Setting field definitions and config mapping
 
 use crate::session::{
-    validate_check_interval, validate_memory_limit, Config, ProfileConfig, TmuxStatusBarMode,
+    validate_check_interval, Config, ProfileConfig, TmuxMouseMode, TmuxStatusBarMode,
 };
 
 use super::SettingsScope;
@@ -13,6 +13,7 @@ pub enum SettingsCategory {
     Worktree,
     Sandbox,
     Tmux,
+    Session,
 }
 
 impl SettingsCategory {
@@ -22,6 +23,7 @@ impl SettingsCategory {
             Self::Worktree => "Worktree",
             Self::Sandbox => "Sandbox",
             Self::Tmux => "Tmux",
+            Self::Session => "Session",
         }
     }
 }
@@ -38,13 +40,16 @@ pub enum FieldKey {
     BareRepoPathTemplate,
     WorktreeAutoCleanup,
     // Sandbox
+    SandboxEnabledByDefault,
+    YoloModeDefault,
     DefaultImage,
     Environment,
     SandboxAutoCleanup,
-    CpuLimit,
-    MemoryLimit,
     // Tmux
     StatusBar,
+    Mouse,
+    // Session
+    DefaultTool,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -127,10 +132,6 @@ pub struct SettingField {
 impl SettingField {
     pub fn validate(&self) -> Result<(), String> {
         match (&self.key, &self.value) {
-            (FieldKey::MemoryLimit, FieldValue::OptionalText(Some(s))) => {
-                validate_memory_limit(s)?;
-                Ok(())
-            }
             (FieldKey::CheckIntervalHours, FieldValue::Number(n)) => {
                 validate_check_interval(*n)?;
                 Ok(())
@@ -152,6 +153,7 @@ pub fn build_fields_for_category(
         SettingsCategory::Worktree => build_worktree_fields(scope, global, profile),
         SettingsCategory::Sandbox => build_sandbox_fields(scope, global, profile),
         SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
+        SettingsCategory::Session => build_session_fields(scope, global, profile),
     }
 }
 
@@ -264,43 +266,56 @@ fn build_sandbox_fields(
 ) -> Vec<SettingField> {
     let sb = profile.sandbox.as_ref();
 
-    let (default_image, o1) = resolve_value(
+    let (enabled_by_default, o1) = resolve_value(
+        scope,
+        global.sandbox.enabled_by_default,
+        sb.and_then(|s| s.enabled_by_default),
+    );
+    let (yolo_mode_default, o2) = resolve_value(
+        scope,
+        global.sandbox.yolo_mode_default,
+        sb.and_then(|s| s.yolo_mode_default),
+    );
+    let (default_image, o3) = resolve_value(
         scope,
         global.sandbox.default_image.clone(),
         sb.and_then(|s| s.default_image.clone()),
     );
-    let (environment, o2) = resolve_value(
+    let (environment, o4) = resolve_value(
         scope,
         global.sandbox.environment.clone(),
         sb.and_then(|s| s.environment.clone()),
     );
-    let (auto_cleanup, o3) = resolve_value(
+    let (auto_cleanup, o5) = resolve_value(
         scope,
         global.sandbox.auto_cleanup,
         sb.and_then(|s| s.auto_cleanup),
     );
-    // For optional fields, we need special handling: profile override OR global (both Option<T>)
-    let (cpu_limit, o4) = resolve_optional(
-        scope,
-        global.sandbox.cpu_limit.clone(),
-        sb.and_then(|s| s.cpu_limit.clone()),
-        sb.map(|s| s.cpu_limit.is_some()).unwrap_or(false),
-    );
-    let (memory_limit, o5) = resolve_optional(
-        scope,
-        global.sandbox.memory_limit.clone(),
-        sb.and_then(|s| s.memory_limit.clone()),
-        sb.map(|s| s.memory_limit.is_some()).unwrap_or(false),
-    );
 
     vec![
+        SettingField {
+            key: FieldKey::SandboxEnabledByDefault,
+            label: "Enabled by Default",
+            description: "Enable sandbox mode by default for new sessions",
+            value: FieldValue::Bool(enabled_by_default),
+            category: SettingsCategory::Sandbox,
+            has_override: o1,
+        },
+        SettingField {
+            key: FieldKey::YoloModeDefault,
+            label: "YOLO Mode Default",
+            description: "Enable YOLO mode by default when sandbox is enabled",
+            value: FieldValue::Bool(yolo_mode_default),
+            category: SettingsCategory::Sandbox,
+            has_override: o2,
+        },
         SettingField {
             key: FieldKey::DefaultImage,
             label: "Default Image",
             description: "Docker image to use for sandboxes",
             value: FieldValue::Text(default_image),
             category: SettingsCategory::Sandbox,
-            has_override: o1,
+            has_override: o3,
         },
         SettingField {
             key: FieldKey::Environment,
@@ -308,29 +323,13 @@ fn build_sandbox_fields(
             description: "Environment variables to pass to container",
             value: FieldValue::List(environment),
             category: SettingsCategory::Sandbox,
-            has_override: o2,
+            has_override: o4,
         },
         SettingField {
             key: FieldKey::SandboxAutoCleanup,
             label: "Auto Cleanup",
             description: "Remove containers when sessions are deleted",
             value: FieldValue::Bool(auto_cleanup),
-            category: SettingsCategory::Sandbox,
-            has_override: o3,
-        },
-        SettingField {
-            key: FieldKey::CpuLimit,
-            label: "CPU Limit",
-            description: "CPU limit for containers (e.g., '2' for 2 cores)",
-            value: FieldValue::OptionalText(cpu_limit),
-            category: SettingsCategory::Sandbox,
-            has_override: o4,
-        },
-        SettingField {
-            key: FieldKey::MemoryLimit,
-            label: "Memory Limit",
-            description: "Memory limit for containers (e.g., '2g', '512m')",
-            value: FieldValue::OptionalText(memory_limit),
             category: SettingsCategory::Sandbox,
             has_override: o5,
         },
@@ -344,27 +343,89 @@ fn build_tmux_fields(
 ) -> Vec<SettingField> {
     let tmux = profile.tmux.as_ref();
 
-    let (status_bar, has_override) = resolve_value(
+    let (status_bar, status_bar_override) = resolve_value(
         scope,
         global.tmux.status_bar,
         tmux.and_then(|t| t.status_bar),
     );
 
-    let selected = match status_bar {
+    let (mouse, mouse_override) =
+        resolve_value(scope, global.tmux.mouse, tmux.and_then(|t| t.mouse));
+
+    let status_bar_selected = match status_bar {
         TmuxStatusBarMode::Auto => 0,
         TmuxStatusBarMode::Enabled => 1,
         TmuxStatusBarMode::Disabled => 2,
     };
 
+    let mouse_selected = match mouse {
+        TmuxMouseMode::Auto => 0,
+        TmuxMouseMode::Enabled => 1,
+        TmuxMouseMode::Disabled => 2,
+    };
+
+    vec![
+        SettingField {
+            key: FieldKey::StatusBar,
+            label: "Status Bar",
+            description: "Control tmux status bar styling (Auto respects your tmux config)",
+            value: FieldValue::Select {
+                selected: status_bar_selected,
+                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+            },
+            category: SettingsCategory::Tmux,
+            has_override: status_bar_override,
+        },
+        SettingField {
+            key: FieldKey::Mouse,
+            label: "Mouse Support",
+            description: "Control mouse scrolling (Auto respects your tmux config)",
+            value: FieldValue::Select {
+                selected: mouse_selected,
+                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+            },
+            category: SettingsCategory::Tmux,
+            has_override: mouse_override,
+        },
+    ]
+}
+
+fn build_session_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let session = profile.session.as_ref();
+
+    let (default_tool, has_override) = resolve_optional(
+        scope,
+        global.session.default_tool.clone(),
+        session.and_then(|s| s.default_tool.clone()),
+        session.map(|s| s.default_tool.is_some()).unwrap_or(false),
+    );
+
+    // Map tool name to selected index: 0=Auto (first available), 1=claude, 2=opencode, 3=codex
+    let selected = match default_tool.as_deref() {
+        Some("claude") => 1,
+        Some("opencode") => 2,
+        Some("codex") => 3,
+        _ => 0, // Auto (use first available)
+    };
+
     vec![SettingField {
-        key: FieldKey::StatusBar,
-        label: "Status Bar",
-        description: "Control tmux status bar styling (Auto respects your tmux config)",
+        key: FieldKey::DefaultTool,
+        label: "Default Tool",
+        description: "Default coding tool for new sessions",
         value: FieldValue::Select {
             selected,
-            options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+            options: vec![
+                "Auto (first available)".into(),
+                "claude".into(),
+                "opencode".into(),
+                "codex".into(),
+            ],
         },
-        category: SettingsCategory::Tmux,
+        category: SettingsCategory::Session,
         has_override,
     }]
 }
@@ -398,19 +459,35 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => config.worktree.auto_cleanup = *v,
         // Sandbox
+        (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
+            config.sandbox.enabled_by_default = *v
+        }
+        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.sandbox.yolo_mode_default = *v,
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
-        (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => config.sandbox.cpu_limit = v.clone(),
-        (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
-            config.sandbox.memory_limit = v.clone()
-        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             config.tmux.status_bar = match selected {
                 0 => TmuxStatusBarMode::Auto,
                 1 => TmuxStatusBarMode::Enabled,
                 _ => TmuxStatusBarMode::Disabled,
+            };
+        }
+        (FieldKey::Mouse, FieldValue::Select { selected, .. }) => {
+            config.tmux.mouse = match selected {
+                0 => TmuxMouseMode::Auto,
+                1 => TmuxMouseMode::Enabled,
+                _ => TmuxMouseMode::Disabled,
+            };
+        }
+        // Session
+        (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
+            config.session.default_tool = match selected {
+                1 => Some("claude".to_string()),
+                2 => Some("opencode".to_string()),
+                3 => Some("codex".to_string()),
+                _ => None, // Auto
             };
         }
         _ => {}
@@ -420,8 +497,6 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
 /// Apply a field to the profile config.
 /// If the value matches the global config, the override is cleared instead of set.
 fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut ProfileConfig) {
-    use crate::session::SandboxConfigOverride;
-
     match (&field.key, &field.value) {
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
@@ -474,6 +549,22 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             );
         }
         // Sandbox
+        (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.sandbox.enabled_by_default,
+                &mut config.sandbox,
+                |s, val| s.enabled_by_default = val,
+            );
+        }
+        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.sandbox.yolo_mode_default,
+                &mut config.sandbox,
+                |s, val| s.yolo_mode_default = val,
+            );
+        }
         (FieldKey::DefaultImage, FieldValue::Text(v)) => {
             set_or_clear_override(
                 v.clone(),
@@ -498,35 +589,6 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 |s, val| s.auto_cleanup = val,
             );
         }
-        (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => {
-            // For optional fields, flatten Option<Option<T>> to Option<T>
-            let flat_value = v.clone().unwrap_or_default();
-            let flat_global = global.sandbox.cpu_limit.clone().unwrap_or_default();
-            if flat_value == flat_global {
-                if let Some(ref mut sb) = config.sandbox {
-                    sb.cpu_limit = None;
-                }
-            } else if let Some(val) = v {
-                let sb = config
-                    .sandbox
-                    .get_or_insert_with(SandboxConfigOverride::default);
-                sb.cpu_limit = Some(val.clone());
-            }
-        }
-        (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
-            let flat_value = v.clone().unwrap_or_default();
-            let flat_global = global.sandbox.memory_limit.clone().unwrap_or_default();
-            if flat_value == flat_global {
-                if let Some(ref mut sb) = config.sandbox {
-                    sb.memory_limit = None;
-                }
-            } else if let Some(val) = v {
-                let sb = config
-                    .sandbox
-                    .get_or_insert_with(SandboxConfigOverride::default);
-                sb.memory_limit = Some(val.clone());
-            }
-        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             let mode = match selected {
@@ -537,6 +599,37 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             set_or_clear_override(mode, &global.tmux.status_bar, &mut config.tmux, |s, val| {
                 s.status_bar = val
             });
+        }
+        (FieldKey::Mouse, FieldValue::Select { selected, .. }) => {
+            let mode = match selected {
+                0 => TmuxMouseMode::Auto,
+                1 => TmuxMouseMode::Enabled,
+                _ => TmuxMouseMode::Disabled,
+            };
+            set_or_clear_override(mode, &global.tmux.mouse, &mut config.tmux, |s, val| {
+                s.mouse = val
+            });
+        }
+        // Session
+        (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
+            let tool = match selected {
+                1 => Some("claude".to_string()),
+                2 => Some("opencode".to_string()),
+                3 => Some("codex".to_string()),
+                _ => None, // Auto
+            };
+            // Compare with global and set/clear override accordingly
+            if tool == global.session.default_tool {
+                if let Some(ref mut session) = config.session {
+                    session.default_tool = None;
+                }
+            } else {
+                use crate::session::SessionConfigOverride;
+                let session = config
+                    .session
+                    .get_or_insert_with(SessionConfigOverride::default);
+                session.default_tool = tool;
+            }
         }
         _ => {}
     }
