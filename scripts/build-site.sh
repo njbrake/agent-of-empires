@@ -43,7 +43,12 @@ cp "$ROOT_DIR/assets/social-preview.svg" "$DIST_DIR/assets/" 2>/dev/null || true
 echo "Copying install script..."
 cp "$ROOT_DIR/scripts/install.sh" "$DIST_DIR/"
 
-# 6. Create a simple 404 page that redirects to home
+# 6. Copy SEO files
+echo "Copying SEO files..."
+cp "$ROOT_DIR/website/robots.txt" "$DIST_DIR/"
+cp "$ROOT_DIR/website/sitemap.xml" "$DIST_DIR/"
+
+# 7. Create a simple 404 page that redirects to home
 cat > "$DIST_DIR/404.html" << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
@@ -67,7 +72,7 @@ cat > "$DIST_DIR/404.html" << 'EOF'
 </html>
 EOF
 
-# 7. Create CNAME file for GitHub Pages (if using custom domain)
+# 8. Create CNAME file for GitHub Pages (if using custom domain)
 echo "agentofempires.com" > "$DIST_DIR/CNAME"
 
 echo ""
