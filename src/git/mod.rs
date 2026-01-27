@@ -132,6 +132,34 @@ impl GitWorktree {
         Ok(())
     }
 
+    /// Delete a local git branch.
+    /// Returns an error if the branch doesn't exist or is currently checked out.
+    pub fn delete_branch(&self, branch: &str) -> Result<()> {
+        let output = std::process::Command::new("git")
+            .args(["branch", "-d", branch])
+            .current_dir(&self.repo_path)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // If the branch has unmerged changes, try force delete
+            if stderr.contains("not fully merged") {
+                let force_output = std::process::Command::new("git")
+                    .args(["branch", "-D", branch])
+                    .current_dir(&self.repo_path)
+                    .output()?;
+
+                if !force_output.status.success() {
+                    return Err(GitError::BranchNotFound(branch.to_string()));
+                }
+            } else {
+                return Err(GitError::BranchNotFound(branch.to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn compute_path(&self, branch: &str, template: &str, session_id: &str) -> Result<PathBuf> {
         let repo_name = self
             .repo_path
@@ -424,5 +452,40 @@ mod tests {
         let worktrees = worktrees.unwrap();
         // Should have at least the main worktree
         assert!(!worktrees.is_empty(), "Should list at least one worktree");
+    }
+
+    #[test]
+    fn test_delete_branch_deletes_local_branch() {
+        let (_dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        // Create a new branch
+        let head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        repo.branch("to-delete", &commit, false).unwrap();
+
+        // Verify branch exists
+        assert!(repo
+            .find_branch("to-delete", git2::BranchType::Local)
+            .is_ok());
+
+        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
+        git_wt.delete_branch("to-delete").unwrap();
+
+        // Verify branch no longer exists
+        assert!(repo
+            .find_branch("to-delete", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn test_delete_branch_fails_for_nonexistent_branch() {
+        let (_dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
+        let result = git_wt.delete_branch("nonexistent");
+
+        assert!(result.is_err());
     }
 }

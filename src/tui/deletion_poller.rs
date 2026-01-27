@@ -12,6 +12,7 @@ pub struct DeletionRequest {
     pub session_id: String,
     pub instance: Instance,
     pub delete_worktree: bool,
+    pub delete_branch: bool,
     pub delete_sandbox: bool,
 }
 
@@ -59,7 +60,20 @@ impl DeletionPoller {
     fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         let mut errors = Vec::new();
 
+        // Track branch info for potential deletion after worktree removal
+        let branch_to_delete = if request.delete_branch {
+            request
+                .instance
+                .worktree_info
+                .as_ref()
+                .filter(|wt| wt.managed_by_aoe)
+                .map(|wt| (wt.branch.clone(), PathBuf::from(&wt.main_repo_path)))
+        } else {
+            None
+        };
+
         // Worktree cleanup (if user opted to delete it)
+        // Must happen before branch deletion since the worktree is using the branch
         if request.delete_worktree {
             if let Some(wt_info) = &request.instance.worktree_info {
                 if wt_info.managed_by_aoe {
@@ -70,6 +84,20 @@ impl DeletionPoller {
                         if let Err(e) = git_wt.remove_worktree(&worktree_path) {
                             errors.push(format!("Worktree: {}", e));
                         }
+                    }
+                }
+            }
+        }
+
+        // Branch cleanup (if user opted to delete it and worktree was successfully removed)
+        if let Some((branch, main_repo)) = branch_to_delete {
+            // Only delete branch if worktree deletion succeeded (or wasn't requested)
+            let worktree_ok =
+                !request.delete_worktree || !errors.iter().any(|e| e.starts_with("Worktree:"));
+            if worktree_ok {
+                if let Ok(git_wt) = GitWorktree::new(main_repo) {
+                    if let Err(e) = git_wt.delete_branch(&branch) {
+                        errors.push(format!("Branch: {}", e));
                     }
                 }
             }
@@ -137,6 +165,7 @@ mod tests {
             session_id: instance.id.clone(),
             instance,
             delete_worktree: false,
+            delete_branch: false,
             delete_sandbox: false,
         };
 
@@ -154,6 +183,7 @@ mod tests {
             session_id: instance.id.clone(),
             instance,
             delete_worktree: true,
+            delete_branch: false,
             delete_sandbox: false,
         };
 
@@ -173,6 +203,7 @@ mod tests {
             session_id: session_id.clone(),
             instance,
             delete_worktree: false,
+            delete_branch: false,
             delete_sandbox: false,
         });
 
@@ -206,6 +237,7 @@ mod tests {
             session_id: custom_id.clone(),
             instance,
             delete_worktree: false,
+            delete_branch: false,
             delete_sandbox: false,
         };
 

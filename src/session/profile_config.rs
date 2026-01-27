@@ -78,6 +78,9 @@ pub struct WorktreeConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_branch_in_tui: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_branch_on_cleanup: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -215,6 +218,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(show_branch_in_tui) = worktree_override.show_branch_in_tui {
             global.worktree.show_branch_in_tui = show_branch_in_tui;
+        }
+        if let Some(delete_branch_on_cleanup) = worktree_override.delete_branch_on_cleanup {
+            global.worktree.delete_branch_on_cleanup = delete_branch_on_cleanup;
         }
     }
 

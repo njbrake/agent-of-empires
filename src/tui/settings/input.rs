@@ -386,6 +386,11 @@ impl SettingsView {
                     w.auto_cleanup = None;
                 }
             }
+            FieldKey::DeleteBranchOnCleanup => {
+                if let Some(ref mut w) = self.profile_config.worktree {
+                    w.delete_branch_on_cleanup = None;
+                }
+            }
             // Sandbox
             FieldKey::DefaultImage => {
                 if let Some(ref mut s) = self.profile_config.sandbox {

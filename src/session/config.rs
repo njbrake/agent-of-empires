@@ -123,6 +123,11 @@ pub struct WorktreeConfig {
 
     #[serde(default = "default_true")]
     pub show_branch_in_tui: bool,
+
+    /// When deleting a worktree, also delete the associated git branch.
+    /// Default: false (unchecked in delete dialog)
+    #[serde(default)]
+    pub delete_branch_on_cleanup: bool,
 }
 
 impl Default for WorktreeConfig {
@@ -133,6 +138,7 @@ impl Default for WorktreeConfig {
             bare_repo_path_template: default_bare_repo_template(),
             auto_cleanup: true,
             show_branch_in_tui: true,
+            delete_branch_on_cleanup: false,
         }
     }
 }

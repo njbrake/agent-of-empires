@@ -39,6 +39,7 @@ pub enum FieldKey {
     PathTemplate,
     BareRepoPathTemplate,
     WorktreeAutoCleanup,
+    DeleteBranchOnCleanup,
     // Sandbox
     SandboxEnabledByDefault,
     YoloModeDefault,
@@ -230,6 +231,11 @@ fn build_worktree_fields(
         global.worktree.auto_cleanup,
         wt.and_then(|w| w.auto_cleanup),
     );
+    let (delete_branch_on_cleanup, o4) = resolve_value(
+        scope,
+        global.worktree.delete_branch_on_cleanup,
+        wt.and_then(|w| w.delete_branch_on_cleanup),
+    );
 
     vec![
         SettingField {
@@ -255,6 +261,14 @@ fn build_worktree_fields(
             value: FieldValue::Bool(auto_cleanup),
             category: SettingsCategory::Worktree,
             has_override: o3,
+        },
+        SettingField {
+            key: FieldKey::DeleteBranchOnCleanup,
+            label: "Delete Branch on Cleanup",
+            description: "Also delete the git branch when deleting a worktree",
+            value: FieldValue::Bool(delete_branch_on_cleanup),
+            category: SettingsCategory::Worktree,
+            has_override: o4,
         },
     ]
 }
@@ -460,6 +474,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.worktree.bare_repo_path_template = v.clone()
         }
         (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => config.worktree.auto_cleanup = *v,
+        (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
+            config.worktree.delete_branch_on_cleanup = *v
+        }
         // Sandbox
         (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
             config.sandbox.enabled_by_default = *v
@@ -549,6 +566,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.worktree.auto_cleanup,
                 &mut config.worktree,
                 |s, val| s.auto_cleanup = val,
+            );
+        }
+        (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.worktree.delete_branch_on_cleanup,
+                &mut config.worktree,
+                |s, val| s.delete_branch_on_cleanup = val,
             );
         }
         // Sandbox

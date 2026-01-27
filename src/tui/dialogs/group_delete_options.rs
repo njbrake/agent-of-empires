@@ -11,6 +11,7 @@ use crate::tui::styles::Theme;
 pub struct GroupDeleteOptions {
     pub delete_sessions: bool,
     pub delete_worktrees: bool,
+    pub delete_branches: bool,
     pub delete_containers: bool,
 }
 
@@ -46,7 +47,7 @@ impl GroupDeleteOptionsDialog {
         }
         let mut count = 2; // move(0), delete(1)
         if self.has_managed_worktrees {
-            count += 1; // worktree checkbox
+            count += 2; // worktree checkbox + branch checkbox
         }
         if self.has_containers {
             count += 1; // container checkbox
@@ -62,10 +63,18 @@ impl GroupDeleteOptionsDialog {
         }
     }
 
+    fn branch_field_index(&self) -> Option<usize> {
+        if self.options.delete_sessions && self.has_managed_worktrees {
+            Some(3)
+        } else {
+            None
+        }
+    }
+
     fn container_field_index(&self) -> Option<usize> {
         if self.options.delete_sessions && self.has_containers {
             let base = 2;
-            let offset = if self.has_managed_worktrees { 1 } else { 0 };
+            let offset = if self.has_managed_worktrees { 2 } else { 0 }; // worktree + branch
             Some(base + offset)
         } else {
             None
@@ -94,6 +103,7 @@ impl GroupDeleteOptionsDialog {
                     0 => {
                         self.options.delete_sessions = false;
                         self.options.delete_worktrees = false;
+                        self.options.delete_branches = false;
                         self.options.delete_containers = false;
                     }
                     1 => {
@@ -101,6 +111,9 @@ impl GroupDeleteOptionsDialog {
                     }
                     f if Some(f) == self.worktree_field_index() => {
                         self.options.delete_worktrees = !self.options.delete_worktrees;
+                    }
+                    f if Some(f) == self.branch_field_index() => {
+                        self.options.delete_branches = !self.options.delete_branches;
                     }
                     f if Some(f) == self.container_field_index() => {
                         self.options.delete_containers = !self.options.delete_containers;
@@ -132,7 +145,7 @@ impl GroupDeleteOptionsDialog {
         let dialog_width = 50;
         let mut dialog_height = 11; // Base height
         if show_worktree_option {
-            dialog_height += 1;
+            dialog_height += 2; // worktree + branch checkboxes
         }
         if show_container_option {
             dialog_height += 1;
@@ -167,6 +180,7 @@ impl GroupDeleteOptionsDialog {
         ];
         if show_worktree_option {
             constraints.push(Constraint::Length(1)); // Worktree checkbox
+            constraints.push(Constraint::Length(1)); // Branch checkbox
         }
         if show_container_option {
             constraints.push(Constraint::Length(1)); // Container checkbox
@@ -257,6 +271,28 @@ impl GroupDeleteOptionsDialog {
             ]);
             frame.render_widget(Paragraph::new(wt_line), chunks[next_chunk]);
             next_chunk += 1;
+
+            // Branch checkbox (shown alongside worktree option)
+            let br_focused = Some(self.focused_field) == self.branch_field_index();
+            let br_checkbox = if self.options.delete_branches {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let br_style = if br_focused {
+                Style::default().fg(theme.error).underlined()
+            } else if self.options.delete_branches {
+                Style::default().fg(theme.error)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let br_line = Line::from(vec![
+                Span::raw("    "),
+                Span::styled(br_checkbox, br_style),
+                Span::styled(" Also delete git branches", br_style),
+            ]);
+            frame.render_widget(Paragraph::new(br_line), chunks[next_chunk]);
+            next_chunk += 1;
         }
 
         // Container checkbox (only shown when delete is selected and has containers)
@@ -332,6 +368,7 @@ mod tests {
         let options = GroupDeleteOptions::default();
         assert!(!options.delete_sessions);
         assert!(!options.delete_worktrees);
+        assert!(!options.delete_branches);
         assert!(!options.delete_containers);
     }
 
@@ -408,7 +445,7 @@ mod tests {
         assert_eq!(dialog.max_field(), 2); // No worktree option yet
 
         dialog.options.delete_sessions = true;
-        assert_eq!(dialog.max_field(), 3); // Now worktree option is available
+        assert_eq!(dialog.max_field(), 4); // Now worktree + branch options are available
     }
 
     #[test]
@@ -435,7 +472,10 @@ mod tests {
         assert_eq!(dialog.focused_field, 1);
 
         dialog.handle_key(key(KeyCode::Tab));
-        assert_eq!(dialog.focused_field, 2);
+        assert_eq!(dialog.focused_field, 2); // worktree checkbox
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 3); // branch checkbox
 
         dialog.handle_key(key(KeyCode::Tab));
         assert_eq!(dialog.focused_field, 0);
@@ -486,11 +526,13 @@ mod tests {
         let mut dialog = dialog_with_worktrees();
         dialog.options.delete_sessions = true;
         dialog.options.delete_worktrees = true;
+        dialog.options.delete_branches = true;
         dialog.focused_field = 0;
 
         dialog.handle_key(key(KeyCode::Char(' ')));
         assert!(!dialog.options.delete_sessions);
         assert!(!dialog.options.delete_worktrees);
+        assert!(!dialog.options.delete_branches);
     }
 
     #[test]
@@ -550,7 +592,7 @@ mod tests {
         assert_eq!(dialog.max_field(), 2); // No checkboxes yet
 
         dialog.options.delete_sessions = true;
-        assert_eq!(dialog.max_field(), 4); // Both checkboxes available
+        assert_eq!(dialog.max_field(), 5); // worktree + branch + container checkboxes
     }
 
     #[test]
@@ -566,7 +608,10 @@ mod tests {
         assert_eq!(dialog.focused_field, 2); // Worktree checkbox
 
         dialog.handle_key(key(KeyCode::Tab));
-        assert_eq!(dialog.focused_field, 3); // Container checkbox
+        assert_eq!(dialog.focused_field, 3); // Branch checkbox
+
+        dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 4); // Container checkbox
 
         dialog.handle_key(key(KeyCode::Tab));
         assert_eq!(dialog.focused_field, 0); // Wrap around
@@ -579,8 +624,10 @@ mod tests {
 
         // Worktree is at index 2
         assert_eq!(dialog.worktree_field_index(), Some(2));
-        // Container is at index 3 (after worktree)
-        assert_eq!(dialog.container_field_index(), Some(3));
+        // Branch is at index 3 (after worktree)
+        assert_eq!(dialog.branch_field_index(), Some(3));
+        // Container is at index 4 (after branch)
+        assert_eq!(dialog.container_field_index(), Some(4));
     }
 
     #[test]
@@ -599,6 +646,7 @@ mod tests {
         let mut dialog = dialog_with_both();
         dialog.options.delete_sessions = true;
         dialog.options.delete_worktrees = true;
+        dialog.options.delete_branches = true;
         dialog.options.delete_containers = true;
 
         let result = dialog.handle_key(key(KeyCode::Enter));
@@ -606,6 +654,7 @@ mod tests {
             DialogResult::Submit(opts) => {
                 assert!(opts.delete_sessions);
                 assert!(opts.delete_worktrees);
+                assert!(opts.delete_branches);
                 assert!(opts.delete_containers);
             }
             _ => panic!("Expected Submit"),
@@ -617,12 +666,28 @@ mod tests {
         let mut dialog = dialog_with_both();
         dialog.options.delete_sessions = true;
         dialog.options.delete_worktrees = true;
+        dialog.options.delete_branches = true;
         dialog.options.delete_containers = true;
         dialog.focused_field = 0;
 
         dialog.handle_key(key(KeyCode::Char(' ')));
         assert!(!dialog.options.delete_sessions);
         assert!(!dialog.options.delete_worktrees);
+        assert!(!dialog.options.delete_branches);
         assert!(!dialog.options.delete_containers);
+    }
+
+    #[test]
+    fn test_branch_checkbox_toggle() {
+        let mut dialog = dialog_with_worktrees();
+        dialog.options.delete_sessions = true;
+        dialog.focused_field = 3; // Branch checkbox
+        assert!(!dialog.options.delete_branches);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(dialog.options.delete_branches);
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.delete_branches);
     }
 }

@@ -55,6 +55,7 @@ impl HomeView {
                     session_id: id.clone(),
                     instance: inst.clone(),
                     delete_worktree: options.delete_worktree,
+                    delete_branch: options.delete_branch,
                     delete_sandbox: options.delete_sandbox,
                 };
                 self.deletion_poller.request_deletion(request);
@@ -114,12 +115,18 @@ impl HomeView {
                             .worktree_info
                             .as_ref()
                             .is_some_and(|wt| wt.managed_by_aoe);
+                    let delete_branch = options.delete_branches
+                        && inst
+                            .worktree_info
+                            .as_ref()
+                            .is_some_and(|wt| wt.managed_by_aoe);
                     let delete_sandbox = options.delete_containers
                         && inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
                     let request = DeletionRequest {
                         session_id: session_id.clone(),
                         instance: inst.clone(),
                         delete_worktree,
+                        delete_branch,
                         delete_sandbox,
                     };
                     self.deletion_poller.request_deletion(request);
