@@ -129,5 +129,5 @@ See [tmux Status Bar Guide](guides/tmux-status-bar.md) for details.
 ## Next Steps
 
 - See the [CLI Reference](cli/reference.md) for complete command documentation
-- Learn about [Git Worktrees](guides/worktrees.md) for parallel development
+- Learn the recommended [Workflow](guides/workflow.md) with bare repos and worktrees
 - Customize the [tmux Status Bar](guides/tmux-status-bar.md)

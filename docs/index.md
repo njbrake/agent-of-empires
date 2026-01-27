@@ -33,4 +33,4 @@ If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and ret
 - [Installation](installation.md): Get started with Agent of Empires
 - [Quick Start](quick-start.md): Basic usage tutorial
 - [CLI Reference](cli/reference.md): Complete command documentation
-- [Git Worktrees Guide](guides/worktrees.md): Parallel development with worktrees
+- [Workflow Guide](guides/workflow.md): Recommended setup and daily workflow

@@ -13,8 +13,8 @@
 
 # Guides
 
-- [Git Worktrees](guides/worktrees.md)
-- [Two-Terminal Workflow](guides/two-terminal-workflow.md)
+- [Workflow](guides/workflow.md)
+- [Worktrees Reference](guides/worktrees.md)
 - [Docker Sandbox](guides/sandbox.md)
 - [tmux Status Bar](guides/tmux-status-bar.md)
 
