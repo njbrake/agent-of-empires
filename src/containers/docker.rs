@@ -224,7 +224,7 @@ impl ContainerRuntimeInterface for Docker {
     }
 
     fn remove(&self, name: &str, force: bool) -> Result<()> {
-        let mut args = vec!["delete".to_string()];
+        let mut args = vec!["rm".to_string()];
         if force {
             args.push("-f".to_string());
         }
