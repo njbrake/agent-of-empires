@@ -46,6 +46,8 @@ impl HomeView {
                 SettingsAction::Continue => return None,
                 SettingsAction::Close => {
                     self.settings_view = None;
+                    // Refresh config-dependent state in case settings changed
+                    self.refresh_from_config();
                     return None;
                 }
                 SettingsAction::UnsavedChangesWarning => {

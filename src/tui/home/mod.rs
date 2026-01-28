@@ -506,6 +506,20 @@ impl HomeView {
             .unwrap_or(self.default_terminal_mode)
     }
 
+    /// Refresh all config-dependent state from the current profile's config.
+    /// Call this after settings are saved to pick up any changes.
+    pub fn refresh_from_config(&mut self) {
+        if let Ok(config) = resolve_config(self.storage.profile()) {
+            // Refresh default terminal mode for sandboxed sessions
+            self.default_terminal_mode = match config.sandbox.default_terminal_mode {
+                DefaultTerminalMode::Host => TerminalMode::Host,
+                DefaultTerminalMode::Container => TerminalMode::Container,
+            };
+
+            // Add other config-dependent state refreshes here as needed
+        }
+    }
+
     /// Toggle terminal mode between Container and Host for a session
     pub fn toggle_terminal_mode(&mut self, session_id: &str) {
         let current = self.get_terminal_mode(session_id);
