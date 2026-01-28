@@ -5,7 +5,7 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::{HomeView, TerminalMode, ViewMode};
-use crate::session::{flatten_tree, Item, Status};
+use crate::session::{flatten_tree, list_profiles, Item, Status};
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, InfoDialog,
@@ -208,7 +208,11 @@ impl HomeView {
                 }
                 DialogResult::Submit(data) => {
                     self.rename_dialog = None;
-                    if let Err(e) = self.rename_selected(&data.title, data.group.as_deref()) {
+                    if let Err(e) = self.rename_selected(
+                        &data.title,
+                        data.group.as_deref(),
+                        data.profile.as_deref(),
+                    ) {
                         tracing::error!("Failed to rename session: {}", e);
                     }
                 }
@@ -362,7 +366,15 @@ impl HomeView {
                         if inst.status == Status::Deleting {
                             return None;
                         }
-                        self.rename_dialog = Some(RenameDialog::new(&inst.title, &inst.group_path));
+                        let current_profile = self.storage.profile().to_string();
+                        let profiles =
+                            list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+                        self.rename_dialog = Some(RenameDialog::new(
+                            &inst.title,
+                            &inst.group_path,
+                            &current_profile,
+                            profiles,
+                        ));
                     }
                 }
             }

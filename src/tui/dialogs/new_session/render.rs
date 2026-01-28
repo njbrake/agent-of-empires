@@ -19,8 +19,19 @@ impl NewSessionDialog {
         let has_sandbox = self.docker_available;
         let sandbox_options_visible = has_sandbox && self.sandbox_enabled;
         let dialog_width = 80;
+        // Calculate env list height based on expanded state and number of items
+        let env_list_height: u16 = if sandbox_options_visible {
+            if self.env_list_expanded {
+                // Header + items + some padding, min 4, max 8
+                (2 + self.extra_env_keys.len() as u16).clamp(4, 8)
+            } else {
+                2 // Collapsed: single line
+            }
+        } else {
+            0
+        };
         let dialog_height = if sandbox_options_visible {
-            24
+            22 + env_list_height
         } else if has_sandbox {
             20
         } else {
@@ -60,6 +71,7 @@ impl NewSessionDialog {
         if sandbox_options_visible {
             constraints.push(Constraint::Length(2)); // Image field
             constraints.push(Constraint::Length(2)); // YOLO mode checkbox
+            constraints.push(Constraint::Length(env_list_height)); // Env vars field
         }
         constraints.push(Constraint::Min(1)); // Hints/errors
 
@@ -257,7 +269,11 @@ impl NewSessionDialog {
                 ]);
                 frame.render_widget(Paragraph::new(yolo_line), chunks[next_chunk + 2]);
 
-                next_chunk + 3
+                // Render environment variables field
+                let env_field = yolo_mode_field + 1;
+                self.render_env_field(frame, chunks[next_chunk + 3], env_field, theme);
+
+                next_chunk + 4
             } else {
                 next_chunk + 1
             }
@@ -305,6 +321,121 @@ impl NewSessionDialog {
         }
     }
 
+    fn render_env_field(&self, frame: &mut Frame, area: Rect, env_field: usize, theme: &Theme) {
+        let is_focused = self.focused_field == env_field;
+        let label_style = if is_focused {
+            Style::default().fg(theme.accent).underlined()
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        if !self.env_list_expanded {
+            // Collapsed view
+            let count = self.extra_env_keys.len();
+            let summary = if count == 0 {
+                "(empty - press Enter to add)".to_string()
+            } else {
+                format!("[{} items]", count)
+            };
+            let summary_style = if count > 0 {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+
+            let line = Line::from(vec![
+                Span::styled("  Env Vars:", label_style),
+                Span::raw(" "),
+                Span::styled(summary, summary_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+        } else {
+            // Expanded view with list
+            let mut lines: Vec<Line> = Vec::new();
+
+            // Header with controls hint
+            let header = Line::from(vec![
+                Span::styled("  Env Vars:", label_style),
+                Span::styled(
+                    " (a)dd (d)el (Enter)edit (Esc)close",
+                    Style::default().fg(theme.dimmed),
+                ),
+            ]);
+            lines.push(header);
+
+            // Check if we're in editing/adding mode
+            if let Some(ref input) = self.env_editing_input {
+                if self.env_adding_new {
+                    // Show existing items
+                    for (i, key) in self.extra_env_keys.iter().enumerate() {
+                        let prefix = if i == self.env_selected_index {
+                            "  > "
+                        } else {
+                            "    "
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, key),
+                            Style::default().fg(theme.text),
+                        )));
+                    }
+                    // Show input for new item
+                    let input_line = Line::from(vec![
+                        Span::styled("  + ", Style::default().fg(theme.accent)),
+                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
+                        Span::styled("_", Style::default().fg(theme.accent)),
+                    ]);
+                    lines.push(input_line);
+                } else {
+                    // Editing existing item
+                    for (i, key) in self.extra_env_keys.iter().enumerate() {
+                        if i == self.env_selected_index {
+                            // Show editable input
+                            let input_line = Line::from(vec![
+                                Span::styled("  > ", Style::default().fg(theme.accent)),
+                                Span::styled(
+                                    input.value(),
+                                    Style::default().fg(theme.accent).bold(),
+                                ),
+                                Span::styled("_", Style::default().fg(theme.accent)),
+                            ]);
+                            lines.push(input_line);
+                        } else {
+                            let prefix = "    ";
+                            lines.push(Line::from(Span::styled(
+                                format!("{}{}", prefix, key),
+                                Style::default().fg(theme.text),
+                            )));
+                        }
+                    }
+                }
+            } else {
+                // Normal list display
+                if self.extra_env_keys.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "    (press 'a' to add)",
+                        Style::default().fg(theme.dimmed),
+                    )));
+                } else {
+                    for (i, key) in self.extra_env_keys.iter().enumerate() {
+                        let is_selected = i == self.env_selected_index;
+                        let prefix = if is_selected { "  > " } else { "    " };
+                        let style = if is_selected {
+                            Style::default().fg(theme.accent).bold()
+                        } else {
+                            Style::default().fg(theme.text)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, key),
+                            style,
+                        )));
+                    }
+                }
+            }
+
+            frame.render_widget(Paragraph::new(lines), area);
+        }
+    }
+
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
@@ -315,7 +446,7 @@ impl NewSessionDialog {
         let dialog_height: u16 = base_height
             + if has_tool_selection { 3 } else { 0 }
             + if has_sandbox { 3 } else { 0 }
-            + if show_sandbox_options_help { 6 } else { 0 };
+            + if show_sandbox_options_help { 9 } else { 0 }; // Image, YOLO, Env
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -351,6 +482,9 @@ impl NewSessionDialog {
                 continue;
             }
             if idx == 8 && !show_sandbox_options_help {
+                continue;
+            }
+            if idx == 9 && !show_sandbox_options_help {
                 continue;
             }
 

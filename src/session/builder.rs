@@ -26,6 +26,8 @@ pub struct InstanceParams {
     /// The sandbox image to use. Required when sandbox is true.
     pub sandbox_image: String,
     pub yolo_mode: bool,
+    /// Additional environment variable keys to pass from host to container.
+    pub extra_env_keys: Vec<String>,
 }
 
 /// Result of building an instance, tracking what was created for cleanup purposes.
@@ -166,6 +168,11 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             container_name: DockerContainer::generate_name(&instance.id),
             created_at: None,
             yolo_mode: if params.yolo_mode { Some(true) } else { None },
+            extra_env_keys: if params.extra_env_keys.is_empty() {
+                None
+            } else {
+                Some(params.extra_env_keys.clone())
+            },
         });
     }
 

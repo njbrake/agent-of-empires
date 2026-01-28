@@ -350,8 +350,8 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
 
-    // Tab through all fields including sandbox image and yolo mode
-    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo
+    // Tab through all fields including sandbox image, yolo mode, and env vars
+    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo, 8: env
     for _ in 0..6 {
         dialog.handle_key(key(KeyCode::Tab));
     }
@@ -359,6 +359,9 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 7); // yolo mode field
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.focused_field, 8); // env vars field
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 0); // wrap to start
