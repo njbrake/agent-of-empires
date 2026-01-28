@@ -35,7 +35,7 @@ This document contains the help content for the `aoe` command-line program.
 
 ## `aoe`
 
-Agent of Empires (aoe) is a terminal session manager that uses tmux to help you manage and monitor AI coding agents like Claude Code, OpenCode, Mistral Vibe, and Codex CLI.
+Agent of Empires (aoe) is a terminal session manager that uses tmux to help you manage and monitor AI coding agents like Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI.
 
 Run without arguments to launch the TUI dashboard.
 
@@ -75,7 +75,7 @@ Add a new session
 
 * `-t`, `--title <TITLE>`:Session title (defaults to folder name)
 * `-g`, `--group <GROUP>`:Group path (defaults to parent folder)
-* `-c`, `--cmd <COMMAND>`:Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex')
+* `-c`, `--cmd <COMMAND>`:Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex', 'gemini')
 * `-P`, `--parent <PARENT>`:Parent session (creates sub-session, inherits group)
 * `-l`, `--launch`:Launch the session immediately after creating
 * `-w`, `--worktree <WORKTREE_BRANCH>`:Create session in a git worktree for the specified branch

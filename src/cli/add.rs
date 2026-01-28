@@ -21,7 +21,7 @@ pub struct AddArgs {
     #[arg(short = 'g', long)]
     group: Option<String>,
 
-    /// Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex')
+    /// Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex', 'gemini')
     #[arg(short = 'c', long = "cmd")]
     command: Option<String>,
 
@@ -285,10 +285,12 @@ fn detect_tool(cmd: &str) -> Result<String> {
         Ok("vibe".to_string())
     } else if cmd_lower.contains("codex") {
         Ok("codex".to_string())
+    } else if cmd_lower.contains("gemini") {
+        Ok("gemini".to_string())
     } else {
         bail!(
             "Unknown tool in command: {}\n\
-             Supported tools: claude, opencode, vibe, codex\n\
+             Supported tools: claude, opencode, vibe, codex, gemini\n\
              Tip: Command must contain one of the supported tool names",
             cmd
         )

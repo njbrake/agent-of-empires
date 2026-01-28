@@ -9,7 +9,8 @@ mod utils;
 pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
 pub use status_detection::{
-    detect_claude_status, detect_codex_status, detect_opencode_status, detect_vibe_status,
+    detect_claude_status, detect_codex_status, detect_gemini_status, detect_opencode_status,
+    detect_vibe_status,
 };
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
 
@@ -124,12 +125,21 @@ pub fn is_vibe_available() -> bool {
     Command::new("vibe").arg("--version").output().is_ok()
 }
 
+pub fn is_gemini_available() -> bool {
+    Command::new("which")
+        .arg("gemini")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone)]
 pub struct AvailableTools {
     pub claude: bool,
     pub opencode: bool,
     pub vibe: bool,
     pub codex: bool,
+    pub gemini: bool,
 }
 
 impl AvailableTools {
@@ -139,11 +149,12 @@ impl AvailableTools {
             opencode: is_opencode_available(),
             vibe: is_vibe_available(),
             codex: is_codex_available(),
+            gemini: is_gemini_available(),
         }
     }
 
     pub fn any_available(&self) -> bool {
-        self.claude || self.opencode || self.vibe || self.codex
+        self.claude || self.opencode || self.vibe || self.codex || self.gemini
     }
 
     pub fn available_list(&self) -> Vec<&'static str> {
@@ -159,6 +170,9 @@ impl AvailableTools {
         }
         if self.codex {
             tools.push("codex");
+        }
+        if self.gemini {
+            tools.push("gemini");
         }
         tools
     }

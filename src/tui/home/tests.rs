@@ -35,6 +35,7 @@ fn create_test_env_empty() -> TestEnv {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -58,6 +59,7 @@ fn create_test_env_with_sessions(count: usize) -> TestEnv {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -87,6 +89,7 @@ fn create_test_env_with_groups() -> TestEnv {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -171,6 +174,7 @@ fn test_has_dialog_returns_true_for_new_dialog() {
             opencode: false,
             vibe: false,
             codex: false,
+            gemini: false,
         },
         Vec::new(),
     ));
@@ -598,6 +602,7 @@ fn test_get_next_profile_cycles_through_profiles() {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -621,6 +626,7 @@ fn test_get_next_profile_wraps_around() {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -643,6 +649,7 @@ fn test_uppercase_p_returns_switch_profile_action() {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let mut view = HomeView::new(storage, tools).unwrap();
 
@@ -792,6 +799,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
@@ -827,6 +835,7 @@ fn test_group_has_managed_worktrees() {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -865,6 +874,7 @@ fn test_group_has_containers() {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let view = HomeView::new(storage, tools).unwrap();
 
@@ -985,6 +995,7 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let mut view = HomeView::new(storage, tools).unwrap();
 
@@ -1036,6 +1047,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
         opencode: false,
         vibe: false,
         codex: false,
+        gemini: false,
     };
     let mut view = HomeView::new(storage, tools).unwrap();
 

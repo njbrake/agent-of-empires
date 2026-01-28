@@ -2,7 +2,7 @@
 
 ## Overview
 
-Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Codex CLI) inside isolated Docker containers while maintaining access to your project files and credentials.
+Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI) inside isolated Docker containers while maintaining access to your project files and credentials.
 
 **Key Features:**
 - One container per session
@@ -85,6 +85,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | `aoe-opencode-auth` | `/root/.local/share/opencode/` | OpenCode credentials |
 | `aoe-vibe-auth` | `/root/.vibe/` | Mistral Vibe credentials |
 | `aoe-codex-auth` | `/root/.codex/` | Codex CLI credentials |
+| `aoe-gemini-auth` | `/root/.gemini/` | Gemini CLI credentials |
 
 **Note:** Auth persists across containers. First session requires authentication, subsequent sessions reuse it.
 
@@ -102,7 +103,7 @@ Example: `aoe-sandbox-a1b2c3d4`
 
 1. **Session Creation:** When you add a sandboxed session, aoe records the sandbox configuration
 2. **Container Start:** When you start the session, aoe creates/starts the Docker container with appropriate volume mounts
-3. **tmux + docker exec:** Host tmux runs `docker exec -it <container> <tool>` (claude, opencode, vibe, or codex)
+3. **tmux + docker exec:** Host tmux runs `docker exec -it <container> <tool>` (claude, opencode, vibe, codex, or gemini)
 4. **Cleanup:** When you remove the session, the container is automatically deleted
 
 
@@ -115,7 +116,7 @@ Pass additional variables (like API keys) through containers by adding them to c
 
 ```toml
 [sandbox]
-environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
 ```
 
 These variables are read from your host environment and passed to containers (in addition to the terminal defaults above).
@@ -126,7 +127,7 @@ AOE provides two official sandbox images:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, git, ripgrep, fzf |
+| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, ripgrep, fzf |
 | `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
 
 ### Dev Sandbox Tools
@@ -151,7 +152,7 @@ default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
 
 ## Custom Docker Images
 
-The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
+The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
 
 ### Step 1: Create a Dockerfile
 

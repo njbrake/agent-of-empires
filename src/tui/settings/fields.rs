@@ -441,12 +441,13 @@ fn build_session_fields(
         session.map(|s| s.default_tool.is_some()).unwrap_or(false),
     );
 
-    // Map tool name to selected index: 0=Auto, 1=claude, 2=opencode, 3=vibe, 4=codex
+    // Map tool name to selected index: 0=Auto, 1=claude, 2=opencode, 3=vibe, 4=codex, 5=gemini
     let selected = match default_tool.as_deref() {
         Some("claude") => 1,
         Some("opencode") => 2,
         Some("vibe") => 3,
         Some("codex") => 4,
+        Some("gemini") => 5,
         _ => 0, // Auto (use first available)
     };
 
@@ -462,6 +463,7 @@ fn build_session_fields(
                 "opencode".into(),
                 "vibe".into(),
                 "codex".into(),
+                "gemini".into(),
             ],
         },
         category: SettingsCategory::Session,
@@ -536,6 +538,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 2 => Some("opencode".to_string()),
                 3 => Some("vibe".to_string()),
                 4 => Some("codex".to_string()),
+                5 => Some("gemini".to_string()),
                 _ => None, // Auto
             };
         }
@@ -686,6 +689,7 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 2 => Some("opencode".to_string()),
                 3 => Some("vibe".to_string()),
                 4 => Some("codex".to_string()),
+                5 => Some("gemini".to_string()),
                 _ => None, // Auto
             };
             // Compare with global and set/clear override accordingly

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::docker::{
     self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME,
-    OPENCODE_AUTH_VOLUME, VIBE_AUTH_VOLUME,
+    GEMINI_AUTH_VOLUME, OPENCODE_AUTH_VOLUME, VIBE_AUTH_VOLUME,
 };
 use crate::tmux;
 
@@ -207,6 +207,7 @@ impl Instance {
                 "opencode" => "opencode",
                 "vibe" => "vibe",
                 "codex" => "codex",
+                "gemini" => "gemini",
                 _ => "bash",
             }
         } else {
@@ -356,6 +357,7 @@ impl Instance {
                     "claude" => "claude --dangerously-skip-permissions".to_string(),
                     "vibe" => "vibe --agent auto-approve".to_string(),
                     "codex" => "codex --dangerously-bypass-approvals-and-sandbox".to_string(),
+                    "gemini" => "gemini --approval-mode yolo".to_string(),
                     _ => self.get_tool_command().to_string(),
                 }
             } else {
@@ -376,6 +378,7 @@ impl Instance {
                 "claude" => Some(wrap_command_ignore_suspend("claude")),
                 "vibe" => Some(wrap_command_ignore_suspend("vibe")),
                 "codex" => Some(wrap_command_ignore_suspend("codex")),
+                "gemini" => Some(wrap_command_ignore_suspend("gemini")),
                 _ => None,
             }
         } else {
@@ -457,6 +460,7 @@ impl Instance {
         docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
         docker::ensure_named_volume(VIBE_AUTH_VOLUME)?;
         docker::ensure_named_volume(CODEX_AUTH_VOLUME)?;
+        docker::ensure_named_volume(GEMINI_AUTH_VOLUME)?;
 
         crate::migrations::run_lazy_docker_migrations();
 
@@ -539,6 +543,10 @@ impl Instance {
             (
                 CODEX_AUTH_VOLUME.to_string(),
                 format!("{}/.codex", CONTAINER_HOME),
+            ),
+            (
+                GEMINI_AUTH_VOLUME.to_string(),
+                format!("{}/.gemini", CONTAINER_HOME),
             ),
         ];
 
@@ -735,13 +743,13 @@ fn wrap_command_ignore_suspend(cmd: &str) -> String {
 /// - `detect_status_from_content()` in tmux/status_detection.rs
 /// - `default_tool_fields()` in tui/settings/fields.rs (options list and match statements)
 /// - `apply_field_to_global()` and `apply_field_to_profile()` in tui/settings/fields.rs
-pub const SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex"];
+pub const SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "gemini"];
 
 /// Tools that have YOLO mode support configured.
 /// When adding a new tool, add it here and implement YOLO support in:
 /// - `start()` for command construction (Claude uses CLI flag, Vibe uses --auto-approve, Codex uses CLI flag)
 /// - `build_container_config()` for environment variables (OpenCode uses env var)
-pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex"];
+pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "gemini"];
 
 #[cfg(test)]
 mod tests {
@@ -776,6 +784,7 @@ mod tests {
             opencode: true,
             vibe: true,
             codex: true,
+            gemini: true,
         };
         for tool in available_tools.available_list() {
             assert!(
@@ -868,6 +877,13 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "codex".to_string();
         assert_eq!(inst.get_tool_command(), "codex");
+    }
+
+    #[test]
+    fn test_get_tool_command_gemini() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "gemini".to_string();
+        assert_eq!(inst.get_tool_command(), "gemini");
     }
 
     #[test]
