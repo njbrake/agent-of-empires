@@ -3,5 +3,8 @@ import sitemap from '@astrojs/sitemap';
 
 export default defineConfig({
   site: 'https://agent-of-empires.com',
-  integrations: [sitemap()],
+  integrations: [sitemap({
+    changefreq: 'weekly',
+    priority: 0.7,
+  })],
 });

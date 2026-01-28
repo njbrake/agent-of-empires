@@ -7,7 +7,7 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "@astrojs/sitemap": "^3.2.0",
-    "astro": "^4.16.0"
+    "@astrojs/sitemap": "3.1.6",
+    "astro": "4.15.9"
   }
 }
