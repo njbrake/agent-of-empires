@@ -2,9 +2,20 @@
 interface Props {
   title: string;
   description: string;
+  ogTitle?: string;
+  ogDescription?: string;
+  ogImage?: string;
 }
 
-const { title, description } = Astro.props;
+const {
+  title,
+  description,
+  ogTitle = 'Agent of Empires',
+  ogDescription = 'Terminal session manager for AI coding agents. Git worktrees, Docker sandboxing, beautiful TUI.',
+  ogImage = 'https://agent-of-empires.com/assets/social-preview.png'
+} = Astro.props;
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 ---
 
 <!DOCTYPE html>
@@ -17,13 +28,13 @@ const { title, description } = Astro.props;
   <meta name="keywords" content="AI coding agent, terminal session manager, tmux, Claude Code, Codex, OpenCode, Mistral Vibe, Gemini CLI, git worktrees, Docker sandbox, Rust, TUI, CLI, developer tools">
   <meta name="author" content="Nate Brake">
   <meta name="robots" content="index, follow">
-  <link rel="canonical" href="https://agent-of-empires.com/">
+  <link rel="canonical" href={canonicalURL}>
 
   <!-- Open Graph -->
-  <meta property="og:title" content="Agent of Empires">
-  <meta property="og:description" content="Terminal session manager for AI coding agents. Git worktrees, Docker sandboxing, beautiful TUI.">
-  <meta property="og:image" content="https://agent-of-empires.com/assets/social-preview.png">
-  <meta property="og:url" content="https://agent-of-empires.com">
+  <meta property="og:title" content={ogTitle}>
+  <meta property="og:description" content={ogDescription}>
+  <meta property="og:image" content={ogImage}>
+  <meta property="og:url" content={canonicalURL}>
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Agent of Empires">
   <meta property="og:locale" content="en_US">
@@ -32,9 +43,9 @@ const { title, description } = Astro.props;
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:site" content="@natebrake">
   <meta name="twitter:creator" content="@natebrake">
-  <meta name="twitter:title" content="Agent of Empires">
-  <meta name="twitter:description" content="Terminal session manager for AI coding agents">
-  <meta name="twitter:image" content="https://agent-of-empires.com/assets/social-preview.png">
+  <meta name="twitter:title" content={ogTitle}>
+  <meta name="twitter:description" content={ogDescription}>
+  <meta name="twitter:image" content={ogImage}>
 
   <!-- Favicon -->
   <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
@@ -70,6 +81,7 @@ const { title, description } = Astro.props;
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" as="style">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
   <!-- Tailwind CSS -->
