@@ -1,7 +1,7 @@
 //! Session operations for HomeView (create, delete, rename)
 
 use crate::session::builder::{self, InstanceParams};
-use crate::session::{flatten_tree, GroupTree, Status};
+use crate::session::{flatten_tree, list_profiles, GroupTree, Status, Storage};
 use crate::tui::deletion_poller::DeletionRequest;
 use crate::tui::dialogs::{DeleteOptions, GroupDeleteOptions, NewSessionData};
 
@@ -160,6 +160,7 @@ impl HomeView {
         &mut self,
         new_title: &str,
         new_group: Option<&str>,
+        new_profile: Option<&str>,
     ) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
@@ -184,7 +185,71 @@ impl HomeView {
                 Some(g) => g.to_string(),      // Set new (empty string means ungroup)
             };
 
-            // Update instances list
+            // Handle profile change (move session to different profile)
+            if let Some(target_profile) = new_profile {
+                let current_profile = self.storage.profile();
+                if target_profile != current_profile {
+                    // Validate target profile exists
+                    let profiles = list_profiles()?;
+                    if !profiles.contains(&target_profile.to_string()) {
+                        anyhow::bail!("Profile '{}' does not exist", target_profile);
+                    }
+
+                    // Get the instance to move
+                    let mut instance = self
+                        .instances
+                        .iter()
+                        .find(|i| i.id == id)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+
+                    // Apply title and group changes to the instance
+                    instance.title = effective_title.clone();
+                    instance.group_path = effective_group.clone();
+
+                    // Handle tmux rename if title changed
+                    if let Some(orig_inst) = self.instance_map.get(&id) {
+                        if orig_inst.title != effective_title {
+                            let tmux_session = orig_inst.tmux_session()?;
+                            if tmux_session.exists() {
+                                let new_tmux_name =
+                                    crate::tmux::Session::generate_name(&id, &effective_title);
+                                if let Err(e) = tmux_session.rename(&new_tmux_name) {
+                                    tracing::warn!("Failed to rename tmux session: {}", e);
+                                } else {
+                                    crate::tmux::refresh_session_cache();
+                                }
+                            }
+                        }
+                    }
+
+                    // Remove from current profile
+                    self.instances.retain(|i| i.id != id);
+                    self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+                    self.storage
+                        .save_with_groups(&self.instances, &self.group_tree)?;
+
+                    // Add to target profile
+                    let target_storage = Storage::new(target_profile)?;
+                    let (mut target_instances, target_groups) =
+                        target_storage.load_with_groups()?;
+                    target_instances.push(instance);
+                    let mut target_tree =
+                        GroupTree::new_with_groups(&target_instances, &target_groups);
+                    if !effective_group.is_empty() {
+                        target_tree.create_group(&effective_group);
+                    }
+                    target_storage.save_with_groups(&target_instances, &target_tree)?;
+
+                    // Clear selection since session is no longer in this profile
+                    self.selected_session = None;
+
+                    self.reload()?;
+                    return Ok(());
+                }
+            }
+
+            // No profile change - update in place
             if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                 inst.title = effective_title.clone();
                 inst.group_path = effective_group.clone();
