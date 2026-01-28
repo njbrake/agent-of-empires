@@ -76,7 +76,8 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
         // Choose appropriate template based on repo type (bare vs regular)
-        let is_bare = GitWorktree::is_bare_repo(&path);
+        // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
+        let is_bare = GitWorktree::is_bare_repo(&main_repo_path);
         let template = if is_bare {
             &config.worktree.bare_repo_path_template
         } else {

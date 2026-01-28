@@ -83,7 +83,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         let session_id_short = &session_id[..8];
 
         // Choose appropriate template based on repo type (bare vs regular)
-        let template = if GitWorktree::is_bare_repo(&path) {
+        // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
+        let template = if GitWorktree::is_bare_repo(&main_repo_path) {
             &config.worktree.bare_repo_path_template
         } else {
             &config.worktree.path_template

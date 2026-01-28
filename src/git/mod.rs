@@ -41,6 +41,14 @@ impl GitWorktree {
     pub fn find_main_repo(path: &Path) -> Result<PathBuf> {
         let repo = git2::Repository::discover(path)?;
 
+        // Check if this is a worktree of a bare repo setup.
+        // For worktrees of bare repos, repo.path() returns something like:
+        // /project/.bare/worktrees/main/
+        // We want to return /project/ (the parent of .bare).
+        if let Some(bare_repo_root) = Self::find_bare_repo_root_from_gitdir(repo.path()) {
+            return Ok(bare_repo_root);
+        }
+
         // For regular repos with a working directory, return it
         if let Some(workdir) = repo.workdir() {
             return Ok(workdir.to_path_buf());
@@ -54,6 +62,28 @@ impl GitWorktree {
             .parent()
             .map(|p| p.to_path_buf())
             .ok_or(GitError::NotAGitRepo)
+    }
+
+    /// If gitdir is inside a worktrees/ directory of a bare repo (e.g., /project/.bare/worktrees/main/),
+    /// returns the parent of the bare repo (e.g., /project/).
+    /// Returns None if not a bare repo worktree setup.
+    fn find_bare_repo_root_from_gitdir(gitdir: &Path) -> Option<PathBuf> {
+        // Look for a "worktrees" ancestor directory
+        let mut current = gitdir;
+        while let Some(parent) = current.parent() {
+            if current
+                .file_name()
+                .map(|n| n == "worktrees")
+                .unwrap_or(false)
+            {
+                // current is the "worktrees" directory
+                // parent is the bare repo directory (e.g., .bare)
+                // parent.parent() is the main repo root
+                return parent.parent().map(|p| p.to_path_buf());
+            }
+            current = parent;
+        }
+        None
     }
 
     pub fn create_worktree(&self, branch: &str, path: &Path, create_branch: bool) -> Result<()> {
@@ -394,6 +424,39 @@ mod tests {
     }
 
     #[test]
+    fn test_is_bare_repo_from_worktree_uses_main_repo_path() {
+        let dir = setup_linked_worktree_bare_repo();
+        let worktree_path = dir.path().join("main");
+
+        // Skip if worktree wasn't created (git command might not be available)
+        if !worktree_path.exists() {
+            return;
+        }
+
+        // When checking from a worktree directory, is_bare_repo may return false
+        // because git2 sees the worktree as having a working directory.
+        // This documents the current behavior - callers should use find_main_repo first.
+        let from_worktree = GitWorktree::is_bare_repo(&worktree_path);
+
+        // The correct approach: find the main repo first, then check if it's bare
+        let main_repo_path = GitWorktree::find_main_repo(&worktree_path).unwrap();
+        let from_main_repo = GitWorktree::is_bare_repo(&main_repo_path);
+
+        // Main repo path detection should always work correctly
+        assert!(
+            from_main_repo,
+            "is_bare_repo should return true when called with main_repo_path from find_main_repo"
+        );
+
+        // Document that direct worktree check may differ (this is why we use main_repo_path)
+        if !from_worktree {
+            // This is expected behavior - git2's is_bare() returns false for worktrees
+            // because they have a working directory. The fix is to always use
+            // find_main_repo() first, then check is_bare_repo() on that path.
+        }
+    }
+
+    #[test]
     fn test_is_bare_repo_returns_false_for_regular_repo() {
         let (_dir, repo) = setup_test_repo();
         let repo_path = repo.path().parent().unwrap();
@@ -421,6 +484,31 @@ mod tests {
         assert_eq!(
             main_repo, expected,
             "find_main_repo should return the root directory for bare repo setup"
+        );
+    }
+
+    #[test]
+    fn test_find_main_repo_from_worktree_returns_root() {
+        let dir = setup_linked_worktree_bare_repo();
+        let worktree_path = dir.path().join("main");
+
+        // Skip if worktree wasn't created (git command might not be available)
+        if !worktree_path.exists() {
+            return;
+        }
+
+        // find_main_repo from a worktree should return the root path, not the worktree path
+        let result = GitWorktree::find_main_repo(&worktree_path);
+        assert!(
+            result.is_ok(),
+            "find_main_repo should succeed when called from a worktree"
+        );
+
+        let main_repo = result.unwrap();
+        let expected = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            main_repo, expected,
+            "find_main_repo from worktree should return the root directory, not the worktree directory"
         );
     }
 
