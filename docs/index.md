@@ -9,7 +9,7 @@ A terminal session manager for Linux and macOS using tmux to aid in management a
 - **TUI Dashboard**: Visual interface to manage all your AI coding sessions
 - **Session Management**: Create, attach, detach, and delete sessions
 - **Group Organization**: Organize sessions into hierarchical folders
-- **Status Detection**: Automatic status detection for Claude Code, OpenCode, Mistral Vibe, and Codex CLI
+- **Status Detection**: Automatic status detection for Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI
 - **tmux Integration**: Sessions persist in tmux for reliability
 - **Multi-profile Support**: Separate workspaces for different projects
 - **Git Worktrees**: Run parallel agents on different branches of the same repo
