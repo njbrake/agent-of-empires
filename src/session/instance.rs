@@ -18,8 +18,8 @@ fn default_true() -> bool {
 /// Terminal environment variables that are always passed through for proper UI/theming
 const DEFAULT_TERMINAL_ENV_VARS: &[&str] = &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
-/// Build docker exec environment flags from config
-fn build_docker_env_args() -> String {
+/// Build docker exec environment flags from config and optional per-session extra keys
+fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
     let config = super::config::Config::load().unwrap_or_default();
 
     // Start with default terminal variables (always included for proper UI)
@@ -28,10 +28,19 @@ fn build_docker_env_args() -> String {
         .map(|s| s.to_string())
         .collect();
 
-    // Add user-configured variables
+    // Add user-configured variables from global config
     for key in &config.sandbox.environment {
         if !env_keys.contains(key) {
             env_keys.push(key.clone());
+        }
+    }
+
+    // Add per-session extra env keys
+    if let Some(extra_keys) = extra_env_keys {
+        for key in extra_keys {
+            if !env_keys.contains(key) {
+                env_keys.push(key.clone());
+            }
         }
     }
 
@@ -87,6 +96,9 @@ pub struct SandboxInfo {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yolo_mode: Option<bool>,
+    /// Additional environment variable keys to pass from host (session-specific)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_env_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,7 +286,7 @@ impl Instance {
             } else {
                 self.get_tool_command().to_string()
             };
-            let env_args = build_docker_env_args();
+            let env_args = build_docker_env_args(sandbox.extra_env_keys.as_ref());
             let env_part = if env_args.is_empty() {
                 String::new()
             } else {
@@ -475,10 +487,23 @@ impl Instance {
             .map(|s| s.to_string())
             .collect();
 
-        // Add user-configured variables
+        // Add user-configured variables from global config
         for key in &sandbox_config.environment {
             if !env_keys.contains(key) {
                 env_keys.push(key.clone());
+            }
+        }
+
+        // Add per-session extra env keys
+        if let Some(extra_keys) = self
+            .sandbox_info
+            .as_ref()
+            .and_then(|s| s.extra_env_keys.as_ref())
+        {
+            for key in extra_keys {
+                if !env_keys.contains(key) {
+                    env_keys.push(key.clone());
+                }
             }
         }
 
@@ -700,6 +725,7 @@ mod tests {
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: Some(true),
+            extra_env_keys: None,
         });
         assert!(inst.is_yolo_mode());
 
@@ -727,6 +753,7 @@ mod tests {
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: None,
+            extra_env_keys: None,
         });
         assert!(!inst.is_sandboxed());
     }
@@ -741,6 +768,7 @@ mod tests {
             container_name: "test".to_string(),
             created_at: None,
             yolo_mode: None,
+            extra_env_keys: None,
         });
         assert!(inst.is_sandboxed());
     }
@@ -864,6 +892,7 @@ mod tests {
             container_name: "test_container".to_string(),
             created_at: Some(Utc::now()),
             yolo_mode: Some(true),
+            extra_env_keys: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -874,6 +903,7 @@ mod tests {
         assert_eq!(info.image, deserialized.image);
         assert_eq!(info.container_name, deserialized.container_name);
         assert_eq!(info.yolo_mode, deserialized.yolo_mode);
+        assert_eq!(info.extra_env_keys, deserialized.extra_env_keys);
     }
 
     #[test]

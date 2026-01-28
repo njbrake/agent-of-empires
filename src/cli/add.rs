@@ -193,6 +193,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 container_name,
                 created_at: None,
                 yolo_mode: None,
+                extra_env_keys: None,
             });
         }
     }
