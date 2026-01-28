@@ -9,6 +9,7 @@ use crate::docker::{
     self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME,
     OPENCODE_AUTH_VOLUME, VIBE_AUTH_VOLUME,
 };
+use crate::git::GitWorktree;
 use crate::tmux;
 
 fn default_true() -> bool {
@@ -287,12 +288,9 @@ impl Instance {
             format!("{} ", env_args)
         };
 
-        // Get workspace path inside container
-        let dir_name = std::path::Path::new(&self.project_path)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "workspace".to_string());
-        let container_workdir = format!("/workspace/{}", dir_name);
+        // Get workspace path inside container (handles bare repo worktrees correctly)
+        let project_path = std::path::Path::new(&self.project_path);
+        let (_, _, container_workdir) = self.compute_volume_paths(project_path)?;
 
         let cmd = format!(
             "docker exec -it -w {} {}{} /bin/bash",
@@ -471,20 +469,84 @@ impl Instance {
         Ok(())
     }
 
-    fn build_container_config(&self) -> Result<ContainerConfig> {
-        let home =
-            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    /// Compute volume mount paths for Docker container.
+    ///
+    /// For bare repo worktrees, mounts the entire bare repo and sets working_dir to the worktree.
+    /// This allows git commands inside the container to access the full repository structure.
+    ///
+    /// Returns (host_mount_path, container_mount_path, working_dir)
+    fn compute_volume_paths(
+        &self,
+        project_path: &std::path::Path,
+    ) -> Result<(String, String, String)> {
+        // Try to find the main repo if this is a git repository
+        if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
+            // Canonicalize paths for reliable comparison (handles symlinks like /tmp -> /private/tmp)
+            let main_repo_canonical = main_repo
+                .canonicalize()
+                .unwrap_or_else(|_| main_repo.clone());
+            let project_canonical = project_path
+                .canonicalize()
+                .unwrap_or_else(|_| project_path.to_path_buf());
 
-        // Extract dir name from project path to preserve it in the container mount
-        let dir_name = std::path::Path::new(&self.project_path)
+            // Check if main repo is a bare repo and project_path is a worktree within it
+            if GitWorktree::is_bare_repo(&main_repo) && main_repo_canonical != project_canonical {
+                // Bare repo worktree: mount the entire repo, set working_dir to the worktree
+                let repo_name = main_repo_canonical
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "workspace".to_string());
+
+                // Calculate relative path from main_repo to project_path (using canonical paths)
+                let relative_worktree = project_canonical
+                    .strip_prefix(&main_repo_canonical)
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+
+                let container_base = format!("/workspace/{}", repo_name);
+                let working_dir = if relative_worktree.as_os_str().is_empty() {
+                    container_base.clone()
+                } else {
+                    format!("{}/{}", container_base, relative_worktree.display())
+                };
+
+                return Ok((
+                    main_repo_canonical.to_string_lossy().to_string(),
+                    container_base,
+                    working_dir,
+                ));
+            }
+        }
+
+        // Default behavior: mount project_path directly
+        let dir_name = project_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "workspace".to_string());
         let workspace_path = format!("/workspace/{}", dir_name);
 
+        Ok((
+            self.project_path.clone(),
+            workspace_path.clone(),
+            workspace_path,
+        ))
+    }
+
+    fn build_container_config(&self) -> Result<ContainerConfig> {
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+
+        let project_path = std::path::Path::new(&self.project_path);
+
+        // Determine mount path and working directory.
+        // For bare repo worktrees, mount the entire bare repo and set working_dir to the worktree.
+        // This allows git commands to access the full repository structure.
+        let (mount_host_path, container_base_path, workspace_path) =
+            self.compute_volume_paths(project_path)?;
+
         let mut volumes = vec![VolumeMount {
-            host_path: self.project_path.clone(),
-            container_path: workspace_path.clone(),
+            host_path: mount_host_path,
+            container_path: container_base_path,
             read_only: false,
         }];
 
@@ -1141,5 +1203,148 @@ mod tests {
             created_at: None,
         });
         assert!(!inst.has_terminal());
+    }
+
+    mod compute_volume_paths_tests {
+        use super::*;
+        use std::path::Path;
+        use tempfile::TempDir;
+
+        fn setup_regular_repo() -> (TempDir, std::path::PathBuf) {
+            let dir = TempDir::new().unwrap();
+            let repo = git2::Repository::init(dir.path()).unwrap();
+
+            // Create initial commit so HEAD is valid
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let tree_id = repo.index().unwrap().write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
+                .unwrap();
+
+            let repo_path = dir.path().to_path_buf();
+            (dir, repo_path)
+        }
+
+        fn setup_bare_repo_with_worktree() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+            let dir = TempDir::new().unwrap();
+            let bare_path = dir.path().join(".bare");
+
+            // Create bare repository
+            let repo = git2::Repository::init_bare(&bare_path).unwrap();
+
+            // Create initial commit
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
+                .unwrap();
+
+            // Create .git file pointing to bare repo
+            std::fs::write(dir.path().join(".git"), "gitdir: ./.bare\n").unwrap();
+
+            // Create worktree
+            let worktree_path = dir.path().join("main");
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "add", worktree_path.to_str().unwrap(), "HEAD"])
+                .current_dir(&bare_path)
+                .output();
+
+            let main_repo_path = dir.path().to_path_buf();
+            (dir, main_repo_path, worktree_path)
+        }
+
+        #[test]
+        fn test_compute_volume_paths_regular_repo() {
+            let (_dir, repo_path) = setup_regular_repo();
+            let inst = Instance::new("test", repo_path.to_str().unwrap());
+
+            let (mount_path, container_path, working_dir) =
+                inst.compute_volume_paths(&repo_path).unwrap();
+
+            // Regular repo: mount path should be the project path
+            assert_eq!(mount_path, repo_path.to_string_lossy().to_string());
+            // Container path and working dir should be the same
+            assert_eq!(container_path, working_dir);
+            // Should be /workspace/{dir_name}
+            let dir_name = repo_path.file_name().unwrap().to_string_lossy();
+            assert_eq!(container_path, format!("/workspace/{}", dir_name));
+        }
+
+        #[test]
+        fn test_compute_volume_paths_non_git_directory() {
+            let dir = TempDir::new().unwrap();
+            let inst = Instance::new("test", dir.path().to_str().unwrap());
+
+            let (mount_path, container_path, working_dir) =
+                inst.compute_volume_paths(dir.path()).unwrap();
+
+            // Non-git: mount path should be the project path
+            assert_eq!(mount_path, dir.path().to_string_lossy().to_string());
+            // Container path and working dir should be the same
+            assert_eq!(container_path, working_dir);
+        }
+
+        #[test]
+        fn test_compute_volume_paths_bare_repo_worktree() {
+            let (_dir, main_repo_path, worktree_path) = setup_bare_repo_with_worktree();
+
+            // Skip if worktree wasn't created (git might not be available)
+            if !worktree_path.exists() {
+                return;
+            }
+
+            let inst = Instance::new("test", worktree_path.to_str().unwrap());
+
+            let (mount_path, container_path, working_dir) =
+                inst.compute_volume_paths(&worktree_path).unwrap();
+
+            // Canonicalize paths for comparison (handles /var -> /private/var on macOS)
+            let mount_path_canon = Path::new(&mount_path).canonicalize().unwrap();
+            let main_repo_canon = main_repo_path.canonicalize().unwrap();
+
+            // For bare repo worktree: mount the entire repo root
+            assert_eq!(
+                mount_path_canon, main_repo_canon,
+                "Should mount the bare repo root, not just the worktree"
+            );
+
+            // Container path should be /workspace/{repo_name}
+            let repo_name = main_repo_path.file_name().unwrap().to_string_lossy();
+            assert_eq!(
+                container_path,
+                format!("/workspace/{}", repo_name),
+                "Container mount path should be /workspace/{{repo_name}}"
+            );
+
+            // Working dir should point to the worktree within the mount
+            assert!(
+                working_dir.starts_with(&format!("/workspace/{}", repo_name)),
+                "Working dir should be under /workspace/{{repo_name}}"
+            );
+            assert!(
+                working_dir.ends_with("/main"),
+                "Working dir should end with worktree name 'main', got: {}",
+                working_dir
+            );
+        }
+
+        #[test]
+        fn test_compute_volume_paths_bare_repo_root() {
+            let (_dir, main_repo_path, _worktree_path) = setup_bare_repo_with_worktree();
+
+            // When project_path is the bare repo root itself
+            let inst = Instance::new("test", main_repo_path.to_str().unwrap());
+
+            let (mount_path, _container_path, working_dir) =
+                inst.compute_volume_paths(&main_repo_path).unwrap();
+
+            // When at repo root, mount path equals project path
+            let mount_canon = Path::new(&mount_path).canonicalize().unwrap();
+            let main_canon = main_repo_path.canonicalize().unwrap();
+            assert_eq!(mount_canon, main_canon);
+
+            // Working dir should be set
+            assert!(!working_dir.is_empty());
+        }
     }
 }

@@ -111,7 +111,81 @@ impl GitWorktree {
             .current_dir(&self.repo_path)
             .output()?;
 
+        // Convert the .git file from absolute to relative path.
+        // Git always writes absolute paths, but relative paths work better when
+        // the repo is mounted at different locations (e.g., in Docker containers).
+        Self::convert_git_file_to_relative(path)?;
+
         Ok(())
+    }
+
+    /// Convert a worktree's .git file from absolute to relative path.
+    ///
+    /// Git worktrees contain a `.git` file (not directory) with content like:
+    /// `gitdir: /absolute/path/to/.bare/worktrees/name`
+    ///
+    /// This converts it to a relative path like:
+    /// `gitdir: ../.bare/worktrees/name`
+    ///
+    /// Relative paths work when the repo is mounted at different locations.
+    fn convert_git_file_to_relative(worktree_path: &Path) -> Result<()> {
+        let git_file = worktree_path.join(".git");
+        if !git_file.exists() || !git_file.is_file() {
+            return Ok(()); // Not a worktree or already a directory
+        }
+
+        let content = std::fs::read_to_string(&git_file)?;
+        let Some(gitdir_line) = content.lines().find(|l| l.starts_with("gitdir:")) else {
+            return Ok(()); // No gitdir line found
+        };
+
+        let absolute_path = gitdir_line.trim_start_matches("gitdir:").trim();
+        let absolute_path = Path::new(absolute_path);
+
+        if absolute_path.is_relative() {
+            return Ok(()); // Already relative
+        }
+
+        // Calculate relative path from worktree to gitdir
+        let worktree_canonical = worktree_path.canonicalize()?;
+        let gitdir_canonical = absolute_path.canonicalize()?;
+
+        if let Some(relative) = Self::diff_paths(&gitdir_canonical, &worktree_canonical) {
+            let new_content = format!("gitdir: {}\n", relative.display());
+            std::fs::write(&git_file, new_content)?;
+        }
+
+        Ok(())
+    }
+
+    /// Calculate a relative path from `base` to `target`.
+    /// Returns None if the paths have no common ancestor.
+    fn diff_paths(target: &Path, base: &Path) -> Option<PathBuf> {
+        let mut target_components = target.components().peekable();
+        let mut base_components = base.components().peekable();
+
+        // Skip common prefix
+        while let (Some(t), Some(b)) = (target_components.peek(), base_components.peek()) {
+            if t != b {
+                break;
+            }
+            target_components.next();
+            base_components.next();
+        }
+
+        // Count remaining base components (need ".." for each)
+        let up_count = base_components.count();
+
+        // Build relative path: "../" for each remaining base component + remaining target
+        let mut result = PathBuf::new();
+        for _ in 0..up_count {
+            result.push("..");
+        }
+        for component in target_components {
+            result.push(component);
+        }
+
+        Some(result)
     }
 
     pub fn list_worktrees(&self) -> Result<Vec<WorktreeEntry>> {
