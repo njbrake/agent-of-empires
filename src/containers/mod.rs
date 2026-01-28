@@ -5,12 +5,14 @@ pub mod error;
 
 use crate::cli::truncate_id;
 pub use container_interface::{ContainerConfig, ContainerRuntimeInterface, VolumeMount};
+pub use docker::Docker as DefaultContainerRuntime;
 use error::Result;
 
 pub const CLAUDE_AUTH_VOLUME: &str = "aoe-claude-auth";
 pub const OPENCODE_AUTH_VOLUME: &str = "aoe-opencode-auth";
 pub const CODEX_AUTH_VOLUME: &str = "aoe-codex-auth";
 pub const VIBE_AUTH_VOLUME: &str = "aoe-vibe-auth";
+pub const GEMINI_AUTH_VOLUME: &str = "aoe-gemini-auth";
 
 pub struct DockerContainer<T: ContainerRuntimeInterface> {
     pub name: String,
@@ -22,17 +24,17 @@ pub fn default_container_runtime() -> impl ContainerRuntimeInterface {
     docker::Docker
 }
 
+pub fn generate_name(session_id: &str) -> String {
+    format!("aoe-sandbox-{}", truncate_id(session_id, 8))
+}
+
 impl<T> DockerContainer<T>
 where
     T: ContainerRuntimeInterface + Default,
 {
-    pub fn generate_name(session_id: &str) -> String {
-        format!("aoe-sandbox-{}", truncate_id(session_id, 8))
-    }
-
     pub fn new(session_id: &str, image: &str) -> Self {
         Self {
-            name: Self::generate_name(session_id),
+            name: generate_name(session_id),
             image: image.to_string(),
             runtime: T::default(),
         }
@@ -40,7 +42,7 @@ where
 
     pub fn from_session_id(session_id: &str) -> Self {
         Self {
-            name: Self::generate_name(session_id),
+            name: generate_name(session_id),
             image: String::new(),
             runtime: T::default(),
         }
@@ -86,13 +88,13 @@ mod tests {
 
     #[test]
     fn test_container_generate_name_short_id() {
-        let name = DockerContainer::<docker::Docker>::generate_name("abc");
+        let name = generate_name("abc");
         assert_eq!(name, "aoe-sandbox-abc");
     }
 
     #[test]
     fn test_container_generate_name_long_id() {
-        let name = DockerContainer::<docker::Docker>::generate_name("abcdefghijklmnop");
+        let name = generate_name("abcdefghijklmnop");
         assert_eq!(name, "aoe-sandbox-abcdefgh");
     }
 

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use chrono::Utc;
 
-use crate::docker::DockerContainer;
+use crate::containers::{self, ContainerRuntimeInterface};
 use crate::git::GitWorktree;
 
 use super::{civilizations, Config, Instance, SandboxInfo, WorktreeInfo};
@@ -50,10 +50,11 @@ pub struct CreatedWorktree {
 /// if starting fails.
 pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Result<BuildResult> {
     if params.sandbox {
-        if !crate::docker::is_docker_available() {
+        let runtime = containers::default_container_runtime();
+        if !runtime.is_docker_available() {
             bail!("Docker is not installed. Please install Docker to use sandbox mode.");
         }
-        if !crate::docker::is_daemon_running() {
+        if !runtime.is_daemon_running() {
             bail!("Docker daemon is not running. Please start Docker to use sandbox mode.");
         }
     }
@@ -165,7 +166,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             enabled: true,
             container_id: None,
             image: params.sandbox_image.clone(),
-            container_name: DockerContainer::generate_name(&instance.id),
+            container_name: containers::generate_name(&instance.id),
             created_at: None,
             yolo_mode: if params.yolo_mode { Some(true) } else { None },
             extra_env_keys: if params.extra_env_keys.is_empty() {
@@ -199,7 +200,10 @@ pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWo
 
     if let Some(sandbox) = &instance.sandbox_info {
         if sandbox.enabled {
-            let container = DockerContainer::from_session_id(&instance.id);
+            let container =
+                containers::DockerContainer::<containers::DefaultContainerRuntime>::from_session_id(
+                    &instance.id,
+                );
             if container.exists().unwrap_or(false) {
                 if let Err(e) = container.remove(true) {
                     tracing::warn!("Failed to clean up container: {}", e);

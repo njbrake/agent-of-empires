@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 use std::path::PathBuf;
 
-use crate::docker::{self, DockerContainer};
+use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::{civilizations, Config, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
@@ -170,8 +170,9 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
     let config = Config::load()?;
 
+    let runtime = containers::default_container_runtime();
     if use_sandbox || config.sandbox.enabled_by_default {
-        if !docker::is_docker_available() {
+        if !runtime.is_docker_available() {
             if use_sandbox {
                 bail!(
                     "Docker is not installed or not accessible.\n\
@@ -180,12 +181,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 );
             }
         } else {
-            let container_name = DockerContainer::generate_name(&instance.id);
+            let container_name = containers::generate_name(&instance.id);
             let image = args
                 .sandbox_image
                 .as_ref()
                 .map(|s| s.trim().to_string())
-                .unwrap_or_else(docker::effective_default_image);
+                .unwrap_or(runtime.effective_default_image());
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,

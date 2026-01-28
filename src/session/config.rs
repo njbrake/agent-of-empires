@@ -1,11 +1,11 @@
 //! User configuration management
 
+use super::get_app_dir;
+use crate::containers::{self, ContainerRuntimeInterface};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-
-use super::get_app_dir;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -229,7 +229,9 @@ impl Default for SandboxConfig {
 }
 
 fn default_sandbox_image() -> String {
-    crate::docker::default_sandbox_image().to_string()
+    containers::default_container_runtime()
+        .default_sandbox_image()
+        .to_string()
 }
 
 fn default_sandbox_environment() -> Vec<String> {

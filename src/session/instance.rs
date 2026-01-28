@@ -5,9 +5,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::docker::{
-    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME,
-    GEMINI_AUTH_VOLUME, OPENCODE_AUTH_VOLUME, VIBE_AUTH_VOLUME,
+use crate::containers::{
+    self, ContainerConfig, ContainerRuntimeInterface, DockerContainer, VolumeMount,
+    CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME, GEMINI_AUTH_VOLUME, OPENCODE_AUTH_VOLUME,
+    VIBE_AUTH_VOLUME,
 };
 use crate::git::GitWorktree;
 use crate::tmux;
@@ -432,7 +433,8 @@ impl Instance {
             .ok_or_else(|| anyhow::anyhow!("Cannot ensure container for non-sandboxed session"))?;
 
         let image = &sandbox.image;
-        let container = DockerContainer::new(&self.id, image);
+        let container =
+            DockerContainer::<containers::DefaultContainerRuntime>::new(&self.id, image);
 
         if container.is_running()? {
             return Ok(());
@@ -444,13 +446,13 @@ impl Instance {
         }
 
         // Ensure image is available (always pulls to get latest)
-        docker::ensure_image(image)?;
+        containers::default_container_runtime().ensure_image(image)?;
 
-        docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(VIBE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(CODEX_AUTH_VOLUME)?;
-        docker::ensure_named_volume(GEMINI_AUTH_VOLUME)?;
+        containers::default_container_runtime().ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
+        containers::default_container_runtime().ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
+        containers::default_container_runtime().ensure_named_volume(VIBE_AUTH_VOLUME)?;
+        containers::default_container_runtime().ensure_named_volume(CODEX_AUTH_VOLUME)?;
+        containers::default_container_runtime().ensure_named_volume(GEMINI_AUTH_VOLUME)?;
 
         crate::migrations::run_lazy_docker_migrations();
 
