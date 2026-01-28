@@ -23,26 +23,17 @@ else
     exit 1
 fi
 
-# 2. Copy mdbook output to dist/docs/
-echo "Copying documentation..."
-cp -r "$ROOT_DIR/book" "$DIST_DIR/docs"
-
-# 3. Copy landing page
-echo "Copying landing page..."
-cp "$ROOT_DIR/website/index.html" "$DIST_DIR/"
-
-# 4. Copy shared assets
-echo "Copying assets..."
-mkdir -p "$DIST_DIR/assets"
-cp "$ROOT_DIR/assets/logo.svg" "$DIST_DIR/assets/"
-cp "$ROOT_DIR/assets/logo.png" "$DIST_DIR/assets/"
-cp "$ROOT_DIR/assets/social-preview.png" "$DIST_DIR/assets/" 2>/dev/null || true
-cp "$ROOT_DIR/assets/social-preview.svg" "$DIST_DIR/assets/" 2>/dev/null || true
-cp "$ROOT_DIR/theme/favicon.png" "$DIST_DIR/assets/" 2>/dev/null || true
+# 2. Copy shared assets to website/public before Astro build
+echo "Copying assets to website..."
+mkdir -p "$ROOT_DIR/website/public/assets"
+cp "$ROOT_DIR/assets/logo.svg" "$ROOT_DIR/website/public/assets/"
+cp "$ROOT_DIR/assets/logo.png" "$ROOT_DIR/website/public/assets/"
+cp "$ROOT_DIR/assets/social-preview.png" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
+cp "$ROOT_DIR/assets/social-preview.svg" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
+cp "$ROOT_DIR/theme/favicon.png" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
 if [ -f "$ROOT_DIR/docs/assets/demo.gif" ]; then
-  # Verify it's an actual GIF, not a Git LFS pointer
   if head -c 6 "$ROOT_DIR/docs/assets/demo.gif" | grep -q "GIF8"; then
-    cp "$ROOT_DIR/docs/assets/demo.gif" "$DIST_DIR/assets/"
+    cp "$ROOT_DIR/docs/assets/demo.gif" "$ROOT_DIR/website/public/assets/"
     echo "  - demo.gif copied ($(du -h "$ROOT_DIR/docs/assets/demo.gif" | cut -f1))"
   else
     echo "WARNING: demo.gif appears to be a Git LFS pointer, not actual content"
@@ -50,14 +41,21 @@ if [ -f "$ROOT_DIR/docs/assets/demo.gif" ]; then
   fi
 fi
 
-# 5. Copy install script
+# 3. Build Astro website
+echo "Building Astro website..."
+(cd "$ROOT_DIR/website" && npm install && npm run build)
+
+# 4. Copy Astro output to dist/
+echo "Copying website..."
+cp -r "$ROOT_DIR/website/dist/"* "$DIST_DIR/"
+
+# 5. Copy mdbook output to dist/docs/
+echo "Copying documentation..."
+cp -r "$ROOT_DIR/book" "$DIST_DIR/docs"
+
+# 6. Copy install script
 echo "Copying install script..."
 cp "$ROOT_DIR/scripts/install.sh" "$DIST_DIR/"
-
-# 6. Copy SEO files
-echo "Copying SEO files..."
-cp "$ROOT_DIR/website/robots.txt" "$DIST_DIR/"
-cp "$ROOT_DIR/website/sitemap.xml" "$DIST_DIR/"
 
 # 7. Create a simple 404 page that redirects to home
 cat > "$DIST_DIR/404.html" << 'EOF'

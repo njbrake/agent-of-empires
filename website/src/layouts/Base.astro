@@ -1,0 +1,119 @@
+---
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <meta name="description" content={description}>
+  <meta name="keywords" content="AI coding agent, terminal session manager, tmux, Claude Code, Codex, OpenCode, Mistral Vibe, Gemini CLI, git worktrees, Docker sandbox, Rust, TUI, CLI, developer tools">
+  <meta name="author" content="Nate Brake">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://agent-of-empires.com/">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Agent of Empires">
+  <meta property="og:description" content="Terminal session manager for AI coding agents. Git worktrees, Docker sandboxing, beautiful TUI.">
+  <meta property="og:image" content="https://agent-of-empires.com/assets/social-preview.png">
+  <meta property="og:url" content="https://agent-of-empires.com">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Agent of Empires">
+  <meta property="og:locale" content="en_US">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@natebrake">
+  <meta name="twitter:creator" content="@natebrake">
+  <meta name="twitter:title" content="Agent of Empires">
+  <meta name="twitter:description" content="Terminal session manager for AI coding agents">
+  <meta name="twitter:image" content="https://agent-of-empires.com/assets/social-preview.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+  <link rel="icon" type="image/png" href="/assets/logo.png">
+
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Agent of Empires",
+    "description": "A terminal session manager for Linux and macOS using tmux to manage and monitor AI coding agents. Features git worktrees, Docker sandboxing, and a beautiful TUI.",
+    "url": "https://agent-of-empires.com",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS",
+    "programmingLanguage": "Rust",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "author": {
+      "@type": "Person",
+      "name": "Nate Brake",
+      "url": "https://twitter.com/natebrake"
+    },
+    "license": "https://github.com/njbrake/agent-of-empires/blob/main/LICENSE",
+    "codeRepository": "https://github.com/njbrake/agent-of-empires",
+    "keywords": ["AI coding agent", "terminal session manager", "tmux", "Claude Code", "Codex", "OpenCode", "Mistral Vibe", "Gemini CLI", "git worktrees", "Docker sandbox"]
+  }
+  </script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS -->
+  <script is:inline src="https://cdn.tailwindcss.com"></script>
+  <script is:inline>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#fffbeb',
+              100: '#fef3c7',
+              200: '#fde68a',
+              300: '#fcd34d',
+              400: '#fbbf24',
+              500: '#f59e0b',
+              600: '#d97706',
+              700: '#b45309',
+              800: '#92400e',
+              900: '#78350f',
+            },
+            surface: {
+              50: '#f8fafc',
+              100: '#f1f5f9',
+              200: '#e2e8f0',
+              700: '#334155',
+              800: '#1e293b',
+              850: '#162032',
+              900: '#0f172a',
+              950: '#020617',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="gradient-bg min-h-screen text-gray-100 antialiased">
+  <slot />
+  <script is:inline src="/main.js"></script>
+</body>
+</html>
