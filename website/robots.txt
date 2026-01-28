@@ -1,6 +1,6 @@
-# robots.txt for agentofempires.com
+# robots.txt for agent-of-empires.com
 User-agent: *
 Allow: /
 
 # Sitemap location
-Sitemap: https://agentofempires.com/sitemap.xml
+Sitemap: https://agent-of-empires.com/sitemap.xml

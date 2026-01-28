@@ -84,7 +84,7 @@ cat > "$DIST_DIR/404.html" << 'EOF'
 EOF
 
 # 8. Create CNAME file for GitHub Pages (if using custom domain)
-echo "agentofempires.com" > "$DIST_DIR/CNAME"
+echo "agent-of-empires.com" > "$DIST_DIR/CNAME"
 
 echo ""
 echo "Build complete! Output in: $DIST_DIR"
