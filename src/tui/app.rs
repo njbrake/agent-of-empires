@@ -5,7 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use std::time::Duration;
 
-use super::home::HomeView;
+use super::home::{HomeView, TerminalMode};
 use super::styles::Theme;
 use crate::session::{get_update_settings, load_config, save_config, Storage};
 use crate::tmux::AvailableTools;
@@ -243,8 +243,8 @@ impl App {
                 Action::AttachSession(id) => {
                     self.attach_session(&id, terminal)?;
                 }
-                Action::AttachTerminal(id) => {
-                    self.attach_terminal(&id, terminal)?;
+                Action::AttachTerminal(id, mode) => {
+                    self.attach_terminal(&id, mode, terminal)?;
                 }
                 Action::SwitchProfile(profile) => {
                     let storage = Storage::new(&profile)?;
@@ -331,6 +331,7 @@ impl App {
     fn attach_terminal(
         &mut self,
         session_id: &str,
+        mode: TerminalMode,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
         let instance = match self.home.get_instance(session_id) {
@@ -338,36 +339,65 @@ impl App {
             None => return Ok(()),
         };
 
-        let terminal_session = instance.terminal_tmux_session()?;
+        // Get terminal size to pass to tmux session creation
+        let size = crate::terminal::get_size();
 
-        if !terminal_session.exists() {
-            // Get terminal size to pass to tmux session creation
-            // This ensures the session starts at the correct size instead of 80x24 default
-            let size = crate::terminal::get_size();
+        // Handle container vs host terminal based on mode
+        let attach_result = match mode {
+            TerminalMode::Container if instance.is_sandboxed() => {
+                let container_session = instance.container_terminal_tmux_session()?;
 
-            // Start the terminal (creates tmux session and updates terminal_info)
-            if let Err(e) = self
-                .home
-                .start_terminal_for_instance_with_size(session_id, size)
-            {
-                self.home
-                    .set_instance_error(session_id, Some(e.to_string()));
-                return Ok(());
+                if !container_session.exists() {
+                    if let Err(e) = self
+                        .home
+                        .start_container_terminal_for_instance_with_size(session_id, size)
+                    {
+                        self.home
+                            .set_instance_error(session_id, Some(e.to_string()));
+                        return Ok(());
+                    }
+                }
+
+                // Leave TUI mode completely
+                crossterm::terminal::disable_raw_mode()?;
+                crossterm::execute!(
+                    terminal.backend_mut(),
+                    crossterm::terminal::LeaveAlternateScreen,
+                    crossterm::event::DisableMouseCapture,
+                    crossterm::cursor::Show
+                )?;
+                std::io::Write::flush(terminal.backend_mut())?;
+
+                container_session.attach()
             }
-        }
+            _ => {
+                // Host mode (or non-sandboxed session)
+                let terminal_session = instance.terminal_tmux_session()?;
 
-        // Leave TUI mode completely
-        crossterm::terminal::disable_raw_mode()?;
-        crossterm::execute!(
-            terminal.backend_mut(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture,
-            crossterm::cursor::Show
-        )?;
-        std::io::Write::flush(terminal.backend_mut())?;
+                if !terminal_session.exists() {
+                    if let Err(e) = self
+                        .home
+                        .start_terminal_for_instance_with_size(session_id, size)
+                    {
+                        self.home
+                            .set_instance_error(session_id, Some(e.to_string()));
+                        return Ok(());
+                    }
+                }
 
-        // Attach to terminal session (this blocks until user detaches with Ctrl+b d)
-        let attach_result = terminal_session.attach();
+                // Leave TUI mode completely
+                crossterm::terminal::disable_raw_mode()?;
+                crossterm::execute!(
+                    terminal.backend_mut(),
+                    crossterm::terminal::LeaveAlternateScreen,
+                    crossterm::event::DisableMouseCapture,
+                    crossterm::cursor::Show
+                )?;
+                std::io::Write::flush(terminal.backend_mut())?;
+
+                terminal_session.attach()
+            }
+        };
 
         // Re-enter TUI mode
         crossterm::terminal::enable_raw_mode()?;
@@ -406,7 +436,7 @@ impl App {
 pub enum Action {
     Quit,
     AttachSession(String),
-    AttachTerminal(String),
+    AttachTerminal(String, TerminalMode),
     SwitchProfile(String),
 }
 
@@ -418,9 +448,15 @@ mod tests {
     fn test_action_enum() {
         let quit = Action::Quit;
         let attach = Action::AttachSession("test-id".to_string());
+        let attach_terminal =
+            Action::AttachTerminal("test-id".to_string(), TerminalMode::Container);
 
         assert_eq!(quit, Action::Quit);
         assert_eq!(attach, Action::AttachSession("test-id".to_string()));
+        assert_eq!(
+            attach_terminal,
+            Action::AttachTerminal("test-id".to_string(), TerminalMode::Container)
+        );
     }
 
     #[test]
@@ -428,6 +464,10 @@ mod tests {
         let original = Action::AttachSession("session-123".to_string());
         let cloned = original.clone();
         assert_eq!(original, cloned);
+
+        let terminal_action = Action::AttachTerminal("session-123".to_string(), TerminalMode::Host);
+        let terminal_cloned = terminal_action.clone();
+        assert_eq!(terminal_action, terminal_cloned);
     }
 
     #[test]

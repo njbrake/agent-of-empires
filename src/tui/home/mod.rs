@@ -12,7 +12,9 @@ use std::time::Instant;
 
 use tui_input::Input;
 
-use crate::session::{flatten_tree, Group, GroupTree, Instance, Item, Storage};
+use crate::session::{
+    flatten_tree, resolve_config, DefaultTerminalMode, Group, GroupTree, Instance, Item, Storage,
+};
 use crate::tmux::AvailableTools;
 
 use super::creation_poller::{CreationPoller, CreationRequest};
@@ -30,6 +32,14 @@ pub enum ViewMode {
     #[default]
     Agent,
     Terminal,
+}
+
+/// Terminal mode for sandboxed sessions (container vs host)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TerminalMode {
+    #[default]
+    Host,
+    Container,
 }
 
 /// Cached preview content to avoid subprocess calls on every frame
@@ -125,6 +135,12 @@ pub struct HomeView {
     // Performance: preview caching
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
+    pub(super) container_terminal_preview_cache: PreviewCache,
+
+    // Terminal mode for sandboxed sessions (per-session, ephemeral)
+    pub(super) terminal_modes: HashMap<String, TerminalMode>,
+    // Default terminal mode from config
+    pub(super) default_terminal_mode: TerminalMode,
 
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
@@ -146,6 +162,14 @@ impl HomeView {
             .collect();
         let group_tree = GroupTree::new_with_groups(&instances, &groups);
         let flat_items = flatten_tree(&group_tree, &instances);
+
+        // Load the resolved config to get the default terminal mode
+        let default_terminal_mode = resolve_config(storage.profile())
+            .map(|config| match config.sandbox.default_terminal_mode {
+                DefaultTerminalMode::Host => TerminalMode::Host,
+                DefaultTerminalMode::Container => TerminalMode::Container,
+            })
+            .unwrap_or_default();
 
         let mut view = Self {
             storage,
@@ -178,6 +202,9 @@ impl HomeView {
             creation_cancelled: false,
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
+            container_terminal_preview_cache: PreviewCache::default(),
+            terminal_modes: HashMap::new(),
+            default_terminal_mode,
             settings_view: None,
             settings_close_confirm: false,
         };
@@ -469,5 +496,38 @@ impl HomeView {
                 }
             }
         }
+    }
+
+    /// Get the terminal mode for a session (uses config default if not set)
+    pub fn get_terminal_mode(&self, session_id: &str) -> TerminalMode {
+        self.terminal_modes
+            .get(session_id)
+            .copied()
+            .unwrap_or(self.default_terminal_mode)
+    }
+
+    /// Toggle terminal mode between Container and Host for a session
+    pub fn toggle_terminal_mode(&mut self, session_id: &str) {
+        let current = self.get_terminal_mode(session_id);
+        let new_mode = match current {
+            TerminalMode::Container => TerminalMode::Host,
+            TerminalMode::Host => TerminalMode::Container,
+        };
+        self.terminal_modes.insert(session_id.to_string(), new_mode);
+    }
+
+    pub fn start_container_terminal_for_instance_with_size(
+        &mut self,
+        id: &str,
+        size: Option<(u16, u16)>,
+    ) -> anyhow::Result<()> {
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            inst.start_container_terminal_with_size(size)?;
+        }
+        if let Some(inst) = self.instance_map.get_mut(id) {
+            inst.start_container_terminal_with_size(size)?;
+        }
+        // Don't save terminal info for container terminals - it's ephemeral
+        Ok(())
     }
 }

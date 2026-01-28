@@ -1,7 +1,8 @@
 //! Setting field definitions and config mapping
 
 use crate::session::{
-    validate_check_interval, Config, ProfileConfig, TmuxMouseMode, TmuxStatusBarMode,
+    validate_check_interval, Config, DefaultTerminalMode, ProfileConfig, TmuxMouseMode,
+    TmuxStatusBarMode,
 };
 
 use super::SettingsScope;
@@ -46,6 +47,7 @@ pub enum FieldKey {
     DefaultImage,
     Environment,
     SandboxAutoCleanup,
+    DefaultTerminalMode,
     // Tmux
     StatusBar,
     Mouse,
@@ -305,6 +307,16 @@ fn build_sandbox_fields(
         global.sandbox.auto_cleanup,
         sb.and_then(|s| s.auto_cleanup),
     );
+    let (default_terminal_mode, o6) = resolve_value(
+        scope,
+        global.sandbox.default_terminal_mode,
+        sb.and_then(|s| s.default_terminal_mode),
+    );
+
+    let terminal_mode_selected = match default_terminal_mode {
+        DefaultTerminalMode::Host => 0,
+        DefaultTerminalMode::Container => 1,
+    };
 
     vec![
         SettingField {
@@ -346,6 +358,17 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(auto_cleanup),
             category: SettingsCategory::Sandbox,
             has_override: o5,
+        },
+        SettingField {
+            key: FieldKey::DefaultTerminalMode,
+            label: "Default Terminal Mode",
+            description: "Default terminal for sandboxed sessions (toggle with 'c' key)",
+            value: FieldValue::Select {
+                selected: terminal_mode_selected,
+                options: vec!["Host".into(), "Container".into()],
+            },
+            category: SettingsCategory::Sandbox,
+            has_override: o6,
         },
     ]
 }
@@ -485,6 +508,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
+        (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
+            config.sandbox.default_terminal_mode = match selected {
+                0 => DefaultTerminalMode::Host,
+                _ => DefaultTerminalMode::Container,
+            };
+        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             config.tmux.status_bar = match selected {
@@ -615,6 +644,18 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.auto_cleanup,
                 &mut config.sandbox,
                 |s, val| s.auto_cleanup = val,
+            );
+        }
+        (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
+            let mode = match selected {
+                0 => DefaultTerminalMode::Host,
+                _ => DefaultTerminalMode::Container,
+            };
+            set_or_clear_override(
+                mode,
+                &global.sandbox.default_terminal_mode,
+                &mut config.sandbox,
+                |s, val| s.default_terminal_mode = val,
             );
         }
         // Tmux

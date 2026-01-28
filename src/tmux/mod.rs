@@ -11,7 +11,7 @@ pub use status_bar::{get_session_info_for_current, get_status_for_current_sessio
 pub use status_detection::{
     detect_claude_status, detect_codex_status, detect_opencode_status, detect_vibe_status,
 };
-pub use terminal_session::TerminalSession;
+pub use terminal_session::{ContainerTerminalSession, TerminalSession};
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 pub const SESSION_PREFIX: &str = "aoe_";
 pub const TERMINAL_PREFIX: &str = "aoe_term_";
+pub const CONTAINER_TERMINAL_PREFIX: &str = "aoe_cterm_";
 
 static SESSION_CACHE: RwLock<SessionCache> = RwLock::new(SessionCache {
     data: None,

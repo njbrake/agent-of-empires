@@ -691,7 +691,7 @@ fn test_enter_returns_attach_terminal_in_terminal_view() {
 
     // In Terminal view, Enter returns AttachTerminal
     let action = view.handle_key(key(KeyCode::Enter));
-    assert!(matches!(action, Some(Action::AttachTerminal(_))));
+    assert!(matches!(action, Some(Action::AttachTerminal(_, _))));
 }
 
 #[test]

@@ -226,7 +226,7 @@ impl Instance {
 
         let is_new = !session.exists();
         if is_new {
-            session.create_with_size(&self.project_path, size)?;
+            session.create_with_size(&self.project_path, None, size)?;
         }
 
         // Apply all configured tmux options to terminal sessions too
@@ -248,6 +248,81 @@ impl Instance {
             session.kill()?;
         }
         Ok(())
+    }
+
+    pub fn container_terminal_tmux_session(&self) -> Result<tmux::ContainerTerminalSession> {
+        tmux::ContainerTerminalSession::new(&self.id, &self.title)
+    }
+
+    pub fn has_container_terminal(&self) -> bool {
+        self.container_terminal_tmux_session()
+            .map(|s| s.exists())
+            .unwrap_or(false)
+    }
+
+    pub fn start_container_terminal_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
+        if !self.is_sandboxed() {
+            anyhow::bail!("Cannot create container terminal for non-sandboxed session");
+        }
+
+        self.ensure_container_running()?;
+        let sandbox = self.sandbox_info.as_ref().unwrap();
+
+        let env_args = build_docker_env_args();
+        let env_part = if env_args.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", env_args)
+        };
+
+        // Get workspace path inside container
+        let dir_name = std::path::Path::new(&self.project_path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "workspace".to_string());
+        let container_workdir = format!("/workspace/{}", dir_name);
+
+        let cmd = format!(
+            "docker exec -it -w {} {}{} /bin/bash",
+            container_workdir, env_part, sandbox.container_name
+        );
+
+        let session = self.container_terminal_tmux_session()?;
+        let is_new = !session.exists();
+        if is_new {
+            session.create_with_size(&self.project_path, Some(&cmd), size)?;
+            self.apply_container_terminal_tmux_options();
+        }
+
+        Ok(())
+    }
+
+    pub fn kill_container_terminal(&self) -> Result<()> {
+        let session = self.container_terminal_tmux_session()?;
+        if session.exists() {
+            session.kill()?;
+        }
+        Ok(())
+    }
+
+    /// Apply all configured tmux options to the container terminal session.
+    fn apply_container_terminal_tmux_options(&self) {
+        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
+
+        let session_name = tmux::ContainerTerminalSession::generate_name(&self.id, &self.title);
+        let terminal_title = format!("{} (container)", self.title);
+        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
+            if s.enabled {
+                Some(SandboxDisplay {
+                    container_name: s.container_name.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
+        apply_all_tmux_options(&session_name, &terminal_title, branch, sandbox.as_ref());
     }
 
     pub fn start(&mut self) -> Result<()> {

@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use super::config::{Config, TmuxMouseMode, TmuxStatusBarMode};
+use super::config::{Config, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMode};
 use super::get_profile_dir;
 
 /// Profile-specific settings. All fields are Option<T> - None means "inherit from global"
@@ -108,6 +108,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_terminal_mode: Option<DefaultTerminalMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -249,6 +252,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(ref memory_limit) = sandbox_override.memory_limit {
             global.sandbox.memory_limit = Some(memory_limit.clone());
+        }
+        if let Some(default_terminal_mode) = sandbox_override.default_terminal_mode {
+            global.sandbox.default_terminal_mode = default_terminal_mode;
         }
     }
 

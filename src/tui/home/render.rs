@@ -5,8 +5,8 @@ use ratatui::widgets::*;
 use std::time::Instant;
 
 use super::{
-    get_indent, HomeView, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR, ICON_EXPANDED,
-    ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_WAITING,
+    get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
+    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_WAITING,
 };
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
@@ -234,10 +234,22 @@ impl HomeView {
                             (icon, Cow::Borrowed(&inst.title), style)
                         }
                         ViewMode::Terminal => {
-                            let terminal_running = inst
-                                .terminal_tmux_session()
-                                .map(|s| s.exists())
-                                .unwrap_or(false);
+                            // For sandboxed sessions, check the appropriate terminal based on mode
+                            let terminal_mode = if inst.is_sandboxed() {
+                                self.get_terminal_mode(id)
+                            } else {
+                                TerminalMode::Host
+                            };
+                            let terminal_running = match terminal_mode {
+                                TerminalMode::Container => inst
+                                    .container_terminal_tmux_session()
+                                    .map(|s| s.exists())
+                                    .unwrap_or(false),
+                                TerminalMode::Host => inst
+                                    .terminal_tmux_session()
+                                    .map(|s| s.exists())
+                                    .unwrap_or(false),
+                            };
                             let (icon, color) = if terminal_running {
                                 (ICON_RUNNING, theme.terminal_active)
                             } else {
@@ -273,11 +285,24 @@ impl HomeView {
                         Style::default().fg(Color::Cyan),
                     ));
                 }
-                if inst.is_sandboxed() && self.view_mode == ViewMode::Agent {
-                    line_spans.push(Span::styled(
-                        " [sandbox]",
-                        Style::default().fg(Color::Magenta),
-                    ));
+                if inst.is_sandboxed() {
+                    match self.view_mode {
+                        ViewMode::Agent => {
+                            line_spans.push(Span::styled(
+                                " [sandbox]",
+                                Style::default().fg(Color::Magenta),
+                            ));
+                        }
+                        ViewMode::Terminal => {
+                            let mode = self.get_terminal_mode(id);
+                            let mode_text = match mode {
+                                TerminalMode::Container => " [container]",
+                                TerminalMode::Host => " [host]",
+                            };
+                            line_spans
+                                .push(Span::styled(mode_text, Style::default().fg(Color::Magenta)));
+                        }
+                    }
                 }
             }
         }
@@ -318,7 +343,7 @@ impl HomeView {
         }
     }
 
-    /// Refresh terminal preview cache if needed
+    /// Refresh terminal preview cache if needed (for host terminals)
     fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
@@ -346,6 +371,39 @@ impl HomeView {
                     self.terminal_preview_cache.session_id = Some(id.clone());
                     self.terminal_preview_cache.dimensions = (width, height);
                     self.terminal_preview_cache.last_refresh = Instant::now();
+                }
+            }
+        }
+    }
+
+    /// Refresh container terminal preview cache if needed
+    fn refresh_container_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
+        const PREVIEW_REFRESH_MS: u128 = 250;
+
+        let needs_refresh = match &self.selected_session {
+            Some(id) => {
+                self.container_terminal_preview_cache.session_id.as_ref() != Some(id)
+                    || self.container_terminal_preview_cache.dimensions != (width, height)
+                    || self
+                        .container_terminal_preview_cache
+                        .last_refresh
+                        .elapsed()
+                        .as_millis()
+                        > PREVIEW_REFRESH_MS
+            }
+            None => false,
+        };
+
+        if needs_refresh {
+            if let Some(id) = &self.selected_session {
+                if let Some(inst) = self.instance_map.get(id) {
+                    self.container_terminal_preview_cache.content = inst
+                        .container_terminal_tmux_session()
+                        .and_then(|s| s.capture_pane(height as usize))
+                        .unwrap_or_default();
+                    self.container_terminal_preview_cache.session_id = Some(id.clone());
+                    self.container_terminal_preview_cache.dimensions = (width, height);
+                    self.container_terminal_preview_cache.last_refresh = Instant::now();
                 }
             }
         }
@@ -392,20 +450,62 @@ impl HomeView {
                 }
             }
             ViewMode::Terminal => {
-                self.refresh_terminal_preview_cache_if_needed(inner.width, inner.height);
+                // Clone id early to avoid borrow conflicts
+                let selected_id = self.selected_session.clone();
 
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(id) {
-                        let terminal_running = inst
-                            .terminal_tmux_session()
-                            .map(|s| s.exists())
-                            .unwrap_or(false);
+                if let Some(id) = selected_id {
+                    // Determine which terminal to preview based on mode
+                    let terminal_mode = if let Some(inst) = self.instance_map.get(&id) {
+                        if inst.is_sandboxed() {
+                            self.get_terminal_mode(&id)
+                        } else {
+                            TerminalMode::Host
+                        }
+                    } else {
+                        TerminalMode::Host
+                    };
+
+                    // Refresh the appropriate cache before borrowing instance
+                    match terminal_mode {
+                        TerminalMode::Container => {
+                            self.refresh_container_terminal_preview_cache_if_needed(
+                                inner.width,
+                                inner.height,
+                            );
+                        }
+                        TerminalMode::Host => {
+                            self.refresh_terminal_preview_cache_if_needed(
+                                inner.width,
+                                inner.height,
+                            );
+                        }
+                    }
+
+                    // Now borrow instance for rendering
+                    if let Some(inst) = self.instance_map.get(&id) {
+                        let (terminal_running, preview_content) = match terminal_mode {
+                            TerminalMode::Container => {
+                                let running = inst
+                                    .container_terminal_tmux_session()
+                                    .map(|s| s.exists())
+                                    .unwrap_or(false);
+                                (running, &self.container_terminal_preview_cache.content)
+                            }
+                            TerminalMode::Host => {
+                                let running = inst
+                                    .terminal_tmux_session()
+                                    .map(|s| s.exists())
+                                    .unwrap_or(false);
+                                (running, &self.terminal_preview_cache.content)
+                            }
+                        };
+
                         Preview::render_terminal_preview(
                             frame,
                             inner,
                             inst,
                             terminal_running,
-                            &self.terminal_preview_cache.content,
+                            preview_content,
                             theme,
                         );
                     }
@@ -456,6 +556,24 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" t", key_style),
             Span::styled(" View ", desc_style),
+        ]);
+
+        // Show c: container/host hint for sandboxed sessions in Terminal view
+        if self.view_mode == ViewMode::Terminal {
+            if let Some(id) = &self.selected_session {
+                if let Some(inst) = self.instance_map.get(id) {
+                    if inst.is_sandboxed() {
+                        spans.extend([
+                            Span::styled("│", sep_style),
+                            Span::styled(" c", key_style),
+                            Span::styled(" Mode ", desc_style),
+                        ]);
+                    }
+                }
+            }
+        }
+
+        spans.extend([
             Span::styled("│", sep_style),
             Span::styled(" n", key_style),
             Span::styled(" New ", desc_style),

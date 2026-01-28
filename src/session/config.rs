@@ -177,6 +177,10 @@ pub struct SandboxConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit: Option<String>,
+
+    /// Default terminal mode for sandboxed sessions (host or container)
+    #[serde(default)]
+    pub default_terminal_mode: DefaultTerminalMode,
 }
 
 impl Default for SandboxConfig {
@@ -190,6 +194,7 @@ impl Default for SandboxConfig {
             auto_cleanup: true,
             cpu_limit: None,
             memory_limit: None,
+            default_terminal_mode: DefaultTerminalMode::default(),
         }
     }
 }
@@ -205,6 +210,17 @@ fn default_sandbox_environment() -> Vec<String> {
         "FORCE_COLOR".to_string(),
         "NO_COLOR".to_string(),
     ]
+}
+
+/// Default terminal mode for sandboxed sessions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultTerminalMode {
+    /// Default to host terminal (shell on the host machine)
+    #[default]
+    Host,
+    /// Default to container terminal (shell inside the Docker container)
+    Container,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

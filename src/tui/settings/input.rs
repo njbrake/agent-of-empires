@@ -435,6 +435,11 @@ impl SettingsView {
                     s.yolo_mode_default = None;
                 }
             }
+            FieldKey::DefaultTerminalMode => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.default_terminal_mode = None;
+                }
+            }
         }
 
         self.has_changes = true;
