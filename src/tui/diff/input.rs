@@ -44,8 +44,8 @@ impl DiffView {
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> DiffAction {
         match (key.code, key.modifiers) {
-            // Close view (Esc only - q quits the whole app)
-            (KeyCode::Esc, _) => DiffAction::Close,
+            // Close view
+            (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => DiffAction::Close,
 
             // File navigation (j/k always navigate between files)
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {

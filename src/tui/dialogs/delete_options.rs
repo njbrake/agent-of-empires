@@ -118,7 +118,19 @@ impl UnifiedDeleteDialog {
             KeyCode::Enter => match self.focus {
                 FocusElement::YesButton => DialogResult::Submit(self.options.clone()),
                 FocusElement::NoButton => DialogResult::Cancel,
-                _ => DialogResult::Submit(self.options.clone()),
+                // Enter on checkbox toggles it (same as Space) rather than submitting
+                FocusElement::WorktreeCheckbox => {
+                    self.options.delete_worktree = !self.options.delete_worktree;
+                    DialogResult::Continue
+                }
+                FocusElement::BranchCheckbox => {
+                    self.options.delete_branch = !self.options.delete_branch;
+                    DialogResult::Continue
+                }
+                FocusElement::SandboxCheckbox => {
+                    self.options.delete_sandbox = !self.options.delete_sandbox;
+                    DialogResult::Continue
+                }
             },
 
             KeyCode::Char(' ') => {

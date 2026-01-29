@@ -433,22 +433,22 @@ impl DiffView {
                 "Navigation",
                 vec![
                     ("j/k, ↑/↓", "Navigate between files"),
-                    ("Scroll", "Scroll diff content"),
-                    ("PgUp/PgDn", "Page up / down in diff"),
+                    ("PgUp/Dn", "Page up / down in diff"),
+                    ("Ctrl+u/d", "Half-page up / down"),
                     ("g/G", "Go to top / bottom of diff"),
                 ],
             ),
             (
                 "Actions",
                 vec![
-                    ("Enter, e", "Edit file in vim/nano"),
+                    ("e", "Edit file in external editor"),
                     ("b", "Select base branch"),
                     ("r", "Refresh diff"),
                 ],
             ),
             (
                 "Other",
-                vec![("?", "Toggle this help"), ("Esc", "Close diff view")],
+                vec![("?", "Toggle this help"), ("q/Esc", "Close diff view")],
             ),
         ];
 

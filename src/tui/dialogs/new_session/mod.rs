@@ -349,11 +349,11 @@ impl NewSessionDialog {
                     },
                 })
             }
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::Down => {
                 self.focused_field = (self.focused_field + 1) % max_field;
                 DialogResult::Continue
             }
-            KeyCode::BackTab => {
+            KeyCode::BackTab | KeyCode::Up => {
                 self.focused_field = if self.focused_field == 0 {
                     max_field - 1
                 } else {

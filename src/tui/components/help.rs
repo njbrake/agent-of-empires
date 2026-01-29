@@ -23,8 +23,8 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("k/↑", "Move up"),
                 ("h/←", "Collapse group"),
                 ("l/→", "Expand group"),
-                ("g", "Go to top"),
-                ("G", "Go to bottom"),
+                ("g/G", "Go to top / bottom"),
+                ("PgUp/Dn", "Move 10 items up / down"),
             ],
         ),
         (
