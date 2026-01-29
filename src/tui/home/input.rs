@@ -319,14 +319,22 @@ impl HomeView {
                 }
             }
             KeyCode::Char('D') => {
-                // Open diff view - use selected session's path or current directory
-                let repo_path = self
-                    .selected_session
-                    .as_ref()
-                    .and_then(|id| self.instance_map.get(id))
-                    .map(|inst| std::path::PathBuf::from(&inst.project_path))
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                // Open diff view - requires a selected session
+                let Some(session_id) = &self.selected_session else {
+                    self.info_dialog = Some(InfoDialog::new(
+                        "No Session Selected",
+                        "Select a session to view its diff.",
+                    ));
+                    return None;
+                };
 
+                let Some(inst) = self.instance_map.get(session_id) else {
+                    self.info_dialog =
+                        Some(InfoDialog::new("Error", "Could not find session data."));
+                    return None;
+                };
+
+                let repo_path = std::path::PathBuf::from(&inst.project_path);
                 match DiffView::new(repo_path) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
