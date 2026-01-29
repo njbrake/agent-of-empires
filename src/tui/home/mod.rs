@@ -23,6 +23,7 @@ use super::dialogs::{
     ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, InfoDialog, NewSessionData,
     NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
+use super::diff::DiffView;
 use super::settings::SettingsView;
 use super::status_poller::StatusPoller;
 
@@ -146,6 +147,9 @@ pub struct HomeView {
     pub(super) settings_view: Option<SettingsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
     pub(super) settings_close_confirm: bool,
+
+    // Diff view
+    pub(super) diff_view: Option<DiffView>,
 }
 
 impl HomeView {
@@ -207,6 +211,7 @@ impl HomeView {
             default_terminal_mode,
             settings_view: None,
             settings_close_confirm: false,
+            diff_view: None,
         };
 
         view.update_selected();

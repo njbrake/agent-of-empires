@@ -6,7 +6,7 @@ use ratatui::widgets::*;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 28;
+const DIALOG_HEIGHT: u16 = 30;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -41,6 +41,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 ("t", "Toggle Agent/Terminal view"),
                 ("c", "Toggle container/host (sandbox)"),
+                ("D", "Diff view (git changes)"),
             ],
         ),
         (

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod diff;
 pub mod error;
 pub mod template;
 

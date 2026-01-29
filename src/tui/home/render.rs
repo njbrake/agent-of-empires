@@ -33,6 +33,30 @@ impl HomeView {
             return;
         }
 
+        // Diff view takes over the whole screen
+        if let Some(ref mut diff) = self.diff_view {
+            // Compute diff for selected file if not cached
+            let _ = diff.get_current_diff();
+
+            // Update dimensions for scrolling
+            let visible_lines = area.height.saturating_sub(8); // Approximate
+            let total_lines = diff
+                .diff_cache
+                .get(
+                    &diff
+                        .files
+                        .get(diff.selected_file)
+                        .map(|f| f.path.clone())
+                        .unwrap_or_default(),
+                )
+                .map(|d| d.hunks.iter().map(|h| h.lines.len() + 2).sum::<usize>() as u16)
+                .unwrap_or(0);
+            diff.update_dimensions(visible_lines, total_lines);
+
+            diff.render(frame, area, theme);
+            return;
+        }
+
         // Layout: main area + status bar + optional update bar at bottom
         let constraints = if update_info.is_some() {
             vec![
@@ -591,6 +615,9 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" /", key_style),
             Span::styled(" Search ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" D", key_style),
+            Span::styled(" Diff ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" ?", key_style),
             Span::styled(" Help ", desc_style),

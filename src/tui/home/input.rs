@@ -1,6 +1,6 @@
 //! Input handling for HomeView
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
@@ -11,6 +11,7 @@ use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, InfoDialog,
     NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
 };
+use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
 
 impl HomeView {
@@ -59,6 +60,21 @@ impl HomeView {
                     ));
                     self.settings_close_confirm = true;
                     return None;
+                }
+            }
+        }
+
+        // Handle diff view (full-screen takeover)
+        if let Some(ref mut diff_view) = self.diff_view {
+            match diff_view.handle_key(key) {
+                DiffAction::Continue => return None,
+                DiffAction::Close => {
+                    self.diff_view = None;
+                    return None;
+                }
+                DiffAction::EditFile(path) => {
+                    // Launch external editor (vim or nano)
+                    return Some(Action::EditFile(path));
                 }
             }
         }
@@ -298,6 +314,26 @@ impl HomeView {
                         self.info_dialog = Some(InfoDialog::new(
                             "Error",
                             &format!("Failed to open settings: {}", e),
+                        ));
+                    }
+                }
+            }
+            KeyCode::Char('D') => {
+                // Open diff view - use selected session's path or current directory
+                let repo_path = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|id| self.instance_map.get(id))
+                    .map(|inst| std::path::PathBuf::from(&inst.project_path))
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+                match DiffView::new(repo_path) {
+                    Ok(view) => self.diff_view = Some(view),
+                    Err(e) => {
+                        tracing::error!("Failed to open diff view: {}", e);
+                        self.info_dialog = Some(InfoDialog::new(
+                            "Error",
+                            &format!("Failed to open diff view: {}", e),
                         ));
                     }
                 }
@@ -544,5 +580,25 @@ impl HomeView {
         self.filtered_items = Some(matches);
         self.cursor = 0;
         self.update_selected();
+    }
+
+    /// Handle a mouse event
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Pass mouse events to diff view if active
+        if let Some(ref mut diff_view) = self.diff_view {
+            match diff_view.handle_mouse(mouse) {
+                DiffAction::Continue => return None,
+                DiffAction::Close => {
+                    self.diff_view = None;
+                    return None;
+                }
+                DiffAction::EditFile(path) => {
+                    return Some(Action::EditFile(path));
+                }
+            }
+        }
+
+        // No mouse handling for other views currently
+        None
     }
 }

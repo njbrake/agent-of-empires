@@ -14,6 +14,7 @@
 # Guides
 
 - [Workflow](guides/workflow.md)
+- [Diff View](guides/diff-view.md)
 - [Worktrees Reference](guides/worktrees.md)
 - [Docker Sandbox](guides/sandbox.md)
 - [tmux Status Bar](guides/tmux-status-bar.md)

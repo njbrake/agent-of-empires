@@ -111,6 +111,7 @@ This creates:
 | Key | Action |
 |-----|--------|
 | `t` | Toggle between Agent View and Terminal View |
+| `D` | Open [Diff View](diff-view.md) to review git changes |
 | `Enter` | Attach to agent (Agent View) or terminal (Terminal View) |
 | `n` | Create new session |
 | `d` | Delete session (Agent View only) |

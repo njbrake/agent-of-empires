@@ -1,8 +1,9 @@
 //! Main TUI application
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::prelude::*;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
@@ -103,16 +104,27 @@ impl App {
 
             // Poll with short timeout for responsive input
             if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    self.handle_key(key, terminal).await?;
+                match event::read()? {
+                    Event::Key(key) => {
+                        self.handle_key(key, terminal).await?;
 
-                    // Draw immediately after input for responsiveness
-                    terminal.draw(|f| self.render(f))?;
+                        // Draw immediately after input for responsiveness
+                        terminal.draw(|f| self.render(f))?;
 
-                    if self.should_quit {
-                        break;
+                        if self.should_quit {
+                            break;
+                        }
+                        continue; // Skip status refresh this iteration for responsiveness
                     }
-                    continue; // Skip status refresh this iteration for responsiveness
+                    Event::Mouse(mouse) => {
+                        self.handle_mouse(mouse, terminal).await?;
+
+                        // Draw immediately after input for responsiveness
+                        terminal.draw(|f| self.render(f))?;
+
+                        continue;
+                    }
+                    _ => {}
                 }
             }
 
@@ -250,6 +262,38 @@ impl App {
                     let storage = Storage::new(&profile)?;
                     let tools = self.home.available_tools();
                     self.home = HomeView::new(storage, tools)?;
+                }
+                Action::EditFile(path) => {
+                    self.edit_file(&path, terminal)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        // Delegate to home view
+        if let Some(action) = self.home.handle_mouse(mouse) {
+            match action {
+                Action::Quit => self.should_quit = true,
+                Action::AttachSession(id) => {
+                    self.attach_session(&id, terminal)?;
+                }
+                Action::AttachTerminal(id, mode) => {
+                    self.attach_terminal(&id, mode, terminal)?;
+                }
+                Action::SwitchProfile(profile) => {
+                    let storage = Storage::new(&profile)?;
+                    let tools = self.home.available_tools();
+                    self.home = HomeView::new(storage, tools)?;
+                }
+                Action::EditFile(path) => {
+                    self.edit_file(&path, terminal)?;
                 }
             }
         }
@@ -430,6 +474,85 @@ impl App {
 
         Ok(())
     }
+
+    fn edit_file(
+        &mut self,
+        path: &std::path::Path,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        // Determine which editor to use (prefer vim, fall back to nano)
+        let editor = std::env::var("EDITOR")
+            .ok()
+            .or_else(|| {
+                // Check if vim is available
+                if std::process::Command::new("vim")
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok()
+                {
+                    Some("vim".to_string())
+                } else if std::process::Command::new("nano")
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok()
+                {
+                    Some("nano".to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "vim".to_string());
+
+        // Leave TUI mode completely
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+            crossterm::cursor::Show
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        // Launch the editor
+        let status = std::process::Command::new(&editor).arg(path).status();
+
+        // Re-enter TUI mode
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture,
+            crossterm::cursor::Hide
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        // Drain any stale events that accumulated during editor session
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read();
+        }
+
+        // Force terminal to clear and redraw completely
+        terminal.clear()?;
+        self.needs_redraw = true;
+
+        // Refresh diff view if it's open (file may have changed)
+        if let Some(ref mut diff_view) = self.home.diff_view {
+            if let Err(e) = diff_view.refresh_files() {
+                tracing::warn!("Failed to refresh diff after edit: {}", e);
+            }
+        }
+
+        // Log any editor errors but don't fail
+        if let Err(e) = status {
+            tracing::warn!("Editor '{}' returned error: {}", editor, e);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -438,6 +561,7 @@ pub enum Action {
     AttachSession(String),
     AttachTerminal(String, TerminalMode),
     SwitchProfile(String),
+    EditFile(PathBuf),
 }
 
 #[cfg(test)]

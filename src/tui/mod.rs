@@ -5,6 +5,7 @@ mod components;
 mod creation_poller;
 mod deletion_poller;
 pub mod dialogs;
+pub mod diff;
 mod home;
 pub mod settings;
 mod status_poller;
