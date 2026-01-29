@@ -174,9 +174,7 @@ mod config {
     fn test_diff_config_defaults() {
         let config = DiffConfig::default();
         assert!(config.default_branch.is_none());
-        assert!(config.syntax_highlighting);
         assert_eq!(config.context_lines, 3);
-        assert!(config.inline_changes);
     }
 
     #[test]
@@ -184,12 +182,10 @@ mod config {
         let toml = r#"
             [diff]
             default_branch = "develop"
-            syntax_highlighting = false
             context_lines = 5
         "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.diff.default_branch, Some("develop".to_string()));
-        assert!(!config.diff.syntax_highlighting);
         assert_eq!(config.diff.context_lines, 5);
     }
 
@@ -197,17 +193,13 @@ mod config {
     fn test_diff_config_serialization() {
         let config = DiffConfig {
             default_branch: Some("main".to_string()),
-            syntax_highlighting: true,
             context_lines: 10,
-            inline_changes: false,
         };
 
         let serialized = toml::to_string(&config).unwrap();
         let deserialized: DiffConfig = toml::from_str(&serialized).unwrap();
 
         assert_eq!(config.default_branch, deserialized.default_branch);
-        assert_eq!(config.syntax_highlighting, deserialized.syntax_highlighting);
         assert_eq!(config.context_lines, deserialized.context_lines);
-        assert_eq!(config.inline_changes, deserialized.inline_changes);
     }
 }

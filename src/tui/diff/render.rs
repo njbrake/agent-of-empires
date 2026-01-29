@@ -16,8 +16,22 @@ use super::DiffView;
 use crate::git::diff::FileStatus;
 use crate::tui::styles::Theme;
 
+/// Truncate a string from the left, adding an ellipsis prefix if it doesn't fit.
+fn truncate_left(s: &str, max_width: usize) -> String {
+    if s.len() <= max_width {
+        return s.to_string();
+    }
+    if max_width <= 1 {
+        return ".".to_string();
+    }
+    // "..." + tail of the string
+    let tail_len = max_width.saturating_sub(1);
+    let start = s.len() - tail_len;
+    format!("\u{2026}{}", &s[start..])
+}
+
 impl DiffView {
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Clear the area
         frame.render_widget(Clear, area);
 
@@ -87,7 +101,7 @@ impl DiffView {
         frame.render_widget(Paragraph::new(header), inner);
     }
 
-    fn render_content(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Split into file list (left) and diff content (right)
         let layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -117,6 +131,9 @@ impl DiffView {
             return;
         }
 
+        // Available width for the file path text (subtract borders, padding, prefix, status)
+        let max_path_width = inner.width.saturating_sub(4) as usize; // "  M " = 4 chars
+
         let items: Vec<ListItem> = self
             .files
             .iter()
@@ -133,20 +150,6 @@ impl DiffView {
                     FileStatus::Untracked => Color::Gray,
                 };
 
-                let filename = file
-                    .path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("?");
-
-                let dir = file
-                    .path
-                    .parent()
-                    .and_then(|p| p.to_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| format!("{}/", s))
-                    .unwrap_or_default();
-
                 let style = if is_selected {
                     Style::default()
                         .fg(theme.accent)
@@ -157,14 +160,26 @@ impl DiffView {
 
                 let prefix = if is_selected { "> " } else { "  " };
 
+                let display_path = if is_selected {
+                    // Selected: show full path, truncate from left with ellipsis
+                    let full = file.path.to_string_lossy();
+                    truncate_left(&full, max_path_width)
+                } else {
+                    // Not selected: show filename only
+                    file.path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("?")
+                        .to_string()
+                };
+
                 let line = Line::from(vec![
                     Span::styled(prefix, style),
                     Span::styled(
                         format!("{} ", file.status.indicator()),
                         Style::default().fg(status_color),
                     ),
-                    Span::styled(dir, Style::default().fg(theme.dimmed)),
-                    Span::styled(filename, style),
+                    Span::styled(display_path, style),
                 ]);
 
                 ListItem::new(line)
@@ -175,7 +190,7 @@ impl DiffView {
         frame.render_widget(list, inner);
     }
 
-    fn render_diff_content(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_diff_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let title = self
             .selected_file()
             .map(|f| format!(" {} ", f.path.display()))
@@ -189,8 +204,6 @@ impl DiffView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // We need mutable access to get the diff, but we're in a &self method
-        // So we'll render from the cache only
         if let Some(file) = self.files.get(self.selected_file) {
             if let Some(diff) = self.diff_cache.get(&file.path) {
                 if diff.is_binary {
@@ -200,11 +213,21 @@ impl DiffView {
                     return;
                 }
 
+                // Compute max line number for dynamic width
+                let max_line_num = diff
+                    .hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .flat_map(|l| l.old_line_num.into_iter().chain(l.new_line_num))
+                    .max()
+                    .unwrap_or(0);
+                let num_width = max_line_num.max(1).ilog10() as usize + 1;
+                let blank: String = " ".repeat(num_width);
+
                 // Build all diff lines
                 let mut lines: Vec<Line> = Vec::new();
 
                 for hunk in &diff.hunks {
-                    // Hunk header
                     let header = format!(
                         "@@ -{},{} +{},{} @@",
                         hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
@@ -214,7 +237,6 @@ impl DiffView {
                         Style::default().fg(Color::Cyan),
                     )));
 
-                    // Hunk lines
                     for line in &hunk.lines {
                         let (prefix, style) = match line.tag {
                             ChangeTag::Delete => ("-", Style::default().fg(Color::Red)),
@@ -222,15 +244,14 @@ impl DiffView {
                             ChangeTag::Equal => (" ", Style::default().fg(theme.dimmed)),
                         };
 
-                        // Build line number string
                         let old_num = line
                             .old_line_num
-                            .map(|n| format!("{:4}", n))
-                            .unwrap_or_else(|| "    ".to_string());
+                            .map(|n| format!("{:>w$}", n, w = num_width))
+                            .unwrap_or_else(|| blank.clone());
                         let new_num = line
                             .new_line_num
-                            .map(|n| format!("{:4}", n))
-                            .unwrap_or_else(|| "    ".to_string());
+                            .map(|n| format!("{:>w$}", n, w = num_width))
+                            .unwrap_or_else(|| blank.clone());
 
                         let content = line.content.trim_end_matches('\n');
 
@@ -244,12 +265,22 @@ impl DiffView {
                         ]));
                     }
 
-                    // Empty line between hunks
                     lines.push(Line::from(""));
                 }
 
-                // Apply scrolling
+                // Update dimensions from actual content
+                let total_lines = lines.len();
                 let visible_lines = inner.height as usize;
+                self.total_lines = total_lines as u16;
+                self.visible_lines = visible_lines as u16;
+
+                // Clamp scroll offset to valid range
+                let max_scroll = total_lines.saturating_sub(visible_lines);
+                if (self.scroll_offset as usize) > max_scroll {
+                    self.scroll_offset = max_scroll as u16;
+                }
+
+                // Apply scrolling
                 let scroll = self.scroll_offset as usize;
                 let visible: Vec<Line> =
                     lines.into_iter().skip(scroll).take(visible_lines).collect();
@@ -258,15 +289,14 @@ impl DiffView {
                 frame.render_widget(paragraph, inner);
 
                 // Render scrollbar
-                if self.total_lines > self.visible_lines {
+                if total_lines > visible_lines {
                     let scrollbar_area = Rect {
                         x: area.x + area.width - 1,
                         y: area.y + 1,
                         width: 1,
                         height: area.height.saturating_sub(2),
                     };
-                    let mut scrollbar_state = ScrollbarState::new(self.total_lines as usize)
-                        .position(self.scroll_offset as usize);
+                    let mut scrollbar_state = ScrollbarState::new(max_scroll + 1).position(scroll);
                     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                         .begin_symbol(Some("↑"))
                         .end_symbol(Some("↓"));
@@ -302,13 +332,13 @@ impl DiffView {
                 Span::styled(": files  ", Style::default().fg(theme.dimmed)),
                 Span::styled("scroll", Style::default().fg(theme.accent)),
                 Span::styled(": diff  ", Style::default().fg(theme.dimmed)),
-                Span::styled("e", Style::default().fg(theme.accent)),
+                Span::styled("e/Enter", Style::default().fg(theme.accent)),
                 Span::styled(": edit  ", Style::default().fg(theme.dimmed)),
                 Span::styled("b", Style::default().fg(theme.accent)),
                 Span::styled(": branch  ", Style::default().fg(theme.dimmed)),
                 Span::styled("?", Style::default().fg(theme.accent)),
                 Span::styled(": help  ", Style::default().fg(theme.dimmed)),
-                Span::styled("Esc", Style::default().fg(theme.accent)),
+                Span::styled("q/Esc", Style::default().fg(theme.accent)),
                 Span::styled(": close", Style::default().fg(theme.dimmed)),
             ])
         };
@@ -317,7 +347,7 @@ impl DiffView {
         frame.render_widget(paragraph, inner);
     }
 
-    fn render_with_branch_dialog(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_with_branch_dialog(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Render the normal diff view first
         let layout = Layout::default()
             .direction(Direction::Vertical)
@@ -392,12 +422,6 @@ impl DiffView {
         frame.render_widget(list, inner);
     }
 
-    /// Update internal state based on rendered dimensions
-    pub fn update_dimensions(&mut self, visible_lines: u16, total_lines: u16) {
-        self.visible_lines = visible_lines;
-        self.total_lines = total_lines;
-    }
-
     fn render_help(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = 55u16;
         let dialog_height = 18u16;
@@ -441,7 +465,7 @@ impl DiffView {
             (
                 "Actions",
                 vec![
-                    ("e", "Edit file in external editor"),
+                    ("e/Enter", "Edit file in external editor"),
                     ("b", "Select base branch"),
                     ("r", "Refresh diff"),
                 ],

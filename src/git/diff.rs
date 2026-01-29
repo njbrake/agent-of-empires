@@ -73,19 +73,6 @@ pub struct DiffLine {
     pub new_line_num: Option<usize>,
     /// The actual content of the line
     pub content: String,
-    /// Inline changes within this line (start, end, emphasized)
-    pub inline_changes: Vec<InlineChange>,
-}
-
-/// Represents an inline (word-level) change within a line
-#[derive(Debug, Clone)]
-pub struct InlineChange {
-    /// Start byte offset in the content
-    pub start: usize,
-    /// End byte offset in the content
-    pub end: usize,
-    /// Whether this portion is emphasized (actually changed)
-    pub emphasized: bool,
 }
 
 /// A hunk (group of changes) in a diff
@@ -230,16 +217,34 @@ pub fn compute_file_diff(
     // Get the base tree
     let base_tree = get_tree_from_ref(&repo, base_branch)?;
 
-    // Get old content from base tree
-    let old_content = get_blob_content(&repo, &base_tree, file_path).unwrap_or_default();
+    // Get old content from base tree (as bytes first to check for binary)
+    let old_bytes = get_blob_bytes(&repo, &base_tree, file_path);
+    let old_is_binary = old_bytes
+        .as_ref()
+        .map(|b| is_binary_bytes(b))
+        .unwrap_or(false);
 
-    // Get new content from working directory
+    // Get new content from working directory (as bytes first to check for binary)
     let full_path = workdir.join(file_path);
-    let new_content = if full_path.exists() {
-        std::fs::read_to_string(&full_path).unwrap_or_default()
+    let new_bytes = if full_path.exists() {
+        std::fs::read(&full_path).ok()
     } else {
-        String::new()
+        None
     };
+    let new_is_binary = new_bytes
+        .as_ref()
+        .map(|b| is_binary_bytes(b))
+        .unwrap_or(false);
+
+    let is_binary = old_is_binary || new_is_binary;
+
+    // Convert to strings (safe now that we've checked for binary)
+    let old_content = old_bytes
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default();
+    let new_content = new_bytes
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default();
 
     // Determine file status
     let status = if old_content.is_empty() && !new_content.is_empty() {
@@ -249,9 +254,6 @@ pub fn compute_file_diff(
     } else {
         FileStatus::Modified
     };
-
-    // Check if binary
-    let is_binary = is_binary_content(&old_content) || is_binary_content(&new_content);
 
     if is_binary {
         return Ok(FileDiff {
@@ -309,20 +311,11 @@ pub fn compute_file_diff(
                     new_start = change.new_index();
                 }
 
-                // For inline changes, we mark the entire line as one segment
-                // A more sophisticated implementation could do word-level diff
-                let inline_changes = vec![InlineChange {
-                    start: 0,
-                    end: content.len(),
-                    emphasized: tag != ChangeTag::Equal,
-                }];
-
                 hunk_lines.push(DiffLine {
                     tag,
                     old_line_num: change.old_index().map(|i| i + 1),
                     new_line_num: change.new_index().map(|i| i + 1),
                     content,
-                    inline_changes,
                 });
             }
         }
@@ -351,18 +344,17 @@ pub fn compute_file_diff(
     })
 }
 
-/// Get content of a blob from a tree by path
-fn get_blob_content(repo: &git2::Repository, tree: &git2::Tree, path: &Path) -> Option<String> {
+/// Get raw bytes of a blob from a tree by path
+fn get_blob_bytes(repo: &git2::Repository, tree: &git2::Tree, path: &Path) -> Option<Vec<u8>> {
     let entry = tree.get_path(path).ok()?;
     let obj = entry.to_object(repo).ok()?;
     let blob = obj.as_blob()?;
-    String::from_utf8(blob.content().to_vec()).ok()
+    Some(blob.content().to_vec())
 }
 
-/// Check if content appears to be binary
-fn is_binary_content(content: &str) -> bool {
-    // Check first 8000 bytes for null bytes (common heuristic)
-    content.bytes().take(8000).any(|b| b == 0)
+/// Check if raw bytes appear to be binary (null byte heuristic)
+fn is_binary_bytes(content: &[u8]) -> bool {
+    content.iter().take(8000).any(|&b| b == 0)
 }
 
 /// Get the content of a file from the working directory
@@ -546,10 +538,10 @@ mod tests {
     }
 
     #[test]
-    fn test_is_binary_content() {
-        assert!(!is_binary_content("hello world"));
-        assert!(!is_binary_content("line 1\nline 2"));
-        assert!(is_binary_content("hello\0world"));
+    fn test_is_binary_bytes() {
+        assert!(!is_binary_bytes(b"hello world"));
+        assert!(!is_binary_bytes(b"line 1\nline 2"));
+        assert!(is_binary_bytes(b"hello\0world"));
     }
 
     #[test]

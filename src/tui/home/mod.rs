@@ -435,6 +435,7 @@ impl HomeView {
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.settings_view.is_some()
+            || self.diff_view.is_some()
     }
 
     pub fn show_welcome(&mut self) {

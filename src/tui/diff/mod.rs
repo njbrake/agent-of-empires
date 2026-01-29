@@ -199,4 +199,14 @@ impl DiffView {
     pub fn page_up(&mut self) {
         self.scroll_up(self.visible_lines.saturating_sub(2));
     }
+
+    /// Half-page down in diff content
+    pub fn half_page_down(&mut self) {
+        self.scroll_down(self.visible_lines / 2);
+    }
+
+    /// Half-page up in diff content
+    pub fn half_page_up(&mut self) {
+        self.scroll_up(self.visible_lines / 2);
+    }
 }

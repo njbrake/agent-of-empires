@@ -66,26 +66,16 @@ pub struct DiffConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
 
-    /// Enable syntax highlighting in diff view
-    #[serde(default = "default_true")]
-    pub syntax_highlighting: bool,
-
     /// Number of context lines to show around changes
     #[serde(default = "default_context_lines")]
     pub context_lines: usize,
-
-    /// Show inline (word-level) changes
-    #[serde(default = "default_true")]
-    pub inline_changes: bool,
 }
 
 impl Default for DiffConfig {
     fn default() -> Self {
         Self {
             default_branch: None,
-            syntax_highlighting: true,
             context_lines: 3,
-            inline_changes: true,
         }
     }
 }
@@ -762,24 +752,18 @@ mod tests {
     fn test_diff_config_default() {
         let diff = DiffConfig::default();
         assert!(diff.default_branch.is_none());
-        assert!(diff.syntax_highlighting);
         assert_eq!(diff.context_lines, 3);
-        assert!(diff.inline_changes);
     }
 
     #[test]
     fn test_diff_config_deserialize() {
         let toml = r#"
             default_branch = "main"
-            syntax_highlighting = false
             context_lines = 5
-            inline_changes = false
         "#;
         let diff: DiffConfig = toml::from_str(toml).unwrap();
         assert_eq!(diff.default_branch, Some("main".to_string()));
-        assert!(!diff.syntax_highlighting);
         assert_eq!(diff.context_lines, 5);
-        assert!(!diff.inline_changes);
     }
 
     #[test]
@@ -787,8 +771,6 @@ mod tests {
         let toml = r#"default_branch = "develop""#;
         let diff: DiffConfig = toml::from_str(toml).unwrap();
         assert_eq!(diff.default_branch, Some("develop".to_string()));
-        // Defaults for other fields
-        assert!(diff.syntax_highlighting);
         assert_eq!(diff.context_lines, 3);
     }
 
@@ -802,6 +784,5 @@ mod tests {
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.diff.default_branch, Some("main".to_string()));
         assert_eq!(config.diff.context_lines, 10);
-        assert!(config.diff.syntax_highlighting);
     }
 }

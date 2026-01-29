@@ -38,21 +38,6 @@ impl HomeView {
             // Compute diff for selected file if not cached
             let _ = diff.get_current_diff();
 
-            // Update dimensions for scrolling
-            let visible_lines = area.height.saturating_sub(8); // Approximate
-            let total_lines = diff
-                .diff_cache
-                .get(
-                    &diff
-                        .files
-                        .get(diff.selected_file)
-                        .map(|f| f.path.clone())
-                        .unwrap_or_default(),
-                )
-                .map(|d| d.hunks.iter().map(|h| h.lines.len() + 2).sum::<usize>() as u16)
-                .unwrap_or(0);
-            diff.update_dimensions(visible_lines, total_lines);
-
             diff.render(frame, area, theme);
             return;
         }

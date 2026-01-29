@@ -57,13 +57,21 @@ impl DiffView {
                 DiffAction::Continue
             }
 
-            // Diff scrolling (PageUp/PageDown/Ctrl+u/d always scroll the diff)
-            (KeyCode::PageUp, _) | (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+            // Diff scrolling
+            (KeyCode::PageUp, _) => {
                 self.page_up();
                 DiffAction::Continue
             }
-            (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+            (KeyCode::PageDown, _) => {
                 self.page_down();
+                DiffAction::Continue
+            }
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                self.half_page_up();
+                DiffAction::Continue
+            }
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                self.half_page_down();
                 DiffAction::Continue
             }
             (KeyCode::Home, _) | (KeyCode::Char('g'), _) => {
@@ -75,8 +83,8 @@ impl DiffView {
                 DiffAction::Continue
             }
 
-            // Open external editor (vim/nano)
-            (KeyCode::Char('e'), _) => {
+            // Open external editor
+            (KeyCode::Char('e'), _) | (KeyCode::Enter, _) => {
                 if let Some(file) = self.selected_file() {
                     let full_path = self.repo_path.join(&file.path);
                     return DiffAction::EditFile(full_path);
