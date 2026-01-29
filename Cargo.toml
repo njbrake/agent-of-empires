@@ -81,9 +81,8 @@ regex = "1.10"
 # Git operations
 git2 = { version = "0.19", features = ["vendored-openssl"] }
 
-# Diff computation and syntax highlighting
+# Diff computation
 similar = "2.6"
-syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
 
 [dev-dependencies]
 tempfile = "3.14"

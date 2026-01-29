@@ -76,7 +76,7 @@ impl DiffView {
             }
 
             // Open external editor (vim/nano)
-            (KeyCode::Enter, _) | (KeyCode::Char('e'), _) => {
+            (KeyCode::Char('e'), _) => {
                 if let Some(file) = self.selected_file() {
                     let full_path = self.repo_path.join(&file.path);
                     return DiffAction::EditFile(full_path);
