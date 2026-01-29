@@ -216,7 +216,7 @@ impl DiffView {
 
     /// Shrink the file list panel
     pub fn shrink_file_list(&mut self) {
-        self.file_list_width = self.file_list_width.saturating_sub(5).max(15);
+        self.file_list_width = self.file_list_width.saturating_sub(5).max(5);
     }
 
     /// Grow the file list panel
