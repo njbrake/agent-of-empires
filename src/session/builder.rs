@@ -50,7 +50,7 @@ pub struct CreatedWorktree {
 /// if starting fails.
 pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Result<BuildResult> {
     if params.sandbox {
-        let runtime = containers::default_container_runtime();
+        let runtime = containers::get_container_runtime();
         if !runtime.is_docker_available() {
             bail!("Docker is not installed. Please install Docker to use sandbox mode.");
         }
@@ -166,7 +166,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             enabled: true,
             container_id: None,
             image: params.sandbox_image.clone(),
-            container_name: containers::generate_name(&instance.id),
+            container_name: containers::DockerContainer::generate_name(&instance.id),
             created_at: None,
             yolo_mode: if params.yolo_mode { Some(true) } else { None },
             extra_env_keys: if params.extra_env_keys.is_empty() {
@@ -200,10 +200,7 @@ pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWo
 
     if let Some(sandbox) = &instance.sandbox_info {
         if sandbox.enabled {
-            let container =
-                containers::DockerContainer::<containers::DefaultContainerRuntime>::from_session_id(
-                    &instance.id,
-                );
+            let container = containers::DockerContainer::from_session_id(&instance.id);
             if container.exists().unwrap_or(false) {
                 if let Err(e) = container.remove(true) {
                     tracing::warn!("Failed to clean up container: {}", e);

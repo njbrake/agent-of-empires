@@ -210,6 +210,21 @@ pub struct SandboxConfig {
     /// Default terminal mode for sandboxed sessions (host or container)
     #[serde(default)]
     pub default_terminal_mode: DefaultTerminalMode,
+
+    #[serde(default = "default_true")]
+    pub share_ssh_folder: bool,
+
+    #[serde(default)]
+    pub container_runtime: ContainerRuntimeName,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerRuntimeName {
+    #[serde(rename = "apple_container")]
+    AppleContainer,
+    #[default]
+    Docker,
 }
 
 impl Default for SandboxConfig {
@@ -224,12 +239,14 @@ impl Default for SandboxConfig {
             cpu_limit: None,
             memory_limit: None,
             default_terminal_mode: DefaultTerminalMode::default(),
+            share_ssh_folder: true,
+            container_runtime: ContainerRuntimeName::default(),
         }
     }
 }
 
 fn default_sandbox_image() -> String {
-    containers::default_container_runtime()
+    containers::get_container_runtime()
         .default_sandbox_image()
         .to_string()
 }

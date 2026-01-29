@@ -170,7 +170,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
     let config = Config::load()?;
 
-    let runtime = containers::default_container_runtime();
+    let runtime = containers::get_container_runtime();
     if use_sandbox || config.sandbox.enabled_by_default {
         if !runtime.is_docker_available() {
             if use_sandbox {
@@ -181,7 +181,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 );
             }
         } else {
-            let container_name = containers::generate_name(&instance.id);
+            let container_name = containers::DockerContainer::generate_name(&instance.id);
             let image = args
                 .sandbox_image
                 .as_ref()

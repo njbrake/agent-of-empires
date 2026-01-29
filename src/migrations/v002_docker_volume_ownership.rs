@@ -32,7 +32,7 @@ pub fn run_lazy() {
         return;
     }
 
-    let image = containers::default_container_runtime().default_sandbox_image();
+    let image = containers::get_container_runtime().default_sandbox_image();
     for volume in [
         CLAUDE_AUTH_VOLUME,
         OPENCODE_AUTH_VOLUME,
