@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
-use crate::containers::{self, DockerContainer};
+use crate::containers::DockerContainer;
 use crate::git::GitWorktree;
 use crate::session::Instance;
 
@@ -107,10 +107,7 @@ impl DeletionPoller {
         if request.delete_sandbox {
             if let Some(sandbox) = &request.instance.sandbox_info {
                 if sandbox.enabled {
-                    let container =
-                        DockerContainer::<containers::DefaultContainerRuntime>::from_session_id(
-                            &request.instance.id,
-                        );
+                    let container = DockerContainer::from_session_id(&request.instance.id);
                     if container.exists().unwrap_or(false) {
                         if let Err(e) = container.remove(true) {
                             errors.push(format!("Container: {}", e));

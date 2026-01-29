@@ -129,7 +129,7 @@ impl NewSessionDialog {
             .unwrap_or_default();
 
         let available_tools = tools.available_list();
-        let docker_available = containers::default_container_runtime().is_docker_available();
+        let docker_available = containers::get_container_runtime().is_docker_available();
 
         // Load resolved config (global merged with profile overrides)
         let config = resolve_config(profile).unwrap_or_default();
@@ -168,7 +168,7 @@ impl NewSessionDialog {
             create_new_branch: true,
             sandbox_enabled,
             sandbox_image: Input::new(
-                containers::default_container_runtime().effective_default_image(),
+                containers::get_container_runtime().effective_default_image(),
             ),
             docker_available,
             yolo_mode,
@@ -194,7 +194,7 @@ impl NewSessionDialog {
             if self.sandbox_enabled {
                 let image = self.sandbox_image.value().trim();
                 self.needs_image_pull =
-                    !containers::default_container_runtime().image_exists_locally(image);
+                    !containers::get_container_runtime().image_exists_locally(image);
             }
         }
     }
@@ -263,7 +263,7 @@ impl NewSessionDialog {
             create_new_branch: true,
             sandbox_enabled: false,
             sandbox_image: Input::new(
-                containers::default_container_runtime().effective_default_image(),
+                containers::get_container_runtime().effective_default_image(),
             ),
             docker_available: false,
             yolo_mode: false,
