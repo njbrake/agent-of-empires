@@ -7,15 +7,41 @@ interface Props {
   ogImage?: string;
 }
 
+const siteUrl = Astro.site?.toString().replace(/\/$/, '') ?? '';
+
 const {
   title,
   description,
   ogTitle = 'Agent of Empires',
   ogDescription = 'Terminal session manager for AI coding agents. Git worktrees, Docker sandboxing, beautiful TUI.',
-  ogImage = 'https://agent-of-empires.com/assets/social-preview.png'
+  ogImage = `${siteUrl}/assets/social-preview.png`
 } = Astro.props;
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Agent of Empires",
+  "description": "A terminal session manager for Linux and macOS using tmux to manage and monitor AI coding agents. Features git worktrees, Docker sandboxing, and a beautiful TUI.",
+  "url": siteUrl,
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux, macOS",
+  "programmingLanguage": "Rust",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "Nate Brake",
+    "url": "https://twitter.com/natebrake"
+  },
+  "license": "https://github.com/njbrake/agent-of-empires/blob/main/LICENSE",
+  "codeRepository": "https://github.com/njbrake/agent-of-empires",
+  "keywords": ["AI coding agent", "terminal session manager", "tmux", "Claude Code", "Codex", "OpenCode", "Mistral Vibe", "Gemini CLI", "git worktrees", "Docker sandbox"]
+};
 ---
 
 <!DOCTYPE html>
@@ -52,31 +78,7 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site);
   <link rel="icon" type="image/png" href="/assets/logo.png">
 
   <!-- Structured Data -->
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    "name": "Agent of Empires",
-    "description": "A terminal session manager for Linux and macOS using tmux to manage and monitor AI coding agents. Features git worktrees, Docker sandboxing, and a beautiful TUI.",
-    "url": "https://agent-of-empires.com",
-    "applicationCategory": "DeveloperApplication",
-    "operatingSystem": "Linux, macOS",
-    "programmingLanguage": "Rust",
-    "offers": {
-      "@type": "Offer",
-      "price": "0",
-      "priceCurrency": "USD"
-    },
-    "author": {
-      "@type": "Person",
-      "name": "Nate Brake",
-      "url": "https://twitter.com/natebrake"
-    },
-    "license": "https://github.com/njbrake/agent-of-empires/blob/main/LICENSE",
-    "codeRepository": "https://github.com/njbrake/agent-of-empires",
-    "keywords": ["AI coding agent", "terminal session manager", "tmux", "Claude Code", "Codex", "OpenCode", "Mistral Vibe", "Gemini CLI", "git worktrees", "Docker sandbox"]
-  }
-  </script>
+  <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
