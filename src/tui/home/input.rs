@@ -303,6 +303,7 @@ impl HomeView {
                 self.new_dialog = Some(NewSessionDialog::new(
                     self.available_tools.clone(),
                     existing_titles,
+                    self.storage.profile(),
                 ));
             }
             KeyCode::Char('s') => {
