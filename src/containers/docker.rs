@@ -243,13 +243,12 @@ impl ContainerRuntimeInterface for Docker {
         Ok(())
     }
 
-    fn exec_command(&self, name: &str) -> Vec<String> {
-        vec![
-            "docker".to_string(),
-            "exec".to_string(),
-            "-it".to_string(),
-            name.to_string(),
-        ]
+    fn exec_command(&self, name: &str, options: Option<&str>) -> String {
+        if let Some(opt_str) = options {
+            ["docker", "exec", "-it", opt_str, name].join(" ")
+        } else {
+            ["docker", "exec", "-it", name].join(" ")
+        }
     }
 
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output> {

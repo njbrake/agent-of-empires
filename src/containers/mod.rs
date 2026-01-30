@@ -92,8 +92,8 @@ impl DockerContainer {
         self.runtime.remove(&self.name, force)
     }
 
-    pub fn exec_command(&self) -> Vec<String> {
-        self.runtime.exec_command(&self.name)
+    pub fn exec_command(&self, options: Option<&str>) -> String {
+        self.runtime.exec_command(&self.name, options)
     }
 
     pub fn exec(&self, cmd: &[&str]) -> Result<std::process::Output> {
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn test_container_exec_command() {
         let container = DockerContainer::new("test1234567890ab", "ubuntu:latest");
-        let cmd = container.exec_command();
-        assert_eq!(cmd, vec!["docker", "exec", "-it", "aoe-sandbox-test1234"]);
+        let cmd = container.exec_command(None);
+        assert_eq!(cmd, "docker exec -it aoe-sandbox-test1234");
     }
 }
