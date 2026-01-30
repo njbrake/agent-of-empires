@@ -208,7 +208,7 @@ impl SettingsView {
         }
         let w = width as usize;
         // Approximate line count by dividing description length by available width
-        let lines = (description.len() + w - 1) / w;
+        let lines = description.len().div_ceil(w);
         (lines as u16).max(1)
     }
 
