@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 
 use super::config::{Config, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMode};
@@ -99,6 +100,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_values: Option<HashMap<String, String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_cleanup: Option<bool>,
@@ -243,6 +247,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(ref environment) = sandbox_override.environment {
             global.sandbox.environment = environment.clone();
+        }
+        if let Some(ref environment_values) = sandbox_override.environment_values {
+            global.sandbox.environment_values = environment_values.clone();
         }
         if let Some(auto_cleanup) = sandbox_override.auto_cleanup {
             global.sandbox.auto_cleanup = auto_cleanup;

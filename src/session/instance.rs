@@ -19,6 +19,16 @@ fn default_true() -> bool {
 /// Terminal environment variables that are always passed through for proper UI/theming
 const DEFAULT_TERMINAL_ENV_VARS: &[&str] = &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
+/// Resolve an environment_values entry. If the value starts with `$`, read the
+/// named variable from the host environment. Otherwise return the literal value.
+fn resolve_env_value(val: &str) -> Option<String> {
+    if let Some(var_name) = val.strip_prefix('$') {
+        std::env::var(var_name).ok()
+    } else {
+        Some(val.to_string())
+    }
+}
+
 /// Build docker exec environment flags from config and optional per-session extra keys
 fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
     let config = super::config::Config::load().unwrap_or_default();
@@ -45,15 +55,23 @@ fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
         }
     }
 
-    env_keys
+    let mut args: Vec<String> = env_keys
         .iter()
         .filter_map(|key| {
             std::env::var(key)
                 .ok()
                 .map(|val| format!("-e {}={}", key, val))
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect();
+
+    // Inject environment_values from config (AOE-managed values stored in config)
+    for (key, val) in &config.sandbox.environment_values {
+        if let Some(resolved) = resolve_env_value(val) {
+            args.push(format!("-e {}={}", key, resolved));
+        }
+    }
+
+    args.join(" ")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -661,6 +679,13 @@ impl Instance {
             "CLAUDE_CONFIG_DIR".to_string(),
             format!("{}/.claude", CONTAINER_HOME),
         ));
+
+        // Inject environment_values from config (AOE-managed values stored in config)
+        for (key, val) in &sandbox_config.environment_values {
+            if let Some(resolved) = resolve_env_value(val) {
+                environment.push((key.clone(), resolved));
+            }
+        }
 
         if self.is_yolo_mode() && self.tool == "opencode" {
             environment.push((

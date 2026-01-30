@@ -64,6 +64,10 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
         name: "Environment",
         description: "Env var names to pass from host to container (extends global config)",
     },
+    FieldHelp {
+        name: "Environment Values",
+        description: "Custom KEY=VALUE env vars. Edit in Settings > Sandbox > Environment Values",
+    },
 ];
 
 #[derive(Clone)]

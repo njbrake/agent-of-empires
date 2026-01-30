@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -198,6 +199,12 @@ pub struct SandboxConfig {
     #[serde(default = "default_sandbox_environment")]
     pub environment: Vec<String>,
 
+    /// Environment variables with explicit values to inject into sandbox containers.
+    /// Unlike `environment` (which passes through host values), these are stored in config
+    /// and injected directly. Useful for sandbox-specific credentials like GH_TOKEN.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub environment_values: HashMap<String, String>,
+
     #[serde(default = "default_true")]
     pub auto_cleanup: bool,
 
@@ -220,6 +227,7 @@ impl Default for SandboxConfig {
             default_image: default_sandbox_image(),
             extra_volumes: Vec::new(),
             environment: default_sandbox_environment(),
+            environment_values: HashMap::new(),
             auto_cleanup: true,
             cpu_limit: None,
             memory_limit: None,

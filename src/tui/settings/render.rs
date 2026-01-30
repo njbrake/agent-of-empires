@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap},
     Frame,
 };
 use tui_input::Input;
@@ -173,7 +173,7 @@ impl SettingsView {
                 x: inner.x,
                 y: inner.y + y_offset,
                 width: inner.width,
-                height: self.field_height(field, i),
+                height: self.field_height(field, i, inner.width),
             };
 
             self.render_field(frame, field_area, field, i, is_selected, theme);
@@ -202,17 +202,29 @@ impl SettingsView {
         }
     }
 
-    fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
+    fn description_lines(description: &str, width: u16) -> u16 {
+        if width == 0 || description.is_empty() {
+            return 1;
+        }
+        let w = width as usize;
+        // Approximate line count by dividing description length by available width
+        let lines = (description.len() + w - 1) / w;
+        (lines as u16).max(1)
+    }
+
+    fn field_height(&self, field: &super::SettingField, index: usize, width: u16) -> u16 {
+        let desc_lines = Self::description_lines(field.description, width);
         match &field.value {
             FieldValue::List(items) => {
                 // If this field's list is expanded, show all items
                 if self.list_edit_state.is_some() && index == self.selected_field {
-                    4 + items.len() as u16 + 1 // label + description + items + add prompt
+                    // label + description + header + items + add prompt
+                    1 + desc_lines + 1 + items.len() as u16 + 1
                 } else {
-                    3 // Label + description + summary
+                    1 + desc_lines + 1 // Label + description + summary
                 }
             }
-            _ => 3, // Label + description + value
+            _ => 1 + desc_lines + 1, // Label + description + value
         }
     }
 
@@ -247,21 +259,24 @@ impl SettingsView {
 
         frame.render_widget(Paragraph::new(label), area);
 
-        // Render description below label
+        // Render description below label (may wrap to multiple lines)
+        let desc_lines = Self::description_lines(field.description, area.width);
         let description_area = Rect {
             x: area.x,
             y: area.y + 1,
             width: area.width,
-            height: 1,
+            height: desc_lines,
         };
         frame.render_widget(
-            Paragraph::new(field.description).style(Style::default().fg(theme.dimmed)),
+            Paragraph::new(field.description)
+                .style(Style::default().fg(theme.dimmed))
+                .wrap(Wrap { trim: true }),
             description_area,
         );
 
-        // Offset area for value rendering (field renderers add +1, so this puts values at y+2)
+        // Offset area for value rendering (field renderers add +1, so this puts values below description)
         let value_area = Rect {
-            y: area.y + 1,
+            y: area.y + desc_lines,
             ..area
         };
 
@@ -556,11 +571,11 @@ impl SettingsView {
                     "  "
                 };
 
-                // If editing this item, render with cursor
+                // If editing this item (not adding new), render with cursor
                 if let Some(input) = list_state
                     .editing_item
                     .as_ref()
-                    .filter(|_| i == list_state.selected_index)
+                    .filter(|_| i == list_state.selected_index && !list_state.adding_new)
                 {
                     self.render_list_item_with_cursor(frame, item_area, prefix, input, theme);
                 } else {
