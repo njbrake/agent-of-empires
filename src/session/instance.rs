@@ -121,12 +121,6 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_accessed_at: Option<DateTime<Utc>>,
 
-    // Claude Code integration
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_detected_at: Option<DateTime<Utc>>,
-
     // Git worktree integration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_info: Option<WorktreeInfo>,
@@ -167,8 +161,6 @@ impl Instance {
             status: Status::Idle,
             created_at: Utc::now(),
             last_accessed_at: None,
-            claude_session_id: None,
-            claude_detected_at: None,
             worktree_info: None,
             sandbox_info: None,
             terminal_info: None,
@@ -742,33 +734,6 @@ impl Instance {
             Ok(status) => status,
             Err(_) => Status::Idle,
         };
-
-        // Detect Claude session ID if applicable
-        if self.tool == "claude" && self.claude_session_id.is_none() {
-            if let Ok(Some(id)) = super::claude::detect_session_id(&self.project_path) {
-                self.claude_session_id = Some(id);
-                self.claude_detected_at = Some(Utc::now());
-            }
-        }
-    }
-
-    pub fn fork(&self, new_title: &str, new_group: &str) -> Result<Instance> {
-        if self.tool != "claude" {
-            anyhow::bail!("Fork is only supported for Claude sessions");
-        }
-
-        let claude_id = self
-            .claude_session_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No Claude session ID to fork"))?;
-
-        let mut forked = Self::new(new_title, &self.project_path);
-        forked.group_path = new_group.to_string();
-        forked.command = format!("claude --resume {}", claude_id);
-        forked.tool = "claude".to_string();
-        forked.parent_session_id = Some(self.id.clone());
-
-        Ok(forked)
     }
 
     pub fn capture_output_with_size(
@@ -1125,51 +1090,6 @@ mod tests {
         let wt = deserialized.worktree_info.unwrap();
         assert_eq!(wt.branch, "feature/abc");
         assert!(wt.managed_by_aoe);
-    }
-
-    // Tests for fork
-    #[test]
-    fn test_fork_non_claude_tool() {
-        let mut inst = Instance::new("Test", "/tmp/test");
-        inst.tool = "opencode".to_string();
-
-        let result = inst.fork("Forked", "group");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("only supported for Claude"));
-    }
-
-    #[test]
-    fn test_fork_without_claude_session_id() {
-        let mut inst = Instance::new("Test", "/tmp/test");
-        inst.tool = "claude".to_string();
-        inst.claude_session_id = None;
-
-        let result = inst.fork("Forked", "group");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No Claude session ID"));
-    }
-
-    #[test]
-    fn test_fork_success() {
-        let mut inst = Instance::new("Original", "/tmp/test");
-        inst.tool = "claude".to_string();
-        inst.claude_session_id = Some("session123".to_string());
-
-        let forked = inst.fork("Forked Session", "new/group").unwrap();
-
-        assert_eq!(forked.title, "Forked Session");
-        assert_eq!(forked.group_path, "new/group");
-        assert_eq!(forked.project_path, inst.project_path);
-        assert_eq!(forked.tool, "claude");
-        assert!(forked.command.contains("--resume"));
-        assert!(forked.command.contains("session123"));
-        assert_eq!(forked.parent_session_id, Some(inst.id.clone()));
     }
 
     // Test generate_id function properties

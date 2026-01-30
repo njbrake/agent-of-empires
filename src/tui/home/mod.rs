@@ -271,17 +271,11 @@ impl HomeView {
                         inst.status = update.status;
                         inst.last_error = update.last_error.clone();
                     }
-                    if update.claude_session_id.is_some() {
-                        inst.claude_session_id = update.claude_session_id.clone();
-                    }
                 }
                 if let Some(inst) = self.instance_map.get_mut(&update.id) {
                     if inst.status != Status::Deleting {
                         inst.status = update.status;
                         inst.last_error = update.last_error;
-                    }
-                    if update.claude_session_id.is_some() {
-                        inst.claude_session_id = update.claude_session_id;
                     }
                 }
             }

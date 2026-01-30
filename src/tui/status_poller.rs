@@ -14,7 +14,6 @@ pub struct StatusUpdate {
     pub id: String,
     pub status: Status,
     pub last_error: Option<String>,
-    pub claude_session_id: Option<String>,
 }
 
 /// Background thread that polls session status without blocking the UI
@@ -56,7 +55,6 @@ impl StatusPoller {
                         id: inst.id,
                         status: inst.status,
                         last_error: inst.last_error,
-                        claude_session_id: inst.claude_session_id,
                     }
                 })
                 .collect();
