@@ -111,6 +111,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_terminal_mode: Option<DefaultTerminalMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_ignores: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -255,6 +258,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(default_terminal_mode) = sandbox_override.default_terminal_mode {
             global.sandbox.default_terminal_mode = default_terminal_mode;
+        }
+        if let Some(ref volume_ignores) = sandbox_override.volume_ignores {
+            global.sandbox.volume_ignores = volume_ignores.clone();
         }
     }
 

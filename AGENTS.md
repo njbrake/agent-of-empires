@@ -29,6 +29,15 @@
 - `cargo clippy`: lint (fix warnings unless there’s a strong reason not to).
 - Debug logging: `RUST_LOG=agent_of_empires=debug cargo run` (or `AGENT_OF_EMPIRES_DEBUG=1 cargo run`).
 
+## Settings & Configuration
+
+- **Every configurable field must be editable in the settings TUI.** When adding a new config field to `SandboxConfig`, `WorktreeConfig`, etc., you must also:
+  1. Add a `FieldKey` variant in `src/tui/settings/fields.rs`
+  2. Add a `SettingField` entry in the corresponding `build_*_fields()` function
+  3. Wire up `apply_field_to_global()` and `apply_field_to_profile()`
+  4. Add a `clear_profile_override()` case in `src/tui/settings/input.rs`
+- Profile overrides (`*ConfigOverride` structs in `profile_config.rs`) must also include the new field with merge logic in `merge_configs()`.
+
 ## Coding Style & Naming Conventions
 
 - Prefer "let the tools decide": keep code `cargo fmt`-clean and `cargo clippy`-clean.

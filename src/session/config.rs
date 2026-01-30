@@ -210,6 +210,10 @@ pub struct SandboxConfig {
     /// Default terminal mode for sandboxed sessions (host or container)
     #[serde(default)]
     pub default_terminal_mode: DefaultTerminalMode,
+
+    /// Relative directory paths to exclude from the host bind mount via anonymous volumes
+    #[serde(default)]
+    pub volume_ignores: Vec<String>,
 }
 
 impl Default for SandboxConfig {
@@ -224,6 +228,7 @@ impl Default for SandboxConfig {
             cpu_limit: None,
             memory_limit: None,
             default_terminal_mode: DefaultTerminalMode::default(),
+            volume_ignores: Vec::new(),
         }
     }
 }

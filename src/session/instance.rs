@@ -669,10 +669,17 @@ impl Instance {
             ));
         }
 
+        let anonymous_volumes: Vec<String> = sandbox_config
+            .volume_ignores
+            .iter()
+            .map(|ignore| format!("{}/{}", workspace_path, ignore))
+            .collect();
+
         Ok(ContainerConfig {
             working_dir: workspace_path,
             volumes,
             named_volumes,
+            anonymous_volumes,
             environment,
             cpu_limit: sandbox_config.cpu_limit,
             memory_limit: sandbox_config.memory_limit,

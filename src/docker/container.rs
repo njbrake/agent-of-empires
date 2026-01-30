@@ -12,6 +12,7 @@ pub struct ContainerConfig {
     pub working_dir: String,
     pub volumes: Vec<VolumeMount>,
     pub named_volumes: Vec<(String, String)>,
+    pub anonymous_volumes: Vec<String>,
     pub environment: Vec<(String, String)>,
     pub cpu_limit: Option<String>,
     pub memory_limit: Option<String>,
@@ -95,6 +96,11 @@ impl DockerContainer {
         for (vol_name, container_path) in &config.named_volumes {
             args.push("-v".to_string());
             args.push(format!("{}:{}", vol_name, container_path));
+        }
+
+        for path in &config.anonymous_volumes {
+            args.push("-v".to_string());
+            args.push(path.clone());
         }
 
         for (key, value) in &config.environment {

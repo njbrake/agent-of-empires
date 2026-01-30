@@ -440,6 +440,11 @@ impl SettingsView {
                     s.default_terminal_mode = None;
                 }
             }
+            FieldKey::VolumeIgnores => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.volume_ignores = None;
+                }
+            }
         }
 
         self.has_changes = true;

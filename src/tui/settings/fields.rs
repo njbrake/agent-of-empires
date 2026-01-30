@@ -48,6 +48,7 @@ pub enum FieldKey {
     Environment,
     SandboxAutoCleanup,
     DefaultTerminalMode,
+    VolumeIgnores,
     // Tmux
     StatusBar,
     Mouse,
@@ -312,6 +313,11 @@ fn build_sandbox_fields(
         global.sandbox.default_terminal_mode,
         sb.and_then(|s| s.default_terminal_mode),
     );
+    let (volume_ignores, o7) = resolve_value(
+        scope,
+        global.sandbox.volume_ignores.clone(),
+        sb.and_then(|s| s.volume_ignores.clone()),
+    );
 
     let terminal_mode_selected = match default_terminal_mode {
         DefaultTerminalMode::Host => 0,
@@ -369,6 +375,14 @@ fn build_sandbox_fields(
             },
             category: SettingsCategory::Sandbox,
             has_override: o6,
+        },
+        SettingField {
+            key: FieldKey::VolumeIgnores,
+            label: "Volume Ignores",
+            description: "Directories to exclude from host mount (e.g. target, node_modules)",
+            value: FieldValue::List(volume_ignores),
+            category: SettingsCategory::Sandbox,
+            has_override: o7,
         },
     ]
 }
@@ -509,6 +523,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.sandbox.yolo_mode_default = *v,
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
+        (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
             config.sandbox.default_terminal_mode = match selected {
@@ -639,6 +654,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.environment,
                 &mut config.sandbox,
                 |s, val| s.environment = val,
+            );
+        }
+        (FieldKey::VolumeIgnores, FieldValue::List(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.sandbox.volume_ignores,
+                &mut config.sandbox,
+                |s, val| s.volume_ignores = val,
             );
         }
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => {
