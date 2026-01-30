@@ -232,7 +232,9 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
-            sandbox_image: Input::new(docker::effective_default_image()),
+            sandbox_image: Input::new(
+                containers::get_container_runtime().effective_default_image(),
+            ),
             docker_available: false,
             yolo_mode: false,
             extra_env_keys: Vec::new(),
