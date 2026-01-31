@@ -147,8 +147,7 @@ impl HomeView {
                             self.pending_hook_trust_data = Some(data);
                         }
                         Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
-                            let hooks_opt =
-                                if hooks.is_empty() { None } else { Some(hooks) };
+                            let hooks_opt = if hooks.is_empty() { None } else { Some(hooks) };
                             return self.create_session_with_hooks(data, hooks_opt);
                         }
                         Ok(repo_config::HookTrustStatus::NoHooks) => {

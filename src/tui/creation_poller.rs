@@ -8,7 +8,7 @@ use std::thread;
 
 use crate::session::builder::{self, CreatedWorktree, InstanceParams};
 use crate::session::repo_config::{self, HooksConfig};
-use crate::session::Instance;
+use crate::session::{Instance, Status};
 use crate::tui::dialogs::NewSessionData;
 
 pub struct CreationRequest {
@@ -110,7 +110,6 @@ impl CreationPoller {
         // Execute on_create hooks after worktree setup, before starting
         if let Some(ref hooks) = hooks {
             if !hooks.on_create.is_empty() {
-                let hook_dir = &instance.project_path;
                 if data.sandbox {
                     // For sandboxed sessions, we need the container running first
                     if let Err(e) = instance.start() {
@@ -128,22 +127,17 @@ impl CreationPoller {
                             return CreationResult::Error(format!("on_create hook failed: {}", e));
                         }
                     }
-
-                    let created_worktree_info =
-                        created_worktree.as_ref().map(CreatedWorktreeInfo::from);
-                    return CreationResult::Success {
-                        session_id: instance.id.clone(),
-                        instance: Box::new(instance),
-                        created_worktree: created_worktree_info,
-                    };
-                } else if let Err(e) = repo_config::execute_hooks(&hooks.on_create, hook_dir) {
+                } else if let Err(e) =
+                    repo_config::execute_hooks(&hooks.on_create, &instance.project_path)
+                {
                     builder::cleanup_instance(&instance, created_worktree.as_ref());
                     return CreationResult::Error(format!("on_create hook failed: {}", e));
                 }
             }
         }
 
-        if data.sandbox {
+        // Start sandbox instance if not already started above (for on_create hooks)
+        if data.sandbox && instance.status == Status::Idle {
             if let Err(e) = instance.start() {
                 builder::cleanup_instance(&instance, created_worktree.as_ref());
                 return CreationResult::Error(e.to_string());

@@ -205,7 +205,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     // Check for repository hooks
-    let project_path_str = path.to_str().unwrap_or("");
+    let project_path_str = match path.to_str() {
+        Some(s) => s,
+        None => {
+            tracing::warn!("project path contains non-UTF-8 bytes: {:?}", path);
+            ""
+        }
+    };
     match repo_config::check_hook_trust(project_path_str) {
         Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
             let should_trust = if args.trust_hooks {
