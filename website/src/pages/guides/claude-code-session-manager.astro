@@ -1,0 +1,108 @@
+---
+import Base from '../../layouts/Base.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Base
+  title="AI Coding Agent Session Manager - Agent of Empires"
+  description="Run and manage multiple AI coding agent sessions with a TUI dashboard. Status detection for Claude Code, Codex, Gemini CLI, OpenCode, and more. Docker isolation, git worktrees, and tmux persistence."
+>
+  <Nav />
+
+  <article class="pt-32 pb-16 px-6">
+    <div class="max-w-3xl mx-auto prose-content">
+      <header class="mb-12">
+        <h1 class="text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">AI Coding Agent Session Manager</h1>
+        <p class="text-lg text-gray-400 leading-relaxed">
+          AI coding agents -- tools like Claude Code, Codex, Gemini CLI, OpenCode, and Mistral Vibe that write and edit code from a terminal -- are powerful individually. But running multiple instances gets unwieldy fast. Agent of Empires gives you a dashboard to manage, monitor, and isolate all of them.
+        </p>
+      </header>
+
+      <section>
+        <h2>What Is an AI Coding Agent</h2>
+        <p>
+          An AI coding agent is a CLI tool that reads your codebase, writes code, runs commands, and iterates on the results. Unlike a chat interface where you copy and paste snippets, a coding agent operates directly in your project directory. It can edit files, run tests, install dependencies, and commit changes.
+        </p>
+        <p>
+          Examples include Claude Code (Anthropic), Codex (OpenAI), Gemini CLI (Google), OpenCode, and Mistral Vibe. They all share the same basic workflow: you give the agent a task in a terminal, it works through the problem, and you review the results. The differences are in the underlying model, tool use, and interaction style, but the operational needs are the same.
+        </p>
+      </section>
+
+      <section>
+        <h2>Running Multiple Agent Instances</h2>
+        <p>
+          Real productivity comes from running several agents in parallel. One might be refactoring a module, another writing tests, and a third exploring an API integration. Each needs its own terminal session and its own working directory to avoid conflicts.
+        </p>
+        <p>
+          <a href="/">Agent of Empires</a> handles this by creating tmux sessions for each agent instance. Each session can point at a different directory, branch, or even a Docker container. The TUI dashboard shows all your instances at a glance, regardless of which coding agent you are using.
+        </p>
+      </section>
+
+      <section>
+        <h2>Status Detection Across Agents</h2>
+        <p>
+          aoe automatically detects the state of your coding agent sessions. It has built-in support for Claude Code, Codex, Gemini CLI, OpenCode, and Mistral Vibe. The dashboard shows whether each instance is:
+        </p>
+        <ul>
+          <li><strong>Active</strong>: The agent is generating code or running commands</li>
+          <li><strong>Waiting</strong>: The agent needs your input or approval</li>
+          <li><strong>Idle</strong>: The session is open but no agent is running</li>
+        </ul>
+        <p>
+          You do not need to switch into each session to check on progress. A quick glance at the dashboard tells you which agents need your attention and which are still working.
+        </p>
+      </section>
+
+      <section>
+        <h2>Docker Isolation</h2>
+        <p>
+          Coding agents execute shell commands, write files, and install packages. Running them inside a <a href="/guides/docker-sandbox-ai-agents/">Docker sandbox</a> limits what they can access on your host machine.
+        </p>
+        <p>
+          With aoe's Docker integration, each agent session runs in its own container. Your project files are mounted in, SSH keys and git credentials are forwarded, and the container is cleaned up when the session ends. The agent works normally from its perspective, but any unintended side effects are contained.
+        </p>
+      </section>
+
+      <section>
+        <h2>Git Worktrees for Parallel Sessions</h2>
+        <p>
+          When you have multiple agents working on different branches of the same repo, <a href="/guides/git-worktrees-ai-development/">git worktrees</a> keep them isolated. aoe creates a separate worktree for each session, so each agent gets its own branch and working directory.
+        </p>
+        <p>
+          This avoids the common problem of two agents trying to modify the same files. Each instance works independently, and you merge the results when they are done.
+        </p>
+      </section>
+
+      <section>
+        <h2>Session Persistence</h2>
+        <p>
+          All agent sessions run inside tmux, which means they persist even when you close the aoe TUI. You can close your terminal, reopen aoe later, and all your sessions are still running exactly where you left them.
+        </p>
+        <p>
+          This is especially useful for long-running tasks. Start an agent on a large refactoring job, close the TUI, and come back later to check the results.
+        </p>
+      </section>
+
+      <section>
+        <h2>Getting Started</h2>
+        <p>
+          Install aoe and add your first coding agent session:
+        </p>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash
+aoe</code></pre>
+        <p>
+          The TUI will guide you through creating sessions. It works with whichever coding agent you prefer. See the <a href="/docs/">documentation</a> for the full setup guide. Related guides:
+        </p>
+        <ul>
+          <li><a href="/guides/manage-ai-coding-agents/">Managing multiple AI coding agents</a></li>
+          <li><a href="/guides/docker-sandbox-ai-agents/">Docker sandboxing for AI agents</a></li>
+          <li><a href="/guides/git-worktrees-ai-development/">Git worktrees for parallel development</a></li>
+          <li><a href="/guides/tmux-ai-coding-workflow/">tmux workflow for AI coding</a></li>
+        </ul>
+      </section>
+    </div>
+  </article>
+
+  <Footer />
+</Base>

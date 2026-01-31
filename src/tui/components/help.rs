@@ -42,6 +42,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("t", "Toggle Agent/Terminal view"),
                 ("c", "Toggle container/host (sandbox)"),
                 ("D", "Diff view (git changes)"),
+                ("H/L", "Resize list panel"),
             ],
         ),
         (
@@ -118,6 +119,18 @@ impl HelpOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_contains_resize_shortcut() {
+        let all = shortcuts();
+        let views_section = all.iter().find(|(name, _)| *name == "Views");
+        assert!(views_section.is_some(), "Views section should exist");
+        let (_, keys) = views_section.unwrap();
+        assert!(
+            keys.iter().any(|(k, _)| *k == "H/L"),
+            "Views section should contain H/L resize shortcut"
+        );
+    }
 
     #[test]
     fn help_content_fits_in_dialog() {

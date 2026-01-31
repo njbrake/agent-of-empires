@@ -1,0 +1,103 @@
+---
+import Base from '../../layouts/Base.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Base
+  title="Docker Sandboxing for AI Coding Agents - Agent of Empires"
+  description="Run AI coding agents in isolated Docker containers for safety. Persistent auth, volume mounts, custom images, and automatic container lifecycle management."
+>
+  <Nav />
+
+  <article class="pt-32 pb-16 px-6">
+    <div class="max-w-3xl mx-auto prose-content">
+      <header class="mb-12">
+        <h1 class="text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">Docker Sandboxing for AI Coding Agents</h1>
+        <p class="text-lg text-gray-400 leading-relaxed">
+          AI coding agents execute arbitrary commands on your machine. Docker containers provide isolation so an agent cannot accidentally delete files, install system packages, or access sensitive data outside its project.
+        </p>
+      </header>
+
+      <section>
+        <h2>Why Sandbox AI Agents</h2>
+        <p>
+          When you tell an AI agent to "fix the build," it might run shell commands, modify configuration files, or install dependencies. Most of the time this is fine. But agents can make mistakes, especially when working with unfamiliar codebases or complex build systems.
+        </p>
+        <p>
+          Without isolation, a misguided <code>rm -rf</code> or an accidental write to <code>/etc</code> affects your host machine. Docker sandboxing limits the blast radius. Each agent runs in its own container with only the files and permissions it needs.
+        </p>
+      </section>
+
+      <section>
+        <h2>How aoe Docker Integration Works</h2>
+        <p>
+          <a href="/">Agent of Empires</a> manages the full container lifecycle for each session. When you create a sandboxed session, aoe:
+        </p>
+        <ol>
+          <li>Starts a Docker container with your configured image</li>
+          <li>Mounts your project directory into the container</li>
+          <li>Forwards authentication (SSH keys, git credentials) so the agent can push and pull</li>
+          <li>Attaches a tmux session inside the container</li>
+          <li>Cleans up the container when the session ends</li>
+        </ol>
+        <p>
+          You interact with the agent the same way you would without Docker. The sandboxing is transparent.
+        </p>
+      </section>
+
+      <section>
+        <h2>Configuration Options</h2>
+
+        <h3>Custom Docker Images</h3>
+        <p>
+          Use any Docker image as your agent's environment. Need Node.js 20, Python 3.12, and Rust nightly? Build an image with those tools and set it as the default. aoe uses the image you configure for all new sandboxed sessions.
+        </p>
+
+        <h3>Volume Mounts</h3>
+        <p>
+          Beyond the project directory, you can mount additional directories into the container. Common examples include shared package caches (<code>~/.npm</code>, <code>~/.cargo/registry</code>) to avoid re-downloading dependencies in every session.
+        </p>
+
+        <h3>Persistent Authentication</h3>
+        <p>
+          aoe can forward your SSH agent and git credentials into the container so agents can interact with private repositories. This is configured once and applies to all sandboxed sessions.
+        </p>
+
+        <h3>Configurable Directory Ignores</h3>
+        <p>
+          Control which directories are shared between the sandbox and host. You can configure ignore patterns to prevent large directories like <code>node_modules</code> or <code>target</code> from being synced, keeping the sandbox lightweight.
+        </p>
+      </section>
+
+      <section>
+        <h2>The Bare Repo Pattern</h2>
+        <p>
+          Docker sandboxing works especially well with <a href="/guides/git-worktrees-ai-development/">git worktrees</a>. The bare repo pattern means each agent gets its own worktree directory mounted into its own container. Multiple agents can work on different branches of the same repo, each fully isolated from the others.
+        </p>
+        <p>
+          This combination gives you parallel, isolated AI development without any of the agents stepping on each other's changes or corrupting shared state.
+        </p>
+      </section>
+
+      <section>
+        <h2>Getting Started with Docker Sandbox</h2>
+        <p>
+          Enable Docker sandboxing in the aoe settings TUI. You will need Docker installed and running on your machine. Then create a new session with sandboxing enabled:
+        </p>
+        <pre><code>aoe add --sandbox my-agent</code></pre>
+        <p>
+          See the <a href="/docs/">documentation</a> for detailed configuration options. Related guides:
+        </p>
+        <ul>
+          <li><a href="/guides/manage-ai-coding-agents/">Managing multiple AI coding agents</a></li>
+          <li><a href="/guides/git-worktrees-ai-development/">Git worktrees for parallel development</a></li>
+          <li><a href="/guides/claude-code-session-manager/">AI coding agent session manager</a></li>
+          <li><a href="/guides/tmux-ai-coding-workflow/">tmux workflow for AI coding</a></li>
+        </ul>
+      </section>
+    </div>
+  </article>
+
+  <Footer />
+</Base>

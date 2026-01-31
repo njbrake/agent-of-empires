@@ -62,7 +62,8 @@ environment = ["ANTHROPIC_API_KEY"]
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `cpu_limit` | (none) | CPU limit (e.g., "4") |
 | `memory_limit` | (none) | Memory limit (e.g., "8g") |
-| `environment` | `[]` | Env vars to pass through |
+| `environment` | `[]` | Env var names to pass through from host |
+| `environment_values` | `{}` | Env vars with explicit values to inject (see below) |
 | `extra_volumes` | `[]` | Additional volume mounts |
 
 ## Volume Mounts
@@ -120,6 +121,32 @@ environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
 ```
 
 These variables are read from your host environment and passed to containers (in addition to the terminal defaults above).
+
+### Sandbox-Specific Values (`environment_values`)
+
+Use `environment_values` to inject env vars with values that AOE manages directly, independent of your host environment. This is useful for giving sandboxes credentials that differ from (or don't exist on) the host:
+
+```toml
+[sandbox.environment_values]
+GH_TOKEN = "ghp_sandbox_scoped_token"
+CUSTOM_API_KEY = "sk-sandbox-only-key"
+```
+
+Values starting with `$` are read from a host env var instead of being used literally. This lets you store the actual secret in your shell profile rather than in the AOE config file:
+
+```toml
+[sandbox.environment_values]
+GH_TOKEN = "$AOE_GH_TOKEN"   # reads AOE_GH_TOKEN from host, injects as GH_TOKEN
+```
+
+```bash
+# In your .bashrc / .zshrc
+export AOE_GH_TOKEN="ghp_sandbox_scoped_token"
+```
+
+If the referenced host env var is not set, the entry is silently skipped.
+
+To use a literal value starting with `$`, double it: `$$LITERAL` is injected as `$LITERAL`.
 
 ## Available Images
 

@@ -1,0 +1,109 @@
+---
+import Base from '../../layouts/Base.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Base
+  title="Git Worktrees for Parallel AI Development - Agent of Empires"
+  description="Use git worktrees to run multiple AI coding agents on different branches simultaneously. Automatic worktree creation, cleanup, and the bare repo pattern."
+>
+  <Nav />
+
+  <article class="pt-32 pb-16 px-6">
+    <div class="max-w-3xl mx-auto prose-content">
+      <header class="mb-12">
+        <h1 class="text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">Git Worktrees for Parallel AI Development</h1>
+        <p class="text-lg text-gray-400 leading-relaxed">
+          Git worktrees let you check out multiple branches of the same repository at the same time, each in its own directory. This is the foundation for running multiple AI agents on the same codebase without conflicts.
+        </p>
+      </header>
+
+      <section>
+        <h2>What Are Git Worktrees</h2>
+        <p>
+          A git worktree is an additional working directory linked to your repository. Instead of cloning a repo multiple times (duplicating the entire <code>.git</code> directory each time), worktrees share the same git object database while each having their own checked-out branch and working files.
+        </p>
+        <pre><code>git worktree add ../my-repo-feature-branch feature-branch</code></pre>
+        <p>
+          This creates a new directory with <code>feature-branch</code> checked out, linked to the original repo. Changes in either worktree are visible to git, and you can commit, push, and pull from any of them independently.
+        </p>
+      </section>
+
+      <section>
+        <h2>Why Worktrees Matter for AI Agents</h2>
+        <p>
+          When you run multiple AI agents on the same project, each agent needs its own working directory. Without worktrees, you either:
+        </p>
+        <ul>
+          <li>Clone the repo multiple times, wasting disk space and creating disconnected git histories</li>
+          <li>Have agents share a single checkout, leading to merge conflicts and corrupted state</li>
+          <li>Stash and switch branches constantly, losing context</li>
+        </ul>
+        <p>
+          Worktrees solve this cleanly. Each agent gets its own branch and its own directory. They share git history, so changes from one agent are immediately visible (as commits) to the others.
+        </p>
+      </section>
+
+      <section>
+        <h2>The Bare Repo Pattern</h2>
+        <p>
+          For the best experience with multiple worktrees, aoe supports the bare repo pattern. Instead of having a "main" clone with worktrees branching off it, you start with a bare repository (no working directory) and create all checkouts as worktrees:
+        </p>
+        <pre><code>git clone --bare git@github.com:user/repo.git repo.git
+cd repo.git
+git worktree add ../repo-main main
+git worktree add ../repo-feature feature</code></pre>
+        <p>
+          This avoids the confusion of having a "special" main directory. All worktrees are equal peers, and the bare repo is just the shared object store. aoe automates this setup for you.
+        </p>
+      </section>
+
+      <section>
+        <h2>How aoe Automates Worktrees</h2>
+        <p>
+          When you add a session in <a href="/">Agent of Empires</a> with worktree mode enabled, aoe handles the full lifecycle:
+        </p>
+        <ol>
+          <li>Creates the worktree from your configured base repository</li>
+          <li>Checks out the branch you specify (or creates a new one)</li>
+          <li>Points the agent's session at the worktree directory</li>
+          <li>Cleans up the worktree when the session is removed</li>
+        </ol>
+        <p>
+          Combined with <a href="/guides/docker-sandbox-ai-agents/">Docker sandboxing</a>, each agent gets its own isolated branch in its own container. This is the most robust setup for parallel AI development.
+        </p>
+      </section>
+
+      <section>
+        <h2>Daily Workflow</h2>
+        <p>
+          A typical day with worktree-based AI development looks like:
+        </p>
+        <ol>
+          <li>Open <code>aoe</code> and review your agent sessions in the TUI dashboard</li>
+          <li>Add a new session for a feature branch: the worktree is created automatically</li>
+          <li>Start your AI agent in the session and give it the task</li>
+          <li>Meanwhile, another agent is working on a different branch in a different worktree</li>
+          <li>Review and merge completed work from any worktree</li>
+          <li>Remove finished sessions, and aoe cleans up the worktrees</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Getting Started</h2>
+        <p>
+          Enable worktree mode in the aoe settings and configure your base repository. See the <a href="/docs/">documentation</a> for detailed setup instructions. Related guides:
+        </p>
+        <ul>
+          <li><a href="/guides/manage-ai-coding-agents/">Managing multiple AI coding agents</a></li>
+          <li><a href="/guides/docker-sandbox-ai-agents/">Docker sandboxing for AI agents</a></li>
+          <li><a href="/guides/claude-code-session-manager/">AI coding agent session manager</a></li>
+          <li><a href="/guides/tmux-ai-coding-workflow/">tmux workflow for AI coding</a></li>
+        </ul>
+      </section>
+    </div>
+  </article>
+
+  <Footer />
+</Base>

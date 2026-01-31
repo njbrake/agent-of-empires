@@ -60,6 +60,9 @@ pub struct DiffView {
 
     /// Show help overlay
     pub(crate) show_help: bool,
+
+    /// Width of the file list panel (resizable with h/l)
+    pub(crate) file_list_width: u16,
 }
 
 impl DiffView {
@@ -91,6 +94,7 @@ impl DiffView {
             success_message: None,
             context_lines,
             show_help: false,
+            file_list_width: 35,
         };
 
         view.refresh_files()?;
@@ -208,5 +212,15 @@ impl DiffView {
     /// Half-page up in diff content
     pub fn half_page_up(&mut self) {
         self.scroll_up(self.visible_lines / 2);
+    }
+
+    /// Shrink the file list panel
+    pub fn shrink_file_list(&mut self) {
+        self.file_list_width = self.file_list_width.saturating_sub(5).max(5);
+    }
+
+    /// Grow the file list panel
+    pub fn grow_file_list(&mut self) {
+        self.file_list_width = (self.file_list_width + 5).min(80);
     }
 }

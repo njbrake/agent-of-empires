@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::{merge_configs, Config, ProfileConfig, SessionConfigOverride};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -350,8 +351,8 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
 
-    // Tab through all fields including sandbox image, yolo mode, and env vars
-    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo, 8: env
+    // Tab through all fields including sandbox image, yolo mode, env keys, and env values
+    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo, 8: env keys, 9: env values
     for _ in 0..6 {
         dialog.handle_key(key(KeyCode::Tab));
     }
@@ -361,7 +362,10 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
     assert_eq!(dialog.focused_field, 7); // yolo mode field
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 8); // env vars field
+    assert_eq!(dialog.focused_field, 8); // env keys field
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.focused_field, 9); // env values field
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 0); // wrap to start
@@ -562,4 +566,60 @@ fn help_content_fits_in_dialog() {
             available_width
         );
     }
+}
+
+#[test]
+fn test_profile_override_sets_default_tool() {
+    let global = Config::default();
+    let profile_config = ProfileConfig {
+        session: Some(SessionConfigOverride {
+            default_tool: Some("opencode".to_string()),
+        }),
+        ..Default::default()
+    };
+
+    let resolved = merge_configs(global, &profile_config);
+    let dialog = NewSessionDialog::new_with_config(
+        vec!["claude", "opencode"],
+        "/tmp/project".to_string(),
+        resolved,
+    );
+
+    assert_eq!(
+        dialog.tool_index, 1,
+        "Profile override should select opencode (index 1)"
+    );
+    assert_eq!(dialog.available_tools[dialog.tool_index], "opencode");
+}
+
+#[test]
+fn test_profile_override_beats_global_default_tool() {
+    let mut global = Config::default();
+    global.session.default_tool = Some("claude".to_string());
+
+    let profile_config = ProfileConfig {
+        session: Some(SessionConfigOverride {
+            default_tool: Some("opencode".to_string()),
+        }),
+        ..Default::default()
+    };
+
+    let resolved = merge_configs(global, &profile_config);
+    assert_eq!(
+        resolved.session.default_tool.as_deref(),
+        Some("opencode"),
+        "Profile override should take precedence over global default"
+    );
+
+    let dialog = NewSessionDialog::new_with_config(
+        vec!["claude", "opencode"],
+        "/tmp/project".to_string(),
+        resolved,
+    );
+
+    assert_eq!(
+        dialog.tool_index, 1,
+        "Profile override should select opencode over global claude"
+    );
+    assert_eq!(dialog.available_tools[dialog.tool_index], "opencode");
 }

@@ -177,6 +177,7 @@ fn test_has_dialog_returns_true_for_new_dialog() {
             gemini: false,
         },
         Vec::new(),
+        "default",
     ));
     assert!(env.view.has_dialog());
 }
@@ -782,6 +783,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
         created_at: None,
         yolo_mode: None,
         extra_env_keys: None,
+        extra_env_values: None,
     });
     instances.push(inst3);
 
@@ -862,6 +864,7 @@ fn test_group_has_containers() {
         created_at: None,
         yolo_mode: None,
         extra_env_keys: None,
+        extra_env_values: None,
     });
 
     let mut inst2 = Instance::new("other-session", "/tmp/other");
@@ -1038,6 +1041,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
         created_at: None,
         yolo_mode: None,
         extra_env_keys: None,
+        extra_env_values: None,
     });
 
     storage.save(&[inst1]).unwrap();
@@ -1232,4 +1236,67 @@ fn test_group_collapsed_state_saved_to_storage() {
         saved_group.collapsed,
         "collapsed state should be persisted to storage"
     );
+}
+
+#[test]
+#[serial]
+fn test_list_width_default() {
+    let env = create_test_env_empty();
+    assert_eq!(env.view.list_width, 35);
+}
+
+#[test]
+#[serial]
+fn test_shrink_list() {
+    let mut env = create_test_env_empty();
+    env.view.shrink_list();
+    assert_eq!(env.view.list_width, 30);
+}
+
+#[test]
+#[serial]
+fn test_grow_list() {
+    let mut env = create_test_env_empty();
+    env.view.grow_list();
+    assert_eq!(env.view.list_width, 40);
+}
+
+#[test]
+#[serial]
+fn test_shrink_list_clamps_at_minimum() {
+    let mut env = create_test_env_empty();
+    env.view.list_width = 12;
+    env.view.shrink_list();
+    assert_eq!(env.view.list_width, 10);
+    env.view.shrink_list();
+    assert_eq!(env.view.list_width, 10);
+}
+
+#[test]
+#[serial]
+fn test_grow_list_clamps_at_maximum() {
+    let mut env = create_test_env_empty();
+    env.view.list_width = 78;
+    env.view.grow_list();
+    assert_eq!(env.view.list_width, 80);
+    env.view.grow_list();
+    assert_eq!(env.view.list_width, 80);
+}
+
+#[test]
+#[serial]
+fn test_uppercase_h_shrinks_list() {
+    let mut env = create_test_env_empty();
+    assert_eq!(env.view.list_width, 35);
+    env.view.handle_key(key(KeyCode::Char('H')));
+    assert_eq!(env.view.list_width, 30);
+}
+
+#[test]
+#[serial]
+fn test_uppercase_l_grows_list() {
+    let mut env = create_test_env_empty();
+    assert_eq!(env.view.list_width, 35);
+    env.view.handle_key(key(KeyCode::Char('L')));
+    assert_eq!(env.view.list_width, 40);
 }

@@ -11,7 +11,9 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::docker;
-use crate::session::{civilizations, Config};
+#[cfg(test)]
+use crate::session::Config;
+use crate::session::{civilizations, resolve_config};
 use crate::tmux::AvailableTools;
 
 pub(super) struct FieldHelp {
@@ -64,6 +66,10 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
         name: "Environment",
         description: "Env var names to pass from host to container (extends global config)",
     },
+    FieldHelp {
+        name: "Environment Values",
+        description: "Custom KEY=VALUE env vars injected into the sandbox container",
+    },
 ];
 
 #[derive(Clone)]
@@ -80,12 +86,15 @@ pub struct NewSessionData {
     pub yolo_mode: bool,
     /// Additional environment variable keys to pass from host to container.
     pub extra_env_keys: Vec<String>,
+    /// Custom KEY=VALUE environment variables to inject into the container.
+    pub extra_env_values: Vec<String>,
 }
 
 /// Spinner frames for loading animation
 pub(super) const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
 
 pub struct NewSessionDialog {
+    pub(super) profile: String,
     pub(super) title: Input,
     pub(super) path: Input,
     pub(super) group: Input,
@@ -109,6 +118,12 @@ pub struct NewSessionDialog {
     pub(super) env_editing_input: Option<Input>,
     /// Whether we are adding a new entry (vs editing existing)
     pub(super) env_adding_new: bool,
+    /// Custom KEY=VALUE environment variables (session-specific)
+    pub(super) extra_env_values: Vec<String>,
+    pub(super) env_values_list_expanded: bool,
+    pub(super) env_values_selected_index: usize,
+    pub(super) env_values_editing_input: Option<Input>,
+    pub(super) env_values_adding_new: bool,
     pub(super) error_message: Option<String>,
     pub(super) show_help: bool,
     /// Whether the dialog is in loading state (creating session in background)
@@ -120,7 +135,7 @@ pub struct NewSessionDialog {
 }
 
 impl NewSessionDialog {
-    pub fn new(tools: AvailableTools, existing_titles: Vec<String>) -> Self {
+    pub fn new(tools: AvailableTools, existing_titles: Vec<String>, profile: &str) -> Self {
         let current_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -128,8 +143,8 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
         let docker_available = docker::is_docker_available();
 
-        // Load config to get defaults
-        let config = Config::load().unwrap_or_default();
+        // Load resolved config (global merged with profile overrides)
+        let config = resolve_config(profile).unwrap_or_default();
 
         // Determine default tool index based on config
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {
@@ -145,14 +160,21 @@ impl NewSessionDialog {
         let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
         let yolo_mode = sandbox_enabled && config.sandbox.yolo_mode_default;
 
-        // Initialize env keys from config when sandbox is enabled
-        let extra_env_keys = if sandbox_enabled {
-            config.sandbox.environment.clone()
+        // Initialize env keys and values from config when sandbox is enabled
+        let (extra_env_keys, extra_env_values) = if sandbox_enabled {
+            let env_values: Vec<String> = config
+                .sandbox
+                .environment_values
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            (config.sandbox.environment.clone(), env_values)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         Self {
+            profile: profile.to_string(),
             title: Input::default(),
             path: Input::new(current_dir),
             group: Input::default(),
@@ -171,6 +193,11 @@ impl NewSessionDialog {
             env_selected_index: 0,
             env_editing_input: None,
             env_adding_new: false,
+            extra_env_values,
+            env_values_list_expanded: false,
+            env_values_selected_index: 0,
+            env_values_editing_input: None,
+            env_values_adding_new: false,
             error_message: None,
             show_help: false,
             loading: false,
@@ -203,8 +230,53 @@ impl NewSessionDialog {
     }
 
     #[cfg(test)]
+    pub(super) fn new_with_config(tools: Vec<&'static str>, path: String, config: Config) -> Self {
+        let tool_index = if let Some(ref default_tool) = config.session.default_tool {
+            tools
+                .iter()
+                .position(|&t| t == default_tool.as_str())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        Self {
+            profile: "default".to_string(),
+            title: Input::default(),
+            path: Input::new(path),
+            group: Input::default(),
+            tool_index,
+            focused_field: 0,
+            available_tools: tools,
+            existing_titles: Vec::new(),
+            worktree_branch: Input::default(),
+            create_new_branch: true,
+            sandbox_enabled: false,
+            sandbox_image: Input::new(docker::effective_default_image()),
+            docker_available: false,
+            yolo_mode: false,
+            extra_env_keys: Vec::new(),
+            env_list_expanded: false,
+            env_selected_index: 0,
+            env_editing_input: None,
+            env_adding_new: false,
+            extra_env_values: Vec::new(),
+            env_values_list_expanded: false,
+            env_values_selected_index: 0,
+            env_values_editing_input: None,
+            env_values_adding_new: false,
+            error_message: None,
+            show_help: false,
+            loading: false,
+            spinner_frame: 0,
+            needs_image_pull: false,
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
         Self {
+            profile: "default".to_string(),
             title: Input::default(),
             path: Input::new(path),
             group: Input::default(),
@@ -223,6 +295,11 @@ impl NewSessionDialog {
             env_selected_index: 0,
             env_editing_input: None,
             env_adding_new: false,
+            extra_env_values: Vec::new(),
+            env_values_list_expanded: false,
+            env_values_selected_index: 0,
+            env_values_editing_input: None,
+            env_values_adding_new: false,
             error_message: None,
             show_help: false,
             loading: false,
@@ -288,8 +365,13 @@ impl NewSessionDialog {
         } else {
             usize::MAX
         };
-        let max_field = if sandbox_options_visible {
+        let env_values_field = if sandbox_options_visible {
             env_field + 1
+        } else {
+            usize::MAX
+        };
+        let max_field = if sandbox_options_visible {
+            env_values_field + 1
         } else if has_sandbox {
             sandbox_field + 1
         } else if has_worktree {
@@ -301,6 +383,9 @@ impl NewSessionDialog {
         // Handle env list editing mode
         if self.env_list_expanded && self.focused_field == env_field {
             return self.handle_env_list_key(key);
+        }
+        if self.env_values_list_expanded && self.focused_field == env_values_field {
+            return self.handle_env_values_list_key(key);
         }
 
         match key.code {
@@ -315,6 +400,11 @@ impl NewSessionDialog {
             KeyCode::Enter if self.focused_field == env_field => {
                 self.env_list_expanded = true;
                 self.env_selected_index = 0;
+                DialogResult::Continue
+            }
+            KeyCode::Enter if self.focused_field == env_values_field => {
+                self.env_values_list_expanded = true;
+                self.env_values_selected_index = 0;
                 DialogResult::Continue
             }
             KeyCode::Enter => {
@@ -344,6 +434,11 @@ impl NewSessionDialog {
                     yolo_mode: self.sandbox_enabled && self.yolo_mode,
                     extra_env_keys: if self.sandbox_enabled {
                         self.extra_env_keys.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    extra_env_values: if self.sandbox_enabled {
+                        self.extra_env_values.clone()
                     } else {
                         Vec::new()
                     },
@@ -380,15 +475,24 @@ impl NewSessionDialog {
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
                 if self.sandbox_enabled {
-                    // Apply yolo_mode_default and reload env keys from config
-                    let config = Config::load().unwrap_or_default();
+                    // Apply yolo_mode_default and reload env keys/values from config
+                    let config = resolve_config(&self.profile).unwrap_or_default();
                     self.yolo_mode = config.sandbox.yolo_mode_default;
                     self.extra_env_keys = config.sandbox.environment.clone();
+                    self.extra_env_values = config
+                        .sandbox
+                        .environment_values
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect();
                 } else {
                     self.yolo_mode = false;
                     self.extra_env_keys.clear();
                     self.env_list_expanded = false;
                     self.env_editing_input = None;
+                    self.extra_env_values.clear();
+                    self.env_values_list_expanded = false;
+                    self.env_values_editing_input = None;
                     if self.focused_field > sandbox_field {
                         self.focused_field = sandbox_field;
                     }
@@ -407,6 +511,7 @@ impl NewSessionDialog {
                     && self.focused_field != sandbox_field
                     && self.focused_field != yolo_mode_field
                     && self.focused_field != env_field
+                    && self.focused_field != env_values_field
                 {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
@@ -491,6 +596,87 @@ impl NewSessionDialog {
                     let current = self.extra_env_keys[self.env_selected_index].clone();
                     self.env_editing_input = Some(Input::new(current));
                     self.env_adding_new = false;
+                }
+                DialogResult::Continue
+            }
+            _ => DialogResult::Continue,
+        }
+    }
+
+    /// Handle key events when the env values list is expanded
+    fn handle_env_values_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        if let Some(ref mut input) = self.env_values_editing_input {
+            match key.code {
+                KeyCode::Enter => {
+                    let value = input.value().trim().to_string();
+                    if !value.is_empty() && value.contains('=') {
+                        if self.env_values_adding_new {
+                            self.extra_env_values.push(value);
+                            self.env_values_selected_index =
+                                self.extra_env_values.len().saturating_sub(1);
+                        } else if self.env_values_selected_index < self.extra_env_values.len() {
+                            self.extra_env_values[self.env_values_selected_index] = value;
+                        }
+                    }
+                    self.env_values_editing_input = None;
+                    self.env_values_adding_new = false;
+                    return DialogResult::Continue;
+                }
+                KeyCode::Esc => {
+                    self.env_values_editing_input = None;
+                    self.env_values_adding_new = false;
+                    return DialogResult::Continue;
+                }
+                _ => {
+                    input.handle_event(&crossterm::event::Event::Key(key));
+                    return DialogResult::Continue;
+                }
+            }
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.env_values_list_expanded = false;
+                DialogResult::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.env_values_selected_index > 0 {
+                    self.env_values_selected_index -= 1;
+                }
+                DialogResult::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.env_values_selected_index < self.extra_env_values.len().saturating_sub(1) {
+                    self.env_values_selected_index += 1;
+                }
+                DialogResult::Continue
+            }
+            KeyCode::Char('a') => {
+                self.env_values_editing_input = Some(Input::default());
+                self.env_values_adding_new = true;
+                DialogResult::Continue
+            }
+            KeyCode::Char('d') => {
+                if !self.extra_env_values.is_empty()
+                    && self.env_values_selected_index < self.extra_env_values.len()
+                {
+                    self.extra_env_values.remove(self.env_values_selected_index);
+                    if self.env_values_selected_index > 0
+                        && self.env_values_selected_index >= self.extra_env_values.len()
+                    {
+                        self.env_values_selected_index =
+                            self.extra_env_values.len().saturating_sub(1);
+                    }
+                }
+                DialogResult::Continue
+            }
+            KeyCode::Enter => {
+                if !self.extra_env_values.is_empty()
+                    && self.env_values_selected_index < self.extra_env_values.len()
+                {
+                    let current = self.extra_env_values[self.env_values_selected_index].clone();
+                    self.env_values_editing_input = Some(Input::new(current));
+                    self.env_values_adding_new = false;
                 }
                 DialogResult::Continue
             }

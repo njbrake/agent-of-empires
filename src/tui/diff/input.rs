@@ -106,6 +106,16 @@ impl DiffView {
                 DiffAction::Continue
             }
 
+            // Resize file list panel
+            (KeyCode::Char('h'), _) | (KeyCode::Left, _) => {
+                self.shrink_file_list();
+                DiffAction::Continue
+            }
+            (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
+                self.grow_file_list();
+                DiffAction::Continue
+            }
+
             // Help
             (KeyCode::Char('?'), _) => {
                 self.show_help = true;

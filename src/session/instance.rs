@@ -19,8 +19,35 @@ fn default_true() -> bool {
 /// Terminal environment variables that are always passed through for proper UI/theming
 const DEFAULT_TERMINAL_ENV_VARS: &[&str] = &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
-/// Build docker exec environment flags from config and optional per-session extra keys
-fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
+/// Shell-escape a value for safe interpolation into a shell command string.
+/// Uses double-quote escaping so values can be nested inside `bash -c '...'`
+/// (single quotes in the outer wrapper are literal, double quotes work inside).
+fn shell_escape(val: &str) -> String {
+    let escaped = val
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`");
+    format!("\"{}\"", escaped)
+}
+
+/// Resolve an environment_values entry. If the value starts with `$`, read the
+/// named variable from the host environment (use `$$` to escape a literal `$`).
+/// Otherwise return the literal value.
+fn resolve_env_value(val: &str) -> Option<String> {
+    if let Some(rest) = val.strip_prefix("$$") {
+        Some(format!("${}", rest))
+    } else if let Some(var_name) = val.strip_prefix('$') {
+        std::env::var(var_name).ok()
+    } else {
+        Some(val.to_string())
+    }
+}
+
+/// Build docker exec environment flags from config and optional per-session extra keys.
+/// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
+/// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
+fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
     let config = super::config::Config::load().unwrap_or_default();
 
     // Start with default terminal variables (always included for proper UI)
@@ -37,7 +64,7 @@ fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
     }
 
     // Add per-session extra env keys
-    if let Some(extra_keys) = extra_env_keys {
+    if let Some(extra_keys) = &sandbox.extra_env_keys {
         for key in extra_keys {
             if !env_keys.contains(key) {
                 env_keys.push(key.clone());
@@ -45,15 +72,32 @@ fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
         }
     }
 
-    env_keys
+    let mut args: Vec<String> = env_keys
         .iter()
         .filter_map(|key| {
             std::env::var(key)
                 .ok()
-                .map(|val| format!("-e {}={}", key, val))
+                .map(|val| format!("-e {}={}", key, shell_escape(&val)))
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect();
+
+    // Inject environment_values (AOE-managed, used for docker exec sessions)
+    for (key, val) in &config.sandbox.environment_values {
+        if let Some(resolved) = resolve_env_value(val) {
+            args.push(format!("-e {}={}", key, shell_escape(&resolved)));
+        }
+    }
+
+    // Inject per-session extra env values
+    if let Some(extra_vals) = &sandbox.extra_env_values {
+        for (key, val) in extra_vals {
+            if let Some(resolved) = resolve_env_value(val) {
+                args.push(format!("-e {}={}", key, shell_escape(&resolved)));
+            }
+        }
+    }
+
+    args.join(" ")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +144,9 @@ pub struct SandboxInfo {
     /// Additional environment variable keys to pass from host (session-specific)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env_keys: Option<Vec<String>>,
+    /// Additional KEY=VALUE environment variables (session-specific overrides)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_env_values: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,12 +167,6 @@ pub struct Instance {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_accessed_at: Option<DateTime<Utc>>,
-
-    // Claude Code integration
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_detected_at: Option<DateTime<Utc>>,
 
     // Git worktree integration
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,8 +208,6 @@ impl Instance {
             status: Status::Idle,
             created_at: Utc::now(),
             last_accessed_at: None,
-            claude_session_id: None,
-            claude_detected_at: None,
             worktree_info: None,
             sandbox_info: None,
             terminal_info: None,
@@ -282,7 +321,7 @@ impl Instance {
         self.ensure_container_running()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox.extra_env_keys.as_ref());
+        let env_args = build_docker_env_args(sandbox);
         let env_part = if env_args.is_empty() {
             String::new()
         } else {
@@ -361,7 +400,7 @@ impl Instance {
             } else {
                 self.get_tool_command().to_string()
             };
-            let env_args = build_docker_env_args(sandbox.extra_env_keys.as_ref());
+            let env_args = build_docker_env_args(sandbox);
             let env_part = if env_args.is_empty() {
                 String::new()
             } else {
@@ -662,6 +701,26 @@ impl Instance {
             format!("{}/.claude", CONTAINER_HOME),
         ));
 
+        // Inject environment_values (AOE-managed, used for container creation via separate args)
+        for (key, val) in &sandbox_config.environment_values {
+            if let Some(resolved) = resolve_env_value(val) {
+                environment.push((key.clone(), resolved));
+            }
+        }
+
+        // Inject per-session extra env values
+        if let Some(extra_vals) = self
+            .sandbox_info
+            .as_ref()
+            .and_then(|s| s.extra_env_values.as_ref())
+        {
+            for (key, val) in extra_vals {
+                if let Some(resolved) = resolve_env_value(val) {
+                    environment.push((key.clone(), resolved));
+                }
+            }
+        }
+
         if self.is_yolo_mode() && self.tool == "opencode" {
             environment.push((
                 "OPENCODE_PERMISSION".to_string(),
@@ -669,10 +728,17 @@ impl Instance {
             ));
         }
 
+        let anonymous_volumes: Vec<String> = sandbox_config
+            .volume_ignores
+            .iter()
+            .map(|ignore| format!("{}/{}", workspace_path, ignore))
+            .collect();
+
         Ok(ContainerConfig {
             working_dir: workspace_path,
             volumes,
             named_volumes,
+            anonymous_volumes,
             environment,
             cpu_limit: sandbox_config.cpu_limit,
             memory_limit: sandbox_config.memory_limit,
@@ -742,33 +808,6 @@ impl Instance {
             Ok(status) => status,
             Err(_) => Status::Idle,
         };
-
-        // Detect Claude session ID if applicable
-        if self.tool == "claude" && self.claude_session_id.is_none() {
-            if let Ok(Some(id)) = super::claude::detect_session_id(&self.project_path) {
-                self.claude_session_id = Some(id);
-                self.claude_detected_at = Some(Utc::now());
-            }
-        }
-    }
-
-    pub fn fork(&self, new_title: &str, new_group: &str) -> Result<Instance> {
-        if self.tool != "claude" {
-            anyhow::bail!("Fork is only supported for Claude sessions");
-        }
-
-        let claude_id = self
-            .claude_session_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No Claude session ID to fork"))?;
-
-        let mut forked = Self::new(new_title, &self.project_path);
-        forked.group_path = new_group.to_string();
-        forked.command = format!("claude --resume {}", claude_id);
-        forked.tool = "claude".to_string();
-        forked.parent_session_id = Some(self.id.clone());
-
-        Ok(forked)
     }
 
     pub fn capture_output_with_size(
@@ -872,6 +911,7 @@ mod tests {
             created_at: None,
             yolo_mode: Some(true),
             extra_env_keys: None,
+            extra_env_values: None,
         });
         assert!(inst.is_yolo_mode());
 
@@ -900,6 +940,7 @@ mod tests {
             created_at: None,
             yolo_mode: None,
             extra_env_keys: None,
+            extra_env_values: None,
         });
         assert!(!inst.is_sandboxed());
     }
@@ -915,6 +956,7 @@ mod tests {
             created_at: None,
             yolo_mode: None,
             extra_env_keys: None,
+            extra_env_values: None,
         });
         assert!(inst.is_sandboxed());
     }
@@ -1046,6 +1088,7 @@ mod tests {
             created_at: Some(Utc::now()),
             yolo_mode: Some(true),
             extra_env_keys: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
+            extra_env_values: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -1125,51 +1168,6 @@ mod tests {
         let wt = deserialized.worktree_info.unwrap();
         assert_eq!(wt.branch, "feature/abc");
         assert!(wt.managed_by_aoe);
-    }
-
-    // Tests for fork
-    #[test]
-    fn test_fork_non_claude_tool() {
-        let mut inst = Instance::new("Test", "/tmp/test");
-        inst.tool = "opencode".to_string();
-
-        let result = inst.fork("Forked", "group");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("only supported for Claude"));
-    }
-
-    #[test]
-    fn test_fork_without_claude_session_id() {
-        let mut inst = Instance::new("Test", "/tmp/test");
-        inst.tool = "claude".to_string();
-        inst.claude_session_id = None;
-
-        let result = inst.fork("Forked", "group");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No Claude session ID"));
-    }
-
-    #[test]
-    fn test_fork_success() {
-        let mut inst = Instance::new("Original", "/tmp/test");
-        inst.tool = "claude".to_string();
-        inst.claude_session_id = Some("session123".to_string());
-
-        let forked = inst.fork("Forked Session", "new/group").unwrap();
-
-        assert_eq!(forked.title, "Forked Session");
-        assert_eq!(forked.group_path, "new/group");
-        assert_eq!(forked.project_path, inst.project_path);
-        assert_eq!(forked.tool, "claude");
-        assert!(forked.command.contains("--resume"));
-        assert!(forked.command.contains("session123"));
-        assert_eq!(forked.parent_session_id, Some(inst.id.clone()));
     }
 
     // Test generate_id function properties

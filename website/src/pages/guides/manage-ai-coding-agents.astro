@@ -1,0 +1,100 @@
+---
+import Base from '../../layouts/Base.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Base
+  title="How to Manage Multiple AI Coding Agents - Agent of Empires"
+  description="Learn how to run and manage multiple AI coding agents simultaneously using a terminal session manager. Git worktrees, Docker sandboxing, and a TUI dashboard."
+>
+  <Nav />
+
+  <article class="pt-32 pb-16 px-6">
+    <div class="max-w-3xl mx-auto prose-content">
+      <header class="mb-12">
+        <h1 class="text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">How to Manage Multiple AI Coding Agents</h1>
+        <p class="text-lg text-gray-400 leading-relaxed">
+          Running one AI coding agent is straightforward. Running five at once across different repos, branches, and containers turns into a mess of terminal tabs and forgotten sessions. Here is how to bring order to the chaos.
+        </p>
+      </header>
+
+      <section>
+        <h2>The Problem with Multiple Agents</h2>
+        <p>
+          AI coding agents like Claude Code, Codex, Gemini CLI, and OpenCode each need their own terminal session. When you are working on a real project, you might have one agent refactoring a module, another writing tests, and a third exploring an API integration. Each runs in its own terminal, and you quickly lose track of which is which.
+        </p>
+        <p>
+          The typical workaround is a collection of tmux sessions or terminal tabs with cryptic names. You switch between them trying to remember which agent is doing what, whether it is waiting for input, or if it finished ten minutes ago. Context switching becomes the bottleneck instead of the AI.
+        </p>
+      </section>
+
+      <section>
+        <h2>A Session Manager Built for AI Agents</h2>
+        <p>
+          <a href="/">Agent of Empires</a> (aoe) is a terminal session manager designed specifically for this workflow. It gives you a TUI dashboard where every agent session is visible at a glance with real-time status detection. You can see which agents are actively generating code, which are waiting for your input, and which have finished.
+        </p>
+        <p>
+          Sessions are organized into groups, so you can keep your work project agents separate from your side project experiments. Everything runs in tmux underneath, which means sessions persist even if you close the TUI. Your agents keep running.
+        </p>
+      </section>
+
+      <section>
+        <h2>Key Features for Multi-Agent Workflows</h2>
+
+        <h3>Status Detection</h3>
+        <p>
+          aoe automatically detects the status of Claude Code, Gemini CLI, OpenCode, Mistral Vibe, and Codex sessions. The dashboard shows whether each agent is actively working, waiting for input, or idle. No more switching through tabs to check progress.
+        </p>
+
+        <h3>Git Worktrees for Parallel Work</h3>
+        <p>
+          Instead of cloning the same repo multiple times, aoe uses <a href="/guides/git-worktrees-ai-development/">git worktrees</a> to let multiple agents work on different branches of the same repository simultaneously. Each agent gets its own working directory with its own branch, but they all share the same git history.
+        </p>
+
+        <h3>Docker Sandboxing</h3>
+        <p>
+          For safety, you can run agents inside <a href="/guides/docker-sandbox-ai-agents/">Docker containers</a>. Each session gets its own isolated environment with configurable volume mounts, persistent authentication, and custom images. If an agent does something unexpected, it is contained.
+        </p>
+
+        <h3>Session Groups</h3>
+        <p>
+          Organize your sessions into hierarchical folders. Keep client work in one group, open source contributions in another, and experimental agents in a third. Groups can be collapsed and expanded in the TUI.
+        </p>
+      </section>
+
+      <section>
+        <h2>Manual tmux vs. aoe</h2>
+        <p>
+          You can absolutely manage AI agents with raw tmux. Many developers do. But the workflow gets tedious quickly:
+        </p>
+        <ul>
+          <li><strong>Without aoe</strong>: Create tmux sessions manually, name them yourself, switch between them with keyboard shortcuts, check each one individually for status, manage worktrees by hand, set up Docker containers separately.</li>
+          <li><strong>With aoe</strong>: <code>aoe add</code> a session, see all statuses in a dashboard, navigate with arrow keys, get automatic worktree and container lifecycle management.</li>
+        </ul>
+        <p>
+          The difference is most noticeable when you are running 3+ agents. At that point, the overhead of manual management starts eating into the productivity gains from using AI in the first place.
+        </p>
+      </section>
+
+      <section>
+        <h2>Getting Started</h2>
+        <p>
+          Install aoe with a single command:
+        </p>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash</code></pre>
+        <p>
+          Then start the TUI with <code>aoe</code> and add your first session. See the <a href="/docs/">documentation</a> for the full setup guide, or read about specific features:
+        </p>
+        <ul>
+          <li><a href="/guides/docker-sandbox-ai-agents/">Docker sandboxing for AI agents</a></li>
+          <li><a href="/guides/git-worktrees-ai-development/">Git worktrees for parallel development</a></li>
+          <li><a href="/guides/claude-code-session-manager/">AI coding agent session manager</a></li>
+          <li><a href="/guides/tmux-ai-coding-workflow/">tmux workflow for AI coding</a></li>
+        </ul>
+      </section>
+    </div>
+  </article>
+
+  <Footer />
+</Base>

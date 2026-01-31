@@ -22,7 +22,7 @@ impl HomeView {
         update_info: Option<&UpdateInfo>,
     ) {
         // Settings view takes over the whole screen
-        if let Some(ref settings) = self.settings_view {
+        if let Some(ref mut settings) = self.settings_view {
             settings.render(frame, area, theme);
             // Render unsaved changes confirmation dialog over settings
             if self.settings_close_confirm {
@@ -60,7 +60,7 @@ impl HomeView {
         // Layout: left panel (list) and right panel (preview)
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .constraints([Constraint::Length(self.list_width), Constraint::Min(40)])
             .split(main_chunks[0]);
 
         self.render_list(frame, chunks[0], theme);

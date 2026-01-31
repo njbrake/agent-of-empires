@@ -1,0 +1,123 @@
+---
+import Base from '../../layouts/Base.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Base
+  title="tmux Workflow for AI Coding Agents - Agent of Empires"
+  description="Use tmux as the foundation for managing AI coding agents. Session persistence, keyboard-driven workflow, and a TUI layer for monitoring agent status."
+>
+  <Nav />
+
+  <article class="pt-32 pb-16 px-6">
+    <div class="max-w-3xl mx-auto prose-content">
+      <header class="mb-12">
+        <h1 class="text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">tmux Workflow for AI Coding Agents</h1>
+        <p class="text-lg text-gray-400 leading-relaxed">
+          tmux is the terminal multiplexer that makes persistent, multi-session workflows possible. Agent of Empires builds on tmux to add a visual dashboard, status detection, and lifecycle management for AI agent sessions.
+        </p>
+      </header>
+
+      <section>
+        <h2>Why tmux Is the Foundation</h2>
+        <p>
+          AI coding agents run in terminals and often take a long time to complete tasks. If your terminal closes, the agent dies. tmux solves this by running sessions in the background -- they persist across disconnects, reboots, and SSH drops.
+        </p>
+        <p>
+          tmux also handles windowing, splitting, and session management natively. It is the standard tool for this kind of work, with decades of stability and a minimal resource footprint.
+        </p>
+      </section>
+
+      <section>
+        <h2>The Single-Window Workflow</h2>
+        <p>
+          <a href="/">Agent of Empires</a> organizes your tmux sessions into two views:
+        </p>
+        <ul>
+          <li><strong>Agent view</strong>: The TUI dashboard showing all sessions, their status, and metadata. Navigate with keyboard shortcuts, add or remove sessions, and jump into any agent.</li>
+          <li><strong>Terminal view</strong>: The actual tmux pane where the AI agent is running. When you select a session in the dashboard and press enter, you drop into the agent's terminal.</li>
+        </ul>
+        <p>
+          Switching between views is a single keypress. You spend most of your time in the dashboard, dipping into individual agent sessions when they need attention.
+        </p>
+      </section>
+
+      <section>
+        <h2>Keyboard Shortcuts</h2>
+        <p>
+          aoe is keyboard-driven. The core shortcuts:
+        </p>
+        <ul>
+          <li><code>j</code> / <code>k</code> or arrow keys to navigate sessions</li>
+          <li><code>Enter</code> to attach to a session</li>
+          <li><code>a</code> to add a new session</li>
+          <li><code>d</code> to delete a session</li>
+          <li><code>g</code> to manage groups</li>
+          <li><code>/</code> to search sessions</li>
+          <li><code>?</code> to view all shortcuts</li>
+        </ul>
+        <p>
+          The interface follows vim-style conventions, so the keybindings feel natural to terminal users. All actions are available without reaching for the mouse.
+        </p>
+      </section>
+
+      <section>
+        <h2>Session Persistence</h2>
+        <p>
+          Because everything runs in tmux, your agents survive:
+        </p>
+        <ul>
+          <li>Closing the aoe TUI</li>
+          <li>Closing your terminal emulator</li>
+          <li>SSH disconnects</li>
+          <li>System sleep/wake cycles</li>
+        </ul>
+        <p>
+          Reopen <code>aoe</code> and your sessions are all there, with current status automatically detected. Long-running agent tasks complete in the background without you needing to keep anything open.
+        </p>
+      </section>
+
+      <section>
+        <h2>The TUI Layer on Top of tmux</h2>
+        <p>
+          Raw tmux is powerful but requires memorizing session names and switching commands. aoe adds a visual layer:
+        </p>
+        <ul>
+          <li><strong>Dashboard view</strong> with real-time status for each session</li>
+          <li><strong>Session groups</strong> for organization</li>
+          <li><strong>Status detection</strong> that shows agent activity without entering each session</li>
+          <li><strong>Integrated lifecycle</strong> for <a href="/guides/docker-sandbox-ai-agents/">Docker containers</a> and <a href="/guides/git-worktrees-ai-development/">git worktrees</a></li>
+        </ul>
+        <p>
+          You get the reliability of tmux with the usability of a purpose-built interface.
+        </p>
+      </section>
+
+      <section>
+        <h2>Getting Started</h2>
+        <p>
+          You need tmux installed on your system. Most Linux distributions include it in their package managers, and on macOS you can install it via Homebrew:
+        </p>
+        <pre><code>brew install tmux    # macOS
+apt install tmux     # Debian/Ubuntu</code></pre>
+        <p>
+          Then install and run aoe:
+        </p>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash
+aoe</code></pre>
+        <p>
+          See the <a href="/docs/">documentation</a> for the full setup guide. Related guides:
+        </p>
+        <ul>
+          <li><a href="/guides/manage-ai-coding-agents/">Managing multiple AI coding agents</a></li>
+          <li><a href="/guides/docker-sandbox-ai-agents/">Docker sandboxing for AI agents</a></li>
+          <li><a href="/guides/git-worktrees-ai-development/">Git worktrees for parallel development</a></li>
+          <li><a href="/guides/claude-code-session-manager/">AI coding agent session manager</a></li>
+        </ul>
+      </section>
+    </div>
+  </article>
+
+  <Footer />
+</Base>

@@ -12,6 +12,7 @@ pub struct ContainerConfig {
     pub working_dir: String,
     pub volumes: Vec<VolumeMount>,
     pub named_volumes: Vec<(String, String)>,
+    pub anonymous_volumes: Vec<String>,
     pub environment: Vec<(String, String)>,
     pub cpu_limit: Option<String>,
     pub memory_limit: Option<String>,
@@ -68,11 +69,9 @@ impl DockerContainer {
         Ok(stdout.trim() == "true")
     }
 
-    pub fn create(&self, config: &ContainerConfig) -> Result<String> {
-        if self.exists()? {
-            return Err(DockerError::ContainerAlreadyExists(self.name.clone()));
-        }
-
+    /// Build the docker run arguments from the container config.
+    /// Separated from `create` to enable unit testing.
+    pub(crate) fn build_create_args(&self, config: &ContainerConfig) -> Vec<String> {
         let mut args = vec![
             "run".to_string(),
             "-d".to_string(),
@@ -97,6 +96,11 @@ impl DockerContainer {
             args.push(format!("{}:{}", vol_name, container_path));
         }
 
+        for path in &config.anonymous_volumes {
+            args.push("-v".to_string());
+            args.push(path.clone());
+        }
+
         for (key, value) in &config.environment {
             args.push("-e".to_string());
             args.push(format!("{}={}", key, value));
@@ -115,6 +119,16 @@ impl DockerContainer {
         args.push(self.image.clone());
         args.push("sleep".to_string());
         args.push("infinity".to_string());
+
+        args
+    }
+
+    pub fn create(&self, config: &ContainerConfig) -> Result<String> {
+        if self.exists()? {
+            return Err(DockerError::ContainerAlreadyExists(self.name.clone()));
+        }
+
+        let args = self.build_create_args(config);
 
         let output = Command::new("docker").args(&args).output()?;
 
@@ -223,5 +237,56 @@ mod tests {
         let container = DockerContainer::new("test1234567890ab", "ubuntu:latest");
         let cmd = container.exec_command();
         assert_eq!(cmd, vec!["docker", "exec", "-it", "aoe-sandbox-test1234"]);
+    }
+
+    #[test]
+    fn test_anonymous_volumes_in_create_args() {
+        let container = DockerContainer::new("test1234567890ab", "alpine:latest");
+        let config = ContainerConfig {
+            working_dir: "/workspace/myproject".to_string(),
+            volumes: vec![],
+            named_volumes: vec![],
+            anonymous_volumes: vec![
+                "/workspace/myproject/target".to_string(),
+                "/workspace/myproject/node_modules".to_string(),
+            ],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+        };
+
+        let args = container.build_create_args(&config);
+
+        // Find the anonymous volume flags
+        let v_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-v")
+            .map(|(i, _)| i)
+            .collect();
+
+        let volume_values: Vec<&str> = v_positions.iter().map(|&i| args[i + 1].as_str()).collect();
+
+        assert!(volume_values.contains(&"/workspace/myproject/target"));
+        assert!(volume_values.contains(&"/workspace/myproject/node_modules"));
+    }
+
+    #[test]
+    fn test_no_anonymous_volumes_when_empty() {
+        let container = DockerContainer::new("test1234567890ab", "alpine:latest");
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            named_volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+        };
+
+        let args = container.build_create_args(&config);
+
+        // No -v flags at all
+        assert!(!args.contains(&"-v".to_string()));
     }
 }

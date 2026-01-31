@@ -106,8 +106,8 @@ impl DiffView {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(35), // File list
-                Constraint::Min(40),    // Diff content
+                Constraint::Length(self.file_list_width),
+                Constraint::Min(40),
             ])
             .split(area);
 
@@ -330,6 +330,8 @@ impl DiffView {
             Line::from(vec![
                 Span::styled("j/k", Style::default().fg(theme.accent)),
                 Span::styled(": files  ", Style::default().fg(theme.dimmed)),
+                Span::styled("h/l", Style::default().fg(theme.accent)),
+                Span::styled(": resize  ", Style::default().fg(theme.dimmed)),
                 Span::styled("scroll", Style::default().fg(theme.accent)),
                 Span::styled(": diff  ", Style::default().fg(theme.dimmed)),
                 Span::styled("e/Enter", Style::default().fg(theme.accent)),
@@ -424,7 +426,7 @@ impl DiffView {
 
     fn render_help(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = 55u16;
-        let dialog_height = 18u16;
+        let dialog_height = 19u16;
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -460,6 +462,7 @@ impl DiffView {
                     ("PgUp/Dn", "Page up / down in diff"),
                     ("Ctrl+u/d", "Half-page up / down"),
                     ("g/G", "Go to top / bottom of diff"),
+                    ("h/l, ←/→", "Shrink / grow file list"),
                 ],
             ),
             (
