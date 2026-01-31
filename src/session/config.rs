@@ -510,6 +510,7 @@ mod tests {
         assert!(sb.environment.contains(&"COLORTERM".to_string()));
         assert!(sb.cpu_limit.is_none());
         assert!(sb.memory_limit.is_none());
+        assert!(sb.volume_ignores.is_empty());
     }
 
     #[test]
@@ -531,6 +532,36 @@ mod tests {
         assert!(!sb.auto_cleanup);
         assert_eq!(sb.cpu_limit, Some("2".to_string()));
         assert_eq!(sb.memory_limit, Some("4g".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_config_volume_ignores_deserialize() {
+        let toml = r#"
+            volume_ignores = ["target", ".venv", "node_modules"]
+        "#;
+        let sb: SandboxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(sb.volume_ignores, vec!["target", ".venv", "node_modules"]);
+    }
+
+    #[test]
+    fn test_sandbox_config_volume_ignores_defaults_empty() {
+        let toml = r#"enabled_by_default = false"#;
+        let sb: SandboxConfig = toml::from_str(toml).unwrap();
+        assert!(sb.volume_ignores.is_empty());
+    }
+
+    #[test]
+    fn test_sandbox_config_volume_ignores_roundtrip() {
+        let mut config = Config::default();
+        config.sandbox.volume_ignores = vec!["target".to_string(), "node_modules".to_string()];
+
+        let serialized = toml::to_string(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(
+            deserialized.sandbox.volume_ignores,
+            vec!["target", "node_modules"]
+        );
     }
 
     // Tests for ClaudeConfig
