@@ -283,4 +283,16 @@ mod tests {
         dialog.handle_key(key(KeyCode::Tab));
         assert!(!dialog.selected);
     }
+
+    #[test]
+    fn test_empty_hooks_dialog() {
+        let dialog = HookTrustDialog::new(
+            HooksConfig::default(),
+            "empty_hash".to_string(),
+            "/some/path".to_string(),
+        );
+        // Should build with no lines
+        let lines = dialog.build_hook_lines();
+        assert!(lines.is_empty());
+    }
 }

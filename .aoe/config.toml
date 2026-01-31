@@ -1,10 +1,3 @@
-[hooks]                                                                        
- on_create = ["echo 'HOOK: creating session'"]                                  
- on_launch = ["echo 'HOOK: launching session'"]                                 
-                                                                                
-[session]                                                                     
- default_tool = "claude"                                                        
-
 # Agent of Empires - Repository Configuration
 # This file configures aoe behavior for this repository.
 # See: https://github.com/njbrake/agent-of-empires

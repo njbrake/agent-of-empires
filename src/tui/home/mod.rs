@@ -21,8 +21,8 @@ use crate::tmux::AvailableTools;
 use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
 use super::dialogs::{
-    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, InfoDialog, NewSessionData,
-    NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, InfoDialog,
+    NewSessionData, NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -110,6 +110,9 @@ pub struct HomeView {
     pub(super) unified_delete_dialog: Option<UnifiedDeleteDialog>,
     pub(super) group_delete_options_dialog: Option<GroupDeleteOptionsDialog>,
     pub(super) rename_dialog: Option<RenameDialog>,
+    pub(super) hook_trust_dialog: Option<HookTrustDialog>,
+    /// Session data pending hook trust approval
+    pub(super) pending_hook_trust_data: Option<NewSessionData>,
     pub(super) welcome_dialog: Option<WelcomeDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
@@ -196,6 +199,8 @@ impl HomeView {
             unified_delete_dialog: None,
             group_delete_options_dialog: None,
             rename_dialog: None,
+            hook_trust_dialog: None,
+            pending_hook_trust_data: None,
             welcome_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
@@ -330,7 +335,11 @@ impl HomeView {
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
-    pub fn request_creation(&mut self, data: NewSessionData) {
+    pub fn request_creation(
+        &mut self,
+        data: NewSessionData,
+        hooks: Option<crate::session::HooksConfig>,
+    ) {
         if let Some(dialog) = &mut self.new_dialog {
             dialog.set_loading(true);
         }
@@ -339,7 +348,7 @@ impl HomeView {
         let request = CreationRequest {
             data,
             existing_instances: self.instances.clone(),
-            hooks: None,
+            hooks,
         };
         self.creation_poller.request_creation(request);
     }
@@ -435,6 +444,7 @@ impl HomeView {
             || self.unified_delete_dialog.is_some()
             || self.group_delete_options_dialog.is_some()
             || self.rename_dialog.is_some()
+            || self.hook_trust_dialog.is_some()
             || self.welcome_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()

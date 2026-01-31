@@ -1,0 +1,140 @@
+//! Integration tests for repo config loading, trust system, and hook execution.
+
+use std::fs;
+use tempfile::TempDir;
+
+/// Helper to set up a temp dir with `.aoe/config.toml`.
+fn setup_repo_config(content: &str) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let aoe_dir = tmp.path().join(".aoe");
+    fs::create_dir_all(&aoe_dir).unwrap();
+    fs::write(aoe_dir.join("config.toml"), content).unwrap();
+    tmp
+}
+
+#[test]
+fn test_load_repo_config_from_temp_dir() {
+    let tmp = setup_repo_config(
+        r#"
+[hooks]
+on_create = ["echo setup"]
+on_launch = ["echo start"]
+
+[session]
+default_tool = "claude"
+"#,
+    );
+
+    let config =
+        agent_of_empires::session::repo_config::load_repo_config(tmp.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
+
+    let hooks = config.hooks.unwrap();
+    assert_eq!(hooks.on_create, vec!["echo setup"]);
+    assert_eq!(hooks.on_launch, vec!["echo start"]);
+    assert_eq!(
+        config.session.unwrap().default_tool,
+        Some("claude".to_string())
+    );
+}
+
+#[test]
+fn test_load_repo_config_empty_file() {
+    let tmp = setup_repo_config("");
+    let config =
+        agent_of_empires::session::repo_config::load_repo_config(tmp.path().to_str().unwrap())
+            .unwrap();
+    assert!(config.is_none());
+}
+
+#[test]
+fn test_load_repo_config_comments_only() {
+    let tmp = setup_repo_config(agent_of_empires::session::repo_config::INIT_TEMPLATE);
+    let config =
+        agent_of_empires::session::repo_config::load_repo_config(tmp.path().to_str().unwrap())
+            .unwrap()
+            .unwrap();
+    // All-commented template should parse as empty config
+    assert!(config.hooks.is_none());
+    assert!(config.session.is_none());
+}
+
+#[test]
+fn test_trust_untrust_cycle() {
+    // Use a unique path to avoid collisions with other tests or real data
+    let unique_id = uuid::Uuid::new_v4();
+    let project_path = format!("/test/repo_config_integration/{}", unique_id);
+    let hooks_hash = "test_hash_123";
+
+    // Initially not trusted
+    let is_trusted =
+        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, hooks_hash).unwrap();
+    assert!(!is_trusted);
+
+    // Trust it
+    agent_of_empires::session::repo_config::trust_repo(&project_path, hooks_hash).unwrap();
+    let is_trusted =
+        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, hooks_hash).unwrap();
+    assert!(is_trusted);
+
+    // Different hash should not be trusted
+    let is_trusted =
+        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, "different_hash")
+            .unwrap();
+    assert!(!is_trusted);
+
+    // Re-trust with new hash (simulating hooks changed)
+    agent_of_empires::session::repo_config::trust_repo(&project_path, "new_hash").unwrap();
+    // Old hash no longer trusted
+    let is_trusted =
+        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, hooks_hash).unwrap();
+    assert!(!is_trusted);
+    // New hash is trusted
+    let is_trusted =
+        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, "new_hash").unwrap();
+    assert!(is_trusted);
+}
+
+#[test]
+fn test_hook_execution_simple_echo() {
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("hook_ran");
+
+    let cmd = format!("touch {}", marker.display());
+    agent_of_empires::session::repo_config::execute_hooks(&[cmd], tmp.path().to_str().unwrap())
+        .unwrap();
+
+    assert!(marker.exists());
+}
+
+#[test]
+fn test_hook_execution_failure() {
+    let tmp = TempDir::new().unwrap();
+    let result = agent_of_empires::session::repo_config::execute_hooks(
+        &["exit 1".to_string()],
+        tmp.path().to_str().unwrap(),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_changed_hooks_invalidate_trust() {
+    use agent_of_empires::session::repo_config::{compute_hooks_hash, HooksConfig};
+
+    let hooks_v1 = HooksConfig {
+        on_create: vec!["npm install".to_string()],
+        on_launch: vec![],
+    };
+    let hooks_v2 = HooksConfig {
+        on_create: vec!["npm install".to_string(), "npm run build".to_string()],
+        on_launch: vec![],
+    };
+
+    let hash_v1 = compute_hooks_hash(&hooks_v1);
+    let hash_v2 = compute_hooks_hash(&hooks_v2);
+    assert_ne!(
+        hash_v1, hash_v2,
+        "different hooks should produce different hashes"
+    );
+}

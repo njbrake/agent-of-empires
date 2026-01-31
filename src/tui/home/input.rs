@@ -5,11 +5,11 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::{HomeView, TerminalMode, ViewMode};
-use crate::session::{flatten_tree, list_profiles, Item, Status};
+use crate::session::{flatten_tree, list_profiles, repo_config, Item, Status};
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
-    ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, InfoDialog,
-    NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
+    ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
+    InfoDialog, NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -138,22 +138,52 @@ impl HomeView {
                     }
                 }
                 DialogResult::Submit(data) => {
-                    // Use background creation for sandbox sessions to avoid blocking UI
-                    if data.sandbox {
-                        self.request_creation(data);
-                        // Don't close dialog - it will show loading state
-                        // Result will be handled by apply_creation_results in event loop
-                    } else {
-                        // Non-sandbox sessions are fast, create synchronously
-                        match self.create_session(data) {
-                            Ok(session_id) => {
-                                self.new_dialog = None;
-                                return Some(Action::AttachSession(session_id));
+                    // Check for hooks before creating the session
+                    match repo_config::check_hook_trust(&data.path) {
+                        Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
+                            use crate::tui::dialogs::HookTrustDialog;
+                            self.hook_trust_dialog =
+                                Some(HookTrustDialog::new(hooks, hooks_hash, data.path.clone()));
+                            self.pending_hook_trust_data = Some(data);
+                        }
+                        Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
+                            let hooks_opt = if hooks.on_create.is_empty() {
+                                None
+                            } else {
+                                Some(hooks)
+                            };
+                            if data.sandbox {
+                                self.request_creation(data, hooks_opt);
+                            } else {
+                                match self.create_session(data) {
+                                    Ok(session_id) => {
+                                        self.new_dialog = None;
+                                        return Some(Action::AttachSession(session_id));
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to create session: {}", e);
+                                        if let Some(dialog) = &mut self.new_dialog {
+                                            dialog.set_error(e.to_string());
+                                        }
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                tracing::error!("Failed to create session: {}", e);
-                                if let Some(dialog) = &mut self.new_dialog {
-                                    dialog.set_error(e.to_string());
+                        }
+                        Ok(repo_config::HookTrustStatus::NoHooks) | Err(_) => {
+                            if data.sandbox {
+                                self.request_creation(data, None);
+                            } else {
+                                match self.create_session(data) {
+                                    Ok(session_id) => {
+                                        self.new_dialog = None;
+                                        return Some(Action::AttachSession(session_id));
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to create session: {}", e);
+                                        if let Some(dialog) = &mut self.new_dialog {
+                                            dialog.set_error(e.to_string());
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -232,6 +262,68 @@ impl HomeView {
                         data.profile.as_deref(),
                     ) {
                         tracing::error!("Failed to rename session: {}", e);
+                    }
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.hook_trust_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.hook_trust_dialog = None;
+                    self.pending_hook_trust_data = None;
+                }
+                DialogResult::Submit(action) => {
+                    self.hook_trust_dialog = None;
+                    if let Some(data) = self.pending_hook_trust_data.take() {
+                        match action {
+                            HookTrustAction::Trust {
+                                hooks,
+                                hooks_hash,
+                                project_path,
+                            } => {
+                                if let Err(e) = repo_config::trust_repo(&project_path, &hooks_hash)
+                                {
+                                    tracing::error!("Failed to trust repo: {}", e);
+                                }
+                                if data.sandbox {
+                                    self.request_creation(data, Some(hooks));
+                                } else {
+                                    match self.create_session(data) {
+                                        Ok(session_id) => {
+                                            self.new_dialog = None;
+                                            return Some(Action::AttachSession(session_id));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to create session: {}", e);
+                                            if let Some(dialog) = &mut self.new_dialog {
+                                                dialog.set_error(e.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            HookTrustAction::Skip => {
+                                if data.sandbox {
+                                    self.request_creation(data, None);
+                                } else {
+                                    match self.create_session(data) {
+                                        Ok(session_id) => {
+                                            self.new_dialog = None;
+                                            return Some(Action::AttachSession(session_id));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to create session: {}", e);
+                                            if let Some(dialog) = &mut self.new_dialog {
+                                                dialog.set_error(e.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

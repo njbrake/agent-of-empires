@@ -208,14 +208,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let project_path_str = path.to_str().unwrap_or("");
     match repo_config::check_hook_trust(project_path_str) {
         Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
-            if args.trust_hooks {
-                repo_config::trust_repo(project_path_str, &hooks_hash)?;
-                println!("✓ Repository hooks trusted");
-                if !hooks.on_create.is_empty() {
-                    println!("Running on_create hooks...");
-                    repo_config::execute_hooks(&hooks.on_create, project_path_str)?;
-                    println!("✓ on_create hooks completed");
-                }
+            let should_trust = if args.trust_hooks {
+                true
             } else {
                 println!("\nRepository hooks detected in .aoe/config.toml:");
                 if !hooks.on_create.is_empty() {
@@ -235,17 +229,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 std::io::stdout().flush()?;
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
-                if input.trim().eq_ignore_ascii_case("y") {
-                    repo_config::trust_repo(project_path_str, &hooks_hash)?;
-                    println!("✓ Repository hooks trusted");
-                    if !hooks.on_create.is_empty() {
-                        println!("Running on_create hooks...");
-                        repo_config::execute_hooks(&hooks.on_create, project_path_str)?;
-                        println!("✓ on_create hooks completed");
-                    }
-                } else {
-                    println!("Hooks skipped (session created without running hooks)");
-                }
+                input.trim().eq_ignore_ascii_case("y")
+            };
+
+            if should_trust {
+                trust_and_run_on_create(project_path_str, &hooks_hash, &hooks)?;
+            } else {
+                println!("Hooks skipped (session created without running hooks)");
             }
         }
         Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
@@ -336,6 +326,21 @@ pub fn generate_unique_title(instances: &[Instance], base_title: &str, path: &st
     }
 
     format!("{} ({})", base_title, chrono::Utc::now().timestamp())
+}
+
+fn trust_and_run_on_create(
+    project_path: &str,
+    hooks_hash: &str,
+    hooks: &crate::session::HooksConfig,
+) -> Result<()> {
+    repo_config::trust_repo(project_path, hooks_hash)?;
+    println!("✓ Repository hooks trusted");
+    if !hooks.on_create.is_empty() {
+        println!("Running on_create hooks...");
+        repo_config::execute_hooks(&hooks.on_create, project_path)?;
+        println!("✓ on_create hooks completed");
+    }
+    Ok(())
 }
 
 fn detect_tool(cmd: &str) -> Result<String> {

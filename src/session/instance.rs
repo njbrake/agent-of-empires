@@ -387,25 +387,43 @@ impl Instance {
         }
 
         // Execute on_launch hooks (trust already verified during creation)
-        if let Ok(Some(repo_config)) = super::repo_config::load_repo_config(&self.project_path) {
+        let on_launch_hooks = if let Ok(Some(repo_config)) =
+            super::repo_config::load_repo_config(&self.project_path)
+        {
             if let Some(ref hooks) = repo_config.hooks {
                 if !hooks.on_launch.is_empty() {
                     let hooks_hash = super::repo_config::compute_hooks_hash(hooks);
                     if super::repo_config::is_repo_trusted(&self.project_path, &hooks_hash)
                         .unwrap_or(false)
                     {
-                        if let Err(e) =
-                            super::repo_config::execute_hooks(&hooks.on_launch, &self.project_path)
-                        {
-                            tracing::warn!("on_launch hook failed: {}", e);
-                        }
+                        Some(hooks.on_launch.clone())
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         let cmd = if self.is_sandboxed() {
             self.ensure_container_running()?;
+
+            // Run on_launch hooks inside the container
+            if let Some(ref hook_cmds) = on_launch_hooks {
+                if let Some(ref sandbox) = self.sandbox_info {
+                    if let Err(e) = super::repo_config::execute_hooks_in_container(
+                        hook_cmds,
+                        &sandbox.container_name,
+                    ) {
+                        tracing::warn!("on_launch hook failed in container: {}", e);
+                    }
+                }
+            }
             let sandbox = self.sandbox_info.as_ref().unwrap();
             let tool_cmd = if self.is_yolo_mode() {
                 match self.tool.as_str() {
@@ -428,16 +446,25 @@ impl Instance {
                 "docker exec -it {}{} {}",
                 env_part, sandbox.container_name, tool_cmd
             )))
-        } else if self.command.is_empty() {
-            match self.tool.as_str() {
-                "claude" => Some(wrap_command_ignore_suspend("claude")),
-                "vibe" => Some(wrap_command_ignore_suspend("vibe")),
-                "codex" => Some(wrap_command_ignore_suspend("codex")),
-                "gemini" => Some(wrap_command_ignore_suspend("gemini")),
-                _ => None,
-            }
         } else {
-            Some(wrap_command_ignore_suspend(&self.command))
+            // Run on_launch hooks on host for non-sandboxed sessions
+            if let Some(ref hook_cmds) = on_launch_hooks {
+                if let Err(e) = super::repo_config::execute_hooks(hook_cmds, &self.project_path) {
+                    tracing::warn!("on_launch hook failed: {}", e);
+                }
+            }
+
+            if self.command.is_empty() {
+                match self.tool.as_str() {
+                    "claude" => Some(wrap_command_ignore_suspend("claude")),
+                    "vibe" => Some(wrap_command_ignore_suspend("vibe")),
+                    "codex" => Some(wrap_command_ignore_suspend("codex")),
+                    "gemini" => Some(wrap_command_ignore_suspend("gemini")),
+                    _ => None,
+                }
+            } else {
+                Some(wrap_command_ignore_suspend(&self.command))
+            }
         };
 
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
