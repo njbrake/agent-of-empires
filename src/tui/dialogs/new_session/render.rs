@@ -17,26 +17,63 @@ impl NewSessionDialog {
 
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
+        let has_worktree = !self.worktree_branch.value().is_empty();
         let sandbox_options_visible = has_sandbox && self.sandbox_enabled;
         let dialog_width = 80;
-        // Calculate env list height based on expanded state and number of items
+        // Calculate env list heights based on expanded state and number of items
         let env_list_height: u16 = if sandbox_options_visible {
             if self.env_list_expanded {
-                // Header + items + some padding, min 4, max 8
                 (2 + self.extra_env_keys.len() as u16).clamp(4, 8)
             } else {
-                2 // Collapsed: single line
+                2
             }
         } else {
             0
         };
-        let dialog_height = if sandbox_options_visible {
-            22 + env_list_height
-        } else if has_sandbox {
-            20
+        let env_values_list_height: u16 = if sandbox_options_visible {
+            if self.env_values_list_expanded {
+                (2 + self.extra_env_values.len() as u16).clamp(4, 8)
+            } else {
+                2
+            }
         } else {
-            18
+            0
         };
+
+        // Build constraints dynamically based on visible fields only
+        let mut constraints = vec![
+            Constraint::Length(2), // Title
+            Constraint::Length(2), // Path
+            Constraint::Length(2), // Group
+            Constraint::Length(2), // Tool (always shown, interactive or not)
+            Constraint::Length(2), // Worktree Branch
+        ];
+        if has_worktree {
+            constraints.push(Constraint::Length(2)); // New Branch checkbox
+        }
+        if has_sandbox {
+            constraints.push(Constraint::Length(2)); // Sandbox checkbox
+        }
+        if sandbox_options_visible {
+            constraints.push(Constraint::Length(2)); // Image field
+            constraints.push(Constraint::Length(2)); // YOLO mode checkbox
+            constraints.push(Constraint::Length(env_list_height)); // Env vars field
+            constraints.push(Constraint::Length(env_values_list_height)); // Env values field
+        }
+        constraints.push(Constraint::Min(1)); // Hints/errors
+
+        // Compute dialog height from actual constraints
+        // border (2) + margin (2) + sum of field heights + hint line (2)
+        let fields_height: u16 = constraints
+            .iter()
+            .map(|c| match c {
+                Constraint::Length(n) => *n,
+                Constraint::Min(n) => *n,
+                _ => 0,
+            })
+            .sum();
+        let dialog_height = fields_height + 4; // +2 border, +2 margin
+
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -59,28 +96,16 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let mut constraints = vec![
-            Constraint::Length(2), // Title
-            Constraint::Length(2), // Path
-            Constraint::Length(2), // Group
-            Constraint::Length(2), // Tool
-            Constraint::Length(2), // Worktree Branch
-            Constraint::Length(2), // New Branch checkbox
-            Constraint::Length(2), // Sandbox checkbox
-        ];
-        if sandbox_options_visible {
-            constraints.push(Constraint::Length(2)); // Image field
-            constraints.push(Constraint::Length(2)); // YOLO mode checkbox
-            constraints.push(Constraint::Length(env_list_height)); // Env vars field
-        }
-        constraints.push(Constraint::Min(1)); // Hints/errors
-
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
             .constraints(constraints)
             .split(inner);
 
+        // Render fields sequentially, tracking chunk index to match dynamic constraints
+        let mut ci = 0; // chunk index
+
+        // Title, Path, Group (always visible)
         let text_fields: [(&str, &tui_input::Input, Option<&str>); 3] = [
             ("Title:", &self.title, Some("(random civ)")),
             ("Path:", &self.path, None),
@@ -90,24 +115,22 @@ impl NewSessionDialog {
         for (idx, (label, input, placeholder)) in text_fields.iter().enumerate() {
             render_text_field(
                 frame,
-                chunks[idx],
+                chunks[ci],
                 label,
                 input,
                 idx == self.focused_field,
                 *placeholder,
                 theme,
             );
+            ci += 1;
         }
 
+        // Tool (always shown, interactive or read-only)
+        let worktree_field = if has_tool_selection { 4 } else { 3 };
         let is_tool_focused = self.focused_field == 3;
-        let tool_style = if is_tool_focused && has_tool_selection {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
 
         if has_tool_selection {
-            let label_style = if is_tool_focused && has_tool_selection {
+            let label_style = if is_tool_focused {
                 Style::default().fg(theme.accent).underlined()
             } else {
                 Style::default().fg(theme.text)
@@ -130,32 +153,33 @@ impl NewSessionDialog {
                 tool_spans.push(Span::styled(*tool_name, style));
             }
 
-            let tool_line = Line::from(tool_spans);
-            frame.render_widget(Paragraph::new(tool_line), chunks[3]);
+            frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
         } else {
+            let tool_style = Style::default().fg(theme.text);
             let tool_line = Line::from(vec![
                 Span::styled("Tool:", tool_style),
                 Span::raw(" "),
                 Span::styled(self.available_tools[0], Style::default().fg(theme.accent)),
             ]);
-            frame.render_widget(Paragraph::new(tool_line), chunks[3]);
+            frame.render_widget(Paragraph::new(tool_line), chunks[ci]);
         }
+        ci += 1;
 
-        let worktree_field = if has_tool_selection { 4 } else { 3 };
-        let new_branch_field = worktree_field + 1;
-
+        // Worktree Branch (always visible)
         render_text_field(
             frame,
-            chunks[4],
+            chunks[ci],
             "Worktree Branch:",
             &self.worktree_branch,
             self.focused_field == worktree_field,
             Some("(leave empty to skip worktree)"),
             theme,
         );
+        ci += 1;
 
-        let has_worktree = !self.worktree_branch.value().is_empty();
-        let next_chunk = if has_worktree {
+        // New Branch checkbox (only when worktree is set)
+        let new_branch_field = worktree_field + 1;
+        if has_worktree {
             let is_nb_focused = self.focused_field == new_branch_field;
             let nb_label_style = if is_nb_focused {
                 Style::default().fg(theme.accent).underlined()
@@ -186,13 +210,12 @@ impl NewSessionDialog {
                     },
                 ),
             ]);
-            frame.render_widget(Paragraph::new(nb_line), chunks[5]);
-            6
-        } else {
-            5
-        };
+            frame.render_widget(Paragraph::new(nb_line), chunks[ci]);
+            ci += 1;
+        }
 
-        let hint_chunk = if has_sandbox {
+        // Sandbox checkbox (only when Docker available)
+        if has_sandbox {
             let sandbox_field = if has_worktree {
                 new_branch_field + 1
             } else {
@@ -225,20 +248,24 @@ impl NewSessionDialog {
                     },
                 ),
             ]);
-            frame.render_widget(Paragraph::new(sandbox_line), chunks[next_chunk]);
+            frame.render_widget(Paragraph::new(sandbox_line), chunks[ci]);
+            ci += 1;
 
             if sandbox_options_visible {
+                // Image field
                 let sandbox_image_field = sandbox_field + 1;
                 render_text_field(
                     frame,
-                    chunks[next_chunk + 1],
+                    chunks[ci],
                     "  Image:",
                     &self.sandbox_image,
                     self.focused_field == sandbox_image_field,
                     None,
                     theme,
                 );
+                ci += 1;
 
+                // YOLO Mode checkbox
                 let yolo_mode_field = sandbox_image_field + 1;
                 let is_yolo_focused = self.focused_field == yolo_mode_field;
                 let yolo_label_style = if is_yolo_focused {
@@ -267,20 +294,23 @@ impl NewSessionDialog {
                         },
                     ),
                 ]);
-                frame.render_widget(Paragraph::new(yolo_line), chunks[next_chunk + 2]);
+                frame.render_widget(Paragraph::new(yolo_line), chunks[ci]);
+                ci += 1;
 
-                // Render environment variables field
+                // Environment variables field
                 let env_field = yolo_mode_field + 1;
-                self.render_env_field(frame, chunks[next_chunk + 3], env_field, theme);
+                self.render_env_field(frame, chunks[ci], env_field, theme);
+                ci += 1;
 
-                next_chunk + 4
-            } else {
-                next_chunk + 1
+                // Environment values field (KEY=VALUE)
+                let env_values_field = env_field + 1;
+                self.render_env_values_field(frame, chunks[ci], env_values_field, theme);
+                ci += 1;
             }
-        } else {
-            next_chunk
-        };
+        }
 
+        // Hints/errors (last chunk)
+        let hint_chunk = ci;
         if let Some(error) = &self.error_message {
             let error_text = format!("✗ Error: {}", error);
             let error_paragraph = Paragraph::new(error_text)
@@ -436,6 +466,115 @@ impl NewSessionDialog {
         }
     }
 
+    fn render_env_values_field(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        field_idx: usize,
+        theme: &Theme,
+    ) {
+        let is_focused = self.focused_field == field_idx;
+        let label_style = if is_focused {
+            Style::default().fg(theme.accent).underlined()
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        if !self.env_values_list_expanded {
+            let count = self.extra_env_values.len();
+            let summary = if count == 0 {
+                "(empty - press Enter to add)".to_string()
+            } else {
+                format!("[{} items]", count)
+            };
+            let summary_style = if count > 0 {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+
+            let line = Line::from(vec![
+                Span::styled("  Env Values:", label_style),
+                Span::raw(" "),
+                Span::styled(summary, summary_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+        } else {
+            let mut lines: Vec<Line> = Vec::new();
+
+            let header = Line::from(vec![
+                Span::styled("  Env Values:", label_style),
+                Span::styled(
+                    " (a)dd (d)el (Enter)edit (Esc)close",
+                    Style::default().fg(theme.dimmed),
+                ),
+            ]);
+            lines.push(header);
+
+            if let Some(ref input) = self.env_values_editing_input {
+                if self.env_values_adding_new {
+                    for (i, entry) in self.extra_env_values.iter().enumerate() {
+                        let prefix = if i == self.env_values_selected_index {
+                            "  > "
+                        } else {
+                            "    "
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, entry),
+                            Style::default().fg(theme.text),
+                        )));
+                    }
+                    let input_line = Line::from(vec![
+                        Span::styled("  + ", Style::default().fg(theme.accent)),
+                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
+                        Span::styled("_", Style::default().fg(theme.accent)),
+                    ]);
+                    lines.push(input_line);
+                } else {
+                    for (i, entry) in self.extra_env_values.iter().enumerate() {
+                        if i == self.env_values_selected_index {
+                            let input_line = Line::from(vec![
+                                Span::styled("  > ", Style::default().fg(theme.accent)),
+                                Span::styled(
+                                    input.value(),
+                                    Style::default().fg(theme.accent).bold(),
+                                ),
+                                Span::styled("_", Style::default().fg(theme.accent)),
+                            ]);
+                            lines.push(input_line);
+                        } else {
+                            lines.push(Line::from(Span::styled(
+                                format!("    {}", entry),
+                                Style::default().fg(theme.text),
+                            )));
+                        }
+                    }
+                }
+            } else if self.extra_env_values.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "    (press 'a' to add KEY=VALUE)",
+                    Style::default().fg(theme.dimmed),
+                )));
+            } else {
+                for (i, entry) in self.extra_env_values.iter().enumerate() {
+                    let is_selected = i == self.env_values_selected_index;
+                    let prefix = if is_selected { "  > " } else { "    " };
+                    let style = if is_selected {
+                        Style::default().fg(theme.accent).bold()
+                    } else {
+                        Style::default().fg(theme.text)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("{}{}", prefix, entry),
+                        style,
+                    )));
+                }
+            }
+
+            frame.render_widget(Paragraph::new(lines), area);
+        }
+    }
+
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
@@ -446,7 +585,7 @@ impl NewSessionDialog {
         let dialog_height: u16 = base_height
             + if has_tool_selection { 3 } else { 0 }
             + if has_sandbox { 3 } else { 0 }
-            + if show_sandbox_options_help { 9 } else { 0 }; // Image, YOLO, Env
+            + if show_sandbox_options_help { 12 } else { 0 }; // Image, YOLO, Env, Env Values
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -485,6 +624,9 @@ impl NewSessionDialog {
                 continue;
             }
             if idx == 9 && !show_sandbox_options_help {
+                continue;
+            }
+            if idx == 10 && !show_sandbox_options_help {
                 continue;
             }
 

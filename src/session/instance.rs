@@ -20,9 +20,15 @@ fn default_true() -> bool {
 const DEFAULT_TERMINAL_ENV_VARS: &[&str] = &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
 /// Shell-escape a value for safe interpolation into a shell command string.
-/// Wraps in single quotes and escapes any embedded single quotes.
+/// Uses double-quote escaping so values can be nested inside `bash -c '...'`
+/// (single quotes in the outer wrapper are literal, double quotes work inside).
 fn shell_escape(val: &str) -> String {
-    format!("'{}'", val.replace('\'', "'\\''"))
+    let escaped = val
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`");
+    format!("\"{}\"", escaped)
 }
 
 /// Resolve an environment_values entry. If the value starts with `$`, read the
@@ -41,7 +47,7 @@ fn resolve_env_value(val: &str) -> Option<String> {
 /// Build docker exec environment flags from config and optional per-session extra keys.
 /// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
 /// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
-fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
+fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
     let config = super::config::Config::load().unwrap_or_default();
 
     // Start with default terminal variables (always included for proper UI)
@@ -58,7 +64,7 @@ fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
     }
 
     // Add per-session extra env keys
-    if let Some(extra_keys) = extra_env_keys {
+    if let Some(extra_keys) = &sandbox.extra_env_keys {
         for key in extra_keys {
             if !env_keys.contains(key) {
                 env_keys.push(key.clone());
@@ -79,6 +85,15 @@ fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
     for (key, val) in &config.sandbox.environment_values {
         if let Some(resolved) = resolve_env_value(val) {
             args.push(format!("-e {}={}", key, shell_escape(&resolved)));
+        }
+    }
+
+    // Inject per-session extra env values
+    if let Some(extra_vals) = &sandbox.extra_env_values {
+        for (key, val) in extra_vals {
+            if let Some(resolved) = resolve_env_value(val) {
+                args.push(format!("-e {}={}", key, shell_escape(&resolved)));
+            }
         }
     }
 
@@ -129,6 +144,9 @@ pub struct SandboxInfo {
     /// Additional environment variable keys to pass from host (session-specific)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env_keys: Option<Vec<String>>,
+    /// Additional KEY=VALUE environment variables (session-specific overrides)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_env_values: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,7 +321,7 @@ impl Instance {
         self.ensure_container_running()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox.extra_env_keys.as_ref());
+        let env_args = build_docker_env_args(sandbox);
         let env_part = if env_args.is_empty() {
             String::new()
         } else {
@@ -382,7 +400,7 @@ impl Instance {
             } else {
                 self.get_tool_command().to_string()
             };
-            let env_args = build_docker_env_args(sandbox.extra_env_keys.as_ref());
+            let env_args = build_docker_env_args(sandbox);
             let env_part = if env_args.is_empty() {
                 String::new()
             } else {
@@ -690,6 +708,19 @@ impl Instance {
             }
         }
 
+        // Inject per-session extra env values
+        if let Some(extra_vals) = self
+            .sandbox_info
+            .as_ref()
+            .and_then(|s| s.extra_env_values.as_ref())
+        {
+            for (key, val) in extra_vals {
+                if let Some(resolved) = resolve_env_value(val) {
+                    environment.push((key.clone(), resolved));
+                }
+            }
+        }
+
         if self.is_yolo_mode() && self.tool == "opencode" {
             environment.push((
                 "OPENCODE_PERMISSION".to_string(),
@@ -880,6 +911,7 @@ mod tests {
             created_at: None,
             yolo_mode: Some(true),
             extra_env_keys: None,
+            extra_env_values: None,
         });
         assert!(inst.is_yolo_mode());
 
@@ -908,6 +940,7 @@ mod tests {
             created_at: None,
             yolo_mode: None,
             extra_env_keys: None,
+            extra_env_values: None,
         });
         assert!(!inst.is_sandboxed());
     }
@@ -923,6 +956,7 @@ mod tests {
             created_at: None,
             yolo_mode: None,
             extra_env_keys: None,
+            extra_env_values: None,
         });
         assert!(inst.is_sandboxed());
     }
@@ -1054,6 +1088,7 @@ mod tests {
             created_at: Some(Utc::now()),
             yolo_mode: Some(true),
             extra_env_keys: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
+            extra_env_values: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
