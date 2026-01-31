@@ -5,84 +5,94 @@ import Footer from '../../components/Footer.astro';
 ---
 
 <Base
-  title="Managing Claude Code Sessions with Agent of Empires"
-  description="Run and manage multiple Claude Code instances with a TUI dashboard. Status detection, Docker isolation, git worktrees, and session persistence via tmux."
+  title="AI Coding Agent Session Manager - Agent of Empires"
+  description="Run and manage multiple AI coding agent sessions with a TUI dashboard. Status detection for Claude Code, Codex, Gemini CLI, OpenCode, and more. Docker isolation, git worktrees, and tmux persistence."
 >
   <Nav />
 
   <article class="pt-32 pb-16 px-6">
     <div class="max-w-3xl mx-auto prose-content">
       <header class="mb-12">
-        <h1 class="text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">Managing Claude Code Sessions with Agent of Empires</h1>
+        <h1 class="text-4xl md:text-5xl font-bold text-white mb-6 leading-tight">AI Coding Agent Session Manager</h1>
         <p class="text-lg text-gray-400 leading-relaxed">
-          Claude Code is a powerful CLI coding agent, but running multiple instances gets unwieldy fast. Agent of Empires gives you a dashboard to manage, monitor, and isolate Claude Code sessions.
+          AI coding agents -- tools like Claude Code, Codex, Gemini CLI, OpenCode, and Mistral Vibe that write and edit code from a terminal -- are powerful individually. But running multiple instances gets unwieldy fast. Agent of Empires gives you a dashboard to manage, monitor, and isolate all of them.
         </p>
       </header>
 
       <section>
-        <h2>Running Multiple Claude Code Instances</h2>
+        <h2>What Is an AI Coding Agent</h2>
         <p>
-          Claude Code runs in a terminal and works through your codebase interactively. When you want to parallelize work -- one instance refactoring, another writing tests, a third exploring an API -- you need each instance in its own terminal with its own working directory.
+          An AI coding agent is a CLI tool that reads your codebase, writes code, runs commands, and iterates on the results. Unlike a chat interface where you copy and paste snippets, a coding agent operates directly in your project directory. It can edit files, run tests, install dependencies, and commit changes.
         </p>
         <p>
-          <a href="/">Agent of Empires</a> handles this by creating tmux sessions for each Claude Code instance. Each session can point at a different directory, branch, or even a Docker container. The TUI dashboard shows all your instances at a glance.
+          Examples include Claude Code (Anthropic), Codex (OpenAI), Gemini CLI (Google), OpenCode, and Mistral Vibe. They all share the same basic workflow: you give the agent a task in a terminal, it works through the problem, and you review the results. The differences are in the underlying model, tool use, and interaction style, but the operational needs are the same.
         </p>
       </section>
 
       <section>
-        <h2>Status Detection for Claude Code</h2>
+        <h2>Running Multiple Agent Instances</h2>
         <p>
-          aoe automatically detects the state of your Claude Code sessions. The dashboard shows whether each instance is:
+          Real productivity comes from running several agents in parallel. One might be refactoring a module, another writing tests, and a third exploring an API integration. Each needs its own terminal session and its own working directory to avoid conflicts.
+        </p>
+        <p>
+          <a href="/">Agent of Empires</a> handles this by creating tmux sessions for each agent instance. Each session can point at a different directory, branch, or even a Docker container. The TUI dashboard shows all your instances at a glance, regardless of which coding agent you are using.
+        </p>
+      </section>
+
+      <section>
+        <h2>Status Detection Across Agents</h2>
+        <p>
+          aoe automatically detects the state of your coding agent sessions. It has built-in support for Claude Code, Codex, Gemini CLI, OpenCode, and Mistral Vibe. The dashboard shows whether each instance is:
         </p>
         <ul>
-          <li><strong>Active</strong>: Claude is generating code or running commands</li>
-          <li><strong>Waiting</strong>: Claude is waiting for your input or approval</li>
-          <li><strong>Idle</strong>: The session is open but Claude is not running</li>
+          <li><strong>Active</strong>: The agent is generating code or running commands</li>
+          <li><strong>Waiting</strong>: The agent needs your input or approval</li>
+          <li><strong>Idle</strong>: The session is open but no agent is running</li>
         </ul>
         <p>
-          This means you do not need to switch into each session to check on progress. You can see at a glance which Claude instances need your attention.
+          You do not need to switch into each session to check on progress. A quick glance at the dashboard tells you which agents need your attention and which are still working.
         </p>
       </section>
 
       <section>
-        <h2>Docker Isolation for Claude Code</h2>
+        <h2>Docker Isolation</h2>
         <p>
-          Claude Code can execute shell commands, write files, and install packages. Running it inside a <a href="/guides/docker-sandbox-ai-agents/">Docker sandbox</a> limits what it can access on your host machine.
+          Coding agents execute shell commands, write files, and install packages. Running them inside a <a href="/guides/docker-sandbox-ai-agents/">Docker sandbox</a> limits what they can access on your host machine.
         </p>
         <p>
-          With aoe's Docker integration, each Claude Code session runs in its own container. Your project files are mounted in, SSH keys and git credentials are forwarded, and the container is cleaned up when the session ends. Claude works normally from its perspective, but any unintended side effects are contained.
+          With aoe's Docker integration, each agent session runs in its own container. Your project files are mounted in, SSH keys and git credentials are forwarded, and the container is cleaned up when the session ends. The agent works normally from its perspective, but any unintended side effects are contained.
         </p>
       </section>
 
       <section>
-        <h2>Git Worktrees for Parallel Claude Sessions</h2>
+        <h2>Git Worktrees for Parallel Sessions</h2>
         <p>
-          If you want multiple Claude Code instances working on different branches of the same repo, <a href="/guides/git-worktrees-ai-development/">git worktrees</a> are the way to go. aoe creates a separate worktree for each session, so each Claude instance has its own branch and working directory.
+          When you have multiple agents working on different branches of the same repo, <a href="/guides/git-worktrees-ai-development/">git worktrees</a> keep them isolated. aoe creates a separate worktree for each session, so each agent gets its own branch and working directory.
         </p>
         <p>
-          This avoids the common problem of two agents trying to modify the same files. Each Claude instance works independently, and you merge the results when they are done.
+          This avoids the common problem of two agents trying to modify the same files. Each instance works independently, and you merge the results when they are done.
         </p>
       </section>
 
       <section>
         <h2>Session Persistence</h2>
         <p>
-          All Claude Code sessions run inside tmux, which means they persist even when you close the aoe TUI. You can close your terminal, reopen aoe later, and all your Claude sessions are still running exactly where you left them.
+          All agent sessions run inside tmux, which means they persist even when you close the aoe TUI. You can close your terminal, reopen aoe later, and all your sessions are still running exactly where you left them.
         </p>
         <p>
-          This is especially useful for long-running tasks. Start Claude on a large refactoring job, close the TUI, and come back later to check the results.
+          This is especially useful for long-running tasks. Start an agent on a large refactoring job, close the TUI, and come back later to check the results.
         </p>
       </section>
 
       <section>
         <h2>Getting Started</h2>
         <p>
-          Install aoe and add your first Claude Code session:
+          Install aoe and add your first coding agent session:
         </p>
         <pre><code>curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash
 aoe</code></pre>
         <p>
-          The TUI will guide you through creating sessions. See the <a href="/docs/">documentation</a> for the full setup guide. Related guides:
+          The TUI will guide you through creating sessions. It works with whichever coding agent you prefer. See the <a href="/docs/">documentation</a> for the full setup guide. Related guides:
         </p>
         <ul>
           <li><a href="/guides/manage-ai-coding-agents/">Managing multiple AI coding agents</a></li>
