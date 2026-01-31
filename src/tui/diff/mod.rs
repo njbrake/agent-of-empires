@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::git::diff::{
     compute_changed_files, compute_file_diff, get_default_branch, list_branches, DiffFile, FileDiff,
 };
+use crate::session::config::{load_config, save_config};
 use crate::session::Config;
 
 pub use input::DiffAction;
@@ -94,7 +95,7 @@ impl DiffView {
             success_message: None,
             context_lines,
             show_help: false,
-            file_list_width: 35,
+            file_list_width: config.app_state.diff_file_list_width.unwrap_or(35),
         };
 
         view.refresh_files()?;
@@ -217,10 +218,19 @@ impl DiffView {
     /// Shrink the file list panel
     pub fn shrink_file_list(&mut self) {
         self.file_list_width = self.file_list_width.saturating_sub(5).max(5);
+        self.save_file_list_width();
     }
 
     /// Grow the file list panel
     pub fn grow_file_list(&mut self) {
         self.file_list_width = (self.file_list_width + 5).min(80);
+        self.save_file_list_width();
+    }
+
+    fn save_file_list_width(&self) {
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.diff_file_list_width = Some(self.file_list_width);
+            let _ = save_config(&config);
+        }
     }
 }

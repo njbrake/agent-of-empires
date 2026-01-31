@@ -48,6 +48,12 @@ pub struct AppStateConfig {
 
     #[serde(default)]
     pub last_seen_version: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_list_width: Option<u16>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_file_list_width: Option<u16>,
 }
 
 /// Session-related configuration defaults

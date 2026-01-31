@@ -13,6 +13,7 @@ use std::time::Instant;
 use tui_input::Input;
 
 use crate::session::{
+    config::{load_config, save_config},
     flatten_tree, resolve_config, DefaultTerminalMode, Group, GroupTree, Instance, Item, Storage,
 };
 use crate::tmux::AvailableTools;
@@ -215,7 +216,11 @@ impl HomeView {
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
-            list_width: 35,
+            list_width: load_config()
+                .ok()
+                .flatten()
+                .and_then(|c| c.app_state.home_list_width)
+                .unwrap_or(35),
         };
 
         view.update_selected();
@@ -438,10 +443,19 @@ impl HomeView {
 
     pub fn shrink_list(&mut self) {
         self.list_width = self.list_width.saturating_sub(5).max(10);
+        self.save_list_width();
     }
 
     pub fn grow_list(&mut self) {
         self.list_width = (self.list_width + 5).min(80);
+        self.save_list_width();
+    }
+
+    fn save_list_width(&self) {
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.home_list_width = Some(self.list_width);
+            let _ = save_config(&config);
+        }
     }
 
     pub fn show_welcome(&mut self) {
