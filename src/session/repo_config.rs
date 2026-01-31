@@ -309,15 +309,19 @@ pub fn execute_hooks(commands: &[String], project_path: &str) -> Result<()> {
 }
 
 /// Execute hooks inside a Docker container.
-/// Commands run in `/workspace` inside the container.
-pub fn execute_hooks_in_container(commands: &[String], container_name: &str) -> Result<()> {
+/// Commands run in the specified `workdir` inside the container.
+pub fn execute_hooks_in_container(
+    commands: &[String],
+    container_name: &str,
+    workdir: &str,
+) -> Result<()> {
     for cmd in commands {
         tracing::info!("Running hook in container {}: {}", container_name, cmd);
         let status = std::process::Command::new("docker")
             .args([
                 "exec",
                 "--workdir",
-                "/workspace",
+                workdir,
                 container_name,
                 "bash",
                 "-c",
@@ -599,8 +603,11 @@ mod tests {
         // Verify the docker command includes --workdir by checking the function builds
         // the right args. We can't run docker in tests, but we can verify the
         // command construction by checking it fails gracefully (docker not available).
-        let result =
-            execute_hooks_in_container(&["echo test".to_string()], "nonexistent_container");
+        let result = execute_hooks_in_container(
+            &["echo test".to_string()],
+            "nonexistent_container",
+            "/workspace/myproject",
+        );
         // Should fail because docker/container doesn't exist, but should not panic
         assert!(result.is_err());
     }

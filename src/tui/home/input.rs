@@ -9,7 +9,7 @@ use crate::session::{flatten_tree, list_profiles, repo_config, Item, Status};
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    InfoDialog, NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
+    InfoDialog, NewSessionData, NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -147,45 +147,16 @@ impl HomeView {
                             self.pending_hook_trust_data = Some(data);
                         }
                         Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
-                            let hooks_opt = if hooks.on_create.is_empty() {
-                                None
-                            } else {
-                                Some(hooks)
-                            };
-                            if data.sandbox {
-                                self.request_creation(data, hooks_opt);
-                            } else {
-                                match self.create_session(data) {
-                                    Ok(session_id) => {
-                                        self.new_dialog = None;
-                                        return Some(Action::AttachSession(session_id));
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to create session: {}", e);
-                                        if let Some(dialog) = &mut self.new_dialog {
-                                            dialog.set_error(e.to_string());
-                                        }
-                                    }
-                                }
-                            }
+                            let hooks_opt =
+                                if hooks.is_empty() { None } else { Some(hooks) };
+                            return self.create_session_with_hooks(data, hooks_opt);
                         }
-                        Ok(repo_config::HookTrustStatus::NoHooks) | Err(_) => {
-                            if data.sandbox {
-                                self.request_creation(data, None);
-                            } else {
-                                match self.create_session(data) {
-                                    Ok(session_id) => {
-                                        self.new_dialog = None;
-                                        return Some(Action::AttachSession(session_id));
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to create session: {}", e);
-                                        if let Some(dialog) = &mut self.new_dialog {
-                                            dialog.set_error(e.to_string());
-                                        }
-                                    }
-                                }
-                            }
+                        Ok(repo_config::HookTrustStatus::NoHooks) => {
+                            return self.create_session_with_hooks(data, None);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to check repo hooks: {}", e);
+                            return self.create_session_with_hooks(data, None);
                         }
                     }
                 }
@@ -288,40 +259,10 @@ impl HomeView {
                                 {
                                     tracing::error!("Failed to trust repo: {}", e);
                                 }
-                                if data.sandbox {
-                                    self.request_creation(data, Some(hooks));
-                                } else {
-                                    match self.create_session(data) {
-                                        Ok(session_id) => {
-                                            self.new_dialog = None;
-                                            return Some(Action::AttachSession(session_id));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to create session: {}", e);
-                                            if let Some(dialog) = &mut self.new_dialog {
-                                                dialog.set_error(e.to_string());
-                                            }
-                                        }
-                                    }
-                                }
+                                return self.create_session_with_hooks(data, Some(hooks));
                             }
                             HookTrustAction::Skip => {
-                                if data.sandbox {
-                                    self.request_creation(data, None);
-                                } else {
-                                    match self.create_session(data) {
-                                        Ok(session_id) => {
-                                            self.new_dialog = None;
-                                            return Some(Action::AttachSession(session_id));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to create session: {}", e);
-                                            if let Some(dialog) = &mut self.new_dialog {
-                                                dialog.set_error(e.to_string());
-                                            }
-                                        }
-                                    }
-                                }
+                                return self.create_session_with_hooks(data, None);
                             }
                         }
                     }
@@ -687,6 +628,47 @@ impl HomeView {
         self.filtered_items = Some(matches);
         self.cursor = 0;
         self.update_selected();
+    }
+
+    /// Create a session with optional hooks. For sandbox sessions, delegates to
+    /// `request_creation` (background). For non-sandbox, creates inline and
+    /// executes `on_create` hooks if provided.
+    fn create_session_with_hooks(
+        &mut self,
+        data: NewSessionData,
+        hooks: Option<crate::session::HooksConfig>,
+    ) -> Option<Action> {
+        if data.sandbox {
+            self.request_creation(data, hooks);
+            return None;
+        }
+
+        // Non-sandbox: run on_create hooks inline before creating the session
+        if let Some(ref hooks) = hooks {
+            if !hooks.on_create.is_empty() {
+                if let Err(e) = repo_config::execute_hooks(&hooks.on_create, &data.path) {
+                    tracing::error!("on_create hook failed: {}", e);
+                    if let Some(dialog) = &mut self.new_dialog {
+                        dialog.set_error(format!("on_create hook failed: {}", e));
+                    }
+                    return None;
+                }
+            }
+        }
+
+        match self.create_session(data) {
+            Ok(session_id) => {
+                self.new_dialog = None;
+                Some(Action::AttachSession(session_id))
+            }
+            Err(e) => {
+                tracing::error!("Failed to create session: {}", e);
+                if let Some(dialog) = &mut self.new_dialog {
+                    dialog.set_error(e.to_string());
+                }
+                None
+            }
+        }
     }
 
     /// Handle a mouse event

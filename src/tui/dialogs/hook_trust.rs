@@ -79,7 +79,10 @@ impl HookTrustDialog {
                 DialogResult::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                let total_lines = self.build_hook_lines().len() as u16;
+                if self.scroll_offset + 1 < total_lines {
+                    self.scroll_offset += 1;
+                }
                 DialogResult::Continue
             }
             _ => DialogResult::Continue,

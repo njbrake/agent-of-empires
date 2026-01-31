@@ -416,9 +416,11 @@ impl Instance {
             // Run on_launch hooks inside the container
             if let Some(ref hook_cmds) = on_launch_hooks {
                 if let Some(ref sandbox) = self.sandbox_info {
+                    let workdir = self.container_workdir();
                     if let Err(e) = super::repo_config::execute_hooks_in_container(
                         hook_cmds,
                         &sandbox.container_name,
+                        &workdir,
                     ) {
                         tracing::warn!("on_launch hook failed in container: {}", e);
                     }
@@ -618,6 +620,13 @@ impl Instance {
             workspace_path.clone(),
             workspace_path,
         ))
+    }
+
+    /// Get the container working directory for this instance.
+    pub fn container_workdir(&self) -> String {
+        self.compute_volume_paths(std::path::Path::new(&self.project_path))
+            .map(|(_, _, wd)| wd)
+            .unwrap_or_else(|_| "/workspace".to_string())
     }
 
     fn build_container_config(&self) -> Result<ContainerConfig> {

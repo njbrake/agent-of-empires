@@ -308,10 +308,11 @@ pub fn is_duplicate_session(instances: &[Instance], title: &str, path: &str) -> 
 }
 
 pub fn generate_unique_title(instances: &[Instance], base_title: &str, path: &str) -> String {
+    let normalized_path = path.trim_end_matches('/');
     let title_exists = |title: &str| -> bool {
-        instances
-            .iter()
-            .any(|inst| inst.project_path == path && inst.title == title)
+        instances.iter().any(|inst| {
+            inst.project_path.trim_end_matches('/') == normalized_path && inst.title == title
+        })
     };
 
     if !title_exists(base_title) {

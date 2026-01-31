@@ -118,9 +118,11 @@ impl CreationPoller {
                         return CreationResult::Error(e.to_string());
                     }
                     if let Some(ref sandbox) = instance.sandbox_info {
+                        let workdir = instance.container_workdir();
                         if let Err(e) = repo_config::execute_hooks_in_container(
                             &hooks.on_create,
                             &sandbox.container_name,
+                            &workdir,
                         ) {
                             tracing::warn!("on_create hook failed in container: {}", e);
                             return CreationResult::Error(format!("on_create hook failed: {}", e));
