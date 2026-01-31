@@ -386,6 +386,24 @@ impl Instance {
             return Ok(());
         }
 
+        // Execute on_launch hooks (trust already verified during creation)
+        if let Ok(Some(repo_config)) = super::repo_config::load_repo_config(&self.project_path) {
+            if let Some(ref hooks) = repo_config.hooks {
+                if !hooks.on_launch.is_empty() {
+                    let hooks_hash = super::repo_config::compute_hooks_hash(hooks);
+                    if super::repo_config::is_repo_trusted(&self.project_path, &hooks_hash)
+                        .unwrap_or(false)
+                    {
+                        if let Err(e) =
+                            super::repo_config::execute_hooks(&hooks.on_launch, &self.project_path)
+                        {
+                            tracing::warn!("on_launch hook failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
         let cmd = if self.is_sandboxed() {
             self.ensure_container_running()?;
             let sandbox = self.sandbox_info.as_ref().unwrap();

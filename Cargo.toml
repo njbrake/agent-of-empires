@@ -84,6 +84,9 @@ git2 = { version = "0.19", features = ["vendored-openssl"] }
 # Diff computation
 similar = "2.6"
 
+# Hashing
+sha2 = "0.10"
+
 [dev-dependencies]
 tempfile = "3.14"
 serial_test = "3.2"

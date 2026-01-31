@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 
 use super::add::AddArgs;
 use super::group::GroupCommands;
+use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
 use super::remove::RemoveArgs;
@@ -40,6 +41,9 @@ pub struct Cli {
 pub enum Commands {
     /// Add a new session
     Add(AddArgs),
+
+    /// Initialize .aoe/config.toml in a repository
+    Init(InitArgs),
 
     /// List all sessions
     #[command(alias = "ls")]

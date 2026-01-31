@@ -5,6 +5,7 @@ use clap::Args;
 use std::path::PathBuf;
 
 use crate::docker::{self, DockerContainer};
+use crate::session::repo_config;
 use crate::session::{civilizations, Config, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
@@ -48,6 +49,10 @@ pub struct AddArgs {
     /// Custom Docker image for sandbox (implies --sandbox)
     #[arg(long = "sandbox-image")]
     sandbox_image: Option<String>,
+
+    /// Automatically trust repository hooks without prompting
+    #[arg(long = "trust-hooks")]
+    trust_hooks: bool,
 }
 
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
@@ -196,6 +201,63 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 extra_env_keys: None,
                 extra_env_values: None,
             });
+        }
+    }
+
+    // Check for repository hooks
+    let project_path_str = path.to_str().unwrap_or("");
+    match repo_config::check_hook_trust(project_path_str) {
+        Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
+            if args.trust_hooks {
+                repo_config::trust_repo(project_path_str, &hooks_hash)?;
+                println!("✓ Repository hooks trusted");
+                if !hooks.on_create.is_empty() {
+                    println!("Running on_create hooks...");
+                    repo_config::execute_hooks(&hooks.on_create, project_path_str)?;
+                    println!("✓ on_create hooks completed");
+                }
+            } else {
+                println!("\nRepository hooks detected in .aoe/config.toml:");
+                if !hooks.on_create.is_empty() {
+                    println!("  on_create:");
+                    for cmd in &hooks.on_create {
+                        println!("    {}", cmd);
+                    }
+                }
+                if !hooks.on_launch.is_empty() {
+                    println!("  on_launch:");
+                    for cmd in &hooks.on_launch {
+                        println!("    {}", cmd);
+                    }
+                }
+                print!("\nTrust and run these hooks? [y/N] ");
+                use std::io::Write;
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if input.trim().eq_ignore_ascii_case("y") {
+                    repo_config::trust_repo(project_path_str, &hooks_hash)?;
+                    println!("✓ Repository hooks trusted");
+                    if !hooks.on_create.is_empty() {
+                        println!("Running on_create hooks...");
+                        repo_config::execute_hooks(&hooks.on_create, project_path_str)?;
+                        println!("✓ on_create hooks completed");
+                    }
+                } else {
+                    println!("Hooks skipped (session created without running hooks)");
+                }
+            }
+        }
+        Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
+            if !hooks.on_create.is_empty() {
+                println!("Running on_create hooks...");
+                repo_config::execute_hooks(&hooks.on_create, project_path_str)?;
+                println!("✓ on_create hooks completed");
+            }
+        }
+        Ok(repo_config::HookTrustStatus::NoHooks) => {}
+        Err(e) => {
+            tracing::warn!("Failed to check repo hooks: {}", e);
         }
     }
 

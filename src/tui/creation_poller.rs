@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::session::builder::{self, CreatedWorktree, InstanceParams};
+use crate::session::repo_config::{self, HooksConfig};
 use crate::session::Instance;
 use crate::tui::dialogs::NewSessionData;
 
@@ -14,6 +15,8 @@ pub struct CreationRequest {
     pub data: NewSessionData,
     /// Existing instances, used for generating unique titles
     pub existing_instances: Vec<Instance>,
+    /// Trusted hooks to execute after instance creation (already approved by user).
+    pub hooks: Option<HooksConfig>,
 }
 
 #[derive(Debug)]
@@ -74,6 +77,7 @@ impl CreationPoller {
 
     fn create_instance(request: CreationRequest) -> CreationResult {
         let data = request.data;
+        let hooks = request.hooks;
 
         let existing_titles: Vec<&str> = request
             .existing_instances
@@ -83,7 +87,7 @@ impl CreationPoller {
 
         let params = InstanceParams {
             title: data.title,
-            path: data.path,
+            path: data.path.clone(),
             group: data.group,
             tool: data.tool,
             worktree_branch: data.worktree_branch,
@@ -102,6 +106,40 @@ impl CreationPoller {
 
         let mut instance = build_result.instance;
         let created_worktree = build_result.created_worktree;
+
+        // Execute on_create hooks after worktree setup, before starting
+        if let Some(ref hooks) = hooks {
+            if !hooks.on_create.is_empty() {
+                let hook_dir = &instance.project_path;
+                if data.sandbox {
+                    // For sandboxed sessions, we need the container running first
+                    if let Err(e) = instance.start() {
+                        builder::cleanup_instance(&instance, created_worktree.as_ref());
+                        return CreationResult::Error(e.to_string());
+                    }
+                    if let Some(ref sandbox) = instance.sandbox_info {
+                        if let Err(e) = repo_config::execute_hooks_in_container(
+                            &hooks.on_create,
+                            &sandbox.container_name,
+                        ) {
+                            tracing::warn!("on_create hook failed in container: {}", e);
+                            return CreationResult::Error(format!("on_create hook failed: {}", e));
+                        }
+                    }
+
+                    let created_worktree_info =
+                        created_worktree.as_ref().map(CreatedWorktreeInfo::from);
+                    return CreationResult::Success {
+                        session_id: instance.id.clone(),
+                        instance: Box::new(instance),
+                        created_worktree: created_worktree_info,
+                    };
+                } else if let Err(e) = repo_config::execute_hooks(&hooks.on_create, hook_dir) {
+                    builder::cleanup_instance(&instance, created_worktree.as_ref());
+                    return CreationResult::Error(format!("on_create hook failed: {}", e));
+                }
+            }
+        }
 
         if data.sandbox {
             if let Err(e) = instance.start() {

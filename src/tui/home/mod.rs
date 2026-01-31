@@ -339,6 +339,7 @@ impl HomeView {
         let request = CreationRequest {
             data,
             existing_instances: self.instances.clone(),
+            hooks: None,
         };
         self.creation_poller.request_creation(request);
     }
