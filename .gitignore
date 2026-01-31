@@ -39,6 +39,10 @@ Thumbs.db
 # AI coding tools
 .opencode/
 
+# Per-repo aoe config (created by `aoe init`, should be committed per-repo by users)
+# Ignored here since this is the aoe tool repo itself
+.aoe/
+
 # Personal/local files
 *.screenstudio/
 

@@ -41,7 +41,8 @@ impl HookTrustDialog {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<HookTrustAction> {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+            KeyCode::Esc => DialogResult::Cancel,
+            KeyCode::Char('n') | KeyCode::Char('N') => {
                 DialogResult::Submit(HookTrustAction::Skip)
             }
             KeyCode::Enter => {
@@ -191,6 +192,8 @@ impl HookTrustDialog {
             Span::styled("[Trust & Run (y)]", trust_style),
             Span::raw("    "),
             Span::styled("[Skip (n)]", skip_style),
+            Span::raw("    "),
+            Span::styled("[Cancel (Esc)]", Style::default().fg(theme.dimmed)),
         ]);
 
         frame.render_widget(
@@ -247,13 +250,10 @@ mod tests {
     }
 
     #[test]
-    fn test_esc_skips() {
+    fn test_esc_cancels() {
         let mut dialog = test_dialog();
         let result = dialog.handle_key(key(KeyCode::Esc));
-        assert!(matches!(
-            result,
-            DialogResult::Submit(HookTrustAction::Skip)
-        ));
+        assert!(matches!(result, DialogResult::Cancel));
     }
 
     #[test]

@@ -30,13 +30,19 @@ pub struct RepoConfig {
 }
 
 /// Hook commands to run at various lifecycle points.
+///
+/// Failure semantics differ by hook type:
+/// - `on_create`: failures abort session creation (hard failure).
+/// - `on_launch`: failures are logged as warnings but do not prevent the session
+///   from starting, since blocking an existing session on a transient hook failure
+///   would be disruptive.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfig {
     /// Commands run once when a session is first created.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_create: Vec<String>,
 
-    /// Commands run every time a session starts.
+    /// Commands run every time a session starts (failures are non-fatal).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_launch: Vec<String>,
 }
@@ -188,6 +194,9 @@ pub fn compute_hooks_hash(hooks: &HooksConfig) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Path to the global trust store. Trust decisions are shared across all
+/// profiles so that a repo trusted in one profile doesn't require re-approval
+/// in another.
 fn trusted_repos_path() -> Result<PathBuf> {
     Ok(super::get_app_dir()?.join("trusted_repos.toml"))
 }
@@ -219,21 +228,44 @@ fn normalize_path(path: &str) -> String {
 }
 
 /// Check if a repo's hooks are trusted (hash matches stored trust entry).
+/// Normalizes `project_path` before lookup.
 pub fn is_repo_trusted(project_path: &str, hooks_hash: &str) -> Result<bool> {
     let normalized = normalize_path(project_path);
+    is_repo_trusted_normalized(&normalized, hooks_hash)
+}
+
+/// Like `is_repo_trusted` but expects an already-normalized path.
+fn is_repo_trusted_normalized(normalized_path: &str, hooks_hash: &str) -> Result<bool> {
     let trusted = load_trusted_repos()?;
     Ok(trusted
         .repos
         .iter()
-        .any(|r| r.path == normalized && r.hooks_hash == hooks_hash))
+        .any(|r| r.path == normalized_path && r.hooks_hash == hooks_hash))
 }
 
 /// Mark a repo's hooks as trusted.
+///
+/// Uses file locking to prevent concurrent writes from clobbering each other
+/// (e.g. multiple sessions being created simultaneously).
 pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
+    use fs2::FileExt;
+
     let normalized = normalize_path(project_path);
+    let path = trusted_repos_path()?;
+
+    // Ensure the file exists so we can lock it
+    if !path.exists() {
+        fs::write(&path, "")?;
+    }
+
+    let lock_file = fs::File::open(&path)?;
+    lock_file
+        .lock_exclusive()
+        .context("Failed to acquire lock on trusted_repos.toml")?;
+
+    // Read-modify-write while holding the lock (released on drop)
     let mut trusted = load_trusted_repos()?;
 
-    // Remove any existing entry for this path
     trusted.repos.retain(|r| r.path != normalized);
 
     trusted.repos.push(TrustedRepo {
@@ -242,7 +274,9 @@ pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
         trusted_at: chrono::Utc::now().to_rfc3339(),
     });
 
-    save_trusted_repos(&trusted)
+    save_trusted_repos(&trusted)?;
+    drop(lock_file);
+    Ok(())
 }
 
 /// Result of checking hook trust for a project.
@@ -274,7 +308,8 @@ pub fn check_hook_trust(project_path: &str) -> Result<HookTrustStatus> {
 
     let hooks_hash = compute_hooks_hash(&hooks);
 
-    if is_repo_trusted(&normalized, &hooks_hash)? {
+    // Pass already-normalized path to avoid double canonicalization
+    if is_repo_trusted_normalized(&normalized, &hooks_hash)? {
         Ok(HookTrustStatus::Trusted(hooks))
     } else {
         Ok(HookTrustStatus::NeedsTrust { hooks, hooks_hash })
