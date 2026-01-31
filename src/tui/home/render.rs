@@ -22,7 +22,7 @@ impl HomeView {
         update_info: Option<&UpdateInfo>,
     ) {
         // Settings view takes over the whole screen
-        if let Some(ref settings) = self.settings_view {
+        if let Some(ref mut settings) = self.settings_view {
             settings.render(frame, area, theme);
             // Render unsaved changes confirmation dialog over settings
             if self.settings_close_confirm {

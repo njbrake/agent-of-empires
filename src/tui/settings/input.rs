@@ -82,6 +82,7 @@ impl SettingsView {
                     SettingsFocus::Fields => {
                         if self.selected_field > 0 {
                             self.selected_field -= 1;
+                            self.ensure_field_visible(self.fields_viewport_height);
                         }
                     }
                 }
@@ -98,6 +99,7 @@ impl SettingsView {
                     SettingsFocus::Fields => {
                         if self.selected_field < self.fields.len().saturating_sub(1) {
                             self.selected_field += 1;
+                            self.ensure_field_visible(self.fields_viewport_height);
                         }
                     }
                 }

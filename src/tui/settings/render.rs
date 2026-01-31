@@ -4,7 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
+    },
     Frame,
 };
 use tui_input::Input;
@@ -13,7 +16,7 @@ use super::{FieldValue, SettingsFocus, SettingsScope, SettingsView};
 use crate::tui::styles::Theme;
 
 impl SettingsView {
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Clear the area
         frame.render_widget(Clear, area);
 
@@ -75,7 +78,7 @@ impl SettingsView {
         frame.render_widget(Paragraph::new(tabs), inner);
     }
 
-    fn render_content(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Split into categories (left) and fields (right)
         let layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -137,7 +140,7 @@ impl SettingsView {
         frame.render_widget(list, inner);
     }
 
-    fn render_fields(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_fields(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let is_focused = self.focus == SettingsFocus::Fields;
 
         let border_style = if is_focused {
@@ -161,23 +164,75 @@ impl SettingsView {
             return;
         }
 
-        // Calculate how much space each field needs
-        let mut y_offset = 0u16;
+        // Reserve space for messages at the bottom
+        let has_message = self.error_message.is_some() || self.success_message.is_some();
+        let message_height: u16 = if has_message { 2 } else { 0 };
+        let fields_viewport_height = inner.height.saturating_sub(message_height);
+        self.fields_viewport_height = fields_viewport_height;
+
+        // Calculate total content height
+        let mut total_content_height = 0u16;
         for (i, field) in self.fields.iter().enumerate() {
-            if y_offset >= inner.height {
+            if i > 0 {
+                total_content_height += 1; // spacing between fields
+            }
+            total_content_height += self.field_height(field, i);
+        }
+
+        let scroll_offset = self.fields_scroll_offset;
+
+        // Render fields with scroll offset applied
+        let mut y_pos = 0u16; // absolute position in content space
+        for (i, field) in self.fields.iter().enumerate() {
+            let field_h = self.field_height(field, i);
+            let field_top = y_pos;
+            let field_bottom = y_pos + field_h;
+
+            // Skip fields entirely above the viewport
+            if field_bottom <= scroll_offset {
+                y_pos += field_h + 1;
+                continue;
+            }
+
+            // Stop if we're past the viewport
+            if field_top >= scroll_offset + fields_viewport_height {
                 break;
             }
 
+            let visible_y = field_top.saturating_sub(scroll_offset);
             let is_selected = i == self.selected_field && is_focused;
             let field_area = Rect {
                 x: inner.x,
-                y: inner.y + y_offset,
+                y: inner.y + visible_y,
                 width: inner.width,
-                height: self.field_height(field, i),
+                height: field_h.min(fields_viewport_height.saturating_sub(visible_y)),
             };
 
             self.render_field(frame, field_area, field, i, is_selected, theme);
-            y_offset += field_area.height + 1; // +1 for spacing
+            y_pos += field_h + 1; // +1 for spacing
+        }
+
+        // Render scrollbar if content overflows
+        if total_content_height > fields_viewport_height {
+            let scrollbar_area = Rect {
+                x: area.x + area.width - 1,
+                y: area.y + 1,
+                width: 1,
+                height: area.height.saturating_sub(2),
+            };
+
+            let mut scrollbar_state = ScrollbarState::new(
+                total_content_height.saturating_sub(fields_viewport_height) as usize,
+            )
+            .position(scroll_offset as usize);
+
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .track_style(Style::default().fg(theme.border))
+                    .thumb_style(Style::default().fg(theme.dimmed)),
+                scrollbar_area,
+                &mut scrollbar_state,
+            );
         }
 
         // Render messages at the bottom if present
@@ -202,7 +257,7 @@ impl SettingsView {
         }
     }
 
-    fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
+    pub(super) fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
         match &field.value {
             FieldValue::List(items) => {
                 // If this field's list is expanded, show all items
@@ -560,7 +615,7 @@ impl SettingsView {
                 if let Some(input) = list_state
                     .editing_item
                     .as_ref()
-                    .filter(|_| i == list_state.selected_index)
+                    .filter(|_| i == list_state.selected_index && !list_state.adding_new)
                 {
                     self.render_list_item_with_cursor(frame, item_area, prefix, input, theme);
                 } else {
