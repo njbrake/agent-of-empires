@@ -150,6 +150,9 @@ pub struct HomeView {
 
     // Diff view
     pub(super) diff_view: Option<DiffView>,
+
+    // Resizable list column width (percentage-like units)
+    pub(super) list_width: u16,
 }
 
 impl HomeView {
@@ -212,6 +215,7 @@ impl HomeView {
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
+            list_width: 35,
         };
 
         view.update_selected();
@@ -436,6 +440,14 @@ impl HomeView {
             || self.info_dialog.is_some()
             || self.settings_view.is_some()
             || self.diff_view.is_some()
+    }
+
+    pub fn shrink_list(&mut self) {
+        self.list_width = self.list_width.saturating_sub(5).max(10);
+    }
+
+    pub fn grow_list(&mut self) {
+        self.list_width = (self.list_width + 5).min(80);
     }
 
     pub fn show_welcome(&mut self) {

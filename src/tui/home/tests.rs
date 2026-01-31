@@ -1233,3 +1233,66 @@ fn test_group_collapsed_state_saved_to_storage() {
         "collapsed state should be persisted to storage"
     );
 }
+
+#[test]
+#[serial]
+fn test_list_width_default() {
+    let env = create_test_env_empty();
+    assert_eq!(env.view.list_width, 35);
+}
+
+#[test]
+#[serial]
+fn test_shrink_list() {
+    let mut env = create_test_env_empty();
+    env.view.shrink_list();
+    assert_eq!(env.view.list_width, 30);
+}
+
+#[test]
+#[serial]
+fn test_grow_list() {
+    let mut env = create_test_env_empty();
+    env.view.grow_list();
+    assert_eq!(env.view.list_width, 40);
+}
+
+#[test]
+#[serial]
+fn test_shrink_list_clamps_at_minimum() {
+    let mut env = create_test_env_empty();
+    env.view.list_width = 12;
+    env.view.shrink_list();
+    assert_eq!(env.view.list_width, 10);
+    env.view.shrink_list();
+    assert_eq!(env.view.list_width, 10);
+}
+
+#[test]
+#[serial]
+fn test_grow_list_clamps_at_maximum() {
+    let mut env = create_test_env_empty();
+    env.view.list_width = 78;
+    env.view.grow_list();
+    assert_eq!(env.view.list_width, 80);
+    env.view.grow_list();
+    assert_eq!(env.view.list_width, 80);
+}
+
+#[test]
+#[serial]
+fn test_uppercase_h_shrinks_list() {
+    let mut env = create_test_env_empty();
+    assert_eq!(env.view.list_width, 35);
+    env.view.handle_key(key(KeyCode::Char('H')));
+    assert_eq!(env.view.list_width, 30);
+}
+
+#[test]
+#[serial]
+fn test_uppercase_l_grows_list() {
+    let mut env = create_test_env_empty();
+    assert_eq!(env.view.list_width, 35);
+    env.view.handle_key(key(KeyCode::Char('L')));
+    assert_eq!(env.view.list_width, 40);
+}

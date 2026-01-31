@@ -473,6 +473,12 @@ impl HomeView {
                     self.toggle_group_collapsed(&path);
                 }
             }
+            KeyCode::Char('H') => {
+                self.shrink_list();
+            }
+            KeyCode::Char('L') => {
+                self.grow_list();
+            }
             KeyCode::Left | KeyCode::Char('h') => {
                 if let Some(Item::Group {
                     path, collapsed, ..

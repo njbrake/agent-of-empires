@@ -60,7 +60,7 @@ impl HomeView {
         // Layout: left panel (list) and right panel (preview)
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .constraints([Constraint::Length(self.list_width), Constraint::Min(40)])
             .split(main_chunks[0]);
 
         self.render_list(frame, chunks[0], theme);
