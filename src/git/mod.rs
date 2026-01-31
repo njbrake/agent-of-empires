@@ -130,7 +130,7 @@ impl GitWorktree {
     }
 
     /// Prune stale worktree entries whose directories no longer exist on disk.
-    pub fn prune_worktrees(&self) -> Result<()> {
+    fn prune_worktrees(&self) -> Result<()> {
         let output = std::process::Command::new("git")
             .args(["worktree", "prune"])
             .current_dir(&self.repo_path)
