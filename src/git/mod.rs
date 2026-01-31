@@ -103,8 +103,27 @@ impl GitWorktree {
             let commit = head.peel_to_commit()?;
             repo.branch(branch, &commit, false)?;
         } else {
-            repo.find_branch(branch, git2::BranchType::Local)
-                .map_err(|_| GitError::BranchNotFound(branch.to_string()))?;
+            let has_local = repo.find_branch(branch, git2::BranchType::Local).is_ok();
+            if !has_local {
+                let has_remote = repo
+                    .branches(Some(git2::BranchType::Remote))
+                    .ok()
+                    .map(|branches| {
+                        branches.filter_map(|b| b.ok()).any(|(b, _)| {
+                            b.name()
+                                .ok()
+                                .flatten()
+                                .map(|name| {
+                                    name.ends_with(&format!("/{}", branch)) || name == branch
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                if !has_remote {
+                    return Err(GitError::BranchNotFound(branch.to_string()));
+                }
+            }
         }
 
         let path_str = path
@@ -668,6 +687,56 @@ mod tests {
         assert!(repo
             .find_branch("to-delete", git2::BranchType::Local)
             .is_err());
+    }
+
+    #[test]
+    fn test_create_worktree_from_remote_branch() {
+        let dir = TempDir::new().unwrap();
+
+        // Create the "remote" repo with a branch
+        let remote_path = dir.path().join("remote");
+        std::fs::create_dir(&remote_path).unwrap();
+        let remote_repo = git2::Repository::init(&remote_path).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = remote_repo.index().unwrap().write_tree().unwrap();
+        let tree = remote_repo.find_tree(tree_id).unwrap();
+        let commit_oid = remote_repo
+            .commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+            .unwrap();
+        let commit = remote_repo.find_commit(commit_oid).unwrap();
+        remote_repo
+            .branch("remote-only-branch", &commit, false)
+            .unwrap();
+
+        // Clone it as the "local" repo
+        let local_path = dir.path().join("local");
+        std::process::Command::new("git")
+            .args([
+                "clone",
+                remote_path.to_str().unwrap(),
+                local_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        // Verify the branch is not local but is remote
+        let local_repo = git2::Repository::open(&local_path).unwrap();
+        assert!(local_repo
+            .find_branch("remote-only-branch", git2::BranchType::Local)
+            .is_err());
+        assert!(local_repo
+            .find_branch("origin/remote-only-branch", git2::BranchType::Remote)
+            .is_ok());
+
+        // Create a worktree from the remote branch
+        let wt_path = dir.path().join("remote-wt");
+        let git_wt = GitWorktree::new(local_path).unwrap();
+        git_wt
+            .create_worktree("remote-only-branch", &wt_path, false)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
     }
 
     #[test]
