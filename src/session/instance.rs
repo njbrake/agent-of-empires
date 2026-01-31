@@ -19,17 +19,28 @@ fn default_true() -> bool {
 /// Terminal environment variables that are always passed through for proper UI/theming
 const DEFAULT_TERMINAL_ENV_VARS: &[&str] = &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
+/// Shell-escape a value for safe interpolation into a shell command string.
+/// Wraps in single quotes and escapes any embedded single quotes.
+fn shell_escape(val: &str) -> String {
+    format!("'{}'", val.replace('\'', "'\\''"))
+}
+
 /// Resolve an environment_values entry. If the value starts with `$`, read the
-/// named variable from the host environment. Otherwise return the literal value.
+/// named variable from the host environment (use `$$` to escape a literal `$`).
+/// Otherwise return the literal value.
 fn resolve_env_value(val: &str) -> Option<String> {
-    if let Some(var_name) = val.strip_prefix('$') {
+    if let Some(rest) = val.strip_prefix("$$") {
+        Some(format!("${}", rest))
+    } else if let Some(var_name) = val.strip_prefix('$') {
         std::env::var(var_name).ok()
     } else {
         Some(val.to_string())
     }
 }
 
-/// Build docker exec environment flags from config and optional per-session extra keys
+/// Build docker exec environment flags from config and optional per-session extra keys.
+/// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
+/// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
 fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
     let config = super::config::Config::load().unwrap_or_default();
 
@@ -60,14 +71,14 @@ fn build_docker_env_args(extra_env_keys: Option<&Vec<String>>) -> String {
         .filter_map(|key| {
             std::env::var(key)
                 .ok()
-                .map(|val| format!("-e {}={}", key, val))
+                .map(|val| format!("-e {}={}", key, shell_escape(&val)))
         })
         .collect();
 
-    // Inject environment_values from config (AOE-managed values stored in config)
+    // Inject environment_values (AOE-managed, used for docker exec sessions)
     for (key, val) in &config.sandbox.environment_values {
         if let Some(resolved) = resolve_env_value(val) {
-            args.push(format!("-e {}={}", key, resolved));
+            args.push(format!("-e {}={}", key, shell_escape(&resolved)));
         }
     }
 
@@ -672,7 +683,7 @@ impl Instance {
             format!("{}/.claude", CONTAINER_HOME),
         ));
 
-        // Inject environment_values from config (AOE-managed values stored in config)
+        // Inject environment_values (AOE-managed, used for container creation via separate args)
         for (key, val) in &sandbox_config.environment_values {
             if let Some(resolved) = resolve_env_value(val) {
                 environment.push((key.clone(), resolved));

@@ -769,13 +769,20 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
 }
 
 /// Parse a list of "KEY=VALUE" strings into a HashMap.
-/// Entries without '=' are skipped.
+/// Entries without '=' are logged and skipped.
 fn parse_env_values_list(entries: &[String]) -> HashMap<String, String> {
     entries
         .iter()
         .filter_map(|entry| {
-            let (key, value) = entry.split_once('=')?;
-            Some((key.to_string(), value.to_string()))
+            if let Some((key, value)) = entry.split_once('=') {
+                Some((key.to_string(), value.to_string()))
+            } else {
+                tracing::warn!(
+                    "Ignoring malformed environment value (missing '='): {}",
+                    entry
+                );
+                None
+            }
         })
         .collect()
 }

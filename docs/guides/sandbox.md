@@ -146,6 +146,8 @@ export AOE_GH_TOKEN="ghp_sandbox_scoped_token"
 
 If the referenced host env var is not set, the entry is silently skipped.
 
+To use a literal value starting with `$`, double it: `$$LITERAL` is injected as `$LITERAL`.
+
 ## Available Images
 
 AOE provides two official sandbox images:

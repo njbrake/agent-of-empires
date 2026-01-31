@@ -6,7 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        ScrollbarState,
     },
     Frame,
 };
@@ -257,17 +257,7 @@ impl SettingsView {
         }
     }
 
-    fn description_lines(description: &str, width: u16) -> u16 {
-        if width == 0 || description.is_empty() {
-            return 1;
-        }
-        let w = width as usize;
-        let lines = description.len().div_ceil(w);
-        (lines as u16).max(1)
-    }
-
     pub(super) fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
-        // Use 1 line for description in height estimates (actual wrapping happens at render time)
         match &field.value {
             FieldValue::List(items) => {
                 if self.list_edit_state.is_some() && index == self.selected_field {
@@ -312,24 +302,19 @@ impl SettingsView {
 
         frame.render_widget(Paragraph::new(label), area);
 
-        // Render description below label (may wrap to multiple lines)
-        let desc_lines = Self::description_lines(field.description, area.width);
         let description_area = Rect {
             x: area.x,
             y: area.y + 1,
             width: area.width,
-            height: desc_lines,
+            height: 1,
         };
         frame.render_widget(
-            Paragraph::new(field.description)
-                .style(Style::default().fg(theme.dimmed))
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(field.description).style(Style::default().fg(theme.dimmed)),
             description_area,
         );
 
-        // Offset area for value rendering (field renderers add +1, so this puts values below description)
         let value_area = Rect {
-            y: area.y + desc_lines,
+            y: area.y + 1,
             ..area
         };
 
