@@ -2,7 +2,6 @@
 
 pub mod builder;
 pub mod civilizations;
-pub mod claude;
 pub mod config;
 mod groups;
 mod instance;

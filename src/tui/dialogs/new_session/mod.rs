@@ -11,7 +11,9 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::docker;
-use crate::session::{civilizations, Config};
+#[cfg(test)]
+use crate::session::Config;
+use crate::session::{civilizations, resolve_config};
 use crate::tmux::AvailableTools;
 
 pub(super) struct FieldHelp {
@@ -90,6 +92,7 @@ pub struct NewSessionData {
 pub(super) const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
 
 pub struct NewSessionDialog {
+    pub(super) profile: String,
     pub(super) title: Input,
     pub(super) path: Input,
     pub(super) group: Input,
@@ -124,7 +127,7 @@ pub struct NewSessionDialog {
 }
 
 impl NewSessionDialog {
-    pub fn new(tools: AvailableTools, existing_titles: Vec<String>) -> Self {
+    pub fn new(tools: AvailableTools, existing_titles: Vec<String>, profile: &str) -> Self {
         let current_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -132,8 +135,8 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
         let docker_available = docker::is_docker_available();
 
-        // Load config to get defaults
-        let config = Config::load().unwrap_or_default();
+        // Load resolved config (global merged with profile overrides)
+        let config = resolve_config(profile).unwrap_or_default();
 
         // Determine default tool index based on config
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {
@@ -157,6 +160,7 @@ impl NewSessionDialog {
         };
 
         Self {
+            profile: profile.to_string(),
             title: Input::default(),
             path: Input::new(current_dir),
             group: Input::default(),
@@ -207,8 +211,48 @@ impl NewSessionDialog {
     }
 
     #[cfg(test)]
+    pub(super) fn new_with_config(tools: Vec<&'static str>, path: String, config: Config) -> Self {
+        let tool_index = if let Some(ref default_tool) = config.session.default_tool {
+            tools
+                .iter()
+                .position(|&t| t == default_tool.as_str())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        Self {
+            profile: "default".to_string(),
+            title: Input::default(),
+            path: Input::new(path),
+            group: Input::default(),
+            tool_index,
+            focused_field: 0,
+            available_tools: tools,
+            existing_titles: Vec::new(),
+            worktree_branch: Input::default(),
+            create_new_branch: true,
+            sandbox_enabled: false,
+            sandbox_image: Input::new(docker::effective_default_image()),
+            docker_available: false,
+            yolo_mode: false,
+            extra_env_keys: Vec::new(),
+            env_list_expanded: false,
+            env_selected_index: 0,
+            env_editing_input: None,
+            env_adding_new: false,
+            error_message: None,
+            show_help: false,
+            loading: false,
+            spinner_frame: 0,
+            needs_image_pull: false,
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
         Self {
+            profile: "default".to_string(),
             title: Input::default(),
             path: Input::new(path),
             group: Input::default(),
@@ -385,7 +429,7 @@ impl NewSessionDialog {
                 self.sandbox_enabled = !self.sandbox_enabled;
                 if self.sandbox_enabled {
                     // Apply yolo_mode_default and reload env keys from config
-                    let config = Config::load().unwrap_or_default();
+                    let config = resolve_config(&self.profile).unwrap_or_default();
                     self.yolo_mode = config.sandbox.yolo_mode_default;
                     self.extra_env_keys = config.sandbox.environment.clone();
                 } else {

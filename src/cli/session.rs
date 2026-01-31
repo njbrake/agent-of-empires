@@ -17,9 +17,6 @@ pub enum SessionCommands {
     /// Restart session
     Restart(SessionIdArgs),
 
-    /// Fork Claude session with context
-    Fork(ForkArgs),
-
     /// Attach to session interactively
     Attach(SessionIdArgs),
 
@@ -34,20 +31,6 @@ pub enum SessionCommands {
 pub struct SessionIdArgs {
     /// Session ID or title
     identifier: String,
-}
-
-#[derive(Args)]
-pub struct ForkArgs {
-    /// Session ID or title to fork
-    identifier: String,
-
-    /// Custom title for forked session
-    #[arg(short = 't', long)]
-    title: Option<String>,
-
-    /// Target group for forked session
-    #[arg(short = 'g', long)]
-    group: Option<String>,
 }
 
 #[derive(Args)]
@@ -81,8 +64,6 @@ struct SessionDetails {
     command: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    claude_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     parent_session_id: Option<String>,
     profile: String,
 }
@@ -92,7 +73,6 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Start(args) => start_session(profile, args).await,
         SessionCommands::Stop(args) => stop_session(profile, args).await,
         SessionCommands::Restart(args) => restart_session(profile, args).await,
-        SessionCommands::Fork(args) => fork_session(profile, args).await,
         SessionCommands::Attach(args) => attach_session(profile, args).await,
         SessionCommands::Show(args) => show_session(profile, args).await,
         SessionCommands::Current(args) => current_session(args).await,
@@ -162,52 +142,6 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     Ok(())
 }
 
-async fn fork_session(profile: &str, args: ForkArgs) -> Result<()> {
-    let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
-
-    let source_inst = super::resolve_session(&args.identifier, &instances)?;
-
-    if source_inst.tool != "claude" {
-        bail!("Fork is only supported for Claude sessions");
-    }
-
-    if source_inst.claude_session_id.is_none() {
-        bail!("No Claude session ID detected. Start the session first and wait for Claude to initialize.");
-    }
-
-    // Clone source data we need before mutating instances
-    let source_title = source_inst.title.clone();
-    let source_id = source_inst.id.clone();
-    let source_project_path = source_inst.project_path.clone();
-    let source_group_path = source_inst.group_path.clone();
-
-    let fork_title = args.title.unwrap_or_else(|| {
-        let base = format!("{} (fork)", source_title);
-        super::add::generate_unique_title(&instances, &base, &source_project_path)
-    });
-
-    let fork_group = args.group.unwrap_or_else(|| source_group_path.clone());
-
-    let forked = source_inst.fork(&fork_title, &fork_group)?;
-    let forked_id = forked.id.clone();
-    instances.push(forked);
-
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-    if !fork_group.is_empty() {
-        group_tree.create_group(&fork_group);
-    }
-
-    storage.save_with_groups(&instances, &group_tree)?;
-
-    println!("✓ Forked session: {}", fork_title);
-    println!("  Source:  {} ({})", source_title, &source_id[..8]);
-    println!("  ID:      {}", forked_id);
-    println!("  Group:   {}", fork_group);
-
-    Ok(())
-}
-
 async fn attach_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (instances, _) = storage.load_with_groups()?;
@@ -262,7 +196,6 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
             tool: inst.tool.clone(),
             command: inst.command.clone(),
             status: format!("{:?}", inst.status).to_lowercase(),
-            claude_session_id: inst.claude_session_id.clone(),
             parent_session_id: inst.parent_session_id.clone(),
             profile: storage.profile().to_string(),
         };
@@ -276,9 +209,6 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
         println!("  Command: {}", inst.command);
         println!("  Status:  {:?}", inst.status);
         println!("  Profile: {}", storage.profile());
-        if let Some(claude_id) = &inst.claude_session_id {
-            println!("  Claude Session: {}", claude_id);
-        }
         if let Some(parent_id) = &inst.parent_session_id {
             println!("  Parent:  {}", parent_id);
         }

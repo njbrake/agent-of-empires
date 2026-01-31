@@ -115,6 +115,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_terminal_mode: Option<DefaultTerminalMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_ignores: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -262,6 +265,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(default_terminal_mode) = sandbox_override.default_terminal_mode {
             global.sandbox.default_terminal_mode = default_terminal_mode;
+        }
+        if let Some(ref volume_ignores) = sandbox_override.volume_ignores {
+            global.sandbox.volume_ignores = volume_ignores.clone();
         }
     }
 
@@ -536,6 +542,65 @@ mod tests {
 
         let merged = merge_configs(global, &profile);
         assert_eq!(merged.tmux.mouse, TmuxMouseMode::Disabled);
+    }
+
+    #[test]
+    fn test_merge_configs_with_volume_ignores_override() {
+        let global = Config::default();
+        assert!(global.sandbox.volume_ignores.is_empty());
+
+        let profile = ProfileConfig {
+            sandbox: Some(SandboxConfigOverride {
+                volume_ignores: Some(vec!["target".to_string(), "node_modules".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(
+            merged.sandbox.volume_ignores,
+            vec!["target", "node_modules"]
+        );
+    }
+
+    #[test]
+    fn test_merge_configs_volume_ignores_inherits_when_not_overridden() {
+        let mut global = Config::default();
+        global.sandbox.volume_ignores = vec!["target".to_string()];
+
+        let profile = ProfileConfig {
+            sandbox: Some(SandboxConfigOverride {
+                enabled_by_default: Some(true),
+                volume_ignores: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(merged.sandbox.volume_ignores, vec!["target"]);
+        assert!(merged.sandbox.enabled_by_default);
+    }
+
+    #[test]
+    fn test_volume_ignores_override_serialization() {
+        let config = ProfileConfig {
+            sandbox: Some(SandboxConfigOverride {
+                volume_ignores: Some(vec!["target".to_string(), ".venv".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(serialized.contains("volume_ignores"));
+
+        let deserialized: ProfileConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.sandbox.unwrap().volume_ignores,
+            Some(vec!["target".to_string(), ".venv".to_string()])
+        );
     }
 
     #[test]
