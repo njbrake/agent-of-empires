@@ -18,6 +18,9 @@ pub enum GitError {
     #[error("Git error: {0}")]
     Git2Error(#[from] git2::Error),
 
+    #[error("Git worktree command failed: {0}")]
+    WorktreeCommandFailed(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
