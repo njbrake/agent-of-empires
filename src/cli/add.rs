@@ -194,6 +194,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 created_at: None,
                 yolo_mode: None,
                 extra_env_keys: None,
+                extra_env_values: None,
             });
         }
     }

@@ -1,5 +1,7 @@
 //! Setting field definitions and config mapping
 
+use std::collections::HashMap;
+
 use crate::session::{
     validate_check_interval, Config, DefaultTerminalMode, ProfileConfig, TmuxMouseMode,
     TmuxStatusBarMode,
@@ -46,6 +48,7 @@ pub enum FieldKey {
     YoloModeDefault,
     DefaultImage,
     Environment,
+    EnvironmentValues,
     SandboxAutoCleanup,
     DefaultTerminalMode,
     VolumeIgnores,
@@ -303,6 +306,19 @@ fn build_sandbox_fields(
         global.sandbox.environment.clone(),
         sb.and_then(|s| s.environment.clone()),
     );
+    let (environment_values, o_env_vals) = resolve_value(
+        scope,
+        global.sandbox.environment_values.clone(),
+        sb.and_then(|s| s.environment_values.clone()),
+    );
+    let env_values_list = {
+        let mut entries: Vec<String> = environment_values
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        entries.sort();
+        entries
+    };
     let (auto_cleanup, o5) = resolve_value(
         scope,
         global.sandbox.auto_cleanup,
@@ -352,10 +368,18 @@ fn build_sandbox_fields(
         SettingField {
             key: FieldKey::Environment,
             label: "Environment Variables",
-            description: "Var names to pass from host (e.g. ANTHROPIC_API_KEY)",
+            description: "Var names to pass through from host (e.g. GITHUB_TOKEN)",
             value: FieldValue::List(environment),
             category: SettingsCategory::Sandbox,
             has_override: o4,
+        },
+        SettingField {
+            key: FieldKey::EnvironmentValues,
+            label: "Environment Values",
+            description: "Custom KEY=VALUE env vars for sandbox. Use $VAR to reference host vars",
+            value: FieldValue::List(env_values_list),
+            category: SettingsCategory::Sandbox,
+            has_override: o_env_vals,
         },
         SettingField {
             key: FieldKey::SandboxAutoCleanup,
@@ -523,6 +547,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.sandbox.yolo_mode_default = *v,
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
+        (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
+            config.sandbox.environment_values = parse_env_values_list(v);
+        }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
@@ -656,6 +683,15 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 |s, val| s.environment = val,
             );
         }
+        (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
+            let map = parse_env_values_list(v);
+            set_or_clear_override(
+                map,
+                &global.sandbox.environment_values,
+                &mut config.sandbox,
+                |s, val| s.environment_values = val,
+            );
+        }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => {
             set_or_clear_override(
                 v.clone(),
@@ -730,6 +766,25 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
         }
         _ => {}
     }
+}
+
+/// Parse a list of "KEY=VALUE" strings into a HashMap.
+/// Entries without '=' are logged and skipped.
+fn parse_env_values_list(entries: &[String]) -> HashMap<String, String> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            if let Some((key, value)) = entry.split_once('=') {
+                Some((key.to_string(), value.to_string()))
+            } else {
+                tracing::warn!(
+                    "Ignoring malformed environment value (missing '='): {}",
+                    entry
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -260,14 +260,14 @@ impl SettingsView {
     pub(super) fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
         match &field.value {
             FieldValue::List(items) => {
-                // If this field's list is expanded, show all items
                 if self.list_edit_state.is_some() && index == self.selected_field {
-                    4 + items.len() as u16 + 1 // label + description + items + add prompt
+                    // label + description + header + items + add prompt
+                    1 + 1 + 1 + items.len() as u16 + 1
                 } else {
-                    3 // Label + description + summary
+                    1 + 1 + 1 // Label + description + summary
                 }
             }
-            _ => 3, // Label + description + value
+            _ => 1 + 1 + 1, // Label + description + value
         }
     }
 
@@ -302,7 +302,6 @@ impl SettingsView {
 
         frame.render_widget(Paragraph::new(label), area);
 
-        // Render description below label
         let description_area = Rect {
             x: area.x,
             y: area.y + 1,
@@ -314,7 +313,6 @@ impl SettingsView {
             description_area,
         );
 
-        // Offset area for value rendering (field renderers add +1, so this puts values at y+2)
         let value_area = Rect {
             y: area.y + 1,
             ..area
@@ -611,7 +609,7 @@ impl SettingsView {
                     "  "
                 };
 
-                // If editing this item, render with cursor
+                // If editing this item (not adding new), render with cursor
                 if let Some(input) = list_state
                     .editing_item
                     .as_ref()
