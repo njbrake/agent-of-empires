@@ -212,6 +212,31 @@ fn find_sound_file(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Validate that a sound file exists (for settings validation)
+pub fn validate_sound_exists(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Ok(());
+    }
+
+    let available = list_available_sounds();
+    if available.is_empty() {
+        return Err(
+            "No sounds installed. Run 'aoe sounds install' or add your own .wav/.ogg files."
+                .to_string(),
+        );
+    }
+
+    if !available.contains(&name.to_string()) {
+        return Err(format!(
+            "Sound '{}' not found. Available sounds: {}",
+            name,
+            available.join(", ")
+        ));
+    }
+
+    Ok(())
+}
+
 /// Get the platform-specific audio command for playing a sound file
 fn get_audio_command(path: &str) -> Result<(&'static str, Vec<&str>), std::io::Error> {
     if cfg!(target_os = "macos") {

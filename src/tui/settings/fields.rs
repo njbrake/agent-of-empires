@@ -6,7 +6,7 @@ use crate::session::{
     validate_check_interval, Config, DefaultTerminalMode, ProfileConfig, TmuxMouseMode,
     TmuxStatusBarMode,
 };
-use crate::sound::SoundMode;
+use crate::sound::{validate_sound_exists, SoundMode};
 
 use super::SettingsScope;
 
@@ -152,6 +152,20 @@ impl SettingField {
         match (&self.key, &self.value) {
             (FieldKey::CheckIntervalHours, FieldValue::Number(n)) => {
                 validate_check_interval(*n)?;
+                Ok(())
+            }
+            // Sound field validation - check if sound file exists
+            (
+                FieldKey::SoundOnStart
+                | FieldKey::SoundOnRunning
+                | FieldKey::SoundOnWaiting
+                | FieldKey::SoundOnIdle
+                | FieldKey::SoundOnError,
+                FieldValue::OptionalText(Some(name)),
+            ) => {
+                if !name.is_empty() {
+                    validate_sound_exists(name)?;
+                }
                 Ok(())
             }
             _ => Ok(()),
@@ -595,7 +609,7 @@ fn build_sound_fields(
         SettingField {
             key: FieldKey::SoundOnStart,
             label: "On Start",
-            description: "Sound file name for session start (overrides mode)",
+            description: "Sound name without extension (e.g., 'coins', not 'coins.wav')",
             value: FieldValue::OptionalText(on_start),
             category: SettingsCategory::Sound,
             has_override: o3,
@@ -603,7 +617,7 @@ fn build_sound_fields(
         SettingField {
             key: FieldKey::SoundOnRunning,
             label: "On Running",
-            description: "Sound file name for running state (overrides mode)",
+            description: "Sound name without extension (e.g., 'coins', not 'coins.wav')",
             value: FieldValue::OptionalText(on_running),
             category: SettingsCategory::Sound,
             has_override: o4,
@@ -611,7 +625,7 @@ fn build_sound_fields(
         SettingField {
             key: FieldKey::SoundOnWaiting,
             label: "On Waiting",
-            description: "Sound file name for waiting state (overrides mode)",
+            description: "Sound name without extension (e.g., 'coins', not 'coins.wav')",
             value: FieldValue::OptionalText(on_waiting),
             category: SettingsCategory::Sound,
             has_override: o5,
@@ -619,7 +633,7 @@ fn build_sound_fields(
         SettingField {
             key: FieldKey::SoundOnIdle,
             label: "On Idle",
-            description: "Sound file name for idle state (overrides mode)",
+            description: "Sound name without extension (e.g., 'coins', not 'coins.wav')",
             value: FieldValue::OptionalText(on_idle),
             category: SettingsCategory::Sound,
             has_override: o6,
@@ -627,7 +641,7 @@ fn build_sound_fields(
         SettingField {
             key: FieldKey::SoundOnError,
             label: "On Error",
-            description: "Sound file name for error state (overrides mode)",
+            description: "Sound name without extension (e.g., 'coins', not 'coins.wav')",
             value: FieldValue::OptionalText(on_error),
             category: SettingsCategory::Sound,
             has_override: o7,
