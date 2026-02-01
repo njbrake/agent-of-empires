@@ -42,9 +42,7 @@ impl HookTrustDialog {
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<HookTrustAction> {
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
-            KeyCode::Char('n') | KeyCode::Char('N') => {
-                DialogResult::Submit(HookTrustAction::Skip)
-            }
+            KeyCode::Char('n') | KeyCode::Char('N') => DialogResult::Submit(HookTrustAction::Skip),
             KeyCode::Enter => {
                 if self.selected {
                     DialogResult::Submit(HookTrustAction::Trust {

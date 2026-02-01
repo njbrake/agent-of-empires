@@ -213,13 +213,6 @@ fn load_trusted_repos() -> Result<TrustedRepos> {
     Ok(toml::from_str(&content)?)
 }
 
-fn save_trusted_repos(trusted: &TrustedRepos) -> Result<()> {
-    let path = trusted_repos_path()?;
-    let content = toml::to_string_pretty(trusted)?;
-    fs::write(&path, content)?;
-    Ok(())
-}
-
 /// Normalize a path by canonicalizing it, with fallback to the original string.
 fn normalize_path(path: &str) -> String {
     std::fs::canonicalize(path)
@@ -246,9 +239,11 @@ fn is_repo_trusted_normalized(normalized_path: &str, hooks_hash: &str) -> Result
 /// Mark a repo's hooks as trusted.
 ///
 /// Uses file locking to prevent concurrent writes from clobbering each other
-/// (e.g. multiple sessions being created simultaneously).
+/// (e.g. multiple sessions being created simultaneously). Writes through the
+/// locked file handle to ensure the lock is effective.
 pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
     use fs2::FileExt;
+    use std::io::Write;
 
     let normalized = normalize_path(project_path);
     let path = trusted_repos_path()?;
@@ -258,12 +253,12 @@ pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
         fs::write(&path, "")?;
     }
 
-    let lock_file = fs::File::open(&path)?;
+    let lock_file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
     lock_file
         .lock_exclusive()
         .context("Failed to acquire lock on trusted_repos.toml")?;
 
-    // Read-modify-write while holding the lock (released on drop)
+    // Read-modify-write through the locked handle
     let mut trusted = load_trusted_repos()?;
 
     trusted.repos.retain(|r| r.path != normalized);
@@ -274,8 +269,10 @@ pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
         trusted_at: chrono::Utc::now().to_rfc3339(),
     });
 
-    save_trusted_repos(&trusted)?;
-    drop(lock_file);
+    let content = toml::to_string_pretty(&trusted)?;
+    lock_file.set_len(0)?;
+    (&lock_file).write_all(content.as_bytes())?;
+
     Ok(())
 }
 
