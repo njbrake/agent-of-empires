@@ -58,6 +58,7 @@ path_template = "../{repo-name}-worktrees/{branch}"
 bare_repo_path_template = "./{branch}"
 auto_cleanup = true
 show_branch_in_tui = true
+delete_branch_on_cleanup = false
 ```
 
 ### Template Variables
