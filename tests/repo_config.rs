@@ -1,7 +1,14 @@
 //! Integration tests for repo config loading, trust system, and hook execution.
 
+use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
+
+fn setup_temp_home(temp: &std::path::Path) {
+    std::env::set_var("HOME", temp);
+    #[cfg(target_os = "linux")]
+    std::env::set_var("XDG_CONFIG_HOME", temp.join(".config"));
+}
 
 /// Helper to set up a temp dir with `.aoe/config.toml`.
 fn setup_repo_config(content: &str) -> TempDir {
@@ -61,38 +68,41 @@ fn test_load_repo_config_comments_only() {
 }
 
 #[test]
+#[serial]
 fn test_trust_untrust_cycle() {
-    // Use a unique path to avoid collisions with other tests or real data
-    let unique_id = uuid::Uuid::new_v4();
-    let project_path = format!("/test/repo_config_integration/{}", unique_id);
+    let temp_home = TempDir::new().unwrap();
+    setup_temp_home(temp_home.path());
+
+    let project_dir = TempDir::new().unwrap();
+    let project_path = project_dir.path().to_str().unwrap();
     let hooks_hash = "test_hash_123";
 
     // Initially not trusted
     let is_trusted =
-        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, hooks_hash).unwrap();
+        agent_of_empires::session::repo_config::is_repo_trusted(project_path, hooks_hash).unwrap();
     assert!(!is_trusted);
 
     // Trust it
-    agent_of_empires::session::repo_config::trust_repo(&project_path, hooks_hash).unwrap();
+    agent_of_empires::session::repo_config::trust_repo(project_path, hooks_hash).unwrap();
     let is_trusted =
-        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, hooks_hash).unwrap();
+        agent_of_empires::session::repo_config::is_repo_trusted(project_path, hooks_hash).unwrap();
     assert!(is_trusted);
 
     // Different hash should not be trusted
     let is_trusted =
-        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, "different_hash")
+        agent_of_empires::session::repo_config::is_repo_trusted(project_path, "different_hash")
             .unwrap();
     assert!(!is_trusted);
 
     // Re-trust with new hash (simulating hooks changed)
-    agent_of_empires::session::repo_config::trust_repo(&project_path, "new_hash").unwrap();
+    agent_of_empires::session::repo_config::trust_repo(project_path, "new_hash").unwrap();
     // Old hash no longer trusted
     let is_trusted =
-        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, hooks_hash).unwrap();
+        agent_of_empires::session::repo_config::is_repo_trusted(project_path, hooks_hash).unwrap();
     assert!(!is_trusted);
     // New hash is trusted
     let is_trusted =
-        agent_of_empires::session::repo_config::is_repo_trusted(&project_path, "new_hash").unwrap();
+        agent_of_empires::session::repo_config::is_repo_trusted(project_path, "new_hash").unwrap();
     assert!(is_trusted);
 }
 
