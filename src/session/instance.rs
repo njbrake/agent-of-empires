@@ -472,7 +472,7 @@ impl Instance {
         apply_all_tmux_options(&session_name, &terminal_title, branch, sandbox.as_ref());
     }
 
-    fn ensure_container_running(&mut self) -> Result<()> {
+    pub fn ensure_container_running(&mut self) -> Result<()> {
         let sandbox = self
             .sandbox_info
             .as_ref()

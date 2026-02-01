@@ -104,7 +104,10 @@ impl CreationPoller {
         let created_worktree = build_result.created_worktree;
 
         if data.sandbox {
-            if let Err(e) = instance.start() {
+            // Only ensure the Docker container is running here. Don't create the tmux
+            // session yet -- that happens at attach time where the terminal size is
+            // available, avoiding a race that creates the session at 80x24 default.
+            if let Err(e) = instance.ensure_container_running() {
                 builder::cleanup_instance(&instance, created_worktree.as_ref());
                 return CreationResult::Error(e.to_string());
             }
