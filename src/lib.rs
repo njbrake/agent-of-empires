@@ -10,6 +10,7 @@ pub mod openclaw;
 pub mod process;
 pub mod project;
 pub mod session;
+pub mod task;
 pub mod terminal;
 pub mod tmux;
 pub mod tui;
