@@ -16,7 +16,7 @@ impl GatewayClient {
     }
 
     /// Create a GatewayClient with the default config path (~/.openclaw/openclaw.json)
-    pub fn default() -> Result<Self> {
+    pub fn with_default_path() -> Result<Self> {
         let home = dirs::home_dir().context("Could not find home directory")?;
         let config_path = home.join(".openclaw").join("openclaw.json");
         Ok(Self::new(config_path))
@@ -127,13 +127,13 @@ mod tests {
     fn test_get_agent() -> Result<()> {
         let file = create_test_config()?;
         let client = GatewayClient::new(file.path().to_path_buf());
-        
+
         let main = client.get_agent("main")?;
         assert!(main.is_some());
-        
+
         let nonexistent = client.get_agent("nonexistent")?;
         assert!(nonexistent.is_none());
-        
+
         Ok(())
     }
 

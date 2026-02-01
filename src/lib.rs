@@ -8,6 +8,7 @@ pub mod git;
 pub mod migrations;
 pub mod openclaw;
 pub mod process;
+pub mod project;
 pub mod session;
 pub mod terminal;
 pub mod tmux;

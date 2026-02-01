@@ -89,6 +89,7 @@ sha2 = "0.10"
 
 # File locking
 fs2 = "0.4"
+serde_yaml = "0.9.34"
 
 [dev-dependencies]
 tempfile = "3.14"
