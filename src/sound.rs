@@ -172,18 +172,17 @@ fn find_sound_file(name: &str) -> Option<PathBuf> {
 /// Play a sound file by name (fire-and-forget, non-blocking)
 pub fn play_sound(name: &str) {
     let Some(path) = find_sound_file(name) else {
+        eprintln!("❌ Sound file not found: {}", name);
         tracing::debug!("Sound file not found: {}", name);
         return;
     };
 
     let path_str = path.to_string_lossy().to_string();
+    eprintln!("🔊 Playing sound: {} from {}", name, path_str);
+
     std::thread::spawn(move || {
-        let result = if cfg!(target_os = "macos") {
-            std::process::Command::new("afplay")
-                .arg(&path_str)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
+        let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
+            ("afplay", vec![&path_str])
         } else {
             // Try paplay first (PulseAudio), fall back to aplay (ALSA)
             let ext = std::path::Path::new(&path_str)
@@ -192,33 +191,36 @@ pub fn play_sound(name: &str) {
                 .unwrap_or("wav");
 
             if ext.eq_ignore_ascii_case("ogg") {
-                // ogg files need paplay or ogg123
-                std::process::Command::new("paplay")
-                    .arg(&path_str)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
+                ("paplay", vec![&path_str])
             } else {
-                // wav: try aplay first, fall back to paplay
-                let result = std::process::Command::new("aplay")
-                    .arg(&path_str)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                if result.is_err() {
-                    std::process::Command::new("paplay")
-                        .arg(&path_str)
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                } else {
-                    result
-                }
+                ("aplay", vec![&path_str])
             }
         };
 
-        if let Err(e) = result {
-            tracing::debug!("Failed to play sound: {}", e);
+        eprintln!("🎵 Executing: {} {}", cmd, args.join(" "));
+
+        let result = std::process::Command::new(cmd)
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        match result {
+            Ok(output) => {
+                if output.status.success() {
+                    eprintln!("✓ Sound played successfully");
+                } else {
+                    eprintln!("❌ Command failed with exit code: {:?}", output.status.code());
+                    if !output.stderr.is_empty() {
+                        eprintln!("   stderr: {}", String::from_utf8_lossy(&output.stderr));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to execute command '{}': {}", cmd, e);
+                eprintln!("   Is '{}' installed on your system?", cmd);
+                tracing::debug!("Failed to play sound: {}", e);
+            }
         }
     });
 }
