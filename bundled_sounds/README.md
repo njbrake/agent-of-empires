@@ -34,9 +34,11 @@ You are free to:
 
 ## Installation
 
-These sounds are automatically installed to your config directory:
+Run `aoe sounds install` to download these sounds from GitHub to your config directory:
 - **Linux**: `~/.config/agent-of-empires/sounds/`
 - **macOS**: `~/.agent-of-empires/sounds/`
+
+The sounds are downloaded from this repository at runtime, not bundled with the binary.
 
 You can replace or add your own `.wav` or `.ogg` files to customize the sounds.
 

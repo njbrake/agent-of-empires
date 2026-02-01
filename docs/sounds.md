@@ -17,7 +17,7 @@ Agent of Empires can play sound effects when agent sessions change state, provid
    ```bash
    aoe sounds install
    ```
-   This installs bundled CC0 fantasy/RPG sounds to your config directory.
+   This downloads and installs CC0 fantasy/RPG sounds from GitHub to your config directory.
 
 2. **Enable sounds in settings**:
    - Launch `aoe` (TUI mode)
@@ -27,9 +27,9 @@ Agent of Empires can play sound effects when agent sessions change state, provid
 
 3. **Test it**: Start an agent session and listen for the transition sounds!
 
-## Bundled Sounds
+## Available Sounds
 
-Agent of Empires includes 10 CC0 (public domain) fantasy/RPG sound effects:
+Agent of Empires can download 10 CC0 (public domain) fantasy/RPG sound effects from GitHub:
 
 ### Default State Transition Sounds
 - `start.ogg` - Spell fire sound (session starting)
@@ -49,15 +49,18 @@ All sounds are from the [80 CC0 RPG SFX](https://opengameart.org/content/80-cc0-
 
 ## Installation
 
-### Install Bundled Sounds
+### Install Sounds from GitHub
 
 ```bash
 aoe sounds install
 ```
 
-This installs 10 CC0 (public domain) fantasy/RPG sounds to:
+This downloads and installs 10 CC0 (public domain) fantasy/RPG sounds from the GitHub repository to:
 - Linux: `~/.config/agent-of-empires/sounds/`
 - macOS: `~/.agent-of-empires/sounds/`
+
+**Note:** Requires an internet connection for the initial download. Sounds are downloaded from:
+`https://github.com/njbrake/agent-of-empires/tree/dunanuh/bundled_sounds`
 
 ### Install Age of Empires II Sounds
 

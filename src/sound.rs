@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::{get_app_dir, Status};
 
+const GITHUB_SOUNDS_BASE_URL: &str =
+    "https://raw.githubusercontent.com/njbrake/agent-of-empires/dunanuh/bundled_sounds";
+
 /// How to select which sound file to play
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -81,24 +84,18 @@ pub struct SoundConfigOverride {
     pub on_error: Option<String>,
 }
 
-/// Bundled sound files (embedded at compile time)
-const BUNDLED_SOUNDS: &[(&str, &[u8])] = &[
-    ("start.wav", include_bytes!("../bundled_sounds/start.wav")),
-    (
-        "running.wav",
-        include_bytes!("../bundled_sounds/running.wav"),
-    ),
-    (
-        "waiting.wav",
-        include_bytes!("../bundled_sounds/waiting.wav"),
-    ),
-    ("idle.wav", include_bytes!("../bundled_sounds/idle.wav")),
-    ("error.wav", include_bytes!("../bundled_sounds/error.wav")),
-    ("spell.wav", include_bytes!("../bundled_sounds/spell.wav")),
-    ("coins.wav", include_bytes!("../bundled_sounds/coins.wav")),
-    ("metal.wav", include_bytes!("../bundled_sounds/metal.wav")),
-    ("chain.wav", include_bytes!("../bundled_sounds/chain.wav")),
-    ("gem.wav", include_bytes!("../bundled_sounds/gem.wav")),
+/// List of bundled sound files available for download
+const BUNDLED_SOUND_FILES: &[&str] = &[
+    "start.wav",
+    "running.wav",
+    "waiting.wav",
+    "idle.wav",
+    "error.wav",
+    "spell.wav",
+    "coins.wav",
+    "metal.wav",
+    "chain.wav",
+    "gem.wav",
 ];
 
 /// Get the directory where sound files are stored
@@ -106,22 +103,68 @@ pub fn get_sounds_dir() -> Option<PathBuf> {
     get_app_dir().ok().map(|d| d.join("sounds"))
 }
 
-/// Install bundled sounds to the user's config directory if they don't exist
-pub fn install_bundled_sounds() -> Result<(), std::io::Error> {
+/// Download and install bundled sounds from GitHub
+pub async fn install_bundled_sounds() -> anyhow::Result<()> {
     let Some(sounds_dir) = get_sounds_dir() else {
-        return Ok(());
+        return Err(anyhow::anyhow!("Could not determine sounds directory"));
     };
 
     if !sounds_dir.exists() {
         std::fs::create_dir_all(&sounds_dir)?;
     }
 
-    for (name, data) in BUNDLED_SOUNDS {
-        let path = sounds_dir.join(name);
-        if !path.exists() {
-            std::fs::write(path, data)?;
-            tracing::info!("Installed bundled sound: {}", name);
+    let client = reqwest::Client::builder()
+        .user_agent("agent-of-empires")
+        .build()?;
+
+    let mut failed = Vec::new();
+
+    for filename in BUNDLED_SOUND_FILES {
+        let path = sounds_dir.join(filename);
+        if path.exists() {
+            tracing::debug!("Sound already exists, skipping: {}", filename);
+            continue;
         }
+
+        let url = format!("{}/{}", GITHUB_SOUNDS_BASE_URL, filename);
+        tracing::info!("Downloading sound: {}", filename);
+
+        match client.get(&url).send().await {
+            Ok(response) if response.status().is_success() => match response.bytes().await {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(&path, &bytes) {
+                        tracing::warn!("Failed to write sound file {}: {}", filename, e);
+                        failed.push(filename.to_string());
+                    } else {
+                        tracing::info!("Installed sound: {}", filename);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to download sound {}: {}", filename, e);
+                    failed.push(filename.to_string());
+                }
+            },
+            Ok(response) => {
+                tracing::warn!(
+                    "Failed to download {} (HTTP {})",
+                    filename,
+                    response.status()
+                );
+                failed.push(filename.to_string());
+            }
+            Err(e) => {
+                tracing::warn!("Failed to download sound {}: {}", filename, e);
+                failed.push(filename.to_string());
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Failed to download {} sound(s): {}",
+            failed.len(),
+            failed.join(", ")
+        ));
     }
 
     Ok(())
@@ -169,6 +212,65 @@ fn find_sound_file(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Get the platform-specific audio command for playing a sound file
+fn get_audio_command(path: &str) -> Result<(&'static str, Vec<&str>), std::io::Error> {
+    if cfg!(target_os = "macos") {
+        Ok(("afplay", vec![path]))
+    } else {
+        // Linux
+        let ext = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("wav");
+
+        if ext.eq_ignore_ascii_case("ogg") {
+            // Check if paplay is available
+            if which_command("paplay").is_ok() {
+                Ok(("paplay", vec![path]))
+            } else if which_command("aplay").is_ok() {
+                tracing::warn!("paplay not found, using aplay (may not support .ogg files)");
+                Ok(("aplay", vec![path]))
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No audio player found. Install alsa-utils (aplay) or pulseaudio-utils (paplay)",
+                ))
+            }
+        } else {
+            // WAV files
+            if which_command("aplay").is_ok() {
+                Ok(("aplay", vec![path]))
+            } else if which_command("paplay").is_ok() {
+                Ok(("paplay", vec![path]))
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No audio player found. Install alsa-utils (aplay) or pulseaudio-utils (paplay)",
+                ))
+            }
+        }
+    }
+}
+
+/// Check if a command exists in PATH
+fn which_command(cmd: &str) -> Result<(), std::io::Error> {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("{} not found", cmd),
+                ))
+            }
+        })
+}
+
 /// Play a sound file by name (blocking version for testing)
 pub fn play_sound_blocking(name: &str) -> Result<(), std::io::Error> {
     let Some(path) = find_sound_file(name) else {
@@ -179,21 +281,7 @@ pub fn play_sound_blocking(name: &str) -> Result<(), std::io::Error> {
     };
 
     let path_str = path.to_string_lossy().to_string();
-
-    let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
-        ("afplay", vec![&path_str])
-    } else {
-        let ext = std::path::Path::new(&path_str)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("wav");
-
-        if ext.eq_ignore_ascii_case("ogg") {
-            ("paplay", vec![&path_str])
-        } else {
-            ("aplay", vec![&path_str])
-        }
-    };
+    let (cmd, args) = get_audio_command(&path_str)?;
 
     let output = std::process::Command::new(cmd)
         .args(&args)
@@ -221,18 +309,11 @@ pub fn play_sound(name: &str) {
     let path_str = path.to_string_lossy().to_string();
 
     std::thread::spawn(move || {
-        let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
-            ("afplay", vec![&path_str])
-        } else {
-            let ext = std::path::Path::new(&path_str)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("wav");
-
-            if ext.eq_ignore_ascii_case("ogg") {
-                ("paplay", vec![&path_str])
-            } else {
-                ("aplay", vec![&path_str])
+        let (cmd, args) = match get_audio_command(&path_str) {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!("Audio player not available: {}", e);
+                return;
             }
         };
 

@@ -24,47 +24,61 @@ pub enum SoundsCommands {
 pub async fn run(command: SoundsCommands) -> Result<()> {
     match command {
         SoundsCommands::Install => install_bundled().await,
-        SoundsCommands::List => list_sounds().await,
-        SoundsCommands::Test { name } => test_sound(&name).await,
+        SoundsCommands::List => list_sounds(),
+        SoundsCommands::Test { name } => test_sound(&name),
     }
 }
 
 async fn install_bundled() -> Result<()> {
-    sound::install_bundled_sounds()?;
+    println!("📥 Downloading bundled CC0 sounds from GitHub...\n");
 
-    if let Some(sounds_dir) = sound::get_sounds_dir() {
-        println!("✓ Installed bundled CC0 sounds to:");
-        println!("  {}\n", sounds_dir.display());
+    match sound::install_bundled_sounds().await {
+        Ok(()) => {
+            if let Some(sounds_dir) = sound::get_sounds_dir() {
+                println!("\n✓ Successfully installed bundled CC0 sounds to:");
+                println!("  {}\n", sounds_dir.display());
 
-        let sounds = sound::list_available_sounds();
-        println!("📂 Installed {} sounds:", sounds.len());
-        for sound_name in sounds {
-            println!("  • {}", sound_name);
+                let sounds = sound::list_available_sounds();
+                println!("📂 Installed {} sounds:", sounds.len());
+                for sound_name in sounds {
+                    println!("  • {}", sound_name);
+                }
+
+                println!("\n💡 Next steps:");
+                println!("  1. Launch the TUI: aoe");
+                println!("  2. Press 's' to open Settings");
+                println!("  3. Navigate to Sound category");
+                println!("  4. Enable sounds and configure transitions");
+
+                println!("\n🎮 Want Age of Empires II sounds instead?");
+                println!("   If you own AoE II, copy the taunt .wav files from:");
+                println!("   • (AoE II dir)/resources/_common/sound/taunt/");
+                println!("   • Or: (AoE II dir)/Sound/taunt/");
+                println!("   To: {}", sounds_dir.display());
+                println!("\n   Then configure which sounds to use in Settings!");
+            }
+            Ok(())
         }
-
-        println!("\n💡 Next steps:");
-        println!("  1. Launch the TUI: aoe");
-        println!("  2. Press 's' to open Settings");
-        println!("  3. Navigate to Sound category");
-        println!("  4. Enable sounds and configure transitions");
-
-        println!("\n🎮 Want Age of Empires II sounds instead?");
-        println!("   If you own AoE II, copy the taunt .wav files from:");
-        println!("   • (AoE II dir)/resources/_common/sound/taunt/");
-        println!("   • Or: (AoE II dir)/Sound/taunt/");
-        println!("   To: {}", sounds_dir.display());
-        println!("\n   Then configure which sounds to use in Settings!");
+        Err(e) => {
+            eprintln!("\n❌ Failed to install sounds: {}", e);
+            eprintln!("\n💡 Troubleshooting:");
+            eprintln!("  • Check your internet connection");
+            eprintln!("  • Try again later if GitHub is unavailable");
+            eprintln!("  • You can manually download sounds from:");
+            eprintln!(
+                "    https://github.com/njbrake/agent-of-empires/tree/dunanuh/bundled_sounds"
+            );
+            Err(e)
+        }
     }
-
-    Ok(())
 }
 
-async fn list_sounds() -> Result<()> {
+fn list_sounds() -> Result<()> {
     let sounds = sound::list_available_sounds();
 
     if sounds.is_empty() {
         println!("No sounds installed yet.");
-        println!("\nRun 'aoe sounds install --from interactive' to get started.");
+        println!("\nRun 'aoe sounds install' to get started.");
         return Ok(());
     }
 
@@ -83,7 +97,7 @@ async fn list_sounds() -> Result<()> {
     Ok(())
 }
 
-async fn test_sound(name: &str) -> Result<()> {
+fn test_sound(name: &str) -> Result<()> {
     let sounds = sound::list_available_sounds();
 
     if !sounds.contains(&name.to_string()) {
@@ -98,9 +112,26 @@ async fn test_sound(name: &str) -> Result<()> {
     print!("🔊 Playing '{}'... ", name);
     std::io::Write::flush(&mut std::io::stdout())?;
 
-    sound::play_sound_blocking(name)?;
-
-    println!("✓");
-
-    Ok(())
+    match sound::play_sound_blocking(name) {
+        Ok(()) => {
+            println!("✓");
+            Ok(())
+        }
+        Err(e) => {
+            println!("✗");
+            eprintln!("\n❌ Failed to play sound: {}", e);
+            eprintln!("\n💡 Troubleshooting:");
+            if cfg!(target_os = "linux") {
+                eprintln!("  • Ensure audio tools are installed:");
+                eprintln!("    - Debian/Ubuntu: sudo apt install alsa-utils pulseaudio-utils");
+                eprintln!("    - Arch: sudo pacman -S alsa-utils pulseaudio");
+                eprintln!("  • Check that your audio device is working");
+                eprintln!("  • Note: Audio doesn't work over SSH sessions");
+            } else {
+                eprintln!("  • Check that your audio device is working");
+                eprintln!("  • Note: Audio doesn't work over SSH sessions");
+            }
+            Err(e.into())
+        }
+    }
 }
