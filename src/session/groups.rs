@@ -207,19 +207,13 @@ pub fn flatten_tree(group_tree: &GroupTree, instances: &[Instance]) -> Vec<Item>
 
     // Add groups and their sessions
     for root in group_tree.get_roots() {
-        flatten_group(root, instances, &mut items, 0, group_tree);
+        flatten_group(root, instances, &mut items, 0);
     }
 
     items
 }
 
-fn flatten_group(
-    group: &Group,
-    instances: &[Instance],
-    items: &mut Vec<Item>,
-    depth: usize,
-    tree: &GroupTree,
-) {
+fn flatten_group(group: &Group, instances: &[Instance], items: &mut Vec<Item>, depth: usize) {
     let session_count = count_sessions_in_group(&group.path, instances);
 
     items.push(Item::Group {
@@ -249,7 +243,7 @@ fn flatten_group(
 
     // Recursively add child groups
     for child in &group.children {
-        flatten_group(child, instances, items, depth + 1, tree);
+        flatten_group(child, instances, items, depth + 1);
     }
 }
 
