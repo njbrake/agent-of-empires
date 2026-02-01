@@ -318,8 +318,11 @@ impl App {
             // This ensures the session starts at the correct size instead of 80x24 default
             let size = crate::terminal::get_size();
 
+            // Skip on_launch hooks if they already ran in the background creation poller
+            let skip_on_launch = self.home.take_on_launch_hooks_ran(session_id);
+
             let mut inst = instance.clone();
-            if let Err(e) = inst.start_with_size(size) {
+            if let Err(e) = inst.start_with_size_opts(size, skip_on_launch) {
                 self.home
                     .set_instance_error(session_id, Some(e.to_string()));
                 return Ok(());

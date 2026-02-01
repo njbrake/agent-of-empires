@@ -380,6 +380,16 @@ impl Instance {
     }
 
     pub fn start_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
+        self.start_with_size_opts(size, false)
+    }
+
+    /// Start the session, optionally skipping on_launch hooks (e.g. when they
+    /// already ran in the background creation poller).
+    pub fn start_with_size_opts(
+        &mut self,
+        size: Option<(u16, u16)>,
+        skip_on_launch: bool,
+    ) -> Result<()> {
         let session = self.tmux_session()?;
 
         if session.exists() {
@@ -389,13 +399,17 @@ impl Instance {
         // Execute on_launch hooks (trust already verified during creation).
         // Use check_hook_trust which normalizes the path, so symlinked
         // project_paths resolve correctly against the trust store.
-        let on_launch_hooks = match super::repo_config::check_hook_trust(&self.project_path) {
-            Ok(super::repo_config::HookTrustStatus::Trusted(hooks))
-                if !hooks.on_launch.is_empty() =>
-            {
-                Some(hooks.on_launch.clone())
+        let on_launch_hooks = if skip_on_launch {
+            None
+        } else {
+            match super::repo_config::check_hook_trust(std::path::Path::new(&self.project_path)) {
+                Ok(super::repo_config::HookTrustStatus::Trusted(hooks))
+                    if !hooks.on_launch.is_empty() =>
+                {
+                    Some(hooks.on_launch.clone())
+                }
+                _ => None,
             }
-            _ => None,
         };
 
         let cmd = if self.is_sandboxed() {
@@ -439,7 +453,10 @@ impl Instance {
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
             if let Some(ref hook_cmds) = on_launch_hooks {
-                if let Err(e) = super::repo_config::execute_hooks(hook_cmds, &self.project_path) {
+                if let Err(e) = super::repo_config::execute_hooks(
+                    hook_cmds,
+                    std::path::Path::new(&self.project_path),
+                ) {
                     tracing::warn!("on_launch hook failed: {}", e);
                 }
             }

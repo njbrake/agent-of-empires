@@ -9,6 +9,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+
+/// Progress messages streamed from hook execution.
+#[derive(Debug, Clone)]
+pub enum HookProgress {
+    /// A new hook command is starting.
+    Started(String),
+    /// A line of stdout/stderr output from the running hook.
+    Output(String),
+}
 
 use super::config::Config;
 use super::profile_config::{SandboxConfigOverride, SessionConfigOverride, WorktreeConfigOverride};
@@ -58,8 +68,8 @@ const REPO_CONFIG_PATH: &str = ".aoe/config.toml";
 
 /// Load repo config from `<project_path>/.aoe/config.toml`.
 /// Returns `None` if the file doesn't exist.
-pub fn load_repo_config(project_path: &str) -> Result<Option<RepoConfig>> {
-    let config_path = Path::new(project_path).join(REPO_CONFIG_PATH);
+pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
+    let config_path = project_path.join(REPO_CONFIG_PATH);
     if !config_path.exists() {
         return Ok(None);
     }
@@ -150,7 +160,7 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
 }
 
 /// Resolve config with repo overrides: global -> profile -> repo.
-pub fn resolve_config_with_repo(profile: &str, project_path: &str) -> Result<Config> {
+pub fn resolve_config_with_repo(profile: &str, project_path: &Path) -> Result<Config> {
     let config = super::profile_config::resolve_config(profile)?;
 
     match load_repo_config(project_path)? {
@@ -214,15 +224,15 @@ fn load_trusted_repos() -> Result<TrustedRepos> {
 }
 
 /// Normalize a path by canonicalizing it, with fallback to the original string.
-fn normalize_path(path: &str) -> String {
+fn normalize_path(path: &Path) -> String {
     std::fs::canonicalize(path)
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string())
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
 }
 
 /// Check if a repo's hooks are trusted (hash matches stored trust entry).
 /// Normalizes `project_path` before lookup.
-pub fn is_repo_trusted(project_path: &str, hooks_hash: &str) -> Result<bool> {
+pub fn is_repo_trusted(project_path: &Path, hooks_hash: &str) -> Result<bool> {
     let normalized = normalize_path(project_path);
     is_repo_trusted_normalized(&normalized, hooks_hash)
 }
@@ -241,7 +251,7 @@ fn is_repo_trusted_normalized(normalized_path: &str, hooks_hash: &str) -> Result
 /// Uses file locking to prevent concurrent writes from clobbering each other
 /// (e.g. multiple sessions being created simultaneously). Writes through the
 /// locked file handle to ensure the lock is effective.
-pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
+pub fn trust_repo(project_path: &Path, hooks_hash: &str) -> Result<()> {
     use fs2::FileExt;
     use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -299,9 +309,9 @@ pub enum HookTrustStatus {
 
 /// Check hook trust status for a project path.
 /// Loads the repo config, checks for hooks, and validates trust.
-pub fn check_hook_trust(project_path: &str) -> Result<HookTrustStatus> {
+pub fn check_hook_trust(project_path: &Path) -> Result<HookTrustStatus> {
     let normalized = normalize_path(project_path);
-    let repo_config = match load_repo_config(&normalized)? {
+    let repo_config = match load_repo_config(Path::new(&normalized))? {
         Some(rc) => rc,
         None => return Ok(HookTrustStatus::NoHooks),
     };
@@ -327,29 +337,49 @@ pub fn check_hook_trust(project_path: &str) -> Result<HookTrustStatus> {
 
 /// Execute a list of hook commands in the given directory.
 /// Each command is run via `bash -c` with the project path as cwd.
-pub fn execute_hooks(commands: &[String], project_path: &str) -> Result<()> {
+/// Output is captured and only included in the error message on failure.
+pub fn execute_hooks(commands: &[String], project_path: &Path) -> Result<()> {
     for cmd in commands {
         tracing::info!("Running hook: {}", cmd);
-        let status = std::process::Command::new("bash")
+        let output = std::process::Command::new("bash")
             .arg("-c")
             .arg(cmd)
             .current_dir(project_path)
-            .status()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
             .with_context(|| format!("Failed to execute hook: {}", cmd))?;
 
-        if !status.success() {
-            anyhow::bail!(
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut detail = format!(
                 "Hook command failed with exit code {}: {}",
-                status.code().unwrap_or(-1),
+                output.status.code().unwrap_or(-1),
                 cmd
             );
+            if !stderr.is_empty() {
+                detail.push_str(&format!("\nstderr:\n{}", stderr.trim_end()));
+            }
+            if !stdout.is_empty() {
+                detail.push_str(&format!("\nstdout:\n{}", stdout.trim_end()));
+            }
+            anyhow::bail!(detail);
         }
+
+        tracing::debug!(
+            "Hook completed: {} (stdout: {} bytes, stderr: {} bytes)",
+            cmd,
+            output.stdout.len(),
+            output.stderr.len()
+        );
     }
     Ok(())
 }
 
 /// Execute hooks inside a Docker container.
 /// Commands run in the specified `workdir` inside the container.
+/// Output is captured and only included in the error message on failure.
 pub fn execute_hooks_in_container(
     commands: &[String],
     container_name: &str,
@@ -357,7 +387,7 @@ pub fn execute_hooks_in_container(
 ) -> Result<()> {
     for cmd in commands {
         tracing::info!("Running hook in container {}: {}", container_name, cmd);
-        let status = std::process::Command::new("docker")
+        let output = std::process::Command::new("docker")
             .args([
                 "exec",
                 "--workdir",
@@ -367,15 +397,127 @@ pub fn execute_hooks_in_container(
                 "-c",
                 cmd,
             ])
-            .status()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
             .with_context(|| format!("Failed to execute hook in container: {}", cmd))?;
 
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut detail = format!(
+                "Hook command failed in container with exit code {}: {}",
+                output.status.code().unwrap_or(-1),
+                cmd
+            );
+            if !stderr.is_empty() {
+                detail.push_str(&format!("\nstderr:\n{}", stderr.trim_end()));
+            }
+            if !stdout.is_empty() {
+                detail.push_str(&format!("\nstdout:\n{}", stdout.trim_end()));
+            }
+            anyhow::bail!(detail);
+        }
+    }
+    Ok(())
+}
+
+/// Execute a list of hook commands with streamed output.
+/// Each command is run via `bash -c` with stderr merged into stdout (`2>&1`).
+/// Output lines are sent through the progress channel as they arrive.
+pub fn execute_hooks_streamed(
+    commands: &[String],
+    project_path: &Path,
+    progress_tx: &mpsc::Sender<HookProgress>,
+) -> Result<()> {
+    use std::io::BufRead;
+
+    for cmd in commands {
+        tracing::info!("Running hook (streamed): {}", cmd);
+        let _ = progress_tx.send(HookProgress::Started(cmd.clone()));
+
+        let mut child = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("{} 2>&1", cmd))
+            .current_dir(project_path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("Failed to execute hook: {}", cmd))?;
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                let _ = progress_tx.send(HookProgress::Output(line));
+            }
+        }
+
+        let status = child.wait()?;
         if !status.success() {
-            anyhow::bail!(
+            let detail = format!(
+                "Hook command failed with exit code {}: {}",
+                status.code().unwrap_or(-1),
+                cmd
+            );
+            let _ = progress_tx.send(HookProgress::Output(detail.clone()));
+            anyhow::bail!(detail);
+        }
+
+        tracing::debug!("Hook completed (streamed): {}", cmd);
+    }
+    Ok(())
+}
+
+/// Execute hooks inside a Docker container with streamed output.
+/// Commands run in the specified `workdir` inside the container.
+/// stderr is merged into stdout via `2>&1` in the bash command.
+pub fn execute_hooks_in_container_streamed(
+    commands: &[String],
+    container_name: &str,
+    workdir: &str,
+    progress_tx: &mpsc::Sender<HookProgress>,
+) -> Result<()> {
+    use std::io::BufRead;
+
+    for cmd in commands {
+        tracing::info!(
+            "Running hook in container {} (streamed): {}",
+            container_name,
+            cmd
+        );
+        let _ = progress_tx.send(HookProgress::Started(cmd.clone()));
+
+        let mut child = std::process::Command::new("docker")
+            .args([
+                "exec",
+                "--workdir",
+                workdir,
+                container_name,
+                "bash",
+                "-c",
+                &format!("{} 2>&1", cmd),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("Failed to execute hook in container: {}", cmd))?;
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                let _ = progress_tx.send(HookProgress::Output(line));
+            }
+        }
+
+        let status = child.wait()?;
+        if !status.success() {
+            let detail = format!(
                 "Hook command failed in container with exit code {}: {}",
                 status.code().unwrap_or(-1),
                 cmd
             );
+            let _ = progress_tx.send(HookProgress::Output(detail.clone()));
+            anyhow::bail!(detail);
         }
     }
     Ok(())
@@ -559,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_load_repo_config_nonexistent() {
-        let result = load_repo_config("/nonexistent/path").unwrap();
+        let result = load_repo_config(Path::new("/nonexistent/path")).unwrap();
         assert!(result.is_none());
     }
 
@@ -608,18 +750,16 @@ mod tests {
 
     #[test]
     fn test_normalize_path_nonexistent_falls_back() {
-        let path = "/nonexistent/path/that/does/not/exist";
-        assert_eq!(normalize_path(path), path);
+        let path = Path::new("/nonexistent/path/that/does/not/exist");
+        assert_eq!(normalize_path(path), path.to_string_lossy());
     }
 
     #[test]
     fn test_normalize_path_real_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().to_str().unwrap();
-        let normalized = normalize_path(path);
-        // Canonicalized path should resolve to the same real path
+        let normalized = normalize_path(tmp.path());
         assert_eq!(
-            std::fs::canonicalize(path).unwrap().to_string_lossy(),
+            std::fs::canonicalize(tmp.path()).unwrap().to_string_lossy(),
             normalized
         );
     }
@@ -632,16 +772,13 @@ mod tests {
         let link_dir = tmp.path().join("link");
         std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
 
-        let normalized_real = normalize_path(real_dir.to_str().unwrap());
-        let normalized_link = normalize_path(link_dir.to_str().unwrap());
+        let normalized_real = normalize_path(&real_dir);
+        let normalized_link = normalize_path(&link_dir);
         assert_eq!(normalized_real, normalized_link);
     }
 
     #[test]
-    fn test_execute_hooks_in_container_includes_workdir() {
-        // Verify the docker command includes --workdir by checking the function builds
-        // the right args. We can't run docker in tests, but we can verify the
-        // command construction by checking it fails gracefully (docker not available).
+    fn test_execute_hooks_in_container_fails_gracefully() {
         let result = execute_hooks_in_container(
             &["echo test".to_string()],
             "nonexistent_container",

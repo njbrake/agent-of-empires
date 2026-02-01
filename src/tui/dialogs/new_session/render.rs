@@ -654,8 +654,24 @@ impl NewSessionDialog {
 
     fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let needs_extra_line = self.sandbox_enabled && self.needs_image_pull;
-        let dialog_width: u16 = if needs_extra_line { 55 } else { 50 };
-        let dialog_height: u16 = if needs_extra_line { 9 } else { 7 };
+        let show_hook_output = self.has_hooks;
+        let max_output_lines: usize = 6;
+
+        let dialog_width: u16 = if show_hook_output {
+            70
+        } else if needs_extra_line {
+            55
+        } else {
+            50
+        };
+        let dialog_height: u16 = if show_hook_output {
+            // spinner line + command line + output lines + cancel hint + padding
+            (6 + max_output_lines as u16).min(area.height)
+        } else if needs_extra_line {
+            9
+        } else {
+            7
+        };
 
         let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
         let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -669,10 +685,16 @@ impl NewSessionDialog {
 
         frame.render_widget(Clear, dialog_area);
 
+        let title = if show_hook_output {
+            " Running Hooks "
+        } else {
+            " Creating Session "
+        };
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
-            .title(" Creating Session ")
+            .title(title)
             .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
@@ -680,41 +702,98 @@ impl NewSessionDialog {
 
         let spinner = SPINNER_FRAMES[self.spinner_frame];
 
-        let loading_text = if self.sandbox_enabled {
-            if self.needs_image_pull {
-                "Pulling sandbox image..."
-            } else {
-                "Setting up sandbox container..."
-            }
-        } else {
-            "Creating session..."
-        };
+        if show_hook_output {
+            let mut lines = vec![];
 
-        let mut lines = vec![
-            Line::from(""),
-            Line::from(vec![
+            // Status line with spinner
+            let status_text = if let Some(ref cmd) = self.current_hook {
+                // Truncate long commands to fit the dialog
+                let max_cmd_len = (dialog_width as usize).saturating_sub(12);
+                if cmd.len() > max_cmd_len {
+                    format!("{}...", &cmd[..max_cmd_len.saturating_sub(3)])
+                } else {
+                    cmd.clone()
+                }
+            } else {
+                "Preparing...".to_string()
+            };
+
+            lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ", spinner),
+                    format!(" {} ", spinner),
                     Style::default().fg(theme.accent).bold(),
                 ),
-                Span::styled(loading_text, Style::default().fg(theme.text)),
-            ]),
-        ];
+                Span::styled(status_text, Style::default().fg(theme.text)),
+            ]));
 
-        if needs_extra_line {
-            lines.push(Line::from(Span::styled(
-                "    (first time may take a few minutes)",
-                Style::default().fg(theme.dimmed),
-            )));
+            // Show last N output lines
+            let output_start = self.hook_output.len().saturating_sub(max_output_lines);
+            let visible_lines = &self.hook_output[output_start..];
+            let inner_width = (dialog_width as usize).saturating_sub(6);
+
+            for line in visible_lines {
+                let truncated = if line.len() > inner_width {
+                    format!("{}...", &line[..inner_width.saturating_sub(3)])
+                } else {
+                    line.clone()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", truncated),
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+
+            // Pad remaining lines so cancel hint stays at bottom
+            let used = 1 + visible_lines.len(); // status + output
+            let available = dialog_height.saturating_sub(4) as usize; // borders + cancel line
+            for _ in used..available {
+                lines.push(Line::from(""));
+            }
+
+            lines.push(Line::from(vec![
+                Span::styled(" Press ", Style::default().fg(theme.dimmed)),
+                Span::styled("Esc", Style::default().fg(theme.hint)),
+                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
+            ]));
+
+            frame.render_widget(Paragraph::new(lines), inner);
+        } else {
+            let loading_text = if self.sandbox_enabled {
+                if self.needs_image_pull {
+                    "Pulling sandbox image..."
+                } else {
+                    "Setting up sandbox container..."
+                }
+            } else {
+                "Creating session..."
+            };
+
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", spinner),
+                        Style::default().fg(theme.accent).bold(),
+                    ),
+                    Span::styled(loading_text, Style::default().fg(theme.text)),
+                ]),
+            ];
+
+            if needs_extra_line {
+                lines.push(Line::from(Span::styled(
+                    "    (first time may take a few minutes)",
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("  Press ", Style::default().fg(theme.dimmed)),
+                Span::styled("Esc", Style::default().fg(theme.hint)),
+                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
+            ]));
+
+            frame.render_widget(Paragraph::new(lines), inner);
         }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  Press ", Style::default().fg(theme.dimmed)),
-            Span::styled("Esc", Style::default().fg(theme.hint)),
-            Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
-        ]));
-
-        frame.render_widget(Paragraph::new(lines), inner);
     }
 }

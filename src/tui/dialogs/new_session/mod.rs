@@ -11,6 +11,7 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::docker;
+use crate::session::repo_config::HookProgress;
 #[cfg(test)]
 use crate::session::Config;
 use crate::session::{civilizations, resolve_config};
@@ -132,6 +133,12 @@ pub struct NewSessionDialog {
     pub(super) spinner_frame: usize,
     /// Whether a Docker image pull will be needed (image not present locally)
     pub(super) needs_image_pull: bool,
+    /// Whether hooks are being executed during loading
+    pub(super) has_hooks: bool,
+    /// The currently running hook command
+    pub(super) current_hook: Option<String>,
+    /// Accumulated output lines from hook execution
+    pub(super) hook_output: Vec<String>,
 }
 
 impl NewSessionDialog {
@@ -203,6 +210,26 @@ impl NewSessionDialog {
             loading: false,
             spinner_frame: 0,
             needs_image_pull: false,
+            has_hooks: false,
+            current_hook: None,
+            hook_output: Vec::new(),
+        }
+    }
+
+    /// Set whether hooks will be executed during session creation
+    pub fn set_has_hooks(&mut self, has_hooks: bool) {
+        self.has_hooks = has_hooks;
+    }
+
+    /// Push a hook progress message into the dialog state
+    pub fn push_hook_progress(&mut self, progress: HookProgress) {
+        match progress {
+            HookProgress::Started(cmd) => {
+                self.current_hook = Some(cmd);
+            }
+            HookProgress::Output(line) => {
+                self.hook_output.push(line);
+            }
         }
     }
 
@@ -270,6 +297,9 @@ impl NewSessionDialog {
             loading: false,
             spinner_frame: 0,
             needs_image_pull: false,
+            has_hooks: false,
+            current_hook: None,
+            hook_output: Vec::new(),
         }
     }
 
@@ -305,6 +335,9 @@ impl NewSessionDialog {
             loading: false,
             spinner_frame: 0,
             needs_image_pull: false,
+            has_hooks: false,
+            current_hook: None,
+            hook_output: Vec::new(),
         }
     }
 

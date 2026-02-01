@@ -7,7 +7,7 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use tui_input::Input;
@@ -136,6 +136,8 @@ pub struct HomeView {
     pub(super) creation_poller: CreationPoller,
     /// Set to true if user cancelled while creation was pending
     pub(super) creation_cancelled: bool,
+    /// Sessions whose on_launch hooks already ran in the creation poller
+    pub(super) on_launch_hooks_ran: HashSet<String>,
 
     // Performance: preview caching
     pub(super) preview_cache: PreviewCache,
@@ -213,6 +215,7 @@ impl HomeView {
             deletion_poller: DeletionPoller::new(),
             creation_poller: CreationPoller::new(),
             creation_cancelled: false,
+            on_launch_hooks_ran: HashSet::new(),
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
@@ -340,8 +343,12 @@ impl HomeView {
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) {
+        let has_hooks = hooks
+            .as_ref()
+            .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
         if let Some(dialog) = &mut self.new_dialog {
             dialog.set_loading(true);
+            dialog.set_has_hooks(has_hooks);
         }
 
         self.creation_cancelled = false;
@@ -392,6 +399,7 @@ impl HomeView {
             CreationResult::Success {
                 session_id,
                 instance,
+                on_launch_hooks_ran,
                 ..
             } => {
                 let instance = *instance;
@@ -406,6 +414,10 @@ impl HomeView {
                     .save_with_groups(&self.instances, &self.group_tree)
                 {
                     tracing::error!("Failed to save after creation: {}", e);
+                }
+
+                if on_launch_hooks_ran {
+                    self.on_launch_hooks_ran.insert(session_id.clone());
                 }
 
                 let _ = self.reload();
@@ -423,16 +435,25 @@ impl HomeView {
         }
     }
 
+    /// Check if on_launch hooks already ran for this session (and consume the flag).
+    pub fn take_on_launch_hooks_ran(&mut self, session_id: &str) -> bool {
+        self.on_launch_hooks_ran.remove(session_id)
+    }
+
     /// Check if there's a pending creation operation
     pub fn is_creation_pending(&self) -> bool {
         self.creation_poller.is_pending()
     }
 
-    /// Tick the dialog spinner animation if loading
+    /// Tick the dialog spinner animation if loading, and drain hook progress
     pub fn tick_dialog(&mut self) {
         if let Some(dialog) = &mut self.new_dialog {
             if dialog.is_loading() {
                 dialog.tick();
+                // Drain all pending hook progress messages
+                while let Some(progress) = self.creation_poller.try_recv_progress() {
+                    dialog.push_hook_progress(progress);
+                }
             }
         }
     }

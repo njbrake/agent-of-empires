@@ -121,6 +121,40 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.hook_trust_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.hook_trust_dialog = None;
+                    self.pending_hook_trust_data = None;
+                }
+                DialogResult::Submit(action) => {
+                    self.hook_trust_dialog = None;
+                    if let Some(data) = self.pending_hook_trust_data.take() {
+                        match action {
+                            HookTrustAction::Trust {
+                                hooks,
+                                hooks_hash,
+                                project_path,
+                            } => {
+                                if let Err(e) = repo_config::trust_repo(
+                                    std::path::Path::new(&project_path),
+                                    &hooks_hash,
+                                ) {
+                                    tracing::error!("Failed to trust repo: {}", e);
+                                }
+                                return self.create_session_with_hooks(data, Some(hooks));
+                            }
+                            HookTrustAction::Skip => {
+                                return self.create_session_with_hooks(data, None);
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
         let dialog_result = self
             .new_dialog
             .as_mut()
@@ -139,7 +173,7 @@ impl HomeView {
                 }
                 DialogResult::Submit(data) => {
                     // Check for hooks before creating the session
-                    match repo_config::check_hook_trust(&data.path) {
+                    match repo_config::check_hook_trust(std::path::Path::new(&data.path)) {
                         Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
                             use crate::tui::dialogs::HookTrustDialog;
                             self.hook_trust_dialog =
@@ -232,38 +266,6 @@ impl HomeView {
                         data.profile.as_deref(),
                     ) {
                         tracing::error!("Failed to rename session: {}", e);
-                    }
-                }
-            }
-            return None;
-        }
-
-        if let Some(dialog) = &mut self.hook_trust_dialog {
-            match dialog.handle_key(key) {
-                DialogResult::Continue => {}
-                DialogResult::Cancel => {
-                    self.hook_trust_dialog = None;
-                    self.pending_hook_trust_data = None;
-                }
-                DialogResult::Submit(action) => {
-                    self.hook_trust_dialog = None;
-                    if let Some(data) = self.pending_hook_trust_data.take() {
-                        match action {
-                            HookTrustAction::Trust {
-                                hooks,
-                                hooks_hash,
-                                project_path,
-                            } => {
-                                if let Err(e) = repo_config::trust_repo(&project_path, &hooks_hash)
-                                {
-                                    tracing::error!("Failed to trust repo: {}", e);
-                                }
-                                return self.create_session_with_hooks(data, Some(hooks));
-                            }
-                            HookTrustAction::Skip => {
-                                return self.create_session_with_hooks(data, None);
-                            }
-                        }
                     }
                 }
             }
@@ -637,7 +639,9 @@ impl HomeView {
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) -> Option<Action> {
-        let has_hooks = hooks.as_ref().is_some_and(|h| !h.on_create.is_empty());
+        let has_hooks = hooks
+            .as_ref()
+            .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
 
         if data.sandbox || has_hooks {
             self.request_creation(data, hooks);

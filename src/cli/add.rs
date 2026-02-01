@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Result};
 use clap::Args;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::docker::{self, DockerContainer};
 use crate::session::repo_config;
@@ -205,14 +205,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     // Check for repository hooks
-    let project_path_str = match path.to_str() {
-        Some(s) => s,
-        None => {
-            tracing::warn!("project path contains non-UTF-8 bytes: {:?}", path);
-            ""
-        }
-    };
-    match repo_config::check_hook_trust(project_path_str) {
+    match repo_config::check_hook_trust(&path) {
         Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
             let should_trust = if args.trust_hooks {
                 true
@@ -239,7 +232,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             };
 
             if should_trust {
-                trust_and_run_on_create(project_path_str, &hooks_hash, &hooks)?;
+                trust_and_run_on_create(&path, &hooks_hash, &hooks)?;
             } else {
                 println!("Hooks skipped (session created without running hooks)");
             }
@@ -247,7 +240,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
             if !hooks.on_create.is_empty() {
                 println!("Running on_create hooks...");
-                repo_config::execute_hooks(&hooks.on_create, project_path_str)?;
+                repo_config::execute_hooks(&hooks.on_create, &path)?;
                 println!("✓ on_create hooks completed");
             }
         }
@@ -336,7 +329,7 @@ pub fn generate_unique_title(instances: &[Instance], base_title: &str, path: &st
 }
 
 fn trust_and_run_on_create(
-    project_path: &str,
+    project_path: &Path,
     hooks_hash: &str,
     hooks: &crate::session::HooksConfig,
 ) -> Result<()> {

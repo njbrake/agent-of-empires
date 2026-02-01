@@ -2,9 +2,15 @@
 
 use serial_test::serial;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
-fn setup_temp_home(temp: &std::path::Path) {
+/// Set HOME and XDG_CONFIG_HOME to a temp directory for test isolation.
+///
+/// # Safety caveat
+/// `set_var` is not thread-safe. Tests calling this must use `#[serial]` to
+/// ensure no concurrent test is reading the environment at the same time.
+fn setup_temp_home(temp: &Path) {
     std::env::set_var("HOME", temp);
     #[cfg(target_os = "linux")]
     std::env::set_var("XDG_CONFIG_HOME", temp.join(".config"));
@@ -32,10 +38,9 @@ default_tool = "claude"
 "#,
     );
 
-    let config =
-        agent_of_empires::session::repo_config::load_repo_config(tmp.path().to_str().unwrap())
-            .unwrap()
-            .unwrap();
+    let config = agent_of_empires::session::repo_config::load_repo_config(tmp.path())
+        .unwrap()
+        .unwrap();
 
     let hooks = config.hooks.unwrap();
     assert_eq!(hooks.on_create, vec!["echo setup"]);
@@ -49,19 +54,16 @@ default_tool = "claude"
 #[test]
 fn test_load_repo_config_empty_file() {
     let tmp = setup_repo_config("");
-    let config =
-        agent_of_empires::session::repo_config::load_repo_config(tmp.path().to_str().unwrap())
-            .unwrap();
+    let config = agent_of_empires::session::repo_config::load_repo_config(tmp.path()).unwrap();
     assert!(config.is_none());
 }
 
 #[test]
 fn test_load_repo_config_comments_only() {
     let tmp = setup_repo_config(agent_of_empires::session::repo_config::INIT_TEMPLATE);
-    let config =
-        agent_of_empires::session::repo_config::load_repo_config(tmp.path().to_str().unwrap())
-            .unwrap()
-            .unwrap();
+    let config = agent_of_empires::session::repo_config::load_repo_config(tmp.path())
+        .unwrap()
+        .unwrap();
     // All-commented template should parse as empty config
     assert!(config.hooks.is_none());
     assert!(config.session.is_none());
@@ -74,7 +76,7 @@ fn test_trust_untrust_cycle() {
     setup_temp_home(temp_home.path());
 
     let project_dir = TempDir::new().unwrap();
-    let project_path = project_dir.path().to_str().unwrap();
+    let project_path = project_dir.path();
     let hooks_hash = "test_hash_123";
 
     // Initially not trusted
@@ -112,8 +114,7 @@ fn test_hook_execution_simple_echo() {
     let marker = tmp.path().join("hook_ran");
 
     let cmd = format!("touch {}", marker.display());
-    agent_of_empires::session::repo_config::execute_hooks(&[cmd], tmp.path().to_str().unwrap())
-        .unwrap();
+    agent_of_empires::session::repo_config::execute_hooks(&[cmd], tmp.path()).unwrap();
 
     assert!(marker.exists());
 }
@@ -121,10 +122,8 @@ fn test_hook_execution_simple_echo() {
 #[test]
 fn test_hook_execution_failure() {
     let tmp = TempDir::new().unwrap();
-    let result = agent_of_empires::session::repo_config::execute_hooks(
-        &["exit 1".to_string()],
-        tmp.path().to_str().unwrap(),
-    );
+    let result =
+        agent_of_empires::session::repo_config::execute_hooks(&["exit 1".to_string()], tmp.path());
     assert!(result.is_err());
 }
 
