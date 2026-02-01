@@ -9,6 +9,7 @@ pub mod migrations;
 pub mod openclaw;
 pub mod process;
 pub mod project;
+pub mod schedule;
 pub mod session;
 pub mod task;
 pub mod terminal;
