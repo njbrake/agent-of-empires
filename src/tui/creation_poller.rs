@@ -8,7 +8,7 @@ use std::thread;
 
 use crate::session::builder::{self, CreatedWorktree, InstanceParams};
 use crate::session::repo_config::{self, HooksConfig};
-use crate::session::{Instance, Status};
+use crate::session::Instance;
 use crate::tui::dialogs::NewSessionData;
 
 pub struct CreationRequest {
@@ -111,8 +111,10 @@ impl CreationPoller {
         if let Some(ref hooks) = hooks {
             if !hooks.on_create.is_empty() {
                 if data.sandbox {
-                    // For sandboxed sessions, we need the container running first
-                    if let Err(e) = instance.start() {
+                    // Ensure the container is running so we can exec hooks inside it.
+                    // Don't create the tmux session yet -- that happens at attach time
+                    // where the terminal size is available.
+                    if let Err(e) = instance.ensure_container_running() {
                         builder::cleanup_instance(&instance, created_worktree.as_ref());
                         return CreationResult::Error(e.to_string());
                     }
@@ -136,9 +138,11 @@ impl CreationPoller {
             }
         }
 
-        // Start sandbox instance if not already started above (for on_create hooks)
-        if data.sandbox && instance.status == Status::Idle {
-            if let Err(e) = instance.start() {
+        if data.sandbox {
+            // Only ensure the Docker container is running here. Don't create the tmux
+            // session yet -- that happens at attach time where the terminal size is
+            // available, avoiding a race that creates the session at 80x24 default.
+            if let Err(e) = instance.ensure_container_running() {
                 builder::cleanup_instance(&instance, created_worktree.as_ref());
                 return CreationResult::Error(e.to_string());
             }

@@ -390,20 +390,19 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 # Commands run once when a session is first created
 # on_create = ["npm install", "cp .env.example .env"]
 # Commands run every time a session starts
-# on_launch = ["echo 'Starting session'"]
+# on_launch = ["npm install"]
 
 # [session]
 # default_tool = "claude"
 
 # [sandbox]
 # enabled_by_default = true
-# default_image = "ghcr.io/anthropics/anthropic-quickstarts:latest"
+# default_image = "docker pull ghcr.io/njbrake/aoe-dev-sandbox:0.10"
 # environment = ["NODE_ENV", "DATABASE_URL"]
 # volume_ignores = ["node_modules", ".next"]
 
 # [worktree]
 # enabled = true
-# path_template = "../{repo-name}-wt/{branch}"
 "#;
 
 #[cfg(test)]
