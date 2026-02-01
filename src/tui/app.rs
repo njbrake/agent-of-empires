@@ -12,6 +12,44 @@ use crate::session::{get_update_settings, load_config, save_config, Storage};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
+/// Temporarily leave TUI mode, run a closure, and restore TUI mode.
+/// Drains stale events and clears the terminal on return.
+fn with_raw_mode_disabled<F, R>(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    f: F,
+) -> Result<R>
+where
+    F: FnOnce() -> R,
+{
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture,
+        crossterm::cursor::Show
+    )?;
+    std::io::Write::flush(terminal.backend_mut())?;
+
+    let result = f();
+
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture,
+        crossterm::cursor::Hide
+    )?;
+    std::io::Write::flush(terminal.backend_mut())?;
+
+    while event::poll(Duration::from_millis(0))? {
+        let _ = event::read();
+    }
+
+    terminal.clear()?;
+
+    Ok(result)
+}
+
 pub struct App {
     home: HomeView,
     should_quit: bool,
@@ -330,44 +368,13 @@ impl App {
             self.home.set_instance_error(session_id, None);
         }
 
-        // Leave TUI mode completely
-        crossterm::terminal::disable_raw_mode()?;
-        crossterm::execute!(
-            terminal.backend_mut(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture,
-            crossterm::cursor::Show
-        )?;
-        std::io::Write::flush(terminal.backend_mut())?;
+        let attach_result = with_raw_mode_disabled(terminal, || tmux_session.attach())?;
 
-        // Attach to tmux session (this blocks until user detaches with Ctrl+b d)
-        let attach_result = tmux_session.attach();
-
-        // Re-enter TUI mode
-        crossterm::terminal::enable_raw_mode()?;
-        crossterm::execute!(
-            terminal.backend_mut(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture,
-            crossterm::cursor::Hide
-        )?;
-        std::io::Write::flush(terminal.backend_mut())?;
-
-        // Drain any stale events that accumulated during tmux session
-        while event::poll(Duration::from_millis(0))? {
-            let _ = event::read();
-        }
-
-        // Force terminal to clear and redraw completely
-        terminal.clear()?;
         self.needs_redraw = true;
-
-        // Refresh session state since things may have changed
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
         self.home.select_session_by_id(session_id);
 
-        // Log any attach errors but don't fail
         if let Err(e) = attach_result {
             tracing::warn!("tmux attach returned error: {}", e);
         }
@@ -389,11 +396,10 @@ impl App {
         // Get terminal size to pass to tmux session creation
         let size = crate::terminal::get_size();
 
-        // Handle container vs host terminal based on mode
-        let attach_result = match mode {
+        // Prepare the tmux session before leaving TUI mode
+        let attach_fn: Box<dyn FnOnce() -> Result<()>> = match mode {
             TerminalMode::Container if instance.is_sandboxed() => {
                 let container_session = instance.container_terminal_tmux_session()?;
-
                 if !container_session.exists() {
                     if let Err(e) = self
                         .home
@@ -404,23 +410,10 @@ impl App {
                         return Ok(());
                     }
                 }
-
-                // Leave TUI mode completely
-                crossterm::terminal::disable_raw_mode()?;
-                crossterm::execute!(
-                    terminal.backend_mut(),
-                    crossterm::terminal::LeaveAlternateScreen,
-                    crossterm::event::DisableMouseCapture,
-                    crossterm::cursor::Show
-                )?;
-                std::io::Write::flush(terminal.backend_mut())?;
-
-                container_session.attach()
+                Box::new(move || container_session.attach())
             }
             _ => {
-                // Host mode (or non-sandboxed session)
                 let terminal_session = instance.terminal_tmux_session()?;
-
                 if !terminal_session.exists() {
                     if let Err(e) = self
                         .home
@@ -431,46 +424,17 @@ impl App {
                         return Ok(());
                     }
                 }
-
-                // Leave TUI mode completely
-                crossterm::terminal::disable_raw_mode()?;
-                crossterm::execute!(
-                    terminal.backend_mut(),
-                    crossterm::terminal::LeaveAlternateScreen,
-                    crossterm::event::DisableMouseCapture,
-                    crossterm::cursor::Show
-                )?;
-                std::io::Write::flush(terminal.backend_mut())?;
-
-                terminal_session.attach()
+                Box::new(move || terminal_session.attach())
             }
         };
 
-        // Re-enter TUI mode
-        crossterm::terminal::enable_raw_mode()?;
-        crossterm::execute!(
-            terminal.backend_mut(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture,
-            crossterm::cursor::Hide
-        )?;
-        std::io::Write::flush(terminal.backend_mut())?;
+        let attach_result = with_raw_mode_disabled(terminal, attach_fn)?;
 
-        // Drain any stale events that accumulated during tmux session
-        while event::poll(Duration::from_millis(0))? {
-            let _ = event::read();
-        }
-
-        // Force terminal to clear and redraw completely
-        terminal.clear()?;
         self.needs_redraw = true;
-
-        // Refresh session state since things may have changed
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
         self.home.select_session_by_id(session_id);
 
-        // Log any attach errors but don't fail
         if let Err(e) = attach_result {
             tracing::warn!("tmux terminal attach returned error: {}", e);
         }
@@ -510,36 +474,14 @@ impl App {
             })
             .unwrap_or_else(|| "vim".to_string());
 
-        // Leave TUI mode completely
-        crossterm::terminal::disable_raw_mode()?;
-        crossterm::execute!(
-            terminal.backend_mut(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture,
-            crossterm::cursor::Show
-        )?;
-        std::io::Write::flush(terminal.backend_mut())?;
+        let path = path.to_owned();
+        let editor_clone = editor.clone();
+        let status = with_raw_mode_disabled(terminal, move || {
+            std::process::Command::new(&editor_clone)
+                .arg(&path)
+                .status()
+        })?;
 
-        // Launch the editor
-        let status = std::process::Command::new(&editor).arg(path).status();
-
-        // Re-enter TUI mode
-        crossterm::terminal::enable_raw_mode()?;
-        crossterm::execute!(
-            terminal.backend_mut(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture,
-            crossterm::cursor::Hide
-        )?;
-        std::io::Write::flush(terminal.backend_mut())?;
-
-        // Drain any stale events that accumulated during editor session
-        while event::poll(Duration::from_millis(0))? {
-            let _ = event::read();
-        }
-
-        // Force terminal to clear and redraw completely
-        terminal.clear()?;
         self.needs_redraw = true;
 
         // Refresh diff view if it's open (file may have changed)

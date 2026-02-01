@@ -121,15 +121,7 @@ impl HookTrustDialog {
 
         let dialog_width = 60.min(area.width.saturating_sub(4));
         let dialog_height = (content_height + 6).min(area.height.saturating_sub(4));
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width,
-            height: dialog_height,
-        };
+        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
 
         frame.render_widget(Clear, dialog_area);
 

@@ -372,10 +372,7 @@ pub fn load_config() -> Result<Option<Config>> {
     if !path.exists() {
         return Ok(None);
     }
-
-    let content = fs::read_to_string(&path)?;
-    let config: Config = toml::from_str(&content)?;
-    Ok(Some(config))
+    Ok(Some(Config::load()?))
 }
 
 pub fn save_config(config: &Config) -> Result<()> {

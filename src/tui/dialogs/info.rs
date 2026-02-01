@@ -28,17 +28,7 @@ impl InfoDialog {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_width = 50;
-        let dialog_height = 9;
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width.min(area.width),
-            height: dialog_height.min(area.height),
-        };
+        let dialog_area = super::centered_rect(area, 50, 9);
 
         frame.render_widget(Clear, dialog_area);
 

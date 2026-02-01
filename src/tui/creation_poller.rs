@@ -120,6 +120,7 @@ impl CreationPoller {
 
         let has_on_create = hooks.as_ref().is_some_and(|h| !h.on_create.is_empty());
         let has_on_launch = hooks.as_ref().is_some_and(|h| !h.on_launch.is_empty());
+        let mut container_started = false;
 
         // Execute on_create hooks after worktree setup, before starting
         if has_on_create {
@@ -132,6 +133,7 @@ impl CreationPoller {
                     builder::cleanup_instance(&instance, created_worktree.as_ref());
                     return CreationResult::Error(e.to_string());
                 }
+                container_started = true;
                 if let Some(ref sandbox) = instance.sandbox_info {
                     let workdir = instance.container_workdir();
                     if let Err(e) = repo_config::execute_hooks_in_container_streamed(
@@ -159,8 +161,17 @@ impl CreationPoller {
         if has_on_launch {
             let hooks = hooks.as_ref().unwrap();
             if data.sandbox {
-                // For sandbox, ensure container is running (may already be from on_create above).
-                if instance.ensure_container_running().is_ok() {
+                if !container_started {
+                    if let Err(e) = instance.ensure_container_running() {
+                        tracing::warn!(
+                            "Skipping on_launch hooks: container failed to start: {}",
+                            e
+                        );
+                    } else {
+                        container_started = true;
+                    }
+                }
+                if container_started {
                     if let Some(ref sandbox) = instance.sandbox_info {
                         let workdir = instance.container_workdir();
                         if let Err(e) = repo_config::execute_hooks_in_container_streamed(
@@ -172,8 +183,6 @@ impl CreationPoller {
                             tracing::warn!("on_launch hook failed in container: {}", e);
                         }
                     }
-                } else {
-                    tracing::warn!("Skipping on_launch hooks: container not running");
                 }
             } else if let Err(e) = repo_config::execute_hooks_streamed(
                 &hooks.on_launch,
@@ -184,10 +193,10 @@ impl CreationPoller {
             }
         }
 
-        if data.sandbox {
-            // Only ensure the Docker container is running here. Don't create the tmux
-            // session yet -- that happens at attach time where the terminal size is
-            // available, avoiding a race that creates the session at 80x24 default.
+        if data.sandbox && !container_started {
+            // Only ensure the Docker container is running here if hooks didn't already
+            // start it. Don't create the tmux session yet -- that happens at attach time
+            // where the terminal size is available.
             if let Err(e) = instance.ensure_container_running() {
                 builder::cleanup_instance(&instance, created_worktree.as_ref());
                 return CreationResult::Error(e.to_string());

@@ -25,3 +25,19 @@ pub enum DialogResult<T> {
     Cancel,
     Submit(T),
 }
+
+/// Center a dialog of given size within an area, clamping to fit.
+pub fn centered_rect(
+    area: ratatui::layout::Rect,
+    width: u16,
+    height: u16,
+) -> ratatui::layout::Rect {
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    ratatui::layout::Rect {
+        x,
+        y,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
+}

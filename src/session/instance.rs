@@ -44,33 +44,64 @@ fn resolve_env_value(val: &str) -> Option<String> {
     }
 }
 
-/// Build docker exec environment flags from config and optional per-session extra keys.
-/// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
-/// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
-fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
-    let config = super::config::Config::load().unwrap_or_default();
-
-    // Start with default terminal variables (always included for proper UI)
+/// Collect all environment variable keys from defaults, global config, and per-session extras.
+fn collect_env_keys(
+    sandbox_config: &super::config::SandboxConfig,
+    sandbox_info: &SandboxInfo,
+) -> Vec<String> {
     let mut env_keys: Vec<String> = DEFAULT_TERMINAL_ENV_VARS
         .iter()
         .map(|s| s.to_string())
         .collect();
 
-    // Add user-configured variables from global config
-    for key in &config.sandbox.environment {
+    for key in &sandbox_config.environment {
         if !env_keys.contains(key) {
             env_keys.push(key.clone());
         }
     }
 
-    // Add per-session extra env keys
-    if let Some(extra_keys) = &sandbox.extra_env_keys {
+    if let Some(extra_keys) = &sandbox_info.extra_env_keys {
         for key in extra_keys {
             if !env_keys.contains(key) {
                 env_keys.push(key.clone());
             }
         }
     }
+
+    env_keys
+}
+
+/// Collect all key=value environment pairs from global config and per-session extras.
+fn collect_env_values(
+    sandbox_config: &super::config::SandboxConfig,
+    sandbox_info: &SandboxInfo,
+) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+
+    for (key, val) in &sandbox_config.environment_values {
+        if let Some(resolved) = resolve_env_value(val) {
+            values.push((key.clone(), resolved));
+        }
+    }
+
+    if let Some(extra_vals) = &sandbox_info.extra_env_values {
+        for (key, val) in extra_vals {
+            if let Some(resolved) = resolve_env_value(val) {
+                values.push((key.clone(), resolved));
+            }
+        }
+    }
+
+    values
+}
+
+/// Build docker exec environment flags from config and optional per-session extra keys.
+/// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
+/// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
+fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
+    let config = super::config::Config::load().unwrap_or_default();
+
+    let env_keys = collect_env_keys(&config.sandbox, sandbox);
 
     let mut args: Vec<String> = env_keys
         .iter()
@@ -81,20 +112,8 @@ fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
         })
         .collect();
 
-    // Inject environment_values (AOE-managed, used for docker exec sessions)
-    for (key, val) in &config.sandbox.environment_values {
-        if let Some(resolved) = resolve_env_value(val) {
-            args.push(format!("-e {}={}", key, shell_escape(&resolved)));
-        }
-    }
-
-    // Inject per-session extra env values
-    if let Some(extra_vals) = &sandbox.extra_env_values {
-        for (key, val) in extra_vals {
-            if let Some(resolved) = resolve_env_value(val) {
-                args.push(format!("-e {}={}", key, shell_escape(&resolved)));
-            }
-        }
+    for (key, resolved) in collect_env_values(&config.sandbox, sandbox) {
+        args.push(format!("-e {}={}", key, shell_escape(&resolved)));
     }
 
     args.join(" ")
@@ -355,24 +374,31 @@ impl Instance {
         Ok(())
     }
 
-    /// Apply all configured tmux options to the container terminal session.
-    fn apply_container_terminal_tmux_options(&self) {
-        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
-
-        let session_name = tmux::ContainerTerminalSession::generate_name(&self.id, &self.title);
-        let terminal_title = format!("{} (container)", self.title);
-        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
-        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
+    fn sandbox_display(&self) -> Option<crate::tmux::status_bar::SandboxDisplay> {
+        self.sandbox_info.as_ref().and_then(|s| {
             if s.enabled {
-                Some(SandboxDisplay {
+                Some(crate::tmux::status_bar::SandboxDisplay {
                     container_name: s.container_name.clone(),
                 })
             } else {
                 None
             }
-        });
+        })
+    }
 
-        apply_all_tmux_options(&session_name, &terminal_title, branch, sandbox.as_ref());
+    /// Apply all configured tmux options to the container terminal session.
+    fn apply_container_terminal_tmux_options(&self) {
+        let session_name = tmux::ContainerTerminalSession::generate_name(&self.id, &self.title);
+        let terminal_title = format!("{} (container)", self.title);
+        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let sandbox = self.sandbox_display();
+
+        crate::tmux::status_bar::apply_all_tmux_options(
+            &session_name,
+            &terminal_title,
+            branch,
+            sandbox.as_ref(),
+        );
     }
 
     pub fn start(&mut self) -> Result<()> {
@@ -487,41 +513,31 @@ impl Instance {
 
     /// Apply all configured tmux options (status bar, mouse, etc.) to the agent session.
     fn apply_tmux_options(&self) {
-        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
-
         let session_name = tmux::Session::generate_name(&self.id, &self.title);
         let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
-        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
-            if s.enabled {
-                Some(SandboxDisplay {
-                    container_name: s.container_name.clone(),
-                })
-            } else {
-                None
-            }
-        });
+        let sandbox = self.sandbox_display();
 
-        apply_all_tmux_options(&session_name, &self.title, branch, sandbox.as_ref());
+        crate::tmux::status_bar::apply_all_tmux_options(
+            &session_name,
+            &self.title,
+            branch,
+            sandbox.as_ref(),
+        );
     }
 
     /// Apply all configured tmux options to the terminal session.
     fn apply_terminal_tmux_options(&self) {
-        use crate::tmux::status_bar::{apply_all_tmux_options, SandboxDisplay};
-
         let session_name = tmux::TerminalSession::generate_name(&self.id, &self.title);
         let terminal_title = format!("{} (terminal)", self.title);
         let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
-        let sandbox = self.sandbox_info.as_ref().and_then(|s| {
-            if s.enabled {
-                Some(SandboxDisplay {
-                    container_name: s.container_name.clone(),
-                })
-            } else {
-                None
-            }
-        });
+        let sandbox = self.sandbox_display();
 
-        apply_all_tmux_options(&session_name, &terminal_title, branch, sandbox.as_ref());
+        crate::tmux::status_bar::apply_all_tmux_options(
+            &session_name,
+            &terminal_title,
+            branch,
+            sandbox.as_ref(),
+        );
     }
 
     pub fn ensure_container_running(&mut self) -> Result<()> {
@@ -550,8 +566,6 @@ impl Instance {
         docker::ensure_named_volume(VIBE_AUTH_VOLUME)?;
         docker::ensure_named_volume(CODEX_AUTH_VOLUME)?;
         docker::ensure_named_volume(GEMINI_AUTH_VOLUME)?;
-
-        crate::migrations::run_lazy_docker_migrations();
 
         let config = self.build_container_config()?;
         let container_id = container.create(&config)?;
@@ -724,31 +738,8 @@ impl Instance {
             .map(|c| c.sandbox)
             .unwrap_or_default();
 
-        // Start with default terminal variables (always included for proper UI)
-        let mut env_keys: Vec<String> = DEFAULT_TERMINAL_ENV_VARS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        // Add user-configured variables from global config
-        for key in &sandbox_config.environment {
-            if !env_keys.contains(key) {
-                env_keys.push(key.clone());
-            }
-        }
-
-        // Add per-session extra env keys
-        if let Some(extra_keys) = self
-            .sandbox_info
-            .as_ref()
-            .and_then(|s| s.extra_env_keys.as_ref())
-        {
-            for key in extra_keys {
-                if !env_keys.contains(key) {
-                    env_keys.push(key.clone());
-                }
-            }
-        }
+        let sandbox_info = self.sandbox_info.as_ref().unwrap();
+        let env_keys = collect_env_keys(&sandbox_config, sandbox_info);
 
         let mut environment: Vec<(String, String)> = env_keys
             .iter()
@@ -760,25 +751,7 @@ impl Instance {
             format!("{}/.claude", CONTAINER_HOME),
         ));
 
-        // Inject environment_values (AOE-managed, used for container creation via separate args)
-        for (key, val) in &sandbox_config.environment_values {
-            if let Some(resolved) = resolve_env_value(val) {
-                environment.push((key.clone(), resolved));
-            }
-        }
-
-        // Inject per-session extra env values
-        if let Some(extra_vals) = self
-            .sandbox_info
-            .as_ref()
-            .and_then(|s| s.extra_env_values.as_ref())
-        {
-            for (key, val) in extra_vals {
-                if let Some(resolved) = resolve_env_value(val) {
-                    environment.push((key.clone(), resolved));
-                }
-            }
-        }
+        environment.extend(collect_env_values(&sandbox_config, sandbox_info));
 
         if self.is_yolo_mode() && self.tool == "opencode" {
             environment.push((

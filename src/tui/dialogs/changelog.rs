@@ -90,15 +90,7 @@ impl ChangelogDialog {
         // Use 80% of terminal width/height, with min/max bounds
         let dialog_width = (area.width * 80 / 100).clamp(60, 100);
         let dialog_height = (area.height * 80 / 100).clamp(16, 40);
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width.min(area.width),
-            height: dialog_height.min(area.height),
-        };
+        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
 
         frame.render_widget(Clear, dialog_area);
 

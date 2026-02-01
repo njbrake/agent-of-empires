@@ -160,19 +160,9 @@ impl RenameDialog {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = 50;
-        let dialog_height = 15;
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+        let dialog_area = super::centered_rect(area, dialog_width, 15);
 
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width.min(area.width),
-            height: dialog_height.min(area.height),
-        };
-
-        let clear = Clear;
-        frame.render_widget(clear, dialog_area);
+        frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
             .borders(Borders::ALL)

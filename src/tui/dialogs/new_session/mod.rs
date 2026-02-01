@@ -141,6 +141,88 @@ pub struct NewSessionDialog {
     pub(super) hook_output: Vec<String>,
 }
 
+/// Shared logic for handling key events in an editable list (env keys or env values).
+fn handle_editable_list_key(
+    key: KeyEvent,
+    items: &mut Vec<String>,
+    expanded: &mut bool,
+    selected_index: &mut usize,
+    editing_input: &mut Option<Input>,
+    adding_new: &mut bool,
+    validate: impl Fn(&str, &[String]) -> bool,
+) -> DialogResult<NewSessionData> {
+    // Handle text input mode (editing or adding)
+    if let Some(ref mut input) = editing_input {
+        match key.code {
+            KeyCode::Enter => {
+                let value = input.value().trim().to_string();
+                if validate(&value, items) {
+                    if *adding_new {
+                        items.push(value);
+                        *selected_index = items.len().saturating_sub(1);
+                    } else if *selected_index < items.len() {
+                        items[*selected_index] = value;
+                    }
+                }
+                *editing_input = None;
+                *adding_new = false;
+                return DialogResult::Continue;
+            }
+            KeyCode::Esc => {
+                *editing_input = None;
+                *adding_new = false;
+                return DialogResult::Continue;
+            }
+            _ => {
+                input.handle_event(&crossterm::event::Event::Key(key));
+                return DialogResult::Continue;
+            }
+        }
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            *expanded = false;
+            DialogResult::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if *selected_index > 0 {
+                *selected_index -= 1;
+            }
+            DialogResult::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if *selected_index < items.len().saturating_sub(1) {
+                *selected_index += 1;
+            }
+            DialogResult::Continue
+        }
+        KeyCode::Char('a') => {
+            *editing_input = Some(Input::default());
+            *adding_new = true;
+            DialogResult::Continue
+        }
+        KeyCode::Char('d') => {
+            if !items.is_empty() && *selected_index < items.len() {
+                items.remove(*selected_index);
+                if *selected_index > 0 && *selected_index >= items.len() {
+                    *selected_index = items.len().saturating_sub(1);
+                }
+            }
+            DialogResult::Continue
+        }
+        KeyCode::Enter => {
+            if !items.is_empty() && *selected_index < items.len() {
+                let current = items[*selected_index].clone();
+                *editing_input = Some(Input::new(current));
+                *adding_new = false;
+            }
+            DialogResult::Continue
+        }
+        _ => DialogResult::Continue,
+    }
+}
+
 impl NewSessionDialog {
     pub fn new(tools: AvailableTools, existing_titles: Vec<String>, profile: &str) -> Self {
         let current_dir = std::env::current_dir()
@@ -557,164 +639,31 @@ impl NewSessionDialog {
 
     /// Handle key events when the env list is expanded
     fn handle_env_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
-        // Handle text input mode (editing or adding)
-        if let Some(ref mut input) = self.env_editing_input {
-            match key.code {
-                KeyCode::Enter => {
-                    let value = input.value().trim().to_string();
-                    if !value.is_empty() && !self.extra_env_keys.contains(&value) {
-                        if self.env_adding_new {
-                            self.extra_env_keys.push(value);
-                            self.env_selected_index = self.extra_env_keys.len().saturating_sub(1);
-                        } else if self.env_selected_index < self.extra_env_keys.len() {
-                            self.extra_env_keys[self.env_selected_index] = value;
-                        }
-                    }
-                    self.env_editing_input = None;
-                    self.env_adding_new = false;
-                    return DialogResult::Continue;
-                }
-                KeyCode::Esc => {
-                    self.env_editing_input = None;
-                    self.env_adding_new = false;
-                    return DialogResult::Continue;
-                }
-                _ => {
-                    input.handle_event(&crossterm::event::Event::Key(key));
-                    return DialogResult::Continue;
-                }
-            }
-        }
-
-        // Normal list navigation mode
-        match key.code {
-            KeyCode::Esc => {
-                self.env_list_expanded = false;
-                DialogResult::Continue
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.env_selected_index > 0 {
-                    self.env_selected_index -= 1;
-                }
-                DialogResult::Continue
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.env_selected_index < self.extra_env_keys.len().saturating_sub(1) {
-                    self.env_selected_index += 1;
-                }
-                DialogResult::Continue
-            }
-            KeyCode::Char('a') => {
-                self.env_editing_input = Some(Input::default());
-                self.env_adding_new = true;
-                DialogResult::Continue
-            }
-            KeyCode::Char('d') => {
-                if !self.extra_env_keys.is_empty()
-                    && self.env_selected_index < self.extra_env_keys.len()
-                {
-                    self.extra_env_keys.remove(self.env_selected_index);
-                    if self.env_selected_index > 0
-                        && self.env_selected_index >= self.extra_env_keys.len()
-                    {
-                        self.env_selected_index = self.extra_env_keys.len().saturating_sub(1);
-                    }
-                }
-                DialogResult::Continue
-            }
-            KeyCode::Enter => {
-                if !self.extra_env_keys.is_empty()
-                    && self.env_selected_index < self.extra_env_keys.len()
-                {
-                    let current = self.extra_env_keys[self.env_selected_index].clone();
-                    self.env_editing_input = Some(Input::new(current));
-                    self.env_adding_new = false;
-                }
-                DialogResult::Continue
-            }
-            _ => DialogResult::Continue,
-        }
+        let validate =
+            |value: &str, list: &[String]| !value.is_empty() && !list.contains(&value.to_string());
+        handle_editable_list_key(
+            key,
+            &mut self.extra_env_keys,
+            &mut self.env_list_expanded,
+            &mut self.env_selected_index,
+            &mut self.env_editing_input,
+            &mut self.env_adding_new,
+            validate,
+        )
     }
 
     /// Handle key events when the env values list is expanded
     fn handle_env_values_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
-        if let Some(ref mut input) = self.env_values_editing_input {
-            match key.code {
-                KeyCode::Enter => {
-                    let value = input.value().trim().to_string();
-                    if !value.is_empty() && value.contains('=') {
-                        if self.env_values_adding_new {
-                            self.extra_env_values.push(value);
-                            self.env_values_selected_index =
-                                self.extra_env_values.len().saturating_sub(1);
-                        } else if self.env_values_selected_index < self.extra_env_values.len() {
-                            self.extra_env_values[self.env_values_selected_index] = value;
-                        }
-                    }
-                    self.env_values_editing_input = None;
-                    self.env_values_adding_new = false;
-                    return DialogResult::Continue;
-                }
-                KeyCode::Esc => {
-                    self.env_values_editing_input = None;
-                    self.env_values_adding_new = false;
-                    return DialogResult::Continue;
-                }
-                _ => {
-                    input.handle_event(&crossterm::event::Event::Key(key));
-                    return DialogResult::Continue;
-                }
-            }
-        }
-
-        match key.code {
-            KeyCode::Esc => {
-                self.env_values_list_expanded = false;
-                DialogResult::Continue
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.env_values_selected_index > 0 {
-                    self.env_values_selected_index -= 1;
-                }
-                DialogResult::Continue
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.env_values_selected_index < self.extra_env_values.len().saturating_sub(1) {
-                    self.env_values_selected_index += 1;
-                }
-                DialogResult::Continue
-            }
-            KeyCode::Char('a') => {
-                self.env_values_editing_input = Some(Input::default());
-                self.env_values_adding_new = true;
-                DialogResult::Continue
-            }
-            KeyCode::Char('d') => {
-                if !self.extra_env_values.is_empty()
-                    && self.env_values_selected_index < self.extra_env_values.len()
-                {
-                    self.extra_env_values.remove(self.env_values_selected_index);
-                    if self.env_values_selected_index > 0
-                        && self.env_values_selected_index >= self.extra_env_values.len()
-                    {
-                        self.env_values_selected_index =
-                            self.extra_env_values.len().saturating_sub(1);
-                    }
-                }
-                DialogResult::Continue
-            }
-            KeyCode::Enter => {
-                if !self.extra_env_values.is_empty()
-                    && self.env_values_selected_index < self.extra_env_values.len()
-                {
-                    let current = self.extra_env_values[self.env_values_selected_index].clone();
-                    self.env_values_editing_input = Some(Input::new(current));
-                    self.env_values_adding_new = false;
-                }
-                DialogResult::Continue
-            }
-            _ => DialogResult::Continue,
-        }
+        let validate = |value: &str, _list: &[String]| !value.is_empty() && value.contains('=');
+        handle_editable_list_key(
+            key,
+            &mut self.extra_env_values,
+            &mut self.env_values_list_expanded,
+            &mut self.env_values_selected_index,
+            &mut self.env_values_editing_input,
+            &mut self.env_values_adding_new,
+            validate,
+        )
     }
 
     fn current_input_mut(&mut self) -> &mut Input {

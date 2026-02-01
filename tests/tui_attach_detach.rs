@@ -147,31 +147,58 @@ fn test_event_draining_concept() {
 /// This test verifies the fix for the terminal corruption bug where
 /// using std::io::stdout() instead of terminal.backend_mut() caused
 /// file descriptor desynchronization, corrupting tmux sessions.
+///
+/// The terminal leave/restore logic lives in `with_raw_mode_disabled`,
+/// which `attach_session` delegates to.
 #[test]
 fn test_attach_uses_terminal_backend() {
     let source = std::fs::read_to_string("src/tui/app.rs").expect("Failed to read app.rs");
 
-    let attach_fn_start = source
-        .find("fn attach_session(")
-        .expect("attach_session function not found");
+    // The shared helper that handles terminal mode switching must use backend_mut()
+    let helper_start = source
+        .find("fn with_raw_mode_disabled")
+        .expect("with_raw_mode_disabled helper not found");
 
-    let attach_fn_section = &source[attach_fn_start..];
-    let fn_end = attach_fn_section
-        .find("\n    fn ")
-        .or_else(|| attach_fn_section.find("\n}\n"))
-        .unwrap_or(attach_fn_section.len());
+    let helper_section = &source[helper_start..];
+    let fn_end = helper_section
+        .find("\n}\n")
+        .map(|i| i + 3)
+        .unwrap_or(helper_section.len());
 
-    let attach_fn_body = &attach_fn_section[..fn_end];
+    let helper_body = &helper_section[..fn_end];
 
     assert!(
-        !attach_fn_body.contains("std::io::stdout()"),
-        "attach_session should use terminal.backend_mut() instead of std::io::stdout(). \
+        !helper_body.contains("std::io::stdout()"),
+        "with_raw_mode_disabled should use terminal.backend_mut() instead of std::io::stdout(). \
          Using std::io::stdout() creates separate file descriptor handles that can \
          corrupt terminal state and cause 'open terminal failed: not a terminal' errors."
     );
 
     assert!(
-        attach_fn_body.contains("terminal.backend_mut()"),
-        "attach_session should use terminal.backend_mut() for terminal operations"
+        helper_body.contains("terminal.backend_mut()"),
+        "with_raw_mode_disabled should use terminal.backend_mut() for terminal operations"
+    );
+
+    // attach_session must delegate to the helper, not bypass it
+    let attach_fn_start = source
+        .find("fn attach_session(")
+        .expect("attach_session function not found");
+
+    let attach_fn_section = &source[attach_fn_start..];
+    let attach_fn_end = attach_fn_section
+        .find("\n    fn ")
+        .or_else(|| attach_fn_section.find("\n}\n"))
+        .unwrap_or(attach_fn_section.len());
+
+    let attach_fn_body = &attach_fn_section[..attach_fn_end];
+
+    assert!(
+        attach_fn_body.contains("with_raw_mode_disabled"),
+        "attach_session should delegate to with_raw_mode_disabled"
+    );
+
+    assert!(
+        !attach_fn_body.contains("std::io::stdout()"),
+        "attach_session should not use std::io::stdout() directly"
     );
 }

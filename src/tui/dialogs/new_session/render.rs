@@ -74,18 +74,9 @@ impl NewSessionDialog {
             .sum();
         let dialog_height = fields_height + 4; // +2 border, +2 margin
 
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
 
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width.min(area.width),
-            height: dialog_height.min(area.height),
-        };
-
-        let clear = Clear;
-        frame.render_widget(clear, dialog_area);
+        frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -587,15 +578,7 @@ impl NewSessionDialog {
             + if has_sandbox { 3 } else { 0 }
             + if show_sandbox_options_help { 12 } else { 0 }; // Image, YOLO, Env, Env Values
 
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width.min(area.width),
-            height: dialog_height.min(area.height),
-        };
+        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
 
         frame.render_widget(Clear, dialog_area);
 
@@ -673,15 +656,7 @@ impl NewSessionDialog {
             7
         };
 
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width.min(area.width),
-            height: dialog_height.min(area.height),
-        };
+        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
 
         frame.render_widget(Clear, dialog_area);
 
@@ -710,7 +685,9 @@ impl NewSessionDialog {
                 // Truncate long commands to fit the dialog
                 let max_cmd_len = (dialog_width as usize).saturating_sub(12);
                 if cmd.len() > max_cmd_len {
-                    format!("{}...", &cmd[..max_cmd_len.saturating_sub(3)])
+                    let truncated: String =
+                        cmd.chars().take(max_cmd_len.saturating_sub(3)).collect();
+                    format!("{}...", truncated)
                 } else {
                     cmd.clone()
                 }
@@ -733,7 +710,8 @@ impl NewSessionDialog {
 
             for line in visible_lines {
                 let truncated = if line.len() > inner_width {
-                    format!("{}...", &line[..inner_width.saturating_sub(3)])
+                    let t: String = line.chars().take(inner_width.saturating_sub(3)).collect();
+                    format!("{}...", t)
                 } else {
                     line.clone()
                 };

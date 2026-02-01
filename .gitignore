@@ -1,3 +1,5 @@
+# Claude artifacts like ralph loop stuff
+.claude/
 # Rust build artifacts
 /target/
 Cargo.lock

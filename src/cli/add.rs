@@ -205,49 +205,66 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     // Check for repository hooks
-    match repo_config::check_hook_trust(&path) {
-        Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
-            let should_trust = if args.trust_hooks {
-                true
-            } else {
-                println!("\nRepository hooks detected in .aoe/config.toml:");
-                if !hooks.on_create.is_empty() {
-                    println!("  on_create:");
-                    for cmd in &hooks.on_create {
-                        println!("    {}", cmd);
+    let hook_result: Result<()> = (|| {
+        match repo_config::check_hook_trust(&path) {
+            Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
+                let should_trust = if args.trust_hooks {
+                    true
+                } else {
+                    println!("\nRepository hooks detected in .aoe/config.toml:");
+                    if !hooks.on_create.is_empty() {
+                        println!("  on_create:");
+                        for cmd in &hooks.on_create {
+                            println!("    {}", cmd);
+                        }
                     }
-                }
-                if !hooks.on_launch.is_empty() {
-                    println!("  on_launch:");
-                    for cmd in &hooks.on_launch {
-                        println!("    {}", cmd);
+                    if !hooks.on_launch.is_empty() {
+                        println!("  on_launch:");
+                        for cmd in &hooks.on_launch {
+                            println!("    {}", cmd);
+                        }
                     }
-                }
-                print!("\nTrust and run these hooks? [y/N] ");
-                use std::io::Write;
-                std::io::stdout().flush()?;
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                input.trim().eq_ignore_ascii_case("y")
-            };
+                    print!("\nTrust and run these hooks? [y/N] ");
+                    use std::io::Write;
+                    std::io::stdout().flush()?;
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    input.trim().eq_ignore_ascii_case("y")
+                };
 
-            if should_trust {
-                trust_and_run_on_create(&path, &hooks_hash, &hooks)?;
-            } else {
-                println!("Hooks skipped (session created without running hooks)");
+                if should_trust {
+                    trust_and_run_on_create(&path, &hooks_hash, &hooks)?;
+                } else {
+                    println!("Hooks skipped (session created without running hooks)");
+                }
+            }
+            Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
+                if !hooks.on_create.is_empty() {
+                    println!("Running on_create hooks...");
+                    repo_config::execute_hooks(&hooks.on_create, &path)?;
+                    println!("✓ on_create hooks completed");
+                }
+            }
+            Ok(repo_config::HookTrustStatus::NoHooks) => {}
+            Err(e) => {
+                tracing::warn!("Failed to check repo hooks: {}", e);
             }
         }
-        Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
-            if !hooks.on_create.is_empty() {
-                println!("Running on_create hooks...");
-                repo_config::execute_hooks(&hooks.on_create, &path)?;
-                println!("✓ on_create hooks completed");
+        Ok(())
+    })();
+
+    if let Err(e) = hook_result {
+        // Clean up worktree if we created one
+        if let Some(ref wt_info) = instance.worktree_info {
+            if wt_info.managed_by_aoe {
+                if let Ok(git_wt) =
+                    crate::git::GitWorktree::new(std::path::PathBuf::from(&wt_info.main_repo_path))
+                {
+                    let _ = git_wt.remove_worktree(&path);
+                }
             }
         }
-        Ok(repo_config::HookTrustStatus::NoHooks) => {}
-        Err(e) => {
-            tracing::warn!("Failed to check repo hooks: {}", e);
-        }
+        return Err(e);
     }
 
     instances.push(instance.clone());
@@ -304,28 +321,6 @@ pub fn is_duplicate_session(instances: &[Instance], title: &str, path: &str) -> 
         let existing_path = inst.project_path.trim_end_matches('/');
         existing_path == normalized_path && inst.title == title
     })
-}
-
-pub fn generate_unique_title(instances: &[Instance], base_title: &str, path: &str) -> String {
-    let normalized_path = path.trim_end_matches('/');
-    let title_exists = |title: &str| -> bool {
-        instances.iter().any(|inst| {
-            inst.project_path.trim_end_matches('/') == normalized_path && inst.title == title
-        })
-    };
-
-    if !title_exists(base_title) {
-        return base_title.to_string();
-    }
-
-    for i in 2..=100 {
-        let candidate = format!("{} ({})", base_title, i);
-        if !title_exists(&candidate) {
-            return candidate;
-        }
-    }
-
-    format!("{} ({})", base_title, chrono::Utc::now().timestamp())
 }
 
 fn trust_and_run_on_create(

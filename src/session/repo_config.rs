@@ -88,72 +88,21 @@ pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
 }
 
 /// Merge repo config overrides into an already-resolved config (global + profile).
-/// Follows the same pattern as `merge_configs()` in profile_config.rs.
 pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
-    // Session
+    use super::profile_config::{
+        apply_sandbox_overrides, apply_session_overrides, apply_worktree_overrides,
+    };
+
     if let Some(ref session_override) = repo.session {
-        if session_override.default_tool.is_some() {
-            config.session.default_tool = session_override.default_tool.clone();
-        }
+        apply_session_overrides(&mut config.session, session_override);
     }
 
-    // Sandbox
     if let Some(ref sandbox_override) = repo.sandbox {
-        if let Some(enabled_by_default) = sandbox_override.enabled_by_default {
-            config.sandbox.enabled_by_default = enabled_by_default;
-        }
-        if let Some(yolo_mode_default) = sandbox_override.yolo_mode_default {
-            config.sandbox.yolo_mode_default = yolo_mode_default;
-        }
-        if let Some(ref default_image) = sandbox_override.default_image {
-            config.sandbox.default_image = default_image.clone();
-        }
-        if let Some(ref extra_volumes) = sandbox_override.extra_volumes {
-            config.sandbox.extra_volumes = extra_volumes.clone();
-        }
-        if let Some(ref environment) = sandbox_override.environment {
-            config.sandbox.environment = environment.clone();
-        }
-        if let Some(ref environment_values) = sandbox_override.environment_values {
-            config.sandbox.environment_values = environment_values.clone();
-        }
-        if let Some(auto_cleanup) = sandbox_override.auto_cleanup {
-            config.sandbox.auto_cleanup = auto_cleanup;
-        }
-        if let Some(ref cpu_limit) = sandbox_override.cpu_limit {
-            config.sandbox.cpu_limit = Some(cpu_limit.clone());
-        }
-        if let Some(ref memory_limit) = sandbox_override.memory_limit {
-            config.sandbox.memory_limit = Some(memory_limit.clone());
-        }
-        if let Some(default_terminal_mode) = sandbox_override.default_terminal_mode {
-            config.sandbox.default_terminal_mode = default_terminal_mode;
-        }
-        if let Some(ref volume_ignores) = sandbox_override.volume_ignores {
-            config.sandbox.volume_ignores = volume_ignores.clone();
-        }
+        apply_sandbox_overrides(&mut config.sandbox, sandbox_override);
     }
 
-    // Worktree
     if let Some(ref worktree_override) = repo.worktree {
-        if let Some(enabled) = worktree_override.enabled {
-            config.worktree.enabled = enabled;
-        }
-        if let Some(ref path_template) = worktree_override.path_template {
-            config.worktree.path_template = path_template.clone();
-        }
-        if let Some(ref bare_repo_path_template) = worktree_override.bare_repo_path_template {
-            config.worktree.bare_repo_path_template = bare_repo_path_template.clone();
-        }
-        if let Some(auto_cleanup) = worktree_override.auto_cleanup {
-            config.worktree.auto_cleanup = auto_cleanup;
-        }
-        if let Some(show_branch_in_tui) = worktree_override.show_branch_in_tui {
-            config.worktree.show_branch_in_tui = show_branch_in_tui;
-        }
-        if let Some(delete_branch_on_cleanup) = worktree_override.delete_branch_on_cleanup {
-            config.worktree.delete_branch_on_cleanup = delete_branch_on_cleanup;
-        }
+        apply_worktree_overrides(&mut config.worktree, worktree_override);
     }
 
     config
@@ -335,16 +284,86 @@ pub fn check_hook_trust(project_path: &Path) -> Result<HookTrustStatus> {
 // Hook execution
 // ---------------------------------------------------------------------------
 
-/// Execute a list of hook commands in the given directory.
-/// Each command is run via `bash -c` with the project path as cwd.
-/// Output is captured and only included in the error message on failure.
-pub fn execute_hooks(commands: &[String], project_path: &Path) -> Result<()> {
+/// Where to run a hook command.
+enum HookTarget<'a> {
+    /// Run locally in the given project directory.
+    Local { project_path: &'a Path },
+    /// Run inside a Docker container.
+    Container {
+        container_name: &'a str,
+        workdir: &'a str,
+    },
+}
+
+/// Build a `Command` for running a hook via `bash -c`.
+fn build_hook_command(cmd: &str, target: &HookTarget, merge_stderr: bool) -> std::process::Command {
+    let shell_cmd = if merge_stderr {
+        format!("{} 2>&1", cmd)
+    } else {
+        cmd.to_string()
+    };
+
+    match target {
+        HookTarget::Local { project_path } => {
+            let mut command = std::process::Command::new("bash");
+            command.arg("-c").arg(shell_cmd).current_dir(project_path);
+            command
+        }
+        HookTarget::Container {
+            container_name,
+            workdir,
+        } => {
+            let mut command = std::process::Command::new("docker");
+            command.args([
+                "exec",
+                "--workdir",
+                workdir,
+                container_name,
+                "bash",
+                "-c",
+                &shell_cmd,
+            ]);
+            command
+        }
+    }
+}
+
+/// Format a hook failure error message from captured output.
+fn format_hook_error(
+    cmd: &str,
+    exit_code: Option<i32>,
+    stderr: &str,
+    stdout: &str,
+    in_container: bool,
+) -> String {
+    let prefix = if in_container {
+        "Hook command failed in container"
+    } else {
+        "Hook command failed"
+    };
+    let mut detail = format!(
+        "{} with exit code {}: {}",
+        prefix,
+        exit_code.unwrap_or(-1),
+        cmd
+    );
+    if !stderr.is_empty() {
+        detail.push_str(&format!("\nstderr:\n{}", stderr.trim_end()));
+    }
+    if !stdout.is_empty() {
+        detail.push_str(&format!("\nstdout:\n{}", stdout.trim_end()));
+    }
+    detail
+}
+
+/// Run hook commands with captured output (non-streamed).
+fn run_hooks_captured(commands: &[String], target: &HookTarget) -> Result<()> {
+    let in_container = matches!(target, HookTarget::Container { .. });
+
     for cmd in commands {
         tracing::info!("Running hook: {}", cmd);
-        let output = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(cmd)
-            .current_dir(project_path)
+        let mut command = build_hook_command(cmd, target, false);
+        let output = command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
@@ -353,18 +372,13 @@ pub fn execute_hooks(commands: &[String], project_path: &Path) -> Result<()> {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut detail = format!(
-                "Hook command failed with exit code {}: {}",
-                output.status.code().unwrap_or(-1),
-                cmd
-            );
-            if !stderr.is_empty() {
-                detail.push_str(&format!("\nstderr:\n{}", stderr.trim_end()));
-            }
-            if !stdout.is_empty() {
-                detail.push_str(&format!("\nstdout:\n{}", stdout.trim_end()));
-            }
-            anyhow::bail!(detail);
+            anyhow::bail!(format_hook_error(
+                cmd,
+                output.status.code(),
+                &stderr,
+                &stdout,
+                in_container
+            ));
         }
 
         tracing::debug!(
@@ -377,69 +391,22 @@ pub fn execute_hooks(commands: &[String], project_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Execute hooks inside a Docker container.
-/// Commands run in the specified `workdir` inside the container.
-/// Output is captured and only included in the error message on failure.
-pub fn execute_hooks_in_container(
+/// Run hook commands with streamed output sent through a progress channel.
+fn run_hooks_streamed(
     commands: &[String],
-    container_name: &str,
-    workdir: &str,
-) -> Result<()> {
-    for cmd in commands {
-        tracing::info!("Running hook in container {}: {}", container_name, cmd);
-        let output = std::process::Command::new("docker")
-            .args([
-                "exec",
-                "--workdir",
-                workdir,
-                container_name,
-                "bash",
-                "-c",
-                cmd,
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .with_context(|| format!("Failed to execute hook in container: {}", cmd))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut detail = format!(
-                "Hook command failed in container with exit code {}: {}",
-                output.status.code().unwrap_or(-1),
-                cmd
-            );
-            if !stderr.is_empty() {
-                detail.push_str(&format!("\nstderr:\n{}", stderr.trim_end()));
-            }
-            if !stdout.is_empty() {
-                detail.push_str(&format!("\nstdout:\n{}", stdout.trim_end()));
-            }
-            anyhow::bail!(detail);
-        }
-    }
-    Ok(())
-}
-
-/// Execute a list of hook commands with streamed output.
-/// Each command is run via `bash -c` with stderr merged into stdout (`2>&1`).
-/// Output lines are sent through the progress channel as they arrive.
-pub fn execute_hooks_streamed(
-    commands: &[String],
-    project_path: &Path,
+    target: &HookTarget,
     progress_tx: &mpsc::Sender<HookProgress>,
 ) -> Result<()> {
     use std::io::BufRead;
+
+    let in_container = matches!(target, HookTarget::Container { .. });
 
     for cmd in commands {
         tracing::info!("Running hook (streamed): {}", cmd);
         let _ = progress_tx.send(HookProgress::Started(cmd.clone()));
 
-        let mut child = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(format!("{} 2>&1", cmd))
-            .current_dir(project_path)
+        let mut command = build_hook_command(cmd, target, true);
+        let mut child = command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -454,11 +421,7 @@ pub fn execute_hooks_streamed(
 
         let status = child.wait()?;
         if !status.success() {
-            let detail = format!(
-                "Hook command failed with exit code {}: {}",
-                status.code().unwrap_or(-1),
-                cmd
-            );
+            let detail = format_hook_error(cmd, status.code(), "", "", in_container);
             let _ = progress_tx.send(HookProgress::Output(detail.clone()));
             anyhow::bail!(detail);
         }
@@ -468,59 +431,50 @@ pub fn execute_hooks_streamed(
     Ok(())
 }
 
+/// Execute a list of hook commands in the given directory.
+pub fn execute_hooks(commands: &[String], project_path: &Path) -> Result<()> {
+    run_hooks_captured(commands, &HookTarget::Local { project_path })
+}
+
+/// Execute hooks inside a Docker container.
+pub fn execute_hooks_in_container(
+    commands: &[String],
+    container_name: &str,
+    workdir: &str,
+) -> Result<()> {
+    run_hooks_captured(
+        commands,
+        &HookTarget::Container {
+            container_name,
+            workdir,
+        },
+    )
+}
+
+/// Execute a list of hook commands with streamed output.
+pub fn execute_hooks_streamed(
+    commands: &[String],
+    project_path: &Path,
+    progress_tx: &mpsc::Sender<HookProgress>,
+) -> Result<()> {
+    run_hooks_streamed(commands, &HookTarget::Local { project_path }, progress_tx)
+}
+
 /// Execute hooks inside a Docker container with streamed output.
-/// Commands run in the specified `workdir` inside the container.
-/// stderr is merged into stdout via `2>&1` in the bash command.
 pub fn execute_hooks_in_container_streamed(
     commands: &[String],
     container_name: &str,
     workdir: &str,
     progress_tx: &mpsc::Sender<HookProgress>,
 ) -> Result<()> {
-    use std::io::BufRead;
-
-    for cmd in commands {
-        tracing::info!(
-            "Running hook in container {} (streamed): {}",
+    run_hooks_streamed(
+        commands,
+        &HookTarget::Container {
             container_name,
-            cmd
-        );
-        let _ = progress_tx.send(HookProgress::Started(cmd.clone()));
-
-        let mut child = std::process::Command::new("docker")
-            .args([
-                "exec",
-                "--workdir",
-                workdir,
-                container_name,
-                "bash",
-                "-c",
-                &format!("{} 2>&1", cmd),
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .with_context(|| format!("Failed to execute hook in container: {}", cmd))?;
-
-        if let Some(stdout) = child.stdout.take() {
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                let _ = progress_tx.send(HookProgress::Output(line));
-            }
-        }
-
-        let status = child.wait()?;
-        if !status.success() {
-            let detail = format!(
-                "Hook command failed in container with exit code {}: {}",
-                status.code().unwrap_or(-1),
-                cmd
-            );
-            let _ = progress_tx.send(HookProgress::Output(detail.clone()));
-            anyhow::bail!(detail);
-        }
-    }
-    Ok(())
+            workdir,
+        },
+        progress_tx,
+    )
 }
 
 /// Template content for `aoe init`.
@@ -539,7 +493,8 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 
 # [sandbox]
 # enabled_by_default = true
-# default_image = "docker pull ghcr.io/njbrake/aoe-dev-sandbox:0.10"
+# default_image = "ghcr.io/njbrake/aoe-dev-sandbox:0.10"
+# List fields below replace (not append to) global settings when set:
 # environment = ["NODE_ENV", "DATABASE_URL"]
 # volume_ignores = ["node_modules", ".next"]
 

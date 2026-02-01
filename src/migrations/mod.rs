@@ -9,7 +9,6 @@
 //! 3. Add it to the `MIGRATIONS` array below
 
 mod v001_xdg_linux;
-mod v002_docker_volume_ownership;
 
 use anyhow::Result;
 use std::fs;
@@ -74,12 +73,6 @@ fn set_version(version: u32) -> Result<()> {
     fs::write(&version_file, version.to_string())?;
     debug!("Updated schema version to {}", version);
     Ok(())
-}
-
-/// Run lazy migrations that require Docker to be available.
-/// Call this before starting a sandboxed session.
-pub fn run_lazy_docker_migrations() {
-    v002_docker_volume_ownership::run_lazy();
 }
 
 /// Returns all directories where app data might exist (for migration discovery).

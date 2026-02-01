@@ -197,15 +197,7 @@ impl UnifiedDeleteDialog {
             7 // message + spacer + buttons + spacer + hints + border
         };
 
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width.min(area.width),
-            height: dialog_height.min(area.height),
-        };
+        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
 
         frame.render_widget(Clear, dialog_area);
 

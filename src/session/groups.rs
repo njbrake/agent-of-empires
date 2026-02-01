@@ -220,7 +220,7 @@ fn flatten_group(
     depth: usize,
     tree: &GroupTree,
 ) {
-    let session_count = count_sessions_in_group(&group.path, instances, tree);
+    let session_count = count_sessions_in_group(&group.path, instances);
 
     items.push(Item::Group {
         path: group.path.clone(),
@@ -253,7 +253,7 @@ fn flatten_group(
     }
 }
 
-fn count_sessions_in_group(path: &str, instances: &[Instance], _tree: &GroupTree) -> usize {
+fn count_sessions_in_group(path: &str, instances: &[Instance]) -> usize {
     let prefix = format!("{}/", path);
     instances
         .iter()
@@ -298,7 +298,7 @@ mod tests {
         assert!(!items.is_empty());
 
         // First item should be ungrouped session
-        matches!(items[0], Item::Session { .. });
+        assert!(matches!(items[0], Item::Session { .. }));
     }
 
     #[test]

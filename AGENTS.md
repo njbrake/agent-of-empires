@@ -108,3 +108,4 @@ When making breaking changes to stored data (file locations, config schema, etc.
 - Use `tracing::info!` to log what's happening
 - Platform-specific migrations should use `#[cfg(target_os = "...")]`
 - Test migrations by creating the old state manually and verifying the transition
+- Before finishing any feature request, make sure that you have run cargo fmt, clippy, and tests.
