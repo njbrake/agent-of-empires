@@ -18,19 +18,19 @@ You are free to:
 
 ## Default State Transition Sounds
 
-- `start.ogg` - Played when a session starts
-- `running.ogg` - Played when a session enters running state
-- `waiting.ogg` - Played when a session enters waiting state
-- `idle.ogg` - Played when a session enters idle state
-- `error.ogg` - Played when a session encounters an error
+- `start.wav` - Played when a session starts
+- `running.wav` - Played when a session enters running state
+- `waiting.wav` - Played when a session enters waiting state
+- `idle.wav` - Played when a session enters idle state
+- `error.wav` - Played when a session encounters an error
 
 ## Additional Sounds
 
-- `spell.ogg` - Alternative spell/magic sound
-- `coins.ogg` - Coin/reward sound
-- `metal.ogg` - Metal impact sound
-- `chain.ogg` - Chain/lock sound
-- `gem.ogg` - Gem/crystal sound
+- `spell.wav` - Alternative spell/magic sound
+- `coins.wav` - Coin/reward sound
+- `metal.wav` - Metal impact sound
+- `chain.wav` - Chain/lock sound
+- `gem.wav` - Gem/crystal sound
 
 ## Installation
 

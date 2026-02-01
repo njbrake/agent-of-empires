@@ -83,22 +83,22 @@ pub struct SoundConfigOverride {
 
 /// Bundled sound files (embedded at compile time)
 const BUNDLED_SOUNDS: &[(&str, &[u8])] = &[
-    ("start.ogg", include_bytes!("../bundled_sounds/start.ogg")),
+    ("start.wav", include_bytes!("../bundled_sounds/start.wav")),
     (
-        "running.ogg",
-        include_bytes!("../bundled_sounds/running.ogg"),
+        "running.wav",
+        include_bytes!("../bundled_sounds/running.wav"),
     ),
     (
-        "waiting.ogg",
-        include_bytes!("../bundled_sounds/waiting.ogg"),
+        "waiting.wav",
+        include_bytes!("../bundled_sounds/waiting.wav"),
     ),
-    ("idle.ogg", include_bytes!("../bundled_sounds/idle.ogg")),
-    ("error.ogg", include_bytes!("../bundled_sounds/error.ogg")),
-    ("spell.ogg", include_bytes!("../bundled_sounds/spell.ogg")),
-    ("coins.ogg", include_bytes!("../bundled_sounds/coins.ogg")),
-    ("metal.ogg", include_bytes!("../bundled_sounds/metal.ogg")),
-    ("chain.ogg", include_bytes!("../bundled_sounds/chain.ogg")),
-    ("gem.ogg", include_bytes!("../bundled_sounds/gem.ogg")),
+    ("idle.wav", include_bytes!("../bundled_sounds/idle.wav")),
+    ("error.wav", include_bytes!("../bundled_sounds/error.wav")),
+    ("spell.wav", include_bytes!("../bundled_sounds/spell.wav")),
+    ("coins.wav", include_bytes!("../bundled_sounds/coins.wav")),
+    ("metal.wav", include_bytes!("../bundled_sounds/metal.wav")),
+    ("chain.wav", include_bytes!("../bundled_sounds/chain.wav")),
+    ("gem.wav", include_bytes!("../bundled_sounds/gem.wav")),
 ];
 
 /// Get the directory where sound files are stored
