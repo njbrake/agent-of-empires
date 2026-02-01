@@ -1,111 +1,162 @@
-# Repository Guidelines
+# CLAUDE.md - Development Guide for OpenClaw Studio
 
-## Project Structure & Module Organization
+This is the development guide for the OpenClaw Studio project (forked from agent-of-empires).
 
-- `src/main.rs`: binary entrypoint (`aoe`).
-- `src/lib.rs`: shared library code used by the CLI/TUI.
-- `src/cli/`: clap command handlers (e.g., `src/cli/add.rs`, `src/cli/session.rs`).
-- `src/tui/`: ratatui UI and input handling.
-- `src/session/`: session storage, configuration, and group management.
-- `src/tmux/`: tmux integration and status detection.
-- `src/process/`: OS-specific process handling (`macos.rs`, `linux.rs`).
-- `src/docker/`: Docker sandboxing and container management.
-- `src/git/`: git worktree operations and template resolution.
-- `src/update/`: version checking against GitHub releases.
-- `src/migrations/`: versioned data migrations for breaking changes (see below).
-- `tests/`: integration tests (`tests/*.rs`).
-- `docs/`: user-facing documentation and guides.
-- `scripts/`: installation and utility scripts.
-- `xtask/`: build automation workspace.
+## Project Overview
 
-## Build, Test, and Development Commands
+OpenClaw Studio is a terminal session manager for AI coding agents, with integrated project management, task tracking, and monitoring capabilities.
 
-- `cargo build` / `cargo build --release`: compile (release binary at `target/release/aoe`).
-- `cargo build --profile dev-release`: faster optimized builds for local development. Skips LTO for quicker compile times while still producing an optimized binary. Use `--release` for final/CI builds.
-- `cargo run --release`: run from source; requires `tmux` installed.
-- `cargo check`: fast type-checking during development.
-- `cargo test`: run unit + integration tests (some tests skip if `tmux` is unavailable).
-- `cargo fmt`: format with rustfmt (run before pushing).
-- `cargo clippy`: lint (fix warnings unless there’s a strong reason not to).
-- Debug logging: `RUST_LOG=agent_of_empires=debug cargo run` (or `AGENT_OF_EMPIRES_DEBUG=1 cargo run`).
+**Original:** https://github.com/njbrake/agent-of-empires
+**Fork:** https://github.com/kgkgzrtk/agent-of-empires (to be renamed to openclaw-studio)
 
-## Settings & Configuration
+## Architecture
 
-- **Every configurable field must be editable in the settings TUI.** When adding a new config field to `SandboxConfig`, `WorktreeConfig`, etc., you must also:
-  1. Add a `FieldKey` variant in `src/tui/settings/fields.rs`
-  2. Add a `SettingField` entry in the corresponding `build_*_fields()` function
-  3. Wire up `apply_field_to_global()` and `apply_field_to_profile()`
-  4. Add a `clear_profile_override()` case in `src/tui/settings/input.rs`
-- Profile overrides (`*ConfigOverride` structs in `profile_config.rs`) must also include the new field with merge logic in `merge_configs()`.
+### Directory Structure
 
-## Coding Style & Naming Conventions
+```
+src/
+├── cli/           # CLI commands (add, list, remove, status, etc.)
+├── docker/        # Docker sandbox management (CLI-based)
+├── git/           # Git operations (worktrees, diff)
+├── migrations/    # SQLite migrations
+├── process/       # Process management (macOS/Linux)
+├── session/       # Session state management
+│   ├── instance.rs      # Session instance (1396 lines)
+│   ├── config.rs        # Configuration (835 lines)
+│   ├── groups.rs        # Group management (551 lines)
+│   └── ...
+├── tmux/          # tmux integration
+├── tui/           # TUI (ratatui-based)
+│   ├── app.rs           # Main app (21K lines)
+│   ├── dialogs/         # Dialog components
+│   ├── home/            # Home screen
+│   └── ...
+└── update/        # Auto-update mechanism
+```
 
-- Prefer "let the tools decide": keep code `cargo fmt`-clean and `cargo clippy`-clean.
-- **Never use emdashes (—)** in documentation or comments.
-- Rust naming: `snake_case` for modules/functions, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
-- Keep OS-specific logic in `src/process/{macos,linux}.rs` rather than sprinkling `cfg` checks.
-- Do not be concerned about maintaining backwards compatibility. You should not assume that it needs to be backwards compatible, but you should mention when you make a change that breaks backwards compatibility.
-- Add comments where they aid understanding, but remove obvious ones before finishing:
-  - **Keep**: comments explaining non-obvious formulas, layout structure documentation, or "why" something is done
-  - **Remove**: section headers that just name what the next line does (e.g., `// Render buttons` before `render_buttons()`), or comments restating the code
+### Key Dependencies
 
-## Testing Guidelines
+```toml
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
 
-- Use unit tests in-module (`#[cfg(test)]`) for pure logic; use `tests/*.rs` for end-to-end behavior.
-- Tests must be deterministic and clean up after themselves (tmux tests should use unique names like `aoe_test_*`).
-- Avoid reading/writing real user state; prefer temp dirs (see `tempfile` usage in `src/session/storage.rs`).
+# Async
+tokio = "1.42"
 
-## Commit & Pull Request Guidelines
+# Serialization
+serde = "1.0"
+toml = "0.8"
 
-- Branch names: `feature/...`, `fix/...`, `docs/...`, `refactor/...`.
-- Commit messages: use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `refactor:`).
-- PRs: include a clear “what/why”, how you tested (`cargo test`, plus any manual tmux/TUI checks), and screenshots/recordings for UI changes.
+# Git
+git2 = "0.19"
 
-## Local Data & Configuration Tips
+# Process
+nix = "0.29"
+portable-pty = "0.8"
+```
 
-- Runtime config/data location:
-  - **Linux**: `$XDG_CONFIG_HOME/agent-of-empires/` (defaults to `~/.config/agent-of-empires/`)
-  - **macOS/Windows**: `~/.agent-of-empires/`
-- Keep user data out of commits. For repo-local experiments, use ignored paths like `./.agent-of-empires/`, `.env`, and `.mcp.json`.
+### Data Flow
 
-## Data Migrations
+```
+User Input (CLI/TUI)
+       │
+       ▼
+┌──────────────┐
+│   Session    │ ──▶ SQLite DB (migrations/)
+│   Manager    │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐     ┌──────────────┐
+│    tmux      │ ◀─▶ │   Docker     │
+│   Sessions   │     │  Containers  │
+└──────────────┘     └──────────────┘
+```
 
-When making breaking changes to stored data (file locations, config schema, etc.), use the migration system in `src/migrations/` instead of adding fallback/compatibility logic to the main code.
+## Development Phases
 
-**Why**: Keeps the main codebase clean. Legacy transition logic is isolated and clearly marked as such.
+### Phase 1: Core Understanding (Current)
+- [x] Fork repository
+- [ ] Build and test
+- [ ] Code analysis
+- [ ] Document key components
 
-**How it works**:
-1. A `.schema_version` file in the app directory tracks the current version
-2. On startup, `migrations::run_migrations()` runs any pending migrations in order
-3. Each migration bumps the version after completion
+### Phase 2: OpenClaw Integration (Next)
+- [ ] Add OpenClaw Gateway client
+- [ ] Integrate bollard for Docker (vs CLI)
+- [ ] Add channel binding support
 
-**Adding a new migration**:
+### Phase 3: Orchestration Features
+- [ ] Project context switching
+- [ ] Task management (TASKS.md sync)
+- [ ] Cron/Heartbeat integration
+- [ ] Dead Man's Switch
 
-1. Create `src/migrations/vNNN_description.rs`:
-   ```rust
-   use anyhow::Result;
+## Key Components to Understand
 
-   pub fn run() -> Result<()> {
-       // Migration logic here
-       Ok(())
-   }
-   ```
+### 1. Session Instance (`src/session/instance.rs`)
 
-2. Update `src/migrations/mod.rs`:
-   ```rust
-   mod vNNN_description;
+The core session representation with:
+- Docker sandbox configuration
+- Environment variable handling
+- Shell command generation
 
-   const CURRENT_VERSION: u32 = NNN;  // bump this
+```rust
+pub struct Session {
+    pub id: Uuid,
+    pub name: String,
+    pub path: PathBuf,
+    pub sandbox: Option<SandboxInfo>,
+    // ...
+}
+```
 
-   const MIGRATIONS: &[Migration] = &[
-       // ... existing migrations ...
-       Migration { version: NNN, name: "description", run: vNNN_description::run },
-   ];
-   ```
+### 2. TUI App (`src/tui/app.rs`)
 
-**Guidelines**:
-- Migrations must be idempotent (safe to run multiple times)
-- Use `tracing::info!` to log what's happening
-- Platform-specific migrations should use `#[cfg(target_os = "...")]`
-- Test migrations by creating the old state manually and verifying the transition
-- Before finishing any feature request, make sure that you have run cargo fmt, clippy, and tests.
+Main application state and event loop using ratatui.
+
+### 3. tmux Integration (`src/tmux/`)
+
+Session management and status detection for AI agents.
+
+## Integration Points with ocpm
+
+| ocpm Feature | aoe Equivalent | Integration Plan |
+|--------------|----------------|------------------|
+| bollard Docker | CLI Docker | Keep both, adapter pattern |
+| Channel binding | N/A | Add to session config |
+| OpenClaw config | N/A | New module `src/openclaw/` |
+| Browser enable | N/A | Add to sandbox config |
+
+## Build & Test
+
+```bash
+# Build
+cargo build --release
+
+# Run TUI
+./target/release/aoe
+
+# Run CLI
+./target/release/aoe add /path/to/project
+./target/release/aoe list
+```
+
+## Coding Conventions
+
+1. **Error Handling**: Use `anyhow::Result` for CLI, custom errors for library
+2. **Async**: Tokio runtime, prefer async where possible
+3. **TUI**: Follow existing ratatui patterns in `src/tui/`
+4. **Tests**: Unit tests in same file, integration tests in `tests/`
+
+## Next Steps
+
+1. Complete build verification
+2. Test basic functionality (add session, TUI, Docker sandbox)
+3. Create integration branch for OpenClaw features
+4. Implement OpenClaw Gateway client module
+
+---
+
+*Last Updated: 2026-02-01*
