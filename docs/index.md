@@ -1,36 +1,48 @@
 # Agent of Empires
 
-A terminal session manager for Linux and macOS using tmux to aid in management and monitoring of AI coding agents, written in Rust.
+A terminal session manager for AI coding agents on Linux and macOS, built on tmux and written in Rust.
+
+AoE lets you run multiple AI agents in parallel -- each in its own tmux session, optionally on its own git branch, optionally inside a Docker container. A TUI dashboard shows you what every agent is doing at a glance.
 
 ![Agent of Empires Demo](assets/demo.gif)
 
-## Features
+## Why AoE?
 
-- **TUI Dashboard**: Visual interface to manage all your AI coding sessions
-- **Session Management**: Create, attach, detach, and delete sessions
-- **Group Organization**: Organize sessions into hierarchical folders
-- **Status Detection**: Automatic status detection for Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI
-- **tmux Integration**: Sessions persist in tmux for reliability
-- **Multi-profile Support**: Separate workspaces for different projects
-- **Git Worktrees**: Run parallel agents on different branches of the same repo
+**The problem:** You're working with AI coding agents (Claude Code, OpenCode, Codex, etc.) and want to run several in parallel across different tasks or branches. Managing multiple terminal windows, git branches, and container lifecycles by hand gets tedious fast.
 
-## How It Works
+**AoE handles it for you:**
 
-Agent of Empires (aoe) is a wrapper around [tmux](https://github.com/tmux/tmux/wiki), the terminal multiplexer. Each AI coding session you create is actually a tmux session under the hood.
+- **One dashboard for all agents.** See status (running, waiting, idle, error) at a glance. Toggle to paired shell terminals with `t`.
+- **Git worktrees built in.** Create a session and AoE creates a branch + worktree automatically. Delete the session and AoE cleans up.
+- **Docker sandboxing.** Run agents in isolated containers with your project mounted and auth credentials shared across containers.
+- **Per-repo configuration.** Drop a `.aoe/config.toml` in your repo for project-specific settings and hooks that run on session creation or launch.
+- **Sessions survive everything.** AoE wraps tmux, so agents keep running when you close the TUI, disconnect SSH, or your terminal crashes.
 
-Once you attach to a session, you're working directly in tmux. Basic tmux knowledge helps:
+## Supported Agents
 
-| tmux Command | What It Does |
-|--------------|--------------|
-| `Ctrl+b d` | Detach from session (return to Agent of Empires) |
-| `Ctrl+b [` | Enter scroll/copy mode |
-| `Ctrl+b n` / `Ctrl+b p` | Next/previous window |
+Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI. AoE auto-detects which are installed.
 
-If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and return to the TUI.
+## Documentation
 
-## Quick Links
+### Getting Started
 
-- [Installation](installation.md): Get started with Agent of Empires
-- [Quick Start](quick-start.md): Basic usage tutorial
-- [CLI Reference](cli/reference.md): Complete command documentation
-- [Workflow Guide](guides/workflow.md): Recommended setup and daily workflow
+- [Installation](installation.md) -- prerequisites and install methods
+- [Quick Start](quick-start.md) -- create your first session in under a minute
+
+### Guides
+
+- [Workflow Guide](guides/workflow.md) -- recommended setup with bare repos and worktrees
+- [Docker Sandbox](guides/sandbox.md) -- container isolation, images, and volume mounts
+- [Repo Config & Hooks](guides/repo-config.md) -- per-project settings and automation
+- [Git Worktrees](guides/worktrees.md) -- branch management and worktree templates
+- [Diff View](guides/diff-view.md) -- review and edit git changes in the TUI
+- [tmux Status Bar](guides/tmux-status-bar.md) -- session info in your tmux status line
+
+### Reference
+
+- [CLI Reference](cli/reference.md) -- every command and flag
+- [Configuration Reference](guides/configuration.md) -- all config options (global, profile, repo-level)
+
+### Contributing
+
+- [Development](development.md) -- building, testing, and generating demo assets

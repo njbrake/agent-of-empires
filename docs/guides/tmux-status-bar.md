@@ -36,6 +36,7 @@ Configure the status bar behavior in `~/.agent-of-empires/config.toml`:
 # "enabled"        - Always apply aoe status bar styling
 # "disabled"       - Never apply, use your own tmux config
 status_bar = "auto"
+mouse = "auto"    # Same modes: auto, enabled, disabled
 ```
 
 ### Values

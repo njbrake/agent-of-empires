@@ -2,7 +2,8 @@
 
 ## Prerequisites
 
-Agent of Empires requires [tmux](https://github.com/tmux/tmux/wiki) to be installed on your system.
+- [tmux](https://github.com/tmux/tmux/wiki) (required)
+- [Docker](https://www.docker.com/) (optional, for sandboxing agents in containers)
 
 ## Install Agent of Empires
 

@@ -46,6 +46,7 @@ aoe remove <session> --keep-container
 ```toml
 [sandbox]
 enabled_by_default = false
+yolo_mode_default = false
 default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
 auto_cleanup = true
 cpu_limit = "4"
@@ -58,13 +59,16 @@ environment = ["ANTHROPIC_API_KEY"]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled_by_default` | `false` | Auto-enable sandbox for new sessions |
+| `yolo_mode_default` | `false` | Skip agent permission prompts in sandboxed sessions |
 | `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image to use |
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `cpu_limit` | (none) | CPU limit (e.g., "4") |
 | `memory_limit` | (none) | Memory limit (e.g., "8g") |
 | `environment` | `[]` | Env var names to pass through from host |
 | `environment_values` | `{}` | Env vars with explicit values to inject (see below) |
+| `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
+| `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` (on host machine) or `"container"` (inside Docker) |
 
 ## Volume Mounts
 
@@ -89,10 +93,6 @@ environment = ["ANTHROPIC_API_KEY"]
 | `aoe-gemini-auth` | `/root/.gemini/` | Gemini CLI credentials |
 
 **Note:** Auth persists across containers. First session requires authentication, subsequent sessions reuse it.
-
-### Source Code Reference
-
-Volume mounts are defined in `src/session/instance.rs` in the `build_container_config()` method (lines 207-274). The actual Docker `-v` arguments are constructed in `src/docker/container.rs` in the `run_container()` function (lines 89-101).
 
 ## Container Naming
 
@@ -286,4 +286,4 @@ git fetch origin
 git worktree add main main
 ```
 
-See the [Worktrees Guide](worktrees.md#bare-repo-workflow-recommended-for-sandboxing) for detailed setup instructions.
+See the [Workflow Guide](workflow.md) for detailed bare repo setup instructions.

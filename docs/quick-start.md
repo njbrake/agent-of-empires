@@ -2,132 +2,93 @@
 
 ## Launch the TUI
 
-The simplest way to use Agent of Empires is through the TUI dashboard:
-
 ```bash
 aoe
 ```
 
-This opens an interactive interface where you can:
+This opens the dashboard. You'll see an empty session list on first run.
 
-- View all your coding sessions
-- Create new sessions with `n`
-- Attach to sessions with `Enter`
-- Delete sessions with `d`
-- Quit with `q`
+## Create Your First Session
 
-## CLI Quick Reference
+**From the TUI:** Press `n` to open the new session dialog. Fill in the path to your project (or leave it as `.` for the current directory) and press `Enter`.
 
-### Add a Session
+**From the CLI:**
 
 ```bash
-# Add session in current directory
-aoe add
-
-# Add session with custom title
-aoe add -t "my-feature"
-
-# Add and launch immediately
-aoe add -l
-
-# Add session for specific project
 aoe add /path/to/project
 ```
 
-### List Sessions
+The session appears in the dashboard with status **Idle**.
+
+## Attach to a Session
+
+Select a session and press `Enter` to attach. You're now inside a tmux session running your AI agent (Claude Code by default).
+
+To return to the TUI, press **`Ctrl+b d`** (the standard tmux detach shortcut).
+
+## Use the Terminal View
+
+Press `t` to toggle between Agent View and Terminal View. Each agent session has a paired shell terminal where you can run builds, tests, and git commands without interrupting the agent.
+
+## Review Changes with Diff View
+
+Press `D` to open the diff view. This shows changes between your working directory and the base branch. Navigate files with `j`/`k`, press `e` to edit, and `Esc` to close.
+
+## Create a Worktree Session
+
+To work on a new branch with its own directory:
 
 ```bash
-# Table format
-aoe list
+# CLI
+aoe add . -w feat/my-feature -b
 
-# JSON format
-aoe list --json
+# TUI: press n, fill in the worktree branch field
 ```
 
-### Manage Sessions
+This creates a new git branch, a worktree directory, and a session pointing at it. When you delete the session, AoE offers to clean up the worktree too.
+
+## Create a Sandboxed Session
+
+To run an agent inside a Docker container:
 
 ```bash
-# Attach to a session
-aoe session attach my-session
-
-# Start a stopped session
-aoe session start my-session
-
-# Stop a running session
-aoe session stop my-session
-
-# Show session details
-aoe session show my-session
+aoe add --sandbox .
 ```
 
-### Check Status
+In the TUI, toggle the sandbox checkbox when creating a session. The agent runs in an isolated container with your project mounted at `/workspace` and authentication credentials shared via persistent Docker volumes.
+
+Requires Docker to be installed.
+
+## Choose a Different Agent
+
+By default, AoE uses Claude Code. To use a different tool:
 
 ```bash
-# Summary of all sessions
-aoe status
-
-# Detailed status
-aoe status -v
-
-# JSON format (for scripts)
-aoe status --json
+aoe add -c opencode .
+aoe add -c vibe .
+aoe add -c codex .
+aoe add -c gemini .
 ```
 
-## Profiles
+In the TUI, select the tool from the dropdown in the new session dialog.
 
-Profiles let you maintain separate workspaces:
+## TUI Keyboard Reference
 
-```bash
-# Use default profile
-aoe
-
-# Use a specific profile
-aoe -p work
-
-# Create a new profile
-aoe profile create client-xyz
-
-# List all profiles
-aoe profile list
-```
-
-## Configuration
-
-Configuration is stored in `~/.agent-of-empires/`:
-
-```
-~/.agent-of-empires/
-├── config.toml           # Global configuration
-├── profiles/
-│   └── default/
-│       ├── sessions.json # Session data
-│       └── groups.json   # Group structure
-└── logs/                 # Session logs
-```
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `AGENT_OF_EMPIRES_PROFILE` | Default profile to use |
-| `AGENT_OF_EMPIRES_DEBUG` | Enable debug logging |
-
-## tmux Status Bar
-
-By default, aoe displays session info in the tmux status bar for users without an existing tmux configuration. This shows:
-
-- **Session title**: The name of your aoe session
-- **Git branch**: For worktree sessions
-
-If you have your own `~/.tmux.conf`, aoe won't modify your status bar. You can:
-
-- Set `status_bar = "enabled"` in `~/.agent-of-empires/config.toml` to always show aoe info
-- Or add `#(aoe tmux status)` to your tmux.conf for custom integration
-
-See [tmux Status Bar Guide](guides/tmux-status-bar.md) for details.
+| Key | Action |
+|-----|--------|
+| `n` | New session |
+| `Enter` | Attach to session |
+| `d` | Delete session |
+| `t` | Toggle Agent/Terminal view |
+| `D` | Open diff view |
+| `/` | Search sessions |
+| `?` | Show help |
+| `q` | Quit |
+| `Ctrl+b d` | Detach from tmux session |
 
 ## Next Steps
 
-- See the [CLI Reference](cli/reference.md) for complete command documentation
-- Learn the recommended [Workflow](guides/workflow.md) with bare repos and worktrees
-- Customize the [tmux Status Bar](guides/tmux-status-bar.md)
+- [Workflow Guide](guides/workflow.md) -- recommended setup with bare repos and parallel agents
+- [Docker Sandbox](guides/sandbox.md) -- container configuration and custom images
+- [Repo Config & Hooks](guides/repo-config.md) -- per-project settings
+- [CLI Reference](cli/reference.md) -- every command and flag
