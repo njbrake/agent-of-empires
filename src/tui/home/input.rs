@@ -629,30 +629,19 @@ impl HomeView {
         self.update_selected();
     }
 
-    /// Create a session with optional hooks. For sandbox sessions, delegates to
-    /// `request_creation` (background). For non-sandbox, creates inline and
-    /// executes `on_create` hooks if provided.
+    /// Create a session with optional hooks. Delegates to the background
+    /// `CreationPoller` when hooks are present (to avoid freezing the TUI on
+    /// slow commands like `npm install`) or when the session is sandboxed.
     fn create_session_with_hooks(
         &mut self,
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) -> Option<Action> {
-        if data.sandbox {
+        let has_hooks = hooks.as_ref().is_some_and(|h| !h.on_create.is_empty());
+
+        if data.sandbox || has_hooks {
             self.request_creation(data, hooks);
             return None;
-        }
-
-        // Non-sandbox: run on_create hooks inline before creating the session
-        if let Some(ref hooks) = hooks {
-            if !hooks.on_create.is_empty() {
-                if let Err(e) = repo_config::execute_hooks(&hooks.on_create, &data.path) {
-                    tracing::error!("on_create hook failed: {}", e);
-                    if let Some(dialog) = &mut self.new_dialog {
-                        dialog.set_error(format!("on_create hook failed: {}", e));
-                    }
-                    return None;
-                }
-            }
         }
 
         match self.create_session(data) {

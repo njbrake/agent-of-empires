@@ -243,7 +243,7 @@ fn is_repo_trusted_normalized(normalized_path: &str, hooks_hash: &str) -> Result
 /// locked file handle to ensure the lock is effective.
 pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
     use fs2::FileExt;
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
 
     let normalized = normalize_path(project_path);
     let path = trusted_repos_path()?;
@@ -253,13 +253,20 @@ pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
         fs::write(&path, "")?;
     }
 
-    let lock_file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+    let mut lock_file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
     lock_file
         .lock_exclusive()
         .context("Failed to acquire lock on trusted_repos.toml")?;
 
-    // Read-modify-write through the locked handle
-    let mut trusted = load_trusted_repos()?;
+    // Read through the locked handle to avoid a separate file descriptor race
+    let mut content = String::new();
+    lock_file.read_to_string(&mut content)?;
+
+    let mut trusted: TrustedRepos = if content.trim().is_empty() {
+        TrustedRepos::default()
+    } else {
+        toml::from_str(&content).context("Failed to parse trusted_repos.toml")?
+    };
 
     trusted.repos.retain(|r| r.path != normalized);
 
@@ -269,9 +276,10 @@ pub fn trust_repo(project_path: &str, hooks_hash: &str) -> Result<()> {
         trusted_at: chrono::Utc::now().to_rfc3339(),
     });
 
-    let content = toml::to_string_pretty(&trusted)?;
+    let new_content = toml::to_string_pretty(&trusted)?;
+    lock_file.seek(SeekFrom::Start(0))?;
     lock_file.set_len(0)?;
-    (&lock_file).write_all(content.as_bytes())?;
+    lock_file.write_all(new_content.as_bytes())?;
 
     Ok(())
 }
