@@ -128,7 +128,7 @@ impl CreationPoller {
                 // Ensure the container is running so we can exec hooks inside it.
                 // Don't create the tmux session yet -- that happens at attach time
                 // where the terminal size is available.
-                if let Err(e) = instance.ensure_container_running() {
+                if let Err(e) = instance.get_container_for_instance() {
                     builder::cleanup_instance(&instance, created_worktree.as_ref());
                     return CreationResult::Error(e.to_string());
                 }
@@ -160,7 +160,7 @@ impl CreationPoller {
             let hooks = hooks.as_ref().unwrap();
             if data.sandbox {
                 // For sandbox, ensure container is running (may already be from on_create above).
-                if instance.ensure_container_running().is_ok() {
+                if instance.get_container_for_instance().is_ok() {
                     if let Some(ref sandbox) = instance.sandbox_info {
                         let workdir = instance.container_workdir();
                         if let Err(e) = repo_config::execute_hooks_in_container_streamed(
@@ -188,7 +188,7 @@ impl CreationPoller {
             // Only ensure the Docker container is running here. Don't create the tmux
             // session yet -- that happens at attach time where the terminal size is
             // available, avoiding a race that creates the session at 80x24 default.
-            if let Err(e) = instance.ensure_container_running() {
+            if let Err(e) = instance.get_container_for_instance() {
                 builder::cleanup_instance(&instance, created_worktree.as_ref());
                 return CreationResult::Error(e.to_string());
             }

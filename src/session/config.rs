@@ -1,12 +1,11 @@
 //! User configuration management
 
+use super::get_app_dir;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-
-use super::get_app_dir;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -227,6 +226,21 @@ pub struct SandboxConfig {
     /// Relative directory paths to exclude from the host bind mount via anonymous volumes
     #[serde(default)]
     pub volume_ignores: Vec<String>,
+
+    #[serde(default = "default_true")]
+    pub share_ssh_folder: bool,
+
+    #[serde(default)]
+    pub container_runtime: ContainerRuntimeName,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerRuntimeName {
+    #[serde(rename = "apple_container")]
+    AppleContainer,
+    #[default]
+    Docker,
 }
 
 impl Default for SandboxConfig {
@@ -243,12 +257,14 @@ impl Default for SandboxConfig {
             memory_limit: None,
             default_terminal_mode: DefaultTerminalMode::default(),
             volume_ignores: Vec::new(),
+            share_ssh_folder: true,
+            container_runtime: ContainerRuntimeName::default(),
         }
     }
 }
 
 fn default_sandbox_image() -> String {
-    crate::docker::default_sandbox_image().to_string()
+    "ghcr.io/njbrake/aoe-sandbox:latest".to_string()
 }
 
 fn default_sandbox_environment() -> Vec<String> {

@@ -526,7 +526,7 @@ mod tests {
         repo.branch("feature", &commit, false).unwrap();
 
         let branches = list_branches(dir.path()).unwrap();
-        assert!(branches.len() >= 1);
+        assert!(!branches.is_empty());
     }
 
     #[test]

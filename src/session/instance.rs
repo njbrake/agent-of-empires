@@ -5,9 +5,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::docker::{
-    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME,
-    GEMINI_AUTH_VOLUME, OPENCODE_AUTH_VOLUME, VIBE_AUTH_VOLUME,
+use crate::containers::{
+    self, ContainerConfig, ContainerRuntimeInterface, DockerContainer, VolumeMount,
+    CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME, GEMINI_AUTH_VOLUME, OPENCODE_AUTH_VOLUME,
+    VIBE_AUTH_VOLUME,
 };
 use crate::git::GitWorktree;
 use crate::tmux;
@@ -318,7 +319,7 @@ impl Instance {
             anyhow::bail!("Cannot create container terminal for non-sandboxed session");
         }
 
-        self.ensure_container_running()?;
+        let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
         let env_args = build_docker_env_args(sandbox);
@@ -333,8 +334,8 @@ impl Instance {
         let (_, _, container_workdir) = self.compute_volume_paths(project_path)?;
 
         let cmd = format!(
-            "docker exec -it -w {} {}{} /bin/bash",
-            container_workdir, env_part, sandbox.container_name
+            "{} /bin/bash",
+            container.exec_command(Some(&format!("{} {}", container_workdir, env_part)))
         );
 
         let session = self.container_terminal_tmux_session()?;
@@ -413,8 +414,7 @@ impl Instance {
         };
 
         let cmd = if self.is_sandboxed() {
-            self.ensure_container_running()?;
-
+            let container = self.get_container_for_instance()?;
             // Run on_launch hooks inside the container
             if let Some(ref hook_cmds) = on_launch_hooks {
                 if let Some(ref sandbox) = self.sandbox_info {
@@ -428,6 +428,7 @@ impl Instance {
                     }
                 }
             }
+
             let sandbox = self.sandbox_info.as_ref().unwrap();
             let tool_cmd = if self.is_yolo_mode() {
                 match self.tool.as_str() {
@@ -447,8 +448,9 @@ impl Instance {
                 format!("{} ", env_args)
             };
             Some(wrap_command_ignore_suspend(&format!(
-                "docker exec -it {}{} {}",
-                env_part, sandbox.container_name, tool_cmd
+                "{} {}",
+                container.exec_command(Some(&env_part)),
+                tool_cmd
             )))
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
@@ -474,6 +476,10 @@ impl Instance {
             }
         };
 
+        tracing::info!(
+            "container cmd is {}.",
+            cmd.as_ref().map_or("not found.", |v| v)
+        );
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
@@ -524,7 +530,7 @@ impl Instance {
         apply_all_tmux_options(&session_name, &terminal_title, branch, sandbox.as_ref());
     }
 
-    pub fn ensure_container_running(&mut self) -> Result<()> {
+    pub fn get_container_for_instance(&mut self) -> Result<containers::DockerContainer> {
         let sandbox = self
             .sandbox_info
             .as_ref()
@@ -534,22 +540,23 @@ impl Instance {
         let container = DockerContainer::new(&self.id, image);
 
         if container.is_running()? {
-            return Ok(());
+            return Ok(container);
         }
 
         if container.exists()? {
             container.start()?;
-            return Ok(());
+            return Ok(container);
         }
 
         // Ensure image is available (always pulls to get latest)
-        docker::ensure_image(image)?;
+        let runtime = containers::get_container_runtime();
+        runtime.ensure_image(image)?;
 
-        docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(VIBE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(CODEX_AUTH_VOLUME)?;
-        docker::ensure_named_volume(GEMINI_AUTH_VOLUME)?;
+        runtime.ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
+        runtime.ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
+        runtime.ensure_named_volume(VIBE_AUTH_VOLUME)?;
+        runtime.ensure_named_volume(CODEX_AUTH_VOLUME)?;
+        runtime.ensure_named_volume(GEMINI_AUTH_VOLUME)?;
 
         crate::migrations::run_lazy_docker_migrations();
 
@@ -561,7 +568,7 @@ impl Instance {
             sandbox.created_at = Some(Utc::now());
         }
 
-        Ok(())
+        Ok(container)
     }
 
     /// Compute volume mount paths for Docker container.
@@ -654,13 +661,16 @@ impl Instance {
 
         const CONTAINER_HOME: &str = "/root";
 
-        let gitconfig = home.join(".gitconfig");
-        if gitconfig.exists() {
-            volumes.push(VolumeMount {
-                host_path: gitconfig.to_string_lossy().to_string(),
-                container_path: format!("{}/.gitconfig", CONTAINER_HOME),
-                read_only: true,
-            });
+        #[cfg(not(target_os = "macos"))]
+        {
+            let gitconfig = home.join(".gitconfig");
+            if gitconfig.exists() {
+                volumes.push(VolumeMount {
+                    host_path: gitconfig.to_string_lossy().to_string(),
+                    container_path: format!("{}/.gitconfig", CONTAINER_HOME),
+                    read_only: true,
+                });
+            }
         }
 
         let ssh_dir = home.join(".ssh");

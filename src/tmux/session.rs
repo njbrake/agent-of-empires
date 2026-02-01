@@ -53,6 +53,15 @@ impl Session {
         let args = build_create_args(&self.name, working_dir, command, size);
         let output = Command::new("tmux").args(&args).output()?;
 
+        // Since we most certainly will use the -d flag, we won't be able to catch the error
+        // if the shell command fails, the return value of the new-session -d will be 0 even if
+        // the command fails. We can use tmux has-session to check if the session exists,
+        // but you have to delay for a while before using tmux has-session, or else the check
+        // will still return success.
+        //
+        // I choose to log a message here that could be useful for debugging.
+        tracing::info!("tried to start a new tmux session with args {:?}.", args);
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("Failed to create tmux session: {}", stderr);

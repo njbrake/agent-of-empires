@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
-use crate::docker::DockerContainer;
+use crate::containers::DockerContainer;
 use crate::git::GitWorktree;
 use crate::session::Instance;
 
