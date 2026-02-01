@@ -101,12 +101,13 @@ pub struct FileDiff {
     pub is_binary: bool,
 }
 
-/// Compute the list of changed files between a base branch and the working directory
+/// Compute the list of changed files between a base branch and the working directory.
+/// Uses the merge-base of HEAD and the base branch, so only changes introduced
+/// on the current branch are shown (matching GitHub PR diff behavior).
 pub fn compute_changed_files(repo_path: &Path, base_branch: &str) -> Result<Vec<DiffFile>> {
     let repo = git2::Repository::discover(repo_path)?;
 
-    // Get the tree from the base branch
-    let base_tree = get_tree_from_ref(&repo, base_branch)?;
+    let base_tree = get_merge_base_tree(&repo, base_branch)?;
 
     // Create diff options
     let mut opts = git2::DiffOptions::new();
@@ -181,30 +182,112 @@ pub fn compute_changed_files(repo_path: &Path, base_branch: &str) -> Result<Vec<
     Ok(files)
 }
 
-/// Get a git tree from a reference (branch name, tag, or commit)
-fn get_tree_from_ref<'a>(repo: &'a git2::Repository, reference: &str) -> Result<git2::Tree<'a>> {
-    // Try as a branch first
+/// Resolve a reference to a commit (branch name, tag, or commit hash)
+fn get_commit_from_ref<'a>(
+    repo: &'a git2::Repository,
+    reference: &str,
+) -> Result<git2::Commit<'a>> {
+    // Try as a local branch
     if let Ok(branch) = repo.find_branch(reference, git2::BranchType::Local) {
-        let commit = branch.get().peel_to_commit()?;
-        return Ok(commit.tree()?);
+        return Ok(branch.get().peel_to_commit()?);
     }
 
     // Try as a remote branch
     let remote_ref = format!("origin/{}", reference);
     if let Ok(branch) = repo.find_branch(&remote_ref, git2::BranchType::Remote) {
-        let commit = branch.get().peel_to_commit()?;
-        return Ok(commit.tree()?);
+        return Ok(branch.get().peel_to_commit()?);
     }
 
     // Try as a reference/commit
     let obj = repo.revparse_single(reference)?;
-    let commit = obj
-        .peel_to_commit()
-        .map_err(|_| GitError::BranchNotFound(reference.to_string()))?;
-    Ok(commit.tree()?)
+    obj.peel_to_commit()
+        .map_err(|_| GitError::BranchNotFound(reference.to_string()))
 }
 
-/// Compute the full diff for a specific file
+/// Get the merge-base tree between HEAD and the given reference.
+/// This produces GitHub-style PR diffs: only changes introduced on the
+/// current branch are shown, excluding new commits on the base branch
+/// that haven't been merged in yet.
+///
+/// Falls back to the ref's tip tree if HEAD can't be resolved (e.g.
+/// on an unborn branch or when comparing against HEAD itself).
+fn get_merge_base_tree<'a>(repo: &'a git2::Repository, reference: &str) -> Result<git2::Tree<'a>> {
+    let base_commit = get_commit_from_ref(repo, reference)?;
+
+    // If we can resolve HEAD, compute the merge-base
+    if let Ok(head_ref) = repo.head() {
+        if let Ok(head_commit) = head_ref.peel_to_commit() {
+            if let Ok(merge_base_oid) = repo.merge_base(head_commit.id(), base_commit.id()) {
+                let merge_base_commit = repo.find_commit(merge_base_oid)?;
+                return Ok(merge_base_commit.tree()?);
+            }
+        }
+    }
+
+    // Fallback: use the base branch tip directly (e.g. unborn branch,
+    // or no common ancestor -- same as old behavior)
+    Ok(base_commit.tree()?)
+}
+
+/// Check whether the merge-base between HEAD and the given base branch can
+/// be computed. Returns `Some(warning)` if the diff will fall back to
+/// comparing against the branch tip directly (which includes unrelated
+/// changes from the base branch).
+pub fn check_merge_base_status(repo_path: &Path, base_branch: &str) -> Option<String> {
+    let repo = match git2::Repository::discover(repo_path) {
+        Ok(r) => r,
+        Err(_) => return Some("Could not open repository.".to_string()),
+    };
+
+    let base_commit = match get_commit_from_ref(&repo, base_branch) {
+        Ok(c) => c,
+        Err(_) => {
+            return Some(format!(
+                "Branch '{}' not found. Diff may include unrelated changes.",
+                base_branch
+            ))
+        }
+    };
+
+    let head_ref =
+        match repo.head() {
+            Ok(r) => r,
+            Err(_) => return Some(
+                "Could not resolve HEAD. Comparing against the tip of the base branch directly, \
+                 which may include unrelated changes."
+                    .to_string(),
+            ),
+        };
+
+    let head_commit =
+        match head_ref.peel_to_commit() {
+            Ok(c) => c,
+            Err(_) => return Some(
+                "HEAD does not point to a commit. Comparing against the tip of the base branch \
+                 directly, which may include unrelated changes."
+                    .to_string(),
+            ),
+        };
+
+    if head_commit.id() == base_commit.id() {
+        // Same commit, no merge-base needed
+        return None;
+    }
+
+    match repo.merge_base(head_commit.id(), base_commit.id()) {
+        Ok(_) => None,
+        Err(_) => Some(format!(
+            "No common ancestor found between HEAD and '{}'. The branches have unrelated \
+             histories, so the diff is comparing against the tip of '{}' directly and may \
+             include unrelated changes.",
+            base_branch, base_branch
+        )),
+    }
+}
+
+/// Compute the full diff for a specific file.
+/// Uses the merge-base of HEAD and the base branch so only changes from
+/// the current branch are shown.
 pub fn compute_file_diff(
     repo_path: &Path,
     file_path: &Path,
@@ -214,8 +297,7 @@ pub fn compute_file_diff(
     let repo = git2::Repository::discover(repo_path)?;
     let workdir = repo.workdir().ok_or(GitError::NotAGitRepo)?;
 
-    // Get the base tree
-    let base_tree = get_tree_from_ref(&repo, base_branch)?;
+    let base_tree = get_merge_base_tree(&repo, base_branch)?;
 
     // Get old content from base tree (as bytes first to check for binary)
     let old_bytes = get_blob_bytes(&repo, &base_tree, file_path);
@@ -458,6 +540,254 @@ mod tests {
         }
 
         (dir, repo)
+    }
+
+    /// Helper to create a commit on the current branch
+    fn commit_file(repo: &git2::Repository, path: &str, content: &str, message: &str) {
+        let dir = repo.workdir().unwrap();
+        let file_path = dir.join(path);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::write(&file_path, content).unwrap();
+
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(path)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+            .unwrap();
+    }
+
+    /// Set up a repo with a main branch and a feature branch that diverged.
+    /// main has extra commits that the feature branch doesn't have.
+    fn setup_branching_repo() -> (TempDir, git2::Repository) {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Initial commit on default branch (master from git init)
+        commit_file(&repo, "shared.txt", "shared content\n", "Initial commit");
+
+        // Create "main" and "feature" branches at this point
+        {
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("main", &head, false).unwrap();
+            repo.branch("feature", &head, false).unwrap();
+        }
+
+        // Add a commit on main that the feature branch won't have
+        repo.set_head("refs/heads/main").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit_file(
+            &repo,
+            "main_only.txt",
+            "this file only exists on main\n",
+            "Add main-only file",
+        );
+        commit_file(
+            &repo,
+            "shared.txt",
+            "shared content\nmain added this line\n",
+            "Modify shared file on main",
+        );
+
+        // Switch to feature branch and make a feature-specific change
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit_file(
+            &repo,
+            "feature_only.txt",
+            "feature-specific content\n",
+            "Add feature-only file",
+        );
+
+        (dir, repo)
+    }
+
+    #[test]
+    fn test_merge_base_excludes_main_only_changes() {
+        let (dir, _repo) = setup_branching_repo();
+
+        // We're on the feature branch, comparing against main.
+        // Only feature_only.txt should show up -- NOT main_only.txt
+        // and NOT the main-side modification to shared.txt.
+        let files = compute_changed_files(dir.path(), "main").unwrap();
+
+        let paths: Vec<&Path> = files.iter().map(|f| f.path.as_path()).collect();
+        assert!(
+            paths.contains(&Path::new("feature_only.txt")),
+            "feature_only.txt should appear in diff, got: {:?}",
+            paths
+        );
+        assert!(
+            !paths.contains(&Path::new("main_only.txt")),
+            "main_only.txt should NOT appear (it's a main-only change), got: {:?}",
+            paths
+        );
+        // shared.txt was only modified on main, not on the feature branch,
+        // so it should not appear in the merge-base diff
+        assert!(
+            !paths.contains(&Path::new("shared.txt")),
+            "shared.txt should NOT appear (only changed on main), got: {:?}",
+            paths
+        );
+    }
+
+    #[test]
+    fn test_merge_base_file_diff_uses_correct_base() {
+        let (dir, _repo) = setup_branching_repo();
+
+        // The file diff for feature_only.txt should show it as entirely new
+        let diff = compute_file_diff(dir.path(), Path::new("feature_only.txt"), "main", 3).unwrap();
+        assert_eq!(diff.file.status, FileStatus::Added);
+        assert!(diff.file.additions > 0);
+        assert_eq!(diff.file.deletions, 0);
+    }
+
+    #[test]
+    fn test_merge_base_in_worktree() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Initial commit
+        commit_file(&repo, "shared.txt", "shared\n", "Initial commit");
+
+        // Create main branch and feature branch
+        {
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("main", &head, false).unwrap();
+        }
+
+        // Add a commit to main
+        repo.set_head("refs/heads/main").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit_file(&repo, "main_only.txt", "main\n", "Main-only commit");
+
+        // Create a worktree for "feature" branch
+        let wt_path = dir.path().parent().unwrap().join("feature_worktree");
+        {
+            let first_commit = repo
+                .revparse_single("main~1")
+                .unwrap()
+                .peel_to_commit()
+                .unwrap();
+            repo.branch("feature", &first_commit, false).unwrap();
+        }
+
+        // Add worktree
+        repo.worktree(
+            "feature",
+            &wt_path,
+            Some(
+                git2::WorktreeAddOptions::new().reference(Some(
+                    &repo
+                        .find_branch("feature", git2::BranchType::Local)
+                        .unwrap()
+                        .into_reference(),
+                )),
+            ),
+        )
+        .unwrap();
+
+        // Open the worktree repo and add a feature-only file
+        let wt_repo = git2::Repository::open(&wt_path).unwrap();
+        commit_file(&wt_repo, "feature_only.txt", "feature\n", "Feature commit");
+
+        // Now test: from the worktree, diff against main should only show feature_only.txt
+        let files = compute_changed_files(&wt_path, "main").unwrap();
+        let paths: Vec<&Path> = files.iter().map(|f| f.path.as_path()).collect();
+
+        assert!(
+            paths.contains(&Path::new("feature_only.txt")),
+            "feature_only.txt should appear, got: {:?}",
+            paths
+        );
+        assert!(
+            !paths.contains(&Path::new("main_only.txt")),
+            "main_only.txt should NOT appear in worktree diff, got: {:?}",
+            paths
+        );
+
+        // Cleanup worktree
+        fs::remove_dir_all(&wt_path).ok();
+    }
+
+    #[test]
+    fn test_check_merge_base_status_ok_when_common_ancestor_exists() {
+        let (dir, _repo) = setup_branching_repo();
+        // Feature branch and main share a common ancestor, so no warning
+        let status = check_merge_base_status(dir.path(), "main");
+        assert!(
+            status.is_none(),
+            "Expected no warning when merge-base exists, got: {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn test_check_merge_base_status_warns_on_missing_branch() {
+        let (dir, _repo) = setup_test_repo();
+        let status = check_merge_base_status(dir.path(), "nonexistent-branch");
+        assert!(status.is_some(), "Expected warning for missing branch");
+        assert!(
+            status.unwrap().contains("not found"),
+            "Warning should mention branch not found"
+        );
+    }
+
+    #[test]
+    fn test_check_merge_base_status_warns_on_unrelated_histories() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Create first commit on default branch
+        commit_file(&repo, "file_a.txt", "a\n", "First commit");
+
+        // Create an orphan branch with no shared history
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        {
+            fs::write(dir.path().join("file_b.txt"), "b\n").unwrap();
+            let mut index = repo.index().unwrap();
+            index.clear().unwrap();
+            index.add_path(Path::new("file_b.txt")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            // Commit with no parents (orphan)
+            let oid = repo
+                .commit(None, &sig, &sig, "Orphan commit", &tree, &[])
+                .unwrap();
+            let commit = repo.find_commit(oid).unwrap();
+            repo.branch("orphan", &commit, false).unwrap();
+        }
+
+        // HEAD is on master/default branch, compare against orphan
+        let status = check_merge_base_status(dir.path(), "orphan");
+        assert!(status.is_some(), "Expected warning for unrelated histories");
+        assert!(
+            status.unwrap().contains("No common ancestor"),
+            "Warning should mention no common ancestor"
+        );
+    }
+
+    #[test]
+    fn test_check_merge_base_status_ok_same_commit() {
+        let (dir, _repo) = setup_test_repo();
+        // Comparing HEAD against HEAD -- same commit, no warning
+        let status = check_merge_base_status(dir.path(), "HEAD");
+        assert!(
+            status.is_none(),
+            "Expected no warning when comparing same commit, got: {:?}",
+            status
+        );
     }
 
     #[test]

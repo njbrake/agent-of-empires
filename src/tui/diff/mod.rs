@@ -7,10 +7,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::git::diff::{
-    compute_changed_files, compute_file_diff, get_default_branch, list_branches, DiffFile, FileDiff,
+    check_merge_base_status, compute_changed_files, compute_file_diff, get_default_branch,
+    list_branches, DiffFile, FileDiff,
 };
 use crate::session::config::{load_config, save_config};
 use crate::session::Config;
+use crate::tui::dialogs::InfoDialog;
 
 pub use input::DiffAction;
 
@@ -64,6 +66,9 @@ pub struct DiffView {
 
     /// Width of the file list panel (resizable with h/l)
     pub(crate) file_list_width: u16,
+
+    /// Warning dialog shown when merge-base can't be computed
+    pub(crate) warning_dialog: Option<InfoDialog>,
 }
 
 impl DiffView {
@@ -81,6 +86,9 @@ impl DiffView {
 
         let context_lines = config.diff.context_lines;
 
+        let warning_dialog = check_merge_base_status(&repo_path, &base_branch)
+            .map(|msg| InfoDialog::new("Warning", &msg));
+
         let mut view = Self {
             repo_path,
             base_branch,
@@ -96,6 +104,7 @@ impl DiffView {
             context_lines,
             show_help: false,
             file_list_width: config.app_state.diff_file_list_width.unwrap_or(35),
+            warning_dialog,
         };
 
         view.refresh_files()?;
@@ -163,6 +172,8 @@ impl DiffView {
     pub fn select_branch(&mut self, branch: String) {
         self.base_branch = branch;
         self.branch_select = None;
+        self.warning_dialog = check_merge_base_status(&self.repo_path, &self.base_branch)
+            .map(|msg| InfoDialog::new("Warning", &msg));
         if let Err(e) = self.refresh_files() {
             self.error_message = Some(format!("Failed to refresh: {}", e));
         }

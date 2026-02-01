@@ -59,6 +59,11 @@ impl DiffView {
         if self.show_help {
             self.render_help(frame, area, theme);
         }
+
+        // Render warning dialog on top of everything
+        if let Some(ref dialog) = self.warning_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {

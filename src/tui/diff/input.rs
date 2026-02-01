@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use super::DiffView;
+use crate::tui::dialogs::DialogResult;
 
 /// Result of handling a key event in the diff view
 pub enum DiffAction {
@@ -19,6 +20,17 @@ pub enum DiffAction {
 impl DiffView {
     /// Handle a key event
     pub fn handle_key(&mut self, key: KeyEvent) -> DiffAction {
+        // Handle warning dialog first (modal)
+        if let Some(ref mut dialog) = self.warning_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Cancel | DialogResult::Submit(_) => {
+                    self.warning_dialog = None;
+                }
+                DialogResult::Continue => {}
+            }
+            return DiffAction::Continue;
+        }
+
         // Clear transient messages on any key
         self.success_message = None;
 
@@ -175,5 +187,99 @@ impl DiffView {
             }
             _ => DiffAction::Continue,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::dialogs::InfoDialog;
+    use crossterm::event::KeyModifiers;
+    use std::collections::HashMap;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn make_diff_view_with_warning() -> DiffView {
+        DiffView {
+            repo_path: PathBuf::from("/tmp/fake"),
+            base_branch: "main".to_string(),
+            files: Vec::new(),
+            selected_file: 0,
+            diff_cache: HashMap::new(),
+            scroll_offset: 0,
+            visible_lines: 20,
+            total_lines: 0,
+            branch_select: None,
+            error_message: None,
+            success_message: None,
+            context_lines: 3,
+            show_help: false,
+            file_list_width: 35,
+            warning_dialog: Some(InfoDialog::new("Warning", "Test warning")),
+        }
+    }
+
+    fn make_diff_view_no_warning() -> DiffView {
+        DiffView {
+            repo_path: PathBuf::from("/tmp/fake"),
+            base_branch: "main".to_string(),
+            files: Vec::new(),
+            selected_file: 0,
+            diff_cache: HashMap::new(),
+            scroll_offset: 0,
+            visible_lines: 20,
+            total_lines: 0,
+            branch_select: None,
+            error_message: None,
+            success_message: None,
+            context_lines: 3,
+            show_help: false,
+            file_list_width: 35,
+            warning_dialog: None,
+        }
+    }
+
+    #[test]
+    fn test_warning_dialog_blocks_normal_keys() {
+        let mut view = make_diff_view_with_warning();
+        // 'q' would normally close the view, but with warning dialog open it should not
+        let action = view.handle_key(key(KeyCode::Char('q')));
+        assert!(matches!(action, DiffAction::Continue));
+        // Dialog should still be there (q doesn't dismiss InfoDialog)
+        assert!(view.warning_dialog.is_some());
+    }
+
+    #[test]
+    fn test_warning_dialog_dismissed_by_enter() {
+        let mut view = make_diff_view_with_warning();
+        let action = view.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, DiffAction::Continue));
+        assert!(view.warning_dialog.is_none());
+    }
+
+    #[test]
+    fn test_warning_dialog_dismissed_by_esc() {
+        let mut view = make_diff_view_with_warning();
+        let action = view.handle_key(key(KeyCode::Esc));
+        assert!(matches!(action, DiffAction::Continue));
+        assert!(view.warning_dialog.is_none());
+    }
+
+    #[test]
+    fn test_warning_dialog_dismissed_by_space() {
+        let mut view = make_diff_view_with_warning();
+        let action = view.handle_key(key(KeyCode::Char(' ')));
+        assert!(matches!(action, DiffAction::Continue));
+        assert!(view.warning_dialog.is_none());
+    }
+
+    #[test]
+    fn test_normal_keys_work_without_warning() {
+        let mut view = make_diff_view_no_warning();
+        // 'q' should close the view when no dialog
+        let action = view.handle_key(key(KeyCode::Char('q')));
+        assert!(matches!(action, DiffAction::Close));
     }
 }
