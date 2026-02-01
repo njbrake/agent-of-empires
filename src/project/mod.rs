@@ -9,4 +9,4 @@ pub mod config;
 pub mod context;
 
 pub use config::ProjectConfig;
-pub use context::ProjectContext;
+pub use context::{ProjectContext, ProjectManager};

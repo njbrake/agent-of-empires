@@ -35,6 +35,8 @@ async fn main() -> Result<()> {
                 TmuxCommands::Status(args) => cli::tmux::run_status(args),
             }
         }
+        Some(Commands::Project { command }) => cli::project::run(&profile, command).await,
+        Some(Commands::Task { command }) => cli::task::run(command).await,
         Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
         None => tui::run(&profile).await,
     }

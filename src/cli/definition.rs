@@ -10,9 +10,11 @@ use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
+use super::project::ProjectCommands;
 use super::remove::RemoveArgs;
 use super::session::SessionCommands;
 use super::status::StatusArgs;
+use super::task::TaskCommands;
 use super::tmux::TmuxCommands;
 use super::uninstall::UninstallArgs;
 use super::worktree::WorktreeCommands;
@@ -84,6 +86,18 @@ pub enum Commands {
     Tmux {
         #[command(subcommand)]
         command: TmuxCommands,
+    },
+
+    /// Manage OpenClaw projects
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
+
+    /// Manage tasks (TASKS.md)
+    Task {
+        #[command(subcommand)]
+        command: TaskCommands,
     },
 
     /// Uninstall Agent of Empires
