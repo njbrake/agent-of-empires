@@ -15,6 +15,7 @@
 - [Git Worktrees](guides/worktrees.md)
 - [Diff View](guides/diff-view.md)
 - [tmux Status Bar](guides/tmux-status-bar.md)
+- [Sound Effects](sounds.md)
 
 # Reference
 
