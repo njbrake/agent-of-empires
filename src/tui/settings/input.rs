@@ -452,6 +452,16 @@ impl SettingsView {
                     s.volume_ignores = None;
                 }
             }
+            FieldKey::CpuLimit => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.cpu_limit = None;
+                }
+            }
+            FieldKey::MemoryLimit => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.memory_limit = None;
+                }
+            }
             // Sound
             FieldKey::SoundEnabled => {
                 if let Some(ref mut s) = self.profile_config.sound {

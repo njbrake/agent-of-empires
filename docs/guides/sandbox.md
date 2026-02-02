@@ -287,3 +287,35 @@ git worktree add main main
 ```
 
 See the [Workflow Guide](workflow.md) for detailed bare repo setup instructions.
+
+## Troubleshooting
+
+### Container killed due to memory (OOM)
+
+**Symptoms:** Your sandboxed session exits unexpectedly, the container disappears, or you see "Killed" in the output. Running `docker inspect <container>` shows `OOMKilled: true`.
+
+**Cause:** On macOS (and Windows), Docker runs inside a Linux VM with a fixed memory ceiling. Docker Desktop defaults to 2 GB for the entire VM. If a container tries to use more memory than the VM has available, the Linux OOM killer terminates it. This commonly happens with AI coding agents that load large language model contexts or process big codebases.
+
+**Fix:**
+
+1. **Increase Docker Desktop VM memory:**
+   Open Docker Desktop, go to **Settings > Resources > Advanced**, increase the **Memory** slider (8 GB+ recommended for AI coding agents), then click **Apply & Restart**.
+
+2. **Set a per-container memory limit** in your AOE config (`~/.agent-of-empires/config.toml`) so containers have an explicit allocation rather than competing for the VM's total memory:
+
+   ```toml
+   [sandbox]
+   memory_limit = "8g"
+   ```
+
+   The per-container limit must be less than or equal to the Docker Desktop VM memory. If you set `memory_limit = "8g"` but your VM only has 4 GB, the container will still be OOM-killed.
+
+3. **Verify the fix:** Start a new session and check the container's limit:
+
+   ```bash
+   docker stats --no-stream
+   ```
+
+   The `MEM LIMIT` column should reflect your configured value.
+
+**Note:** On Linux, Docker runs natively without a VM, so the memory ceiling is your host's physical RAM. You typically only need `memory_limit` on Linux to prevent a single container from consuming all system memory.
