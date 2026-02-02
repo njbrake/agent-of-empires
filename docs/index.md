@@ -1,5 +1,7 @@
 # Agent of Empires
 
+[![YouTube](https://img.shields.io/badge/YouTube-channel-red?logo=youtube)](https://www.youtube.com/@agent-of-empires)
+
 A terminal session manager for AI coding agents on Linux and macOS, built on tmux and written in Rust.
 
 AoE lets you run multiple AI agents in parallel -- each in its own tmux session, optionally on its own git branch, optionally inside a Docker container. A TUI dashboard shows you what every agent is doing at a glance.
