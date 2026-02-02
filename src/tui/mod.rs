@@ -56,7 +56,12 @@ pub async fn run(profile: &str) -> Result<()> {
         let settings = get_update_settings();
         if settings.check_enabled {
             let current_version = env!("CARGO_PKG_VERSION");
-            let _ = check_for_update(current_version, true).await;
+            // Don't let a network issue block startup
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                check_for_update(current_version, true),
+            )
+            .await;
         }
     }
 

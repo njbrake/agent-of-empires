@@ -85,6 +85,7 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
 
     let client = reqwest::Client::builder()
         .user_agent("agent-of-empires")
+        .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     // Fetch all releases (includes body/release notes)

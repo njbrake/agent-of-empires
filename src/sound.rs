@@ -115,6 +115,7 @@ pub async fn install_bundled_sounds() -> anyhow::Result<()> {
 
     let client = reqwest::Client::builder()
         .user_agent("agent-of-empires")
+        .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
     let mut failed = Vec::new();
