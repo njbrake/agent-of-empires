@@ -666,6 +666,11 @@ impl Instance {
             read_only: false,
         }];
 
+        let sandbox_config = super::config::Config::load()
+            .ok()
+            .map(|c| c.sandbox)
+            .unwrap_or_default();
+
         const CONTAINER_HOME: &str = "/root";
 
         let gitconfig = home.join(".gitconfig");
@@ -677,13 +682,15 @@ impl Instance {
             });
         }
 
-        let ssh_dir = home.join(".ssh");
-        if ssh_dir.exists() {
-            volumes.push(VolumeMount {
-                host_path: ssh_dir.to_string_lossy().to_string(),
-                container_path: format!("{}/.ssh", CONTAINER_HOME),
-                read_only: true,
-            });
+        if sandbox_config.mount_ssh {
+            let ssh_dir = home.join(".ssh");
+            if ssh_dir.exists() {
+                volumes.push(VolumeMount {
+                    host_path: ssh_dir.to_string_lossy().to_string(),
+                    container_path: format!("{}/.ssh", CONTAINER_HOME),
+                    read_only: true,
+                });
+            }
         }
 
         let opencode_config = home.join(".config").join("opencode");
@@ -732,11 +739,6 @@ impl Instance {
                 format!("{}/.vibe", CONTAINER_HOME),
             ));
         }
-
-        let sandbox_config = super::config::Config::load()
-            .ok()
-            .map(|c| c.sandbox)
-            .unwrap_or_default();
 
         let sandbox_info = self.sandbox_info.as_ref().unwrap();
         let env_keys = collect_env_keys(&sandbox_config, sandbox_info);

@@ -121,6 +121,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_ignores: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_ssh: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -221,6 +224,9 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(ref volume_ignores) = source.volume_ignores {
         target.volume_ignores = volume_ignores.clone();
+    }
+    if let Some(mount_ssh) = source.mount_ssh {
+        target.mount_ssh = mount_ssh;
     }
 }
 

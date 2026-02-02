@@ -452,6 +452,11 @@ impl SettingsView {
                     s.volume_ignores = None;
                 }
             }
+            FieldKey::MountSsh => {
+                if let Some(ref mut s) = self.profile_config.sandbox {
+                    s.mount_ssh = None;
+                }
+            }
             // Sound
             FieldKey::SoundEnabled => {
                 if let Some(ref mut s) = self.profile_config.sound {

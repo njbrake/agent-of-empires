@@ -55,6 +55,7 @@ pub enum FieldKey {
     SandboxAutoCleanup,
     DefaultTerminalMode,
     VolumeIgnores,
+    MountSsh,
     // Tmux
     StatusBar,
     Mouse,
@@ -360,6 +361,11 @@ fn build_sandbox_fields(
         global.sandbox.volume_ignores.clone(),
         sb.and_then(|s| s.volume_ignores.clone()),
     );
+    let (mount_ssh, o8) = resolve_value(
+        scope,
+        global.sandbox.mount_ssh,
+        sb.and_then(|s| s.mount_ssh),
+    );
 
     let terminal_mode_selected = match default_terminal_mode {
         DefaultTerminalMode::Host => 0,
@@ -433,6 +439,14 @@ fn build_sandbox_fields(
             value: FieldValue::List(volume_ignores),
             category: SettingsCategory::Sandbox,
             has_override: o7,
+        },
+        SettingField {
+            key: FieldKey::MountSsh,
+            label: "Mount SSH",
+            description: "Mount ~/.ssh into sandbox containers (for git SSH access)",
+            value: FieldValue::Bool(mount_ssh),
+            category: SettingsCategory::Sandbox,
+            has_override: o8,
         },
     ]
 }
@@ -691,6 +705,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.sandbox.environment_values = parse_env_values_list(v);
         }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
+        (FieldKey::MountSsh, FieldValue::Bool(v)) => config.sandbox.mount_ssh = *v,
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
             config.sandbox.default_terminal_mode = match selected {
@@ -861,6 +876,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.volume_ignores,
                 &mut config.sandbox,
                 |s, val| s.volume_ignores = val,
+            );
+        }
+        (FieldKey::MountSsh, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.sandbox.mount_ssh,
+                &mut config.sandbox,
+                |s, val| s.mount_ssh = val,
             );
         }
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => {

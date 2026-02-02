@@ -230,6 +230,10 @@ pub struct SandboxConfig {
     /// Relative directory paths to exclude from the host bind mount via anonymous volumes
     #[serde(default)]
     pub volume_ignores: Vec<String>,
+
+    /// Mount ~/.ssh into sandbox containers (default: false)
+    #[serde(default)]
+    pub mount_ssh: bool,
 }
 
 impl Default for SandboxConfig {
@@ -246,6 +250,7 @@ impl Default for SandboxConfig {
             memory_limit: None,
             default_terminal_mode: DefaultTerminalMode::default(),
             volume_ignores: Vec::new(),
+            mount_ssh: false,
         }
     }
 }
