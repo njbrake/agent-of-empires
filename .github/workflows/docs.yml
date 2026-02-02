@@ -58,22 +58,41 @@ jobs:
             node -e "
               const fs = require('fs');
               const data = JSON.parse(fs.readFileSync('/tmp/credits.json', 'utf8'));
-              const repoUrl = 'https://github.com/${{ github.repository }}';
+              const repoUrl = 'https://github.com/\${{ github.repository }}';
+
               let md = '# Contributors\n\n';
-              md += 'Thank you to everyone who has helped improve Agent of Empires!\n\n';
+              md += 'Thank you to everyone who has helped improve Agent of Empires! Contributors earn a spot on this page by opening issues that receive the **\"helpful contribution\"** label -- bug reports, feature ideas, and documentation improvements all count.\n\n';
+
               if (data.contributors.length === 0) {
                 md += 'No contributions credited yet. Be the first!\n';
               } else {
-                md += '| Rank | Contributor | Contributions | Issues |\n';
-                md += '|------|-------------|:-------------:|--------|\n';
+                md += '<div class=\"contributor-list\">\n\n';
                 data.contributors.forEach((c, i) => {
+                  const rank = i + 1;
+                  const rankClass = rank <= 3 ? \` rank-\${rank}\` : '';
                   const issueLinks = c.issues
-                    .map(issue => \`[#\${issue.number}](\${repoUrl}/issues/\${issue.number})\`)
-                    .join(', ');
-                  md += \`| \${i + 1} | [@\${c.username}](https://github.com/\${c.username}) | \${c.issues.length} | \${issueLinks} |\n\`;
+                    .map(issue => \`      <a href=\"\${repoUrl}/issues/\${issue.number}\">#\${issue.number}</a>\`)
+                    .join('\n');
+                  const count = c.issues.length;
+                  const word = count === 1 ? 'contribution' : 'contributions';
+                  md += \`<div class=\"contributor-row\${rankClass}\">
+  <div class=\"contributor-rank\">\${rank}</div>
+  <img class=\"contributor-avatar\" src=\"https://github.com/\${c.username}.png?size=72\" alt=\"\${c.username}\" />
+  <div class=\"contributor-info\">
+    <div class=\"contributor-name\"><a href=\"https://github.com/\${c.username}\">\${c.username}</a></div>
+    <div class=\"contributor-stats\">\${count} \${word}</div>
+    <div class=\"contributor-issues\">
+\${issueLinks}
+    </div>
+  </div>
+</div>
+
+\`;
                 });
+                md += '</div>\n';
               }
-              md += '\n*Auto-generated. Earn a spot by opening an issue that receives the \"helpful contribution\" label.*\n';
+
+              md += \`\n*Want to contribute? Open an issue on [GitHub](\${repoUrl}/issues) -- bug reports, feature requests, and docs improvements are all welcome.*\n\`;
               fs.writeFileSync('docs/credits.md', md);
             "
             echo "Generated docs/credits.md from credit branch data"
