@@ -14,6 +14,16 @@
           "labeled_at": "2026-02-02T08:27:58.017Z"
         }
       ]
+    },
+    {
+      "username": "gdevos010",
+      "issues": [
+        {
+          "number": 172,
+          "title": "BUG: raise an error if you try to make a worktree in a location where git already has one",
+          "labeled_at": "2026-02-02T08:49:33.205Z"
+        }
+      ]
     }
   ]
 }
