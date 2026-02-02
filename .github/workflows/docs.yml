@@ -51,6 +51,36 @@ jobs:
           curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar -xz
           sudo mv mdbook /usr/local/bin/
 
+      - name: Generate credits page from credit branch
+        run: |
+          # Fetch credits.json from the credit branch (if it exists)
+          if git fetch origin credit && git show origin/credit:credits.json > /tmp/credits.json 2>/dev/null; then
+            node -e "
+              const fs = require('fs');
+              const data = JSON.parse(fs.readFileSync('/tmp/credits.json', 'utf8'));
+              const repoUrl = 'https://github.com/${{ github.repository }}';
+              let md = '# Contributors\n\n';
+              md += 'Thank you to everyone who has helped improve Agent of Empires!\n\n';
+              if (data.contributors.length === 0) {
+                md += 'No contributions credited yet. Be the first!\n';
+              } else {
+                md += '| Rank | Contributor | Contributions | Issues |\n';
+                md += '|------|-------------|:-------------:|--------|\n';
+                data.contributors.forEach((c, i) => {
+                  const issueLinks = c.issues
+                    .map(issue => \`[#\${issue.number}](\${repoUrl}/issues/\${issue.number})\`)
+                    .join(', ');
+                  md += \`| \${i + 1} | [@\${c.username}](https://github.com/\${c.username}) | \${c.issues.length} | \${issueLinks} |\n\`;
+                });
+              }
+              md += '\n*Auto-generated. Earn a spot by opening an issue that receives the \"helpful contribution\" label.*\n';
+              fs.writeFileSync('docs/credits.md', md);
+            "
+            echo "Generated docs/credits.md from credit branch data"
+          else
+            echo "No credit branch or credits.json found, using existing docs/credits.md"
+          fi
+
       - name: Generate CLI documentation
         run: cargo xtask gen-docs
 
