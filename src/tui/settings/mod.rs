@@ -99,6 +99,7 @@ impl SettingsView {
             SettingsCategory::Worktree,
             SettingsCategory::Updates,
             SettingsCategory::Tmux,
+            SettingsCategory::Sound,
         ];
 
         let mut view = Self {

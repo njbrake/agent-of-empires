@@ -6,6 +6,7 @@ use crate::session::{
     validate_check_interval, Config, DefaultTerminalMode, ProfileConfig, TmuxMouseMode,
     TmuxStatusBarMode,
 };
+use crate::sound::{validate_sound_exists, SoundMode};
 
 use super::SettingsScope;
 
@@ -17,6 +18,7 @@ pub enum SettingsCategory {
     Sandbox,
     Tmux,
     Session,
+    Sound,
 }
 
 impl SettingsCategory {
@@ -27,6 +29,7 @@ impl SettingsCategory {
             Self::Sandbox => "Sandbox",
             Self::Tmux => "Tmux",
             Self::Session => "Session",
+            Self::Sound => "Sound",
         }
     }
 }
@@ -57,6 +60,14 @@ pub enum FieldKey {
     Mouse,
     // Session
     DefaultTool,
+    // Sound
+    SoundEnabled,
+    SoundMode,
+    SoundOnStart,
+    SoundOnRunning,
+    SoundOnWaiting,
+    SoundOnIdle,
+    SoundOnError,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -143,6 +154,20 @@ impl SettingField {
                 validate_check_interval(*n)?;
                 Ok(())
             }
+            // Sound field validation - check if sound file exists
+            (
+                FieldKey::SoundOnStart
+                | FieldKey::SoundOnRunning
+                | FieldKey::SoundOnWaiting
+                | FieldKey::SoundOnIdle
+                | FieldKey::SoundOnError,
+                FieldValue::OptionalText(Some(name)),
+            ) => {
+                if !name.is_empty() {
+                    validate_sound_exists(name)?;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -161,6 +186,7 @@ pub fn build_fields_for_category(
         SettingsCategory::Sandbox => build_sandbox_fields(scope, global, profile),
         SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
         SettingsCategory::Session => build_session_fields(scope, global, profile),
+        SettingsCategory::Sound => build_sound_fields(scope, global, profile),
     }
 }
 
@@ -509,6 +535,120 @@ fn build_session_fields(
     }]
 }
 
+fn build_sound_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let snd = profile.sound.as_ref();
+
+    let (enabled, o1) = resolve_value(scope, global.sound.enabled, snd.and_then(|s| s.enabled));
+
+    let (mode, o2) = resolve_value(
+        scope,
+        global.sound.mode.clone(),
+        snd.and_then(|s| s.mode.clone()),
+    );
+
+    let mode_selected = match &mode {
+        SoundMode::Random => 0,
+        SoundMode::Specific(_) => 1,
+    };
+
+    let (on_start, o3) = resolve_optional(
+        scope,
+        global.sound.on_start.clone(),
+        snd.and_then(|s| s.on_start.clone()),
+        snd.map(|s| s.on_start.is_some()).unwrap_or(false),
+    );
+    let (on_running, o4) = resolve_optional(
+        scope,
+        global.sound.on_running.clone(),
+        snd.and_then(|s| s.on_running.clone()),
+        snd.map(|s| s.on_running.is_some()).unwrap_or(false),
+    );
+    let (on_waiting, o5) = resolve_optional(
+        scope,
+        global.sound.on_waiting.clone(),
+        snd.and_then(|s| s.on_waiting.clone()),
+        snd.map(|s| s.on_waiting.is_some()).unwrap_or(false),
+    );
+    let (on_idle, o6) = resolve_optional(
+        scope,
+        global.sound.on_idle.clone(),
+        snd.and_then(|s| s.on_idle.clone()),
+        snd.map(|s| s.on_idle.is_some()).unwrap_or(false),
+    );
+    let (on_error, o7) = resolve_optional(
+        scope,
+        global.sound.on_error.clone(),
+        snd.and_then(|s| s.on_error.clone()),
+        snd.map(|s| s.on_error.is_some()).unwrap_or(false),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::SoundEnabled,
+            label: "Enabled",
+            description: "Play sounds on agent state transitions",
+            value: FieldValue::Bool(enabled),
+            category: SettingsCategory::Sound,
+            has_override: o1,
+        },
+        SettingField {
+            key: FieldKey::SoundMode,
+            label: "Mode",
+            description: "How to select sounds (Random or Specific file name)",
+            value: FieldValue::Select {
+                selected: mode_selected,
+                options: vec!["Random".into(), "Specific".into()],
+            },
+            category: SettingsCategory::Sound,
+            has_override: o2,
+        },
+        SettingField {
+            key: FieldKey::SoundOnStart,
+            label: "On Start",
+            description: "Specify file name with extension",
+            value: FieldValue::OptionalText(on_start),
+            category: SettingsCategory::Sound,
+            has_override: o3,
+        },
+        SettingField {
+            key: FieldKey::SoundOnRunning,
+            label: "On Running",
+            description: "Specify file name with extension",
+            value: FieldValue::OptionalText(on_running),
+            category: SettingsCategory::Sound,
+            has_override: o4,
+        },
+        SettingField {
+            key: FieldKey::SoundOnWaiting,
+            label: "On Waiting",
+            description: "Specify file name with extension",
+            value: FieldValue::OptionalText(on_waiting),
+            category: SettingsCategory::Sound,
+            has_override: o5,
+        },
+        SettingField {
+            key: FieldKey::SoundOnIdle,
+            label: "On Idle",
+            description: "Specify file name with extension",
+            value: FieldValue::OptionalText(on_idle),
+            category: SettingsCategory::Sound,
+            has_override: o6,
+        },
+        SettingField {
+            key: FieldKey::SoundOnError,
+            label: "On Error",
+            description: "Specify file name with extension",
+            value: FieldValue::OptionalText(on_error),
+            category: SettingsCategory::Sound,
+            has_override: o7,
+        },
+    ]
+}
+
 /// Apply a field's value back to the appropriate config.
 /// For profile scope, if the value matches global, the override is removed.
 pub fn apply_field_to_config(
@@ -583,6 +723,29 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 5 => Some("gemini".to_string()),
                 _ => None, // Auto
             };
+        }
+        // Sound
+        (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
+        (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
+            config.sound.mode = match selected {
+                1 => SoundMode::Specific(String::new()),
+                _ => SoundMode::Random,
+            };
+        }
+        (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
+            config.sound.on_start = v.clone();
+        }
+        (FieldKey::SoundOnRunning, FieldValue::OptionalText(v)) => {
+            config.sound.on_running = v.clone();
+        }
+        (FieldKey::SoundOnWaiting, FieldValue::OptionalText(v)) => {
+            config.sound.on_waiting = v.clone();
+        }
+        (FieldKey::SoundOnIdle, FieldValue::OptionalText(v)) => {
+            config.sound.on_idle = v.clone();
+        }
+        (FieldKey::SoundOnError, FieldValue::OptionalText(v)) => {
+            config.sound.on_error = v.clone();
         }
         _ => {}
     }
@@ -762,6 +925,81 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                     .session
                     .get_or_insert_with(SessionConfigOverride::default);
                 session.default_tool = tool;
+            }
+        }
+        // Sound
+        (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {
+            set_or_clear_override(*v, &global.sound.enabled, &mut config.sound, |s, val| {
+                s.enabled = val
+            });
+        }
+        (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
+            let mode = match selected {
+                1 => SoundMode::Specific(String::new()),
+                _ => SoundMode::Random,
+            };
+            set_or_clear_override(mode, &global.sound.mode, &mut config.sound, |s, val| {
+                s.mode = val
+            });
+        }
+        (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
+            if *v == global.sound.on_start {
+                if let Some(ref mut s) = config.sound {
+                    s.on_start = None;
+                }
+            } else {
+                let s = config
+                    .sound
+                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+                s.on_start = v.clone();
+            }
+        }
+        (FieldKey::SoundOnRunning, FieldValue::OptionalText(v)) => {
+            if *v == global.sound.on_running {
+                if let Some(ref mut s) = config.sound {
+                    s.on_running = None;
+                }
+            } else {
+                let s = config
+                    .sound
+                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+                s.on_running = v.clone();
+            }
+        }
+        (FieldKey::SoundOnWaiting, FieldValue::OptionalText(v)) => {
+            if *v == global.sound.on_waiting {
+                if let Some(ref mut s) = config.sound {
+                    s.on_waiting = None;
+                }
+            } else {
+                let s = config
+                    .sound
+                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+                s.on_waiting = v.clone();
+            }
+        }
+        (FieldKey::SoundOnIdle, FieldValue::OptionalText(v)) => {
+            if *v == global.sound.on_idle {
+                if let Some(ref mut s) = config.sound {
+                    s.on_idle = None;
+                }
+            } else {
+                let s = config
+                    .sound
+                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+                s.on_idle = v.clone();
+            }
+        }
+        (FieldKey::SoundOnError, FieldValue::OptionalText(v)) => {
+            if *v == global.sound.on_error {
+                if let Some(ref mut s) = config.sound {
+                    s.on_error = None;
+                }
+            } else {
+                let s = config
+                    .sound
+                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+                s.on_error = v.clone();
             }
         }
         _ => {}

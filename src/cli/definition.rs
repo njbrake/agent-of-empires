@@ -12,6 +12,7 @@ use super::list::ListArgs;
 use super::profile::ProfileCommands;
 use super::remove::RemoveArgs;
 use super::session::SessionCommands;
+use super::sounds::SoundsCommands;
 use super::status::StatusArgs;
 use super::tmux::TmuxCommands;
 use super::uninstall::UninstallArgs;
@@ -84,6 +85,12 @@ pub enum Commands {
     Tmux {
         #[command(subcommand)]
         command: TmuxCommands,
+    },
+
+    /// Manage sound effects for agent state transitions
+    Sounds {
+        #[command(subcommand)]
+        command: SoundsCommands,
     },
 
     /// Uninstall Agent of Empires

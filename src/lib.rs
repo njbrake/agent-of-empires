@@ -6,6 +6,7 @@ pub mod git;
 pub mod migrations;
 pub mod process;
 pub mod session;
+pub mod sound;
 pub mod terminal;
 pub mod tmux;
 pub mod tui;

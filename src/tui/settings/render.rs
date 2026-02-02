@@ -12,8 +12,15 @@ use ratatui::{
 };
 use tui_input::Input;
 
-use super::{FieldValue, SettingsFocus, SettingsScope, SettingsView};
+use super::{FieldValue, SettingsCategory, SettingsFocus, SettingsScope, SettingsView};
 use crate::tui::styles::Theme;
+
+/// Detect if we're running over SSH
+fn is_ssh_session() -> bool {
+    std::env::var("SSH_CONNECTION").is_ok()
+        || std::env::var("SSH_CLIENT").is_ok()
+        || std::env::var("SSH_TTY").is_ok()
+}
 
 impl SettingsView {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -164,10 +171,43 @@ impl SettingsView {
             return;
         }
 
+        // Show SSH warning for Sound category
+        let current_category = self.categories[self.selected_category];
+        let warning_offset = if current_category == SettingsCategory::Sound && is_ssh_session() {
+            let warning = vec![
+                Line::from(vec![
+                    Span::styled("⚠ ", Style::default().fg(theme.waiting)),
+                    Span::styled(
+                        "Warning: Audio playback doesn't work over SSH",
+                        Style::default().fg(theme.waiting),
+                    ),
+                ]),
+                Line::from(vec![Span::styled(
+                    "  Sounds require local terminal with audio output.",
+                    Style::default().fg(theme.dimmed),
+                )]),
+                Line::from(""),
+            ];
+            let warning_widget = Paragraph::new(warning);
+            let warning_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 3,
+            };
+            frame.render_widget(warning_widget, warning_area);
+            3u16
+        } else {
+            0u16
+        };
+
         // Reserve space for messages at the bottom
         let has_message = self.error_message.is_some() || self.success_message.is_some();
         let message_height: u16 = if has_message { 2 } else { 0 };
-        let fields_viewport_height = inner.height.saturating_sub(message_height);
+        let fields_viewport_height = inner
+            .height
+            .saturating_sub(message_height)
+            .saturating_sub(warning_offset);
         self.fields_viewport_height = fields_viewport_height;
 
         // Calculate total content height
@@ -203,7 +243,7 @@ impl SettingsView {
             let is_selected = i == self.selected_field && is_focused;
             let field_area = Rect {
                 x: inner.x,
-                y: inner.y + visible_y,
+                y: inner.y + visible_y + warning_offset,
                 width: inner.width,
                 height: field_h.min(fields_viewport_height.saturating_sub(visible_y)),
             };

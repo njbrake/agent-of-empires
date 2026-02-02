@@ -8,6 +8,7 @@ pub mod list;
 pub mod profile;
 pub mod remove;
 pub mod session;
+pub mod sounds;
 pub mod status;
 pub mod tmux;
 pub mod uninstall;

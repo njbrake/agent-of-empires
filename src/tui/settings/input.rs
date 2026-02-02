@@ -452,6 +452,42 @@ impl SettingsView {
                     s.volume_ignores = None;
                 }
             }
+            // Sound
+            FieldKey::SoundEnabled => {
+                if let Some(ref mut s) = self.profile_config.sound {
+                    s.enabled = None;
+                }
+            }
+            FieldKey::SoundMode => {
+                if let Some(ref mut s) = self.profile_config.sound {
+                    s.mode = None;
+                }
+            }
+            FieldKey::SoundOnStart => {
+                if let Some(ref mut s) = self.profile_config.sound {
+                    s.on_start = None;
+                }
+            }
+            FieldKey::SoundOnRunning => {
+                if let Some(ref mut s) = self.profile_config.sound {
+                    s.on_running = None;
+                }
+            }
+            FieldKey::SoundOnWaiting => {
+                if let Some(ref mut s) = self.profile_config.sound {
+                    s.on_waiting = None;
+                }
+            }
+            FieldKey::SoundOnIdle => {
+                if let Some(ref mut s) = self.profile_config.sound {
+                    s.on_idle = None;
+                }
+            }
+            FieldKey::SoundOnError => {
+                if let Some(ref mut s) = self.profile_config.sound {
+                    s.on_error = None;
+                }
+            }
         }
 
         self.has_changes = true;

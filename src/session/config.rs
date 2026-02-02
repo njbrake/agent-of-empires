@@ -38,6 +38,9 @@ pub struct Config {
     pub diff: DiffConfig,
 
     #[serde(default)]
+    pub sound: crate::sound::SoundConfig,
+
+    #[serde(default)]
     pub app_state: AppStateConfig,
 }
 

@@ -149,6 +149,9 @@ pub struct HomeView {
     // Default terminal mode from config
     pub(super) default_terminal_mode: TerminalMode,
 
+    // Sound config for state transition sounds
+    pub(super) sound_config: crate::sound::SoundConfig,
+
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
@@ -176,12 +179,18 @@ impl HomeView {
         let group_tree = GroupTree::new_with_groups(&instances, &groups);
         let flat_items = flatten_tree(&group_tree, &instances);
 
-        // Load the resolved config to get the default terminal mode
-        let default_terminal_mode = resolve_config(storage.profile())
+        // Load the resolved config to get the default terminal mode and sound config
+        let resolved = resolve_config(storage.profile());
+        let default_terminal_mode = resolved
+            .as_ref()
             .map(|config| match config.sandbox.default_terminal_mode {
                 DefaultTerminalMode::Host => TerminalMode::Host,
                 DefaultTerminalMode::Container => TerminalMode::Container,
             })
+            .unwrap_or_default();
+        let sound_config = resolved
+            .as_ref()
+            .map(|config| config.sound.clone())
             .unwrap_or_default();
 
         let mut view = Self {
@@ -221,6 +230,7 @@ impl HomeView {
             container_terminal_preview_cache: PreviewCache::default(),
             terminal_modes: HashMap::new(),
             default_terminal_mode,
+            sound_config,
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -285,8 +295,16 @@ impl HomeView {
             for update in updates {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
                     if inst.status != Status::Deleting {
+                        let old_status = inst.status;
                         inst.status = update.status;
                         inst.last_error = update.last_error.clone();
+                        if old_status != update.status {
+                            crate::sound::play_for_transition(
+                                old_status,
+                                update.status,
+                                &self.sound_config,
+                            );
+                        }
                     }
                 }
                 if let Some(inst) = self.instance_map.get_mut(&update.id) {
@@ -574,7 +592,8 @@ impl HomeView {
                 DefaultTerminalMode::Container => TerminalMode::Container,
             };
 
-            // Add other config-dependent state refreshes here as needed
+            // Refresh sound config
+            self.sound_config = config.sound.clone();
         }
     }
 

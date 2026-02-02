@@ -9,6 +9,7 @@ pub mod profile_config;
 pub mod repo_config;
 mod storage;
 
+pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub use config::{
     get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
     DefaultTerminalMode, SandboxConfig, SessionConfig, ThemeConfig, TmuxMouseMode,
