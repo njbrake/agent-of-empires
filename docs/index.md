@@ -22,27 +22,7 @@ AoE lets you run multiple AI agents in parallel -- each in its own tmux session,
 
 Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI. AoE auto-detects which are installed.
 
-## Documentation
-
-### Getting Started
-
-- [Installation](installation.md) -- prerequisites and install methods
-- [Quick Start](quick-start.md) -- create your first session in under a minute
-
-### Guides
-
-- [Workflow Guide](guides/workflow.md) -- recommended setup with bare repos and worktrees
-- [Docker Sandbox](guides/sandbox.md) -- container isolation, images, and volume mounts
-- [Repo Config & Hooks](guides/repo-config.md) -- per-project settings and automation
-- [Git Worktrees](guides/worktrees.md) -- branch management and worktree templates
-- [Diff View](guides/diff-view.md) -- review and edit git changes in the TUI
-- [tmux Status Bar](guides/tmux-status-bar.md) -- session info in your tmux status line
-
-### Reference
-
-- [CLI Reference](cli/reference.md) -- every command and flag
-- [Configuration Reference](guides/configuration.md) -- all config options (global, profile, repo-level)
-
-### Contributing
-
-- [Development](development.md) -- building, testing, and generating demo assets
+<div class="cta-box">
+<p><strong>Ready to get started?</strong></p>
+<p><a href="installation.html">Install AoE</a></p>
+</div>

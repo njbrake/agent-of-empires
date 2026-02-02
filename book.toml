@@ -9,5 +9,12 @@ src = "docs"
 build-dir = "book"
 
 [output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/njbrake/agent-of-empires"
 edit-url-template = "https://github.com/njbrake/agent-of-empires/edit/main/docs/{path}"
+additional-css = ["theme/css/custom.css"]
+
+[output.html.fold]
+enable = true
+level = 1
