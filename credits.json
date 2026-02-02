@@ -34,6 +34,16 @@
           "labeled_at": "2026-02-02T08:52:42.570Z"
         }
       ]
+    },
+    {
+      "username": "michalwarda",
+      "issues": [
+        {
+          "number": 86,
+          "title": "[Feature]: Add Hooks / custom commands (.aoerc)",
+          "labeled_at": "2026-02-02T09:07:57.126Z"
+        }
+      ]
     }
   ]
 }
