@@ -2,13 +2,14 @@ name: Contributor Credits
 
 on:
   issues:
-    types: [labeled]
+    types: [labeled, unlabeled]
 
 jobs:
   update-credits:
     if: github.event.label.name == 'helpful contribution'
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       issues: write
     concurrency:
@@ -22,18 +23,6 @@ jobs:
           ref: credit
           fetch-depth: 0
 
-      - name: Post thank-you comment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const author = context.payload.issue.user.login;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              body: `Thanks for the helpful contribution, @${author}! Your issue has been credited in our [contributors page](https://agent-of-empires.com/docs/credits.html). 🎉`
-            });
-
       - name: Update credits data
         id: update
         uses: actions/github-script@v7
@@ -41,11 +30,10 @@ jobs:
           script: |
             const fs = require('fs');
 
+            const action = context.payload.action;
             const issue = context.payload.issue;
             const username = issue.user.login;
             const issueNumber = issue.number;
-            const issueTitle = issue.title;
-            const labeledAt = new Date().toISOString();
 
             // Read or initialize credits.json
             let data;
@@ -55,25 +43,48 @@ jobs:
               data = { contributors: [] };
             }
 
-            // Find or create contributor entry
-            let contributor = data.contributors.find(c => c.username === username);
-            if (!contributor) {
-              contributor = { username, issues: [] };
-              data.contributors.push(contributor);
-            }
+            if (action === 'labeled') {
+              // Find or create contributor entry
+              let contributor = data.contributors.find(c => c.username === username);
+              if (!contributor) {
+                contributor = { username, issues: [] };
+                data.contributors.push(contributor);
+              }
 
-            // Idempotency: skip if issue already credited
-            if (contributor.issues.some(i => i.number === issueNumber)) {
-              console.log(`Issue #${issueNumber} already credited for @${username}, skipping.`);
-              core.setOutput('changed', 'false');
-              return;
-            }
+              // Idempotency: skip if issue already credited
+              if (contributor.issues.some(i => i.number === issueNumber)) {
+                console.log(`Issue #${issueNumber} already credited for @${username}, skipping.`);
+                core.setOutput('changed', 'false');
+                return;
+              }
 
-            contributor.issues.push({
-              number: issueNumber,
-              title: issueTitle,
-              labeled_at: labeledAt
-            });
+              contributor.issues.push({
+                number: issueNumber,
+                title: issue.title,
+                labeled_at: new Date().toISOString()
+              });
+            } else if (action === 'unlabeled') {
+              const contributor = data.contributors.find(c => c.username === username);
+              if (!contributor) {
+                console.log(`No credits entry for @${username}, skipping.`);
+                core.setOutput('changed', 'false');
+                return;
+              }
+
+              const before = contributor.issues.length;
+              contributor.issues = contributor.issues.filter(i => i.number !== issueNumber);
+
+              if (contributor.issues.length === before) {
+                console.log(`Issue #${issueNumber} not found for @${username}, skipping.`);
+                core.setOutput('changed', 'false');
+                return;
+              }
+
+              // Remove contributor entirely if they have no remaining issues
+              if (contributor.issues.length === 0) {
+                data.contributors = data.contributors.filter(c => c.username !== username);
+              }
+            }
 
             // Sort contributors by issue count descending
             data.contributors.sort((a, b) => b.issues.length - a.issues.length);
@@ -104,15 +115,20 @@ jobs:
 
             let md = '# Contributors\n\n';
             md += 'Thank you to everyone who has helped improve Agent of Empires!\n\n';
-            md += '| Rank | Contributor | Contributions | Issues |\n';
-            md += '|------|-------------|:-------------:|--------|\n';
 
-            data.contributors.forEach((c, i) => {
-              const issueLinks = c.issues
-                .map(issue => `[#${issue.number}](${repoUrl}/issues/${issue.number})`)
-                .join(', ');
-              md += `| ${i + 1} | [@${c.username}](https://github.com/${c.username}) | ${c.issues.length} | ${issueLinks} |\n`;
-            });
+            if (data.contributors.length === 0) {
+              md += 'No contributions credited yet. Be the first!\n';
+            } else {
+              md += '| Rank | Contributor | Contributions | Issues |\n';
+              md += '|------|-------------|:-------------:|--------|\n';
+
+              data.contributors.forEach((c, i) => {
+                const issueLinks = c.issues
+                  .map(issue => `[#${issue.number}](${repoUrl}/issues/${issue.number})`)
+                  .join(', ');
+                md += `| ${i + 1} | [@${c.username}](https://github.com/${c.username}) | ${c.issues.length} | ${issueLinks} |\n`;
+              });
+            }
 
             md += '\n*Auto-generated. Earn a spot by opening an issue that receives the "helpful contribution" label.*\n';
 
@@ -130,14 +146,73 @@ jobs:
               execSync('git push');
             }
 
-      - name: Trigger site redeployment
+      - name: Trigger site redeployment and wait
         if: steps.update.outputs.changed == 'true'
         uses: actions/github-script@v7
         with:
           script: |
+            // Trigger the docs workflow
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'docs.yml',
               ref: 'main'
+            });
+
+            // Wait for the run to appear
+            await new Promise(r => setTimeout(r, 5000));
+
+            // Find the triggered run
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docs.yml',
+              branch: 'main',
+              per_page: 1
+            });
+
+            const run = runs.data.workflow_runs[0];
+            if (!run) {
+              core.warning('Could not find triggered docs workflow run');
+              return;
+            }
+
+            console.log(`Waiting for docs workflow run #${run.id}...`);
+
+            // Poll until the run completes (timeout after 10 minutes)
+            const deadline = Date.now() + 10 * 60 * 1000;
+            while (Date.now() < deadline) {
+              const result = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id
+              });
+
+              const status = result.data.status;
+              const conclusion = result.data.conclusion;
+              console.log(`  status: ${status}, conclusion: ${conclusion}`);
+
+              if (status === 'completed') {
+                if (conclusion !== 'success') {
+                  core.warning(`Docs workflow finished with conclusion: ${conclusion}`);
+                }
+                return;
+              }
+
+              await new Promise(r => setTimeout(r, 15000));
+            }
+
+            core.warning('Timed out waiting for docs workflow to complete');
+
+      - name: Post thank-you comment
+        if: steps.update.outputs.changed == 'true' && github.event.action == 'labeled'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const author = context.payload.issue.user.login;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Thanks for the helpful contribution, @${author}! Your issue has been credited in our [contributors page](https://agent-of-empires.com/docs/credits.html). 🎉`
             });
