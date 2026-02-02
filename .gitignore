@@ -45,6 +45,11 @@ Thumbs.db
 # Ignored here since this is the aoe tool repo itself
 .aoe/
 
+# Spec Kit
+.specify/
+.genreleases/
+sdd-*/
+
 # Personal/local files
 *.screenstudio/
 
