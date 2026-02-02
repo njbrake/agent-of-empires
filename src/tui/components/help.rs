@@ -85,12 +85,16 @@ impl HelpOverlay {
 
         frame.render_widget(Clear, dialog_area);
 
+        let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
         let block = Block::default()
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
-            .title(" Keyboard Shortcuts ")
-            .title_style(Style::default().fg(theme.title).bold());
+            .title(Line::styled(
+                " Keyboard Shortcuts ",
+                Style::default().fg(theme.title).bold(),
+            ))
+            .title_bottom(Line::styled(version, Style::default().fg(theme.dimmed)).right_aligned());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
