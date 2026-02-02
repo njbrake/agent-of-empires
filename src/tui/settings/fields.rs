@@ -53,6 +53,8 @@ pub enum FieldKey {
     Environment,
     EnvironmentValues,
     SandboxAutoCleanup,
+    CpuLimit,
+    MemoryLimit,
     DefaultTerminalMode,
     VolumeIgnores,
     MountSsh,
@@ -153,6 +155,10 @@ impl SettingField {
         match (&self.key, &self.value) {
             (FieldKey::CheckIntervalHours, FieldValue::Number(n)) => {
                 validate_check_interval(*n)?;
+                Ok(())
+            }
+            (FieldKey::MemoryLimit, FieldValue::OptionalText(Some(v))) => {
+                crate::session::validate_memory_limit(v)?;
                 Ok(())
             }
             // Sound field validation - check if sound file exists
@@ -351,6 +357,18 @@ fn build_sandbox_fields(
         global.sandbox.auto_cleanup,
         sb.and_then(|s| s.auto_cleanup),
     );
+    let (cpu_limit, o_cpu) = resolve_optional(
+        scope,
+        global.sandbox.cpu_limit.clone(),
+        sb.and_then(|s| s.cpu_limit.clone()),
+        sb.map(|s| s.cpu_limit.is_some()).unwrap_or(false),
+    );
+    let (memory_limit, o_mem) = resolve_optional(
+        scope,
+        global.sandbox.memory_limit.clone(),
+        sb.and_then(|s| s.memory_limit.clone()),
+        sb.map(|s| s.memory_limit.is_some()).unwrap_or(false),
+    );
     let (default_terminal_mode, o6) = resolve_value(
         scope,
         global.sandbox.default_terminal_mode,
@@ -420,6 +438,22 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(auto_cleanup),
             category: SettingsCategory::Sandbox,
             has_override: o5,
+        },
+        SettingField {
+            key: FieldKey::CpuLimit,
+            label: "CPU Limit",
+            description: "CPU limit for containers (e.g. \"4\")",
+            value: FieldValue::OptionalText(cpu_limit),
+            category: SettingsCategory::Sandbox,
+            has_override: o_cpu,
+        },
+        SettingField {
+            key: FieldKey::MemoryLimit,
+            label: "Memory Limit",
+            description: "Memory limit for containers (e.g. \"8g\", \"512m\")",
+            value: FieldValue::OptionalText(memory_limit),
+            category: SettingsCategory::Sandbox,
+            has_override: o_mem,
         },
         SettingField {
             key: FieldKey::DefaultTerminalMode,
@@ -707,6 +741,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::MountSsh, FieldValue::Bool(v)) => config.sandbox.mount_ssh = *v,
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
+        (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => {
+            config.sandbox.cpu_limit = v.clone();
+        }
+        (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
+            config.sandbox.memory_limit = v.clone();
+        }
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
             config.sandbox.default_terminal_mode = match selected {
                 0 => DefaultTerminalMode::Host,
@@ -893,6 +933,32 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &mut config.sandbox,
                 |s, val| s.auto_cleanup = val,
             );
+        }
+        (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => {
+            if *v == global.sandbox.cpu_limit {
+                if let Some(ref mut s) = config.sandbox {
+                    s.cpu_limit = None;
+                }
+            } else {
+                use crate::session::SandboxConfigOverride;
+                let s = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                s.cpu_limit = v.clone();
+            }
+        }
+        (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
+            if *v == global.sandbox.memory_limit {
+                if let Some(ref mut s) = config.sandbox {
+                    s.memory_limit = None;
+                }
+            } else {
+                use crate::session::SandboxConfigOverride;
+                let s = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                s.memory_limit = v.clone();
+            }
         }
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
             let mode = match selected {
