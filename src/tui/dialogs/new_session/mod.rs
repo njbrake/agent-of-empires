@@ -5,7 +5,7 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
@@ -16,6 +16,7 @@ use crate::session::repo_config::HookProgress;
 use crate::session::Config;
 use crate::session::{civilizations, resolve_config};
 use crate::tmux::AvailableTools;
+use crate::tui::components::{ListPicker, ListPickerResult};
 
 pub(super) struct FieldHelp {
     pub(super) name: &'static str,
@@ -35,7 +36,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Group",
-        description: "Optional grouping for organization",
+        description: "Optional grouping for organization (Ctrl+P to browse existing groups)",
     },
     FieldHelp {
         name: "Tool",
@@ -43,7 +44,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Worktree Branch",
-        description: "Branch name for git worktree",
+        description: "Branch name for git worktree (Ctrl+P to browse existing branches)",
     },
     FieldHelp {
         name: "New Branch",
@@ -125,6 +126,9 @@ pub struct NewSessionDialog {
     pub(super) env_values_selected_index: usize,
     pub(super) env_values_editing_input: Option<Input>,
     pub(super) env_values_adding_new: bool,
+    pub(super) existing_groups: Vec<String>,
+    pub(super) group_picker: ListPicker,
+    pub(super) branch_picker: ListPicker,
     pub(super) error_message: Option<String>,
     pub(super) show_help: bool,
     /// Whether the dialog is in loading state (creating session in background)
@@ -224,7 +228,12 @@ fn handle_editable_list_key(
 }
 
 impl NewSessionDialog {
-    pub fn new(tools: AvailableTools, existing_titles: Vec<String>, profile: &str) -> Self {
+    pub fn new(
+        tools: AvailableTools,
+        existing_titles: Vec<String>,
+        existing_groups: Vec<String>,
+        profile: &str,
+    ) -> Self {
         let current_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -271,6 +280,9 @@ impl NewSessionDialog {
             focused_field: 0,
             available_tools,
             existing_titles,
+            existing_groups,
+            group_picker: ListPicker::new("Select Group"),
+            branch_picker: ListPicker::new("Select Branch"),
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled,
@@ -358,6 +370,9 @@ impl NewSessionDialog {
             focused_field: 0,
             available_tools: tools,
             existing_titles: Vec::new(),
+            existing_groups: Vec::new(),
+            group_picker: ListPicker::new("Select Group"),
+            branch_picker: ListPicker::new("Select Branch"),
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
@@ -396,6 +411,9 @@ impl NewSessionDialog {
             focused_field: 0,
             available_tools: tools,
             existing_titles: Vec::new(),
+            existing_groups: Vec::new(),
+            group_picker: ListPicker::new("Select Group"),
+            branch_picker: ListPicker::new("Select Branch"),
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
@@ -440,6 +458,20 @@ impl NewSessionDialog {
         if self.show_help {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
                 self.show_help = false;
+            }
+            return DialogResult::Continue;
+        }
+
+        if self.group_picker.is_active() {
+            if let ListPickerResult::Selected(value) = self.group_picker.handle_key(key) {
+                self.group = Input::new(value);
+            }
+            return DialogResult::Continue;
+        }
+
+        if self.branch_picker.is_active() {
+            if let ListPickerResult::Selected(value) = self.branch_picker.handle_key(key) {
+                self.worktree_branch = Input::new(value);
             }
             return DialogResult::Continue;
         }
@@ -501,6 +533,23 @@ impl NewSessionDialog {
         }
         if self.env_values_list_expanded && self.focused_field == env_values_field {
             return self.handle_env_values_list_key(key);
+        }
+
+        // Ctrl+P opens a context-sensitive picker
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.focused_field == 2 && !self.existing_groups.is_empty() {
+                self.group_picker.activate(self.existing_groups.clone());
+                return DialogResult::Continue;
+            }
+            if self.focused_field == worktree_field {
+                let path = std::path::Path::new(self.path.value().trim());
+                if let Ok(branches) = crate::git::diff::list_branches(path) {
+                    if !branches.is_empty() {
+                        self.branch_picker.activate(branches);
+                    }
+                }
+                return DialogResult::Continue;
+            }
         }
 
         match key.code {

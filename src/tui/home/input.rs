@@ -334,9 +334,16 @@ impl HomeView {
             KeyCode::Char('n') => {
                 let existing_titles: Vec<String> =
                     self.instances.iter().map(|i| i.title.clone()).collect();
+                let existing_groups: Vec<String> = self
+                    .group_tree
+                    .get_all_groups()
+                    .iter()
+                    .map(|g| g.path.clone())
+                    .collect();
                 self.new_dialog = Some(NewSessionDialog::new(
                     self.available_tools.clone(),
                     existing_titles,
+                    existing_groups,
                     self.storage.profile(),
                 ));
             }
