@@ -16,22 +16,27 @@
       ]
     },
     {
-      "username": "gdevos010",
-      "issues": [
-        {
-          "number": 172,
-          "title": "BUG: raise an error if you try to make a worktree in a location where git already has one",
-          "labeled_at": "2026-02-02T08:49:33.205Z"
-        }
-      ]
-    },
-    {
       "username": "jlamberts",
       "issues": [
         {
           "number": 208,
           "title": "Feature: Pass env vars through to Tmux session when not in sandbox mode",
           "labeled_at": "2026-02-02T08:52:42.570Z"
+        },
+        {
+          "number": 209,
+          "title": "Discussion: easier way to create new session in existing group via TUI",
+          "labeled_at": "2026-02-02T14:22:34.263Z"
+        }
+      ]
+    },
+    {
+      "username": "gdevos010",
+      "issues": [
+        {
+          "number": 172,
+          "title": "BUG: raise an error if you try to make a worktree in a location where git already has one",
+          "labeled_at": "2026-02-02T08:49:33.205Z"
         }
       ]
     },
