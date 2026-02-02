@@ -16,10 +16,11 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - name: Checkout
+      - name: Checkout credits branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: credit
+          fetch-depth: 0
 
       - name: Post thank-you comment
         uses: actions/github-script@v7
@@ -30,15 +31,15 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.issue.number,
-              body: `Thanks for the helpful contribution, @${author}! Your issue has been credited in our [contributors page](https://agent-of-empires.github.io/credits.html). 🎉`
+              body: `Thanks for the helpful contribution, @${author}! Your issue has been credited in our [contributors page](https://agent-of-empires.com/docs/credits.html). 🎉`
             });
 
-      - name: Update credits data and markdown
+      - name: Update credits data
+        id: update
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const path = require('path');
 
             const issue = context.payload.issue;
             const username = issue.user.login;
@@ -47,10 +48,9 @@ jobs:
             const labeledAt = new Date().toISOString();
 
             // Read or initialize credits.json
-            const creditsPath = 'credits.json';
             let data;
             try {
-              data = JSON.parse(fs.readFileSync(creditsPath, 'utf8'));
+              data = JSON.parse(fs.readFileSync('credits.json', 'utf8'));
             } catch {
               data = { contributors: [] };
             }
@@ -65,6 +65,7 @@ jobs:
             // Idempotency: skip if issue already credited
             if (contributor.issues.some(i => i.number === issueNumber)) {
               console.log(`Issue #${issueNumber} already credited for @${username}, skipping.`);
+              core.setOutput('changed', 'false');
               return;
             }
 
@@ -77,10 +78,30 @@ jobs:
             // Sort contributors by issue count descending
             data.contributors.sort((a, b) => b.issues.length - a.issues.length);
 
-            fs.writeFileSync(creditsPath, JSON.stringify(data, null, 2) + '\n');
+            fs.writeFileSync('credits.json', JSON.stringify(data, null, 2) + '\n');
+            core.setOutput('changed', 'true');
 
-            // Generate markdown
+      - name: Commit credits.json to credits branch
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add credits.json
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "update contributor credits"
+          git push
+
+      - name: Generate markdown and update main
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            const data = JSON.parse(fs.readFileSync('credits.json', 'utf8'));
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+
             let md = '# Contributors\n\n';
             md += 'Thank you to everyone who has helped improve Agent of Empires!\n\n';
             md += '| Rank | Contributor | Contributions | Issues |\n';
@@ -95,15 +116,28 @@ jobs:
 
             md += '\n*Auto-generated. Earn a spot by opening an issue that receives the "helpful contribution" label.*\n';
 
+            // Switch to main, write generated files, commit and push
+            execSync('git checkout main');
             fs.writeFileSync('CREDITS.md', md);
-            fs.mkdirSync('docs', { recursive: true });
             fs.writeFileSync('docs/credits.md', md);
+            execSync('git add CREDITS.md docs/credits.md');
 
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add credits.json CREDITS.md docs/credits.md
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "docs: update contributor credits"
-          git push
+            try {
+              execSync('git diff --cached --quiet');
+              console.log('No markdown changes to commit');
+            } catch {
+              execSync('git commit -m "docs: update contributor credits"');
+              execSync('git push');
+            }
+
+      - name: Trigger site redeployment
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docs.yml',
+              ref: 'main'
+            });
