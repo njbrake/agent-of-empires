@@ -147,3 +147,104 @@ fn test_changed_hooks_invalidate_trust() {
         "different hooks should produce different hashes"
     );
 }
+
+#[test]
+#[serial]
+fn test_hook_trust_invalidated_on_config_change() {
+    use agent_of_empires::session::repo_config::{check_hook_trust, trust_repo, HookTrustStatus};
+
+    let temp_home = TempDir::new().unwrap();
+    setup_temp_home(temp_home.path());
+
+    // Create a repo with hooks
+    let repo = setup_repo_config(
+        r#"
+[hooks]
+on_create = ["echo setup"]
+"#,
+    );
+
+    // Initially untrusted
+    let status = check_hook_trust(repo.path()).unwrap();
+    assert!(
+        matches!(status, HookTrustStatus::NeedsTrust { .. }),
+        "Hooks should initially need trust"
+    );
+
+    // Trust the hooks
+    if let HookTrustStatus::NeedsTrust { hooks_hash, .. } = &status {
+        trust_repo(repo.path(), hooks_hash).unwrap();
+    }
+
+    // Now should be trusted
+    let status = check_hook_trust(repo.path()).unwrap();
+    assert!(
+        matches!(status, HookTrustStatus::Trusted(_)),
+        "Hooks should be trusted after trust_repo"
+    );
+
+    // Modify the hooks config
+    let aoe_dir = repo.path().join(".aoe");
+    fs::write(
+        aoe_dir.join("config.toml"),
+        r#"
+[hooks]
+on_create = ["echo setup", "echo extra"]
+"#,
+    )
+    .unwrap();
+
+    // Should no longer be trusted (hash changed)
+    let status = check_hook_trust(repo.path()).unwrap();
+    assert!(
+        matches!(status, HookTrustStatus::NeedsTrust { .. }),
+        "Modified hooks should need re-trust"
+    );
+}
+
+#[test]
+#[serial]
+fn test_hook_re_trust_after_change() {
+    use agent_of_empires::session::repo_config::{check_hook_trust, trust_repo, HookTrustStatus};
+
+    let temp_home = TempDir::new().unwrap();
+    setup_temp_home(temp_home.path());
+
+    let repo = setup_repo_config(
+        r#"
+[hooks]
+on_create = ["echo v1"]
+"#,
+    );
+
+    // Trust v1
+    let status = check_hook_trust(repo.path()).unwrap();
+    if let HookTrustStatus::NeedsTrust { hooks_hash, .. } = &status {
+        trust_repo(repo.path(), hooks_hash).unwrap();
+    }
+
+    // Modify to v2
+    let aoe_dir = repo.path().join(".aoe");
+    fs::write(
+        aoe_dir.join("config.toml"),
+        r#"
+[hooks]
+on_create = ["echo v2"]
+"#,
+    )
+    .unwrap();
+
+    // Re-trust v2
+    let status = check_hook_trust(repo.path()).unwrap();
+    assert!(matches!(status, HookTrustStatus::NeedsTrust { .. }));
+    if let HookTrustStatus::NeedsTrust { hooks_hash, .. } = &status {
+        trust_repo(repo.path(), hooks_hash).unwrap();
+    }
+
+    // Should now be trusted again
+    let status = check_hook_trust(repo.path()).unwrap();
+    assert!(
+        matches!(status, HookTrustStatus::Trusted(_)),
+        "Re-trusted hooks should be trusted"
+    );
+}
