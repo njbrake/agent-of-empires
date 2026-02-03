@@ -114,6 +114,19 @@ impl DirPicker {
                 DirPickerResult::Cancelled
             }
             KeyCode::Enter => {
+                if filtered_len > 0 && self.selected < filtered_len {
+                    let selected_name = &filtered[self.selected];
+                    if selected_name == "../" {
+                        if let Some(parent) = self.cwd.parent() {
+                            self.active = false;
+                            return DirPickerResult::Selected(parent.to_string_lossy().to_string());
+                        }
+                    } else {
+                        self.active = false;
+                        let path = self.cwd.join(selected_name);
+                        return DirPickerResult::Selected(path.to_string_lossy().to_string());
+                    }
+                }
                 self.active = false;
                 DirPickerResult::Selected(self.cwd.to_string_lossy().to_string())
             }
@@ -179,10 +192,15 @@ impl DirPicker {
         let ellipsis = "...";
         let available = max_len.saturating_sub(ellipsis.len());
         if available == 0 {
-            return ellipsis[..max_len].to_string();
+            return ellipsis.chars().take(max_len).collect();
         }
-        // Take from the right end of the path
-        let start = path.len() - available;
+        // Take from the right end of the path, finding a char-safe boundary
+        let start = path
+            .char_indices()
+            .rev()
+            .nth(available.min(path.chars().count()) - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         format!("{}{}", ellipsis, &path[start..])
     }
 
@@ -394,14 +412,35 @@ mod tests {
     }
 
     #[test]
-    fn test_enter_selects_cwd() {
+    fn test_enter_selects_highlighted_item() {
         let (_tmp, base) = setup_tempdir();
         let mut picker = DirPicker::new();
         picker.activate(&base.to_string_lossy());
 
+        // selected=0 is "../", so Enter on it selects the parent
         let result = picker.handle_key(key(KeyCode::Enter));
         match result {
-            DirPickerResult::Selected(path) => assert_eq!(path, base.to_string_lossy()),
+            DirPickerResult::Selected(path) => {
+                assert_eq!(path, base.parent().unwrap().to_string_lossy());
+            }
+            _ => panic!("Expected Selected"),
+        }
+        assert!(!picker.is_active());
+    }
+
+    #[test]
+    fn test_enter_selects_highlighted_subdir() {
+        let (_tmp, base) = setup_tempdir();
+        let mut picker = DirPicker::new();
+        picker.activate(&base.to_string_lossy());
+
+        // Navigate to "alpha" (index 1)
+        picker.handle_key(key(KeyCode::Down));
+        let result = picker.handle_key(key(KeyCode::Enter));
+        match result {
+            DirPickerResult::Selected(path) => {
+                assert_eq!(path, base.join("alpha").to_string_lossy());
+            }
             _ => panic!("Expected Selected"),
         }
         assert!(!picker.is_active());
@@ -629,5 +668,20 @@ mod tests {
     fn test_truncate_path_exact() {
         let path = "/exact";
         assert_eq!(DirPicker::truncate_path(path, 6), "/exact");
+    }
+
+    #[test]
+    fn test_truncate_path_multibyte_utf8() {
+        let path = "/home/user/projetcs/donnees/repertoire";
+        let truncated = DirPicker::truncate_path(path, 20);
+        assert!(truncated.starts_with("..."));
+        assert!(truncated.len() <= 23); // 3 for "..." + up to 20 chars (multibyte could vary)
+
+        // Ensure it doesn't panic on actual multi-byte chars
+        let unicode_path = "/home/\u{00e9}\u{00e8}\u{00ea}/\u{00fc}\u{00f6}\u{00e4}/dir";
+        let truncated = DirPicker::truncate_path(unicode_path, 10);
+        assert!(truncated.starts_with("..."));
+        // Verify it's valid UTF-8 (would panic if not)
+        let _ = truncated.as_bytes();
     }
 }
