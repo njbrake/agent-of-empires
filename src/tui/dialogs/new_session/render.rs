@@ -103,9 +103,15 @@ impl NewSessionDialog {
             None
         };
 
+        let path_placeholder = if self.focused_field == 1 {
+            Some("(Ctrl+P to browse directories)")
+        } else {
+            None
+        };
+
         let text_fields: [(&str, &tui_input::Input, Option<&str>); 3] = [
             ("Title:", &self.title, Some("(random civ)")),
-            ("Path:", &self.path, None),
+            ("Path:", &self.path, path_placeholder),
             ("Group:", &self.group, group_placeholder),
         ];
 
@@ -328,6 +334,10 @@ impl NewSessionDialog {
                 hint_spans.push(Span::styled("←/→", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" tool  "));
             }
+            if self.focused_field == 1 {
+                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::raw(" browse  "));
+            }
             if self.focused_field == 2 && !self.existing_groups.is_empty() {
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" groups  "));
@@ -355,6 +365,10 @@ impl NewSessionDialog {
 
         if self.branch_picker.is_active() {
             self.branch_picker.render(frame, area, theme);
+        }
+
+        if self.dir_picker.is_active() {
+            self.dir_picker.render(frame, area, theme);
         }
     }
 

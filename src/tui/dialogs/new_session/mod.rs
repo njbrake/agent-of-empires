@@ -16,7 +16,7 @@ use crate::session::repo_config::HookProgress;
 use crate::session::Config;
 use crate::session::{civilizations, resolve_config};
 use crate::tmux::AvailableTools;
-use crate::tui::components::{ListPicker, ListPickerResult};
+use crate::tui::components::{DirPicker, DirPickerResult, ListPicker, ListPickerResult};
 
 pub(super) struct FieldHelp {
     pub(super) name: &'static str,
@@ -32,7 +32,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Path",
-        description: "Working directory for the session",
+        description: "Working directory for the session (Ctrl+P to browse directories)",
     },
     FieldHelp {
         name: "Group",
@@ -129,6 +129,7 @@ pub struct NewSessionDialog {
     pub(super) existing_groups: Vec<String>,
     pub(super) group_picker: ListPicker,
     pub(super) branch_picker: ListPicker,
+    pub(super) dir_picker: DirPicker,
     pub(super) error_message: Option<String>,
     pub(super) show_help: bool,
     /// Whether the dialog is in loading state (creating session in background)
@@ -283,6 +284,7 @@ impl NewSessionDialog {
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
+            dir_picker: DirPicker::new(),
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled,
@@ -373,6 +375,7 @@ impl NewSessionDialog {
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
+            dir_picker: DirPicker::new(),
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
@@ -414,6 +417,7 @@ impl NewSessionDialog {
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
+            dir_picker: DirPicker::new(),
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
@@ -472,6 +476,16 @@ impl NewSessionDialog {
         if self.branch_picker.is_active() {
             if let ListPickerResult::Selected(value) = self.branch_picker.handle_key(key) {
                 self.worktree_branch = Input::new(value);
+            }
+            return DialogResult::Continue;
+        }
+
+        if self.dir_picker.is_active() {
+            match self.dir_picker.handle_key(key) {
+                DirPickerResult::Selected(path) => {
+                    self.path = Input::new(path);
+                }
+                DirPickerResult::Cancelled | DirPickerResult::Continue => {}
             }
             return DialogResult::Continue;
         }
@@ -537,6 +551,11 @@ impl NewSessionDialog {
 
         // Ctrl+P opens a context-sensitive picker
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.focused_field == 1 {
+                let path_value = self.path.value().trim().to_string();
+                self.dir_picker.activate(&path_value);
+                return DialogResult::Continue;
+            }
             if self.focused_field == 2 && !self.existing_groups.is_empty() {
                 self.group_picker.activate(self.existing_groups.clone());
                 return DialogResult::Continue;
