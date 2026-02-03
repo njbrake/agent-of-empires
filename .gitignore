@@ -1,5 +1,6 @@
-# Claude artifacts like ralph loop stuff
-.claude/
+# Claude artifacts (allow .claude/skills/ for cross-agent skills)
+.claude/*
+!.claude/skills/
 # Rust build artifacts
 /target/
 Cargo.lock
@@ -46,7 +47,6 @@ Thumbs.db
 .aoe/
 
 # Spec Kit
-.specify/
 .genreleases/
 sdd-*/
 

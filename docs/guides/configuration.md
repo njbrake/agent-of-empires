@@ -8,7 +8,7 @@ AoE uses a layered configuration system. Settings are resolved in this order:
 
 Later layers override earlier ones. Only explicitly set fields override; unset fields inherit from the previous layer.
 
-All settings below can also be edited from the TUI settings screen (press `S` or access via the menu).
+All settings below can also be edited from the TUI settings screen (press `s` or access via the menu).
 
 ## File Locations
 
