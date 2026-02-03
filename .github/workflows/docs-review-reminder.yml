@@ -1,0 +1,61 @@
+name: Docs Review Reminder
+
+on:
+  schedule:
+    - cron: "0 9 1 * *" # 1st of each month at 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  create-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for existing open issue
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          count=$(gh issue list --label docs-review --state open --json number --jq 'length')
+          if [ "$count" -gt 0 ]; then
+            echo "Skipping: open docs-review issue already exists"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create reminder issue
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh issue create \
+            --title "docs: monthly documentation review" \
+            --label "docs-review" \
+            --body "$(cat <<'EOF'
+          ## Monthly Documentation Review
+
+          Time to review the project docs against the current codebase.
+
+          ### How to run
+
+          Use the **docs-review** skill from your preferred AI coding agent:
+
+          | Agent | Command |
+          |-------|---------|
+          | Claude Code | `/project:docs-review` |
+          | OpenCode | `/project:docs-review` (reads `.claude/skills/` as fallback) |
+          | Codex CLI | Copy the prompt from `.claude/skills/docs-review/SKILL.md` |
+          | Mistral Vibe | Copy the prompt from `.claude/skills/docs-review/SKILL.md` |
+
+          ### Checklist
+
+          - [ ] Run the docs-review skill
+          - [ ] Review the diff for accuracy
+          - [ ] Commit the changes
+          - [ ] Close this issue
+          EOF
+          )"

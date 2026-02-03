@@ -33,8 +33,8 @@ aoe worktree cleanup
 # Remove session (prompts for worktree cleanup)
 aoe remove <session>
 
-# Remove session (keep worktree)
-aoe remove <session> --keep-worktree
+# Remove session and delete worktree
+aoe remove <session> --delete-worktree
 ```
 
 ## TUI Keyboard Shortcuts
@@ -94,7 +94,7 @@ path_template = "../wt/{branch}-{session-id}"
 |----------|-----------------|
 | aoe-managed worktree | Yes |
 | Manual worktree | No |
-| `--keep-worktree` flag | No (skips prompt) |
+| `--delete-worktree` flag | Yes (deletes worktree) |
 | Non-worktree session | No |
 
 ## Auto-Detection

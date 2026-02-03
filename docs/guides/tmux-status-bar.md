@@ -13,8 +13,8 @@ When you start a session, aoe sets tmux user options (`@aoe_title`, `@aoe_branch
 ```
 aoe: My Session | 14:30                           # Basic session
 aoe: My Session | feature-branch | 14:30          # Worktree session
-aoe: My Session ⬡ aoe_my_container | 14:30        # Sandboxed session
-aoe: My Session | main ⬡ aoe_container | 14:30    # Worktree + sandbox
+aoe: My Session ⬡ aoe-sandbox-a1b2c3d4 | 14:30     # Sandboxed session
+aoe: My Session | main ⬡ aoe-sandbox-a1b2c3d4 | 14:30  # Worktree + sandbox
 ```
 
 ## Auto Mode (Default)
@@ -76,7 +76,7 @@ Output:
 
 For a sandboxed session:
 ```json
-{"title": "My Session", "branch": null, "sandbox": "aoe_my_container"}
+{"title": "My Session", "branch": null, "sandbox": "aoe-sandbox-a1b2c3d4"}
 ```
 
 Returns `null` if not in an aoe session.
@@ -123,4 +123,4 @@ Branch is only displayed for worktree sessions (sessions created with `aoe add -
 
 ### Container not showing
 
-Container name is only displayed for sandboxed sessions (sessions created with `aoe add --sandbox`). The container name follows the pattern `aoe_<session_id>`.
+Container name is only displayed for sandboxed sessions (sessions created with `aoe add --sandbox`). The container name follows the pattern `aoe-sandbox-<session_id_first_8_chars>`.

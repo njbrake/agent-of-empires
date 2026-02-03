@@ -31,6 +31,10 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe worktree list`↴](#aoe-worktree-list)
 * [`aoe worktree info`↴](#aoe-worktree-info)
 * [`aoe worktree cleanup`↴](#aoe-worktree-cleanup)
+* [`aoe sounds`↴](#aoe-sounds)
+* [`aoe sounds install`↴](#aoe-sounds-install)
+* [`aoe sounds list`↴](#aoe-sounds-list)
+* [`aoe sounds test`↴](#aoe-sounds-test)
 * [`aoe tmux`↴](#aoe-tmux)
 * [`aoe tmux status`↴](#aoe-tmux-status)
 * [`aoe uninstall`↴](#aoe-uninstall)
@@ -54,6 +58,7 @@ Run without arguments to launch the TUI dashboard.
 * `group` — Manage groups for organizing sessions
 * `profile` — Manage profiles (separate workspaces)
 * `worktree` — Manage git worktrees for parallel development
+* `sounds` — Manage sound effects for agent state transitions
 * `tmux` — tmux integration utilities
 * `uninstall` — Uninstall Agent of Empires
 
@@ -416,6 +421,48 @@ Cleanup orphaned worktrees
 ###### **Options:**
 
 * `-f`, `--force` — Actually remove worktrees (default is dry-run)
+
+
+
+## `aoe sounds`
+
+Manage sound effects for agent state transitions
+
+**Usage:** `aoe sounds <COMMAND>`
+
+###### **Subcommands:**
+
+* `install` — Install bundled sound effects
+* `list` — List currently installed sounds
+* `test` — Test a sound by playing it
+
+
+
+## `aoe sounds install`
+
+Install bundled sound effects
+
+**Usage:** `aoe sounds install`
+
+
+
+## `aoe sounds list`
+
+List currently installed sounds
+
+**Usage:** `aoe sounds list`
+
+
+
+## `aoe sounds test`
+
+Test a sound by playing it
+
+**Usage:** `aoe sounds test <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — Sound file name (without extension)
 
 
 

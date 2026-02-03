@@ -109,3 +109,10 @@ When making breaking changes to stored data (file locations, config schema, etc.
 - Platform-specific migrations should use `#[cfg(target_os = "...")]`
 - Test migrations by creating the old state manually and verifying the transition
 - Before finishing any feature request, make sure that you have run cargo fmt, clippy, and tests.
+
+## Active Technologies
+- YAML (GitHub Actions workflow) + Markdown (SKILL.md prompt) + Agent Skills open standard, GitHub Actions (001-auto-docs-update)
+- N/A (no persistent state) (001-auto-docs-update)
+
+## Recent Changes
+- 001-auto-docs-update: Added YAML (GitHub Actions workflow) + Markdown (SKILL.md prompt) + Agent Skills open standard, GitHub Actions
