@@ -95,9 +95,6 @@ tempfile = "3.14"
 serial_test = "3.2"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 
-[profile.test]
-debug = "line-tables-only"
-
 [profile.release]
 lto = true
 codegen-units = 1

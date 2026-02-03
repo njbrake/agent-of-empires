@@ -32,7 +32,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Path",
-        description: "Working directory for the session (Ctrl+P to browse directories)",
+        description: "Working directory for the session",
     },
     FieldHelp {
         name: "Group",

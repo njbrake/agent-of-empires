@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use tui_input::backend::crossterm::EventHandler;
@@ -24,6 +24,13 @@ pub struct DirPicker {
     dirs: Vec<String>,
     /// True when read_dir failed (e.g. permission denied)
     read_error: bool,
+    show_hidden: bool,
+}
+
+impl Default for DirPicker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DirPicker {
@@ -35,6 +42,7 @@ impl DirPicker {
             cwd: PathBuf::new(),
             dirs: Vec::new(),
             read_error: false,
+            show_hidden: false,
         }
     }
 
@@ -72,7 +80,7 @@ impl DirPicker {
                     // unlike entry.file_type().is_dir() which does not.
                     if entry.path().is_dir() {
                         if let Some(name) = entry.file_name().to_str() {
-                            if !name.starts_with('.') {
+                            if self.show_hidden || !name.starts_with('.') {
                                 dirs.push(name.to_string());
                             }
                         }
@@ -105,6 +113,13 @@ impl DirPicker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DirPickerResult {
+        if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.show_hidden = !self.show_hidden;
+            self.selected = 0;
+            self.refresh_dirs();
+            return DirPickerResult::Continue;
+        }
+
         let filtered = self.filtered_dirs();
         let filtered_len = filtered.len();
 
@@ -114,7 +129,10 @@ impl DirPicker {
                 DirPickerResult::Cancelled
             }
             KeyCode::Enter => {
-                if filtered_len > 0 && self.selected < filtered_len {
+                if filtered_len == 0 {
+                    return DirPickerResult::Continue;
+                }
+                if self.selected < filtered_len {
                     let selected_name = &filtered[self.selected];
                     if selected_name == "../" {
                         if let Some(parent) = self.cwd.parent() {
@@ -183,25 +201,23 @@ impl DirPicker {
         }
     }
 
-    /// Truncate a path display string from the left to fit within max_len,
+    /// Truncate a path display string from the left to fit within max_len characters,
     /// prefixing with "..." when truncated.
     fn truncate_path(path: &str, max_len: usize) -> String {
-        if path.len() <= max_len {
+        let char_count = path.chars().count();
+        if char_count <= max_len {
             return path.to_string();
         }
         let ellipsis = "...";
-        let available = max_len.saturating_sub(ellipsis.len());
+        let ellipsis_len = ellipsis.len(); // 3, all ASCII
+        let available = max_len.saturating_sub(ellipsis_len);
         if available == 0 {
             return ellipsis.chars().take(max_len).collect();
         }
-        // Take from the right end of the path, finding a char-safe boundary
-        let start = path
-            .char_indices()
-            .rev()
-            .nth(available.min(path.chars().count()) - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        format!("{}{}", ellipsis, &path[start..])
+        // Take `available` characters from the right end of the path
+        let skip = char_count - available;
+        let tail: String = path.chars().skip(skip).collect();
+        format!("{}{}", ellipsis, tail)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -251,7 +267,7 @@ impl DirPicker {
 
         // Directory list with scrolling
         let visible_height = chunks[2].height as usize;
-        let scroll_offset = if self.selected >= visible_height {
+        let scroll_offset = if visible_height > 0 && self.selected >= visible_height {
             self.selected - visible_height + 1
         } else {
             0
@@ -328,6 +344,13 @@ impl DirPicker {
             Span::raw(" filter  "),
             Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" cd  "),
+            Span::styled("C-h", Style::default().fg(theme.hint)),
+            Span::raw(if self.show_hidden {
+                " hide ."
+            } else {
+                " show ."
+            }),
+            Span::raw("  "),
             Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" select  "),
             Span::styled("Esc", Style::default().fg(theme.hint)),
@@ -624,6 +647,46 @@ mod tests {
     }
 
     #[test]
+    fn test_ctrl_h_toggles_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().to_path_buf();
+        std::fs::create_dir(base.join(".hidden")).unwrap();
+        std::fs::create_dir(base.join("visible")).unwrap();
+
+        let mut picker = DirPicker::new();
+        picker.activate(&base.to_string_lossy());
+        assert!(!picker.dirs.contains(&".hidden".to_string()));
+
+        let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        picker.handle_key(ctrl_h);
+        assert!(picker.show_hidden);
+        assert!(picker.dirs.contains(&".hidden".to_string()));
+        assert!(picker.dirs.contains(&"visible".to_string()));
+
+        picker.handle_key(ctrl_h);
+        assert!(!picker.show_hidden);
+        assert!(!picker.dirs.contains(&".hidden".to_string()));
+    }
+
+    #[test]
+    fn test_enter_on_empty_filtered_list_does_nothing() {
+        let (_tmp, base) = setup_tempdir();
+        let mut picker = DirPicker::new();
+        picker.activate(&base.to_string_lossy());
+
+        // Type a filter that matches nothing
+        picker.handle_key(key(KeyCode::Char('z')));
+        picker.handle_key(key(KeyCode::Char('z')));
+        picker.handle_key(key(KeyCode::Char('z')));
+        let filtered = picker.filtered_dirs();
+        assert!(filtered.is_empty());
+
+        let result = picker.handle_key(key(KeyCode::Enter));
+        assert!(matches!(result, DirPickerResult::Continue));
+        assert!(picker.is_active());
+    }
+
+    #[test]
     fn test_unreadable_dir_shows_error() {
         let mut picker = DirPicker::new();
         // Activate on a path that doesn't exist to trigger read_dir failure
@@ -660,7 +723,7 @@ mod tests {
         let long = "/home/user/very/deeply/nested/directory/structure";
         let truncated = DirPicker::truncate_path(long, 30);
         assert!(truncated.starts_with("..."));
-        assert!(truncated.len() <= 30);
+        assert!(truncated.chars().count() <= 30);
         assert!(truncated.ends_with("directory/structure"));
     }
 
@@ -675,13 +738,12 @@ mod tests {
         let path = "/home/user/projetcs/donnees/repertoire";
         let truncated = DirPicker::truncate_path(path, 20);
         assert!(truncated.starts_with("..."));
-        assert!(truncated.len() <= 23); // 3 for "..." + up to 20 chars (multibyte could vary)
+        assert!(truncated.chars().count() <= 20);
 
         // Ensure it doesn't panic on actual multi-byte chars
         let unicode_path = "/home/\u{00e9}\u{00e8}\u{00ea}/\u{00fc}\u{00f6}\u{00e4}/dir";
         let truncated = DirPicker::truncate_path(unicode_path, 10);
         assert!(truncated.starts_with("..."));
-        // Verify it's valid UTF-8 (would panic if not)
-        let _ = truncated.as_bytes();
+        assert!(truncated.chars().count() <= 10);
     }
 }
