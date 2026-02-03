@@ -46,12 +46,13 @@ const features = [
 >
   <Nav />
 
+  <main>
   <!-- Hero Section -->
   <section class="relative pt-32 pb-8 px-6 hero-glow">
     <div class="max-w-6xl mx-auto text-center">
       <!-- Logo -->
       <div class="mb-8">
-        <img src="/assets/logo.svg" alt="Agent of Empires" class="w-20 h-20 mx-auto mb-8 drop-shadow-2xl">
+        <img src="/assets/logo.svg" alt="Agent of Empires" class="w-20 h-20 mx-auto mb-8 drop-shadow-2xl" width="80" height="80" fetchpriority="high">
         <h1 class="text-5xl md:text-6xl lg:text-7xl font-bold mb-6 tracking-tight">
           <span class="text-gradient">Agent of Empires</span>
         </h1>
@@ -71,7 +72,7 @@ const features = [
 
       <!-- CTA Buttons -->
       <div class="flex flex-col sm:flex-row gap-4 justify-center mb-16">
-        <a href="/docs/quick-start.html" class="bg-brand-600 hover:bg-brand-500 text-white font-semibold px-8 py-3.5 rounded-xl transition-all hover:shadow-lg hover:shadow-brand-600/25 text-base">
+        <a href="/docs/quick-start.html" class="bg-brand-700 hover:bg-brand-600 text-white font-semibold px-8 py-3.5 rounded-xl transition-all hover:shadow-lg hover:shadow-brand-600/25 text-base">
           Get Started
         </a>
         <a href="https://github.com/njbrake/agent-of-empires" target="_blank" rel="noopener" class="group bg-surface-800 hover:bg-surface-700 text-white font-semibold px-8 py-3.5 rounded-xl transition-colors flex items-center justify-center gap-2 border border-surface-700 hover:border-brand-500/50 text-base" title="Star on GitHub">
@@ -93,7 +94,7 @@ const features = [
           <div class="w-3 h-3 rounded-full bg-green-500"></div>
           <span class="ml-3 text-sm text-gray-400 font-mono">aoe</span>
         </div>
-        <img src="/assets/demo.gif" alt="Agent of Empires terminal user interface showing session management with Claude Code, git worktree creation, and Docker container status indicators" class="w-full">
+        <img src="/assets/demo.gif" alt="Agent of Empires terminal user interface showing session management with Claude Code, git worktree creation, and Docker container status indicators" class="w-full" width="1200" height="750" loading="lazy">
       </div>
     </div>
   </section>
@@ -150,7 +151,7 @@ const features = [
       <h2 class="text-3xl md:text-4xl font-bold mb-4">Ready to manage your AI agents?</h2>
       <p class="text-gray-400 text-lg mb-10">Get started in under a minute. Free and open source.</p>
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
-        <a href="/docs/installation.html" class="bg-brand-600 hover:bg-brand-500 text-white font-semibold px-10 py-4 rounded-xl transition-all hover:shadow-lg hover:shadow-brand-600/25 text-lg">
+        <a href="/docs/installation.html" class="bg-brand-700 hover:bg-brand-600 text-white font-semibold px-10 py-4 rounded-xl transition-all hover:shadow-lg hover:shadow-brand-600/25 text-lg">
           Install Now
         </a>
         <a href="/docs/" class="bg-surface-800 hover:bg-surface-700 text-white font-semibold px-10 py-4 rounded-xl transition-colors border border-surface-700 text-lg">
@@ -159,6 +160,7 @@ const features = [
       </div>
     </div>
   </section>
+  </main>
 
   <Footer />
 </Base>
