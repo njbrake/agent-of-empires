@@ -22,6 +22,8 @@ pub struct DirPicker {
     selected: usize,
     cwd: PathBuf,
     dirs: Vec<String>,
+    /// True when read_dir failed (e.g. permission denied)
+    read_error: bool,
 }
 
 impl DirPicker {
@@ -32,6 +34,7 @@ impl DirPicker {
             selected: 0,
             cwd: PathBuf::new(),
             dirs: Vec::new(),
+            read_error: false,
         }
     }
 
@@ -61,15 +64,23 @@ impl DirPicker {
 
     fn refresh_dirs(&mut self) {
         let mut dirs = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.cwd) {
-            for entry in entries.flatten() {
-                // Follow symlinks: entry.path().is_dir() resolves symlinks,
-                // unlike entry.file_type().is_dir() which does not.
-                if entry.path().is_dir() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        dirs.push(name.to_string());
+        match std::fs::read_dir(&self.cwd) {
+            Ok(entries) => {
+                self.read_error = false;
+                for entry in entries.flatten() {
+                    // Follow symlinks: entry.path().is_dir() resolves symlinks,
+                    // unlike entry.file_type().is_dir() which does not.
+                    if entry.path().is_dir() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            if !name.starts_with('.') {
+                                dirs.push(name.to_string());
+                            }
+                        }
                     }
                 }
+            }
+            Err(_) => {
+                self.read_error = true;
             }
         }
         dirs.sort_by_key(|a| a.to_lowercase());
@@ -81,7 +92,7 @@ impl DirPicker {
         let has_parent = self.cwd.parent().is_some();
 
         let mut result = Vec::new();
-        if has_parent && (filter.is_empty() || "../".contains(&filter)) {
+        if has_parent && (filter.is_empty() || "..".starts_with(&filter)) {
             result.push("../".to_string());
         }
 
@@ -229,16 +240,39 @@ impl DirPicker {
         };
 
         let mut lines: Vec<Line> = Vec::new();
-        if filtered.is_empty() {
+        if self.read_error {
+            lines.push(Line::from(Span::styled(
+                "  (permission denied)",
+                Style::default().fg(theme.dimmed),
+            )));
+        } else if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (empty directory)",
                 Style::default().fg(theme.dimmed),
             )));
         } else {
+            let has_more_above = scroll_offset > 0;
+            let has_more_below = filtered.len() > scroll_offset + visible_height;
+
+            if has_more_above {
+                lines.push(Line::from(Span::styled(
+                    format!("  [{} more above]", scroll_offset),
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+
+            let list_visible = if has_more_above && has_more_below {
+                visible_height.saturating_sub(2)
+            } else if has_more_above || has_more_below {
+                visible_height.saturating_sub(1)
+            } else {
+                visible_height
+            };
+
             for (i, item) in filtered
                 .iter()
                 .skip(scroll_offset)
-                .take(visible_height)
+                .take(list_visible)
                 .enumerate()
             {
                 let abs_idx = i + scroll_offset;
@@ -257,6 +291,14 @@ impl DirPicker {
                 lines.push(Line::from(Span::styled(
                     format!("{}{}", prefix, display),
                     style,
+                )));
+            }
+
+            if has_more_below {
+                let remaining = filtered.len() - scroll_offset - list_visible;
+                lines.push(Line::from(Span::styled(
+                    format!("  [{} more below]", remaining),
+                    Style::default().fg(theme.dimmed),
                 )));
             }
         }
@@ -455,7 +497,7 @@ mod tests {
         let mut picker = DirPicker::new();
         picker.activate(&base.to_string_lossy());
 
-        // "a" matches "../", "alpha", "beta", "gamma"
+        // "a" matches "alpha", "beta", "gamma" (but not "../")
         picker.handle_key(key(KeyCode::Char('a')));
         let filtered = picker.filtered_dirs();
         assert!(filtered.contains(&"alpha".to_string()));
@@ -525,6 +567,46 @@ mod tests {
     fn test_parent_entry_not_shown_at_root() {
         let mut picker = DirPicker::new();
         picker.activate("/");
+        let filtered = picker.filtered_dirs();
+        assert!(!filtered.contains(&"../".to_string()));
+    }
+
+    #[test]
+    fn test_dotfiles_hidden_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().to_path_buf();
+        std::fs::create_dir(base.join(".hidden")).unwrap();
+        std::fs::create_dir(base.join("visible")).unwrap();
+
+        let mut picker = DirPicker::new();
+        picker.activate(&base.to_string_lossy());
+        assert!(picker.dirs.contains(&"visible".to_string()));
+        assert!(!picker.dirs.contains(&".hidden".to_string()));
+    }
+
+    #[test]
+    fn test_unreadable_dir_shows_error() {
+        let mut picker = DirPicker::new();
+        // Activate on a path that doesn't exist to trigger read_dir failure
+        picker.cwd = PathBuf::from("/nonexistent_path_that_should_not_exist");
+        picker.refresh_dirs();
+        assert!(picker.read_error);
+        assert!(picker.dirs.is_empty());
+    }
+
+    #[test]
+    fn test_parent_filter_only_matches_dots() {
+        let (_tmp, base) = setup_tempdir();
+        let mut picker = DirPicker::new();
+        picker.activate(&base.to_string_lossy());
+
+        // Typing "." should still show "../"
+        picker.handle_key(key(KeyCode::Char('.')));
+        let filtered = picker.filtered_dirs();
+        assert!(filtered.contains(&"../".to_string()));
+
+        // Typing "/" after "." should NOT show "../" (filter is "./" which doesn't match "..")
+        picker.handle_key(key(KeyCode::Char('/')));
         let filtered = picker.filtered_dirs();
         assert!(!filtered.contains(&"../".to_string()));
     }
