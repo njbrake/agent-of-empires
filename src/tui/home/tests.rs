@@ -742,7 +742,7 @@ fn test_has_dialog_includes_settings_view() {
 
     assert!(!view.has_dialog());
 
-    view.settings_view = Some(SettingsView::new("test").unwrap());
+    view.settings_view = Some(SettingsView::new("test", None).unwrap());
     assert!(view.has_dialog());
 }
 

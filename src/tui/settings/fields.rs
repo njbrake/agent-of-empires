@@ -19,6 +19,7 @@ pub enum SettingsCategory {
     Tmux,
     Session,
     Sound,
+    Hooks,
 }
 
 impl SettingsCategory {
@@ -30,6 +31,7 @@ impl SettingsCategory {
             Self::Tmux => "Tmux",
             Self::Session => "Session",
             Self::Sound => "Sound",
+            Self::Hooks => "Hooks",
         }
     }
 }
@@ -71,13 +73,16 @@ pub enum FieldKey {
     SoundOnWaiting,
     SoundOnIdle,
     SoundOnError,
+    // Hooks
+    HookOnCreate,
+    HookOnLaunch,
 }
 
 /// Resolve a field value from global config and optional profile override.
 /// Returns (value, has_override).
 fn resolve_value<T: Clone>(scope: SettingsScope, global: T, profile: Option<T>) -> (T, bool) {
     match scope {
-        SettingsScope::Global => (global, false),
+        SettingsScope::Global | SettingsScope::Repo => (global, false),
         SettingsScope::Profile => {
             let has_override = profile.is_some();
             let value = profile.unwrap_or(global);
@@ -95,7 +100,7 @@ fn resolve_optional<T: Clone>(
     has_explicit_override: bool,
 ) -> (Option<T>, bool) {
     match scope {
-        SettingsScope::Global => (global, false),
+        SettingsScope::Global | SettingsScope::Repo => (global, false),
         SettingsScope::Profile => {
             let value = profile.or(global);
             (value, has_explicit_override)
@@ -180,7 +185,10 @@ impl SettingField {
     }
 }
 
-/// Build fields for a category based on scope and current config values
+/// Build fields for a category based on scope and current config values.
+///
+/// For Repo scope, `global` should be the resolved (global+profile merged) config,
+/// and `profile` should be the repo config converted to ProfileConfig via `repo_config_to_profile`.
 pub fn build_fields_for_category(
     category: SettingsCategory,
     scope: SettingsScope,
@@ -194,6 +202,7 @@ pub fn build_fields_for_category(
         SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
         SettingsCategory::Session => build_session_fields(scope, global, profile),
         SettingsCategory::Sound => build_sound_fields(scope, global, profile),
+        SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
     }
 }
 
@@ -697,6 +706,44 @@ fn build_sound_fields(
     ]
 }
 
+fn build_hooks_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let hooks = profile.hooks.as_ref();
+
+    let (on_create, o1) = resolve_value(
+        scope,
+        global.hooks.on_create.clone(),
+        hooks.and_then(|h| h.on_create.clone()),
+    );
+    let (on_launch, o2) = resolve_value(
+        scope,
+        global.hooks.on_launch.clone(),
+        hooks.and_then(|h| h.on_launch.clone()),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::HookOnCreate,
+            label: "On Create",
+            description: "Commands run once when a session is first created. Runs inside sandbox when enabled.",
+            value: FieldValue::List(on_create),
+            category: SettingsCategory::Hooks,
+            has_override: o1,
+        },
+        SettingField {
+            key: FieldKey::HookOnLaunch,
+            label: "On Launch",
+            description: "Commands run every time a session starts. Runs inside sandbox when enabled.",
+            value: FieldValue::List(on_launch),
+            category: SettingsCategory::Hooks,
+            has_override: o2,
+        },
+    ]
+}
+
 /// Apply a field's value back to the appropriate config.
 /// For profile scope, if the value matches global, the override is removed.
 pub fn apply_field_to_config(
@@ -707,7 +754,9 @@ pub fn apply_field_to_config(
 ) {
     match scope {
         SettingsScope::Global => apply_field_to_global(field, global),
-        SettingsScope::Profile => apply_field_to_profile(field, global, profile),
+        SettingsScope::Profile | SettingsScope::Repo => {
+            apply_field_to_profile(field, global, profile)
+        }
     }
 }
 
@@ -802,6 +851,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::SoundOnError, FieldValue::OptionalText(v)) => {
             config.sound.on_error = v.clone();
         }
+        // Hooks
+        (FieldKey::HookOnCreate, FieldValue::List(v)) => config.hooks.on_create = v.clone(),
+        (FieldKey::HookOnLaunch, FieldValue::List(v)) => config.hooks.on_launch = v.clone(),
         _ => {}
     }
 }
@@ -1091,12 +1143,27 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 s.on_error = v.clone();
             }
         }
+        // Hooks
+        (FieldKey::HookOnCreate, FieldValue::List(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.hooks.on_create,
+                &mut config.hooks,
+                |s, val| s.on_create = val,
+            );
+        }
+        (FieldKey::HookOnLaunch, FieldValue::List(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.hooks.on_launch,
+                &mut config.hooks,
+                |s, val| s.on_launch = val,
+            );
+        }
         _ => {}
     }
 }
 
-/// Parse a list of "KEY=VALUE" strings into a HashMap.
-/// Entries without '=' are logged and skipped.
 fn parse_env_values_list(entries: &[String]) -> HashMap<String, String> {
     entries
         .iter()

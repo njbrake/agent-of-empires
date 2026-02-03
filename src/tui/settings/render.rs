@@ -50,26 +50,22 @@ impl SettingsView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // Tabs: [ Global ] [ Profile: name ]
-        let global_style = if self.scope == SettingsScope::Global {
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-
-        let profile_style = if self.scope == SettingsScope::Profile {
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-
         let modified = if self.has_changes { " *" } else { "" };
 
-        let tabs = Line::from(vec![
+        let scope_style = |scope: SettingsScope| -> Style {
+            if self.scope == scope {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.dimmed)
+            }
+        };
+
+        let global_style = scope_style(SettingsScope::Global);
+        let profile_style = scope_style(SettingsScope::Profile);
+
+        let mut spans = vec![
             Span::styled("  Settings", Style::default().fg(theme.text)),
             Span::styled(modified, Style::default().fg(theme.error)),
             Span::raw("    "),
@@ -80,9 +76,18 @@ impl SettingsView {
             Span::styled("[ ", Style::default().fg(theme.border)),
             Span::styled(format!("Profile: {}", self.profile), profile_style),
             Span::styled(" ]", Style::default().fg(theme.border)),
-        ]);
+        ];
 
-        frame.render_widget(Paragraph::new(tabs), inner);
+        // Show Repo tab when a project path is available
+        if self.project_path.is_some() {
+            let repo_style = scope_style(SettingsScope::Repo);
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled("[ ", Style::default().fg(theme.border)));
+            spans.push(Span::styled("Repo", repo_style));
+            spans.push(Span::styled(" ]", Style::default().fg(theme.border)));
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), inner);
     }
 
     fn render_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -165,8 +170,12 @@ impl SettingsView {
         frame.render_widget(block, area);
 
         if self.fields.is_empty() {
-            let msg = Paragraph::new("No settings in this category")
-                .style(Style::default().fg(theme.dimmed));
+            let msg = if self.scope == SettingsScope::Repo {
+                "No repo-level settings for this category"
+            } else {
+                "No settings in this category"
+            };
+            let msg = Paragraph::new(msg).style(Style::default().fg(theme.dimmed));
             frame.render_widget(msg, inner);
             return;
         }

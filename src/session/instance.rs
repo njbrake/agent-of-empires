@@ -422,19 +422,33 @@ impl Instance {
             return Ok(());
         }
 
-        // Execute on_launch hooks (trust already verified during creation).
-        // Use check_hook_trust which normalizes the path, so symlinked
-        // project_paths resolve correctly against the trust store.
+        // Resolve on_launch hooks from the full config chain (global > profile > repo).
+        // Repo hooks go through trust verification; global/profile hooks are implicitly trusted.
         let on_launch_hooks = if skip_on_launch {
             None
         } else {
+            // Start with global+profile hooks as the base
+            let profile = super::config::Config::load()
+                .map(|c| c.default_profile)
+                .unwrap_or_else(|_| "default".to_string());
+            let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
+                .map(|c| c.hooks.on_launch)
+                .unwrap_or_default();
+
+            // Check if repo has trusted hooks that override
             match super::repo_config::check_hook_trust(std::path::Path::new(&self.project_path)) {
                 Ok(super::repo_config::HookTrustStatus::Trusted(hooks))
                     if !hooks.on_launch.is_empty() =>
                 {
-                    Some(hooks.on_launch.clone())
+                    resolved_on_launch = hooks.on_launch.clone();
                 }
-                _ => None,
+                _ => {}
+            }
+
+            if resolved_on_launch.is_empty() {
+                None
+            } else {
+                Some(resolved_on_launch)
             }
         };
 

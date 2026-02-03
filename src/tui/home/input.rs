@@ -5,7 +5,7 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::{HomeView, TerminalMode, ViewMode};
-use crate::session::{flatten_tree, list_profiles, repo_config, Item, Status};
+use crate::session::{flatten_tree, list_profiles, repo_config, resolve_config, Item, Status};
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
@@ -143,10 +143,12 @@ impl HomeView {
                                 ) {
                                     tracing::error!("Failed to trust repo: {}", e);
                                 }
-                                return self.create_session_with_hooks(data, Some(hooks));
+                                let merged = self.merge_repo_hooks_onto_config(hooks);
+                                return self.create_session_with_hooks(data, merged);
                             }
                             HookTrustAction::Skip => {
-                                return self.create_session_with_hooks(data, None);
+                                let fallback = self.resolve_global_profile_hooks();
+                                return self.create_session_with_hooks(data, fallback);
                             }
                         }
                     }
@@ -180,16 +182,19 @@ impl HomeView {
                                 Some(HookTrustDialog::new(hooks, hooks_hash, data.path.clone()));
                             self.pending_hook_trust_data = Some(data);
                         }
-                        Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
-                            let hooks_opt = if hooks.is_empty() { None } else { Some(hooks) };
-                            return self.create_session_with_hooks(data, hooks_opt);
+                        Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
+                            // Merge repo hooks onto global+profile hooks (per-field override)
+                            let merged = self.merge_repo_hooks_onto_config(repo_hooks);
+                            return self.create_session_with_hooks(data, merged);
                         }
                         Ok(repo_config::HookTrustStatus::NoHooks) => {
-                            return self.create_session_with_hooks(data, None);
+                            let fallback = self.resolve_global_profile_hooks();
+                            return self.create_session_with_hooks(data, fallback);
                         }
                         Err(e) => {
                             tracing::warn!("Failed to check repo hooks: {}", e);
-                            return self.create_session_with_hooks(data, None);
+                            let fallback = self.resolve_global_profile_hooks();
+                            return self.create_session_with_hooks(data, fallback);
                         }
                     }
                 }
@@ -348,8 +353,13 @@ impl HomeView {
                 ));
             }
             KeyCode::Char('s') => {
-                // Open settings view
-                match SettingsView::new(self.storage.profile()) {
+                // Open settings view with selected session's project path (if any)
+                let project_path = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|id| self.instance_map.get(id))
+                    .map(|inst| inst.project_path.clone());
+                match SettingsView::new(self.storage.profile(), project_path) {
                     Ok(view) => self.settings_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open settings: {}", e);
@@ -688,5 +698,42 @@ impl HomeView {
 
         // No mouse handling for other views currently
         None
+    }
+
+    /// Resolve hooks from global+profile config. Returns `Some(hooks)` only if
+    /// at least one hook command is defined. Global/profile hooks are implicitly
+    /// trusted and skip the repo trust dialog.
+    fn resolve_global_profile_hooks(&self) -> Option<crate::session::HooksConfig> {
+        let config = resolve_config(self.storage.profile()).ok()?;
+        if config.hooks.on_create.is_empty() && config.hooks.on_launch.is_empty() {
+            None
+        } else {
+            Some(config.hooks)
+        }
+    }
+
+    /// Merge trusted repo hooks onto the resolved global+profile config using
+    /// per-field override semantics: repo fields replace global/profile fields
+    /// only when the repo field is non-empty.
+    fn merge_repo_hooks_onto_config(
+        &self,
+        repo_hooks: crate::session::HooksConfig,
+    ) -> Option<crate::session::HooksConfig> {
+        let mut base = resolve_config(self.storage.profile())
+            .map(|c| c.hooks)
+            .unwrap_or_default();
+
+        if !repo_hooks.on_create.is_empty() {
+            base.on_create = repo_hooks.on_create;
+        }
+        if !repo_hooks.on_launch.is_empty() {
+            base.on_launch = repo_hooks.on_launch;
+        }
+
+        if base.on_create.is_empty() && base.on_launch.is_empty() {
+            None
+        } else {
+            Some(base)
+        }
     }
 }

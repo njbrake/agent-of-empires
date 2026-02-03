@@ -21,7 +21,10 @@ pub enum HookProgress {
 }
 
 use super::config::Config;
-use super::profile_config::{SandboxConfigOverride, SessionConfigOverride, WorktreeConfigOverride};
+use super::profile_config::{
+    HooksConfigOverride, ProfileConfig, SandboxConfigOverride, SessionConfigOverride,
+    TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
+};
 
 /// Repository-level configuration loaded from `.aoe/config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -37,6 +40,15 @@ pub struct RepoConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updates: Option<UpdatesConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux: Option<TmuxConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<crate::sound::SoundConfigOverride>,
 }
 
 /// Hook commands to run at various lifecycle points.
@@ -87,10 +99,30 @@ pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
     Ok(Some(config))
 }
 
+/// Save repo config to `<project_path>/.aoe/config.toml`.
+/// Creates the `.aoe/` directory if it does not exist.
+pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> {
+    let aoe_dir = project_path.join(".aoe");
+    if !aoe_dir.exists() {
+        fs::create_dir_all(&aoe_dir)
+            .with_context(|| format!("Failed to create {}", aoe_dir.display()))?;
+    }
+
+    let config_path = project_path.join(REPO_CONFIG_PATH);
+    let content = toml::to_string_pretty(config)
+        .with_context(|| "Failed to serialize repo config".to_string())?;
+
+    fs::write(&config_path, content)
+        .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+    Ok(())
+}
+
 /// Merge repo config overrides into an already-resolved config (global + profile).
 pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
     use super::profile_config::{
-        apply_sandbox_overrides, apply_session_overrides, apply_worktree_overrides,
+        apply_sandbox_overrides, apply_session_overrides, apply_tmux_overrides,
+        apply_worktree_overrides,
     };
 
     if let Some(ref session_override) = repo.session {
@@ -105,7 +137,82 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
         apply_worktree_overrides(&mut config.worktree, worktree_override);
     }
 
+    if let Some(ref hooks) = repo.hooks {
+        if !hooks.on_create.is_empty() {
+            config.hooks.on_create = hooks.on_create.clone();
+        }
+        if !hooks.on_launch.is_empty() {
+            config.hooks.on_launch = hooks.on_launch.clone();
+        }
+    }
+
+    if let Some(ref updates_override) = repo.updates {
+        if let Some(check_enabled) = updates_override.check_enabled {
+            config.updates.check_enabled = check_enabled;
+        }
+        if let Some(auto_update) = updates_override.auto_update {
+            config.updates.auto_update = auto_update;
+        }
+        if let Some(check_interval_hours) = updates_override.check_interval_hours {
+            config.updates.check_interval_hours = check_interval_hours;
+        }
+        if let Some(notify_in_cli) = updates_override.notify_in_cli {
+            config.updates.notify_in_cli = notify_in_cli;
+        }
+    }
+
+    if let Some(ref tmux_override) = repo.tmux {
+        apply_tmux_overrides(&mut config.tmux, tmux_override);
+    }
+
+    if let Some(ref sound_override) = repo.sound {
+        crate::sound::apply_sound_overrides(&mut config.sound, sound_override);
+    }
+
     config
+}
+
+/// Convert a RepoConfig into a ProfileConfig for TUI editing.
+/// This allows the settings TUI to reuse the same field infrastructure
+/// for all three scopes (Global, Profile, Repo).
+pub fn repo_config_to_profile(repo: &RepoConfig) -> ProfileConfig {
+    ProfileConfig {
+        updates: repo.updates.clone(),
+        worktree: repo.worktree.clone(),
+        sandbox: repo.sandbox.clone(),
+        tmux: repo.tmux.clone(),
+        session: repo.session.clone(),
+        sound: repo.sound.clone(),
+        hooks: repo.hooks.as_ref().map(|h| HooksConfigOverride {
+            on_create: if h.on_create.is_empty() {
+                None
+            } else {
+                Some(h.on_create.clone())
+            },
+            on_launch: if h.on_launch.is_empty() {
+                None
+            } else {
+                Some(h.on_launch.clone())
+            },
+        }),
+        ..Default::default()
+    }
+}
+
+/// Convert a ProfileConfig back into a RepoConfig after TUI editing.
+pub fn profile_to_repo_config(profile: &ProfileConfig) -> RepoConfig {
+    RepoConfig {
+        hooks: profile.hooks.as_ref().map(|h| HooksConfig {
+            on_create: h.on_create.clone().unwrap_or_default(),
+            on_launch: h.on_launch.clone().unwrap_or_default(),
+        }),
+        session: profile.session.clone(),
+        sandbox: profile.sandbox.clone(),
+        worktree: profile.worktree.clone(),
+        updates: profile.updates.clone(),
+        tmux: profile.tmux.clone(),
+        sound: profile.sound.clone(),
+    }
 }
 
 /// Resolve config with repo overrides: global -> profile -> repo.
@@ -500,6 +607,16 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 
 # [worktree]
 # enabled = true
+
+# [updates]
+# check_enabled = false
+
+# [tmux]
+# status_bar = "auto"
+# mouse = "auto"
+
+# [sound]
+# enabled = false
 "#;
 
 #[cfg(test)]

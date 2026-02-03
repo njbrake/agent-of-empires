@@ -51,10 +51,32 @@ impl SettingsView {
             }
 
             // Switch scope tabs
-            (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
+            (KeyCode::Tab, _) => {
                 self.scope = match self.scope {
                     SettingsScope::Global => SettingsScope::Profile,
+                    SettingsScope::Profile => {
+                        if self.project_path.is_some() {
+                            SettingsScope::Repo
+                        } else {
+                            SettingsScope::Global
+                        }
+                    }
+                    SettingsScope::Repo => SettingsScope::Global,
+                };
+                self.rebuild_fields();
+                SettingsAction::Continue
+            }
+            (KeyCode::BackTab, _) => {
+                self.scope = match self.scope {
+                    SettingsScope::Global => {
+                        if self.project_path.is_some() {
+                            SettingsScope::Repo
+                        } else {
+                            SettingsScope::Profile
+                        }
+                    }
                     SettingsScope::Profile => SettingsScope::Global,
+                    SettingsScope::Repo => SettingsScope::Profile,
                 };
                 self.rebuild_fields();
                 SettingsAction::Continue
@@ -160,9 +182,9 @@ impl SettingsView {
                 SettingsAction::Continue
             }
 
-            // Reset field to default (clear profile override)
+            // Reset field to default (clear profile/repo override)
             (KeyCode::Char('r'), _) => {
-                if self.scope == SettingsScope::Profile
+                if (self.scope == SettingsScope::Profile || self.scope == SettingsScope::Repo)
                     && self.focus == SettingsFocus::Fields
                     && !self.fields.is_empty()
                 {
@@ -355,154 +377,178 @@ impl SettingsView {
 
         let key = self.fields[field_index].key;
 
+        // Pick the right ProfileConfig to clear from based on scope
+        let config = if self.scope == SettingsScope::Repo {
+            &mut self.repo_as_profile
+        } else {
+            &mut self.profile_config
+        };
+
         match key {
             // Updates
             FieldKey::CheckEnabled => {
-                if let Some(ref mut u) = self.profile_config.updates {
+                if let Some(ref mut u) = config.updates {
                     u.check_enabled = None;
                 }
             }
             FieldKey::CheckIntervalHours => {
-                if let Some(ref mut u) = self.profile_config.updates {
+                if let Some(ref mut u) = config.updates {
                     u.check_interval_hours = None;
                 }
             }
             FieldKey::NotifyInCli => {
-                if let Some(ref mut u) = self.profile_config.updates {
+                if let Some(ref mut u) = config.updates {
                     u.notify_in_cli = None;
                 }
             }
             // Worktree
             FieldKey::PathTemplate => {
-                if let Some(ref mut w) = self.profile_config.worktree {
+                if let Some(ref mut w) = config.worktree {
                     w.path_template = None;
                 }
             }
             FieldKey::BareRepoPathTemplate => {
-                if let Some(ref mut w) = self.profile_config.worktree {
+                if let Some(ref mut w) = config.worktree {
                     w.bare_repo_path_template = None;
                 }
             }
             FieldKey::WorktreeAutoCleanup => {
-                if let Some(ref mut w) = self.profile_config.worktree {
+                if let Some(ref mut w) = config.worktree {
                     w.auto_cleanup = None;
                 }
             }
             FieldKey::DeleteBranchOnCleanup => {
-                if let Some(ref mut w) = self.profile_config.worktree {
+                if let Some(ref mut w) = config.worktree {
                     w.delete_branch_on_cleanup = None;
                 }
             }
             // Sandbox
             FieldKey::DefaultImage => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.default_image = None;
                 }
             }
             FieldKey::Environment => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.environment = None;
                 }
             }
             FieldKey::EnvironmentValues => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.environment_values = None;
                 }
             }
             FieldKey::SandboxAutoCleanup => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.auto_cleanup = None;
                 }
             }
             // Tmux
             FieldKey::StatusBar => {
-                if let Some(ref mut t) = self.profile_config.tmux {
+                if let Some(ref mut t) = config.tmux {
                     t.status_bar = None;
                 }
             }
             FieldKey::Mouse => {
-                if let Some(ref mut t) = self.profile_config.tmux {
+                if let Some(ref mut t) = config.tmux {
                     t.mouse = None;
                 }
             }
             // Session
             FieldKey::DefaultTool => {
-                if let Some(ref mut s) = self.profile_config.session {
+                if let Some(ref mut s) = config.session {
                     s.default_tool = None;
                 }
             }
-            // New sandbox settings
             FieldKey::SandboxEnabledByDefault => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.enabled_by_default = None;
                 }
             }
             FieldKey::YoloModeDefault => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.yolo_mode_default = None;
                 }
             }
             FieldKey::DefaultTerminalMode => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.default_terminal_mode = None;
                 }
             }
             FieldKey::VolumeIgnores => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.volume_ignores = None;
                 }
             }
             FieldKey::MountSsh => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.mount_ssh = None;
                 }
             }
             FieldKey::CpuLimit => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.cpu_limit = None;
                 }
             }
             FieldKey::MemoryLimit => {
-                if let Some(ref mut s) = self.profile_config.sandbox {
+                if let Some(ref mut s) = config.sandbox {
                     s.memory_limit = None;
                 }
             }
             // Sound
             FieldKey::SoundEnabled => {
-                if let Some(ref mut s) = self.profile_config.sound {
+                if let Some(ref mut s) = config.sound {
                     s.enabled = None;
                 }
             }
             FieldKey::SoundMode => {
-                if let Some(ref mut s) = self.profile_config.sound {
+                if let Some(ref mut s) = config.sound {
                     s.mode = None;
                 }
             }
             FieldKey::SoundOnStart => {
-                if let Some(ref mut s) = self.profile_config.sound {
+                if let Some(ref mut s) = config.sound {
                     s.on_start = None;
                 }
             }
             FieldKey::SoundOnRunning => {
-                if let Some(ref mut s) = self.profile_config.sound {
+                if let Some(ref mut s) = config.sound {
                     s.on_running = None;
                 }
             }
             FieldKey::SoundOnWaiting => {
-                if let Some(ref mut s) = self.profile_config.sound {
+                if let Some(ref mut s) = config.sound {
                     s.on_waiting = None;
                 }
             }
             FieldKey::SoundOnIdle => {
-                if let Some(ref mut s) = self.profile_config.sound {
+                if let Some(ref mut s) = config.sound {
                     s.on_idle = None;
                 }
             }
             FieldKey::SoundOnError => {
-                if let Some(ref mut s) = self.profile_config.sound {
+                if let Some(ref mut s) = config.sound {
                     s.on_error = None;
                 }
             }
+            // Hooks
+            FieldKey::HookOnCreate => {
+                if let Some(ref mut h) = config.hooks {
+                    h.on_create = None;
+                }
+            }
+            FieldKey::HookOnLaunch => {
+                if let Some(ref mut h) = config.hooks {
+                    h.on_launch = None;
+                }
+            }
+        }
+
+        // Sync repo_config when in Repo scope
+        if self.scope == SettingsScope::Repo {
+            self.repo_config = Some(crate::session::profile_to_repo_config(
+                &self.repo_as_profile,
+            ));
         }
 
         self.has_changes = true;
@@ -517,6 +563,18 @@ impl SettingsView {
     pub fn discard_changes(&mut self) -> anyhow::Result<()> {
         self.global_config = crate::session::Config::load()?;
         self.profile_config = crate::session::load_profile_config(&self.profile)?;
+        self.repo_config = self.project_path.as_ref().and_then(|p| {
+            crate::session::load_repo_config(std::path::Path::new(p))
+                .ok()
+                .flatten()
+        });
+        self.resolved_base =
+            crate::session::merge_configs(self.global_config.clone(), &self.profile_config);
+        self.repo_as_profile = self
+            .repo_config
+            .as_ref()
+            .map(crate::session::repo_config_to_profile)
+            .unwrap_or_default();
         self.has_changes = false;
         self.rebuild_fields();
         Ok(())

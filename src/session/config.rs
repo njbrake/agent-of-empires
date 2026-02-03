@@ -7,6 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::get_app_dir;
+use super::repo_config::HooksConfig;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -36,6 +37,9 @@ pub struct Config {
 
     #[serde(default)]
     pub diff: DiffConfig,
+
+    #[serde(default)]
+    pub hooks: HooksConfig,
 
     #[serde(default)]
     pub sound: crate::sound::SoundConfig,

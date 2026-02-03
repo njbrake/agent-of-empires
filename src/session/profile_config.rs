@@ -36,6 +36,9 @@ pub struct ProfileConfig {
     pub session: Option<SessionConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<HooksConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<crate::sound::SoundConfigOverride>,
 }
 
@@ -141,6 +144,15 @@ pub struct SessionConfigOverride {
     pub default_tool: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HooksConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_create: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_launch: Option<Vec<String>>,
+}
+
 /// Load profile-specific config. Returns empty config if file doesn't exist.
 pub fn load_profile_config(profile: &str) -> Result<ProfileConfig> {
     let path = get_profile_config_path(profile)?;
@@ -177,6 +189,7 @@ pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
         || config.sandbox.is_some()
         || config.tmux.is_some()
         || config.session.is_some()
+        || config.hooks.is_some()
         || config.sound.is_some()
 }
 
@@ -255,6 +268,19 @@ pub fn apply_worktree_overrides(
     }
 }
 
+/// Apply hooks config overrides to a target config.
+pub fn apply_hooks_overrides(
+    target: &mut crate::session::repo_config::HooksConfig,
+    source: &HooksConfigOverride,
+) {
+    if let Some(ref on_create) = source.on_create {
+        target.on_create = on_create.clone();
+    }
+    if let Some(ref on_launch) = source.on_launch {
+        target.on_launch = on_launch.clone();
+    }
+}
+
 /// Apply session config overrides to a target config.
 pub fn apply_session_overrides(
     target: &mut super::config::SessionConfig,
@@ -318,6 +344,10 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
 
     if let Some(ref session_override) = profile.session {
         apply_session_overrides(&mut global.session, session_override);
+    }
+
+    if let Some(ref hooks_override) = profile.hooks {
+        apply_hooks_overrides(&mut global.hooks, hooks_override);
     }
 
     if let Some(ref sound_override) = profile.sound {
