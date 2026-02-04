@@ -299,11 +299,11 @@ struct OpenCodeTime {
     #[serde(default)]
     created: Option<i64>,
     #[serde(default)]
+    #[allow(dead_code)]
     updated: Option<i64>,
 }
 
 async fn import_sessions(profile: &str, args: ImportArgs) -> Result<()> {
-    use crate::session::Instance;
 
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let opencode_storage = home.join(".local/share/opencode/storage/session");
