@@ -65,6 +65,10 @@ pub struct ImportArgs {
 
     /// Specific session ID to import
     identifier: Option<String>,
+
+    /// Tool name (opencode, claude, vibe, codex, gemini)
+    #[arg(long, default_value = "opencode")]
+    tool: String,
 }
 
 #[derive(Serialize)]
