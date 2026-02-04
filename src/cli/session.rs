@@ -2,9 +2,9 @@
 
 use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::session::{GroupTree, Storage};
+use crate::session::{GroupTree, Instance, Storage};
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
@@ -25,6 +25,9 @@ pub enum SessionCommands {
 
     /// Auto-detect current session
     Current(CurrentArgs),
+
+    /// Import sessions from OpenCode
+    Import(ImportArgs),
 }
 
 #[derive(Args)]
@@ -54,6 +57,16 @@ pub struct CurrentArgs {
     json: bool,
 }
 
+#[derive(Args)]
+pub struct ImportArgs {
+    /// Import all sessions from OpenCode
+    #[arg(long)]
+    all: bool,
+
+    /// Specific session ID to import
+    identifier: Option<String>,
+}
+
 #[derive(Serialize)]
 struct SessionDetails {
     id: String,
@@ -76,6 +89,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Attach(args) => attach_session(profile, args).await,
         SessionCommands::Show(args) => show_session(profile, args).await,
         SessionCommands::Current(args) => current_session(args).await,
+        SessionCommands::Import(args) => import_sessions(profile, args).await,
     }
 }
 
@@ -262,4 +276,180 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
     }
 
     bail!("Current tmux session is not an Agent of Empires session")
+}
+
+#[derive(Deserialize)]
+struct OpenCodeSession {
+    id: String,
+    title: String,
+    #[serde(default)]
+    directory: Option<String>,
+    #[serde(default)]
+    time: Option<OpenCodeTime>,
+    #[serde(rename = "parentID")]
+    parent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenCodeTime {
+    #[serde(default)]
+    created: Option<i64>,
+    #[serde(default)]
+    updated: Option<i64>,
+}
+
+async fn import_sessions(profile: &str, args: ImportArgs) -> Result<()> {
+    use crate::session::Instance;
+
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let opencode_storage = home.join(".local/share/opencode/storage/session");
+
+    if !opencode_storage.exists() {
+        bail!(
+            "OpenCode storage directory not found: {}. \
+            Make sure OpenCode is installed and has been used at least once.",
+            opencode_storage.display()
+        );
+    }
+
+    let mut parsed_sessions: Vec<ParsedSession> = Vec::new();
+
+    if args.all {
+        for entry in std::fs::read_dir(&opencode_storage)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_dir() {
+                continue;
+            }
+
+            for session_file in std::fs::read_dir(&path)? {
+                let file = session_file?;
+                if !file.path().extension().map(|e| e == "json").unwrap_or(false) {
+                    continue;
+                }
+
+                if let Ok(session) = parse_opencode_session(&file.path()) {
+                    // Skip subagent sessions (sessions with a parent) when importing all
+                    if session.instance.parent_session_id.is_some() {
+                        continue;
+                    }
+                    parsed_sessions.push(session);
+                }
+            }
+        }
+    } else if let Some(identifier) = &args.identifier {
+        let session_path = find_opencode_session(&opencode_storage, identifier)?;
+        if let Some(session) = session_path {
+            parsed_sessions.push(session);
+        } else {
+            bail!("OpenCode session not found: {}", identifier);
+        }
+    } else {
+        bail!("Either --all or a session identifier is required");
+    }
+
+    if parsed_sessions.is_empty() {
+        println!("No sessions to import.");
+        return Ok(());
+    }
+
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+	let mut imported_count = 0;
+	    for parsed in &parsed_sessions {
+	        let already_exists = instances.iter().any(|inst| {
+	            inst.command.contains(&parsed.opencode_id)
+	                || inst.title == parsed.instance.title
+	        });
+
+	        if already_exists {
+	            println!("Skipping duplicate: {}", parsed.instance.title);
+	            continue;
+	        }
+
+	instances.push(parsed.instance.clone());
+		imported_count += 1;
+	        println!("✓ Imported: {}", parsed.instance.title);
+	    }
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    println!("\nImported {} session(s)", imported_count);
+    Ok(())
+}
+
+struct ParsedSession {
+    instance: Instance,
+    opencode_id: String,
+}
+
+fn parse_opencode_session(path: &std::path::Path) -> Result<ParsedSession> {
+    let content = std::fs::read_to_string(path)?;
+    let oc_session: OpenCodeSession = serde_json::from_str(&content)?;
+
+    let project_path = oc_session
+        .directory
+        .ok_or_else(|| anyhow::anyhow!("Session missing directory field"))?;
+
+    let title = if oc_session.title.is_empty() {
+        &oc_session.id
+    } else {
+        &oc_session.title
+    };
+
+    let created_at = if let Some(time) = &oc_session.time {
+        if let Some(created) = time.created {
+            chrono::DateTime::from_timestamp_millis(created)
+                .unwrap_or_else(chrono::Utc::now)
+        } else {
+            chrono::Utc::now()
+        }
+    } else {
+        chrono::Utc::now()
+    };
+
+    let mut instance = Instance::new(title, &project_path);
+    instance.command = format!("opencode --session {}", oc_session.id);
+    instance.tool = "opencode".to_string();
+    instance.group_path = "OpenCode Imports".to_string();
+    instance.created_at = created_at;
+    instance.parent_session_id = oc_session.parent_id;
+    instance.update_search_cache();
+
+    Ok(ParsedSession {
+        instance,
+        opencode_id: oc_session.id,
+    })
+}
+
+fn find_opencode_session(
+    storage_dir: &std::path::Path,
+    identifier: &str,
+) -> Result<Option<ParsedSession>> {
+    for entry in std::fs::read_dir(storage_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        for session_file in std::fs::read_dir(&path)? {
+            let file = session_file?;
+            if !file.path().extension().map(|e| e == "json").unwrap_or(false) {
+                continue;
+            }
+
+            if let Ok(session) = parse_opencode_session(&file.path()) {
+                if session.opencode_id == identifier || file.file_name().to_string_lossy().contains(identifier) {
+                    return Ok(Some(session));
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
