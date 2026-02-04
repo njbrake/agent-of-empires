@@ -846,7 +846,7 @@ impl Instance {
         };
 
         if !session.exists() {
-            self.status = Status::Error;
+            self.status = Status::Idle;
             self.last_error_check = Some(std::time::Instant::now());
             return;
         }
