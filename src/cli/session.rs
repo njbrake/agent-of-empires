@@ -26,7 +26,7 @@ pub enum SessionCommands {
     /// Auto-detect current session
     Current(CurrentArgs),
 
-    /// Import sessions from OpenCode
+    /// Import sessions from external tools
     Import(ImportArgs),
 }
 
@@ -59,14 +59,14 @@ pub struct CurrentArgs {
 
 #[derive(Args)]
 pub struct ImportArgs {
-    /// Import all sessions from OpenCode
+    /// Import all sessions from the specified tool
     #[arg(long)]
     all: bool,
 
     /// Specific session ID to import
     identifier: Option<String>,
 
-    /// Tool name (opencode, claude, vibe, codex, gemini)
+    /// Tool name (currently only 'opencode' is implemented)
     #[arg(long, default_value = "opencode")]
     tool: String,
 }
@@ -304,6 +304,13 @@ struct OpenCodeTime {
 }
 
 async fn import_sessions(profile: &str, args: ImportArgs) -> Result<()> {
+
+    if args.tool != "opencode" {
+        bail!(
+            "Tool '{}' is not yet supported for import. Currently only 'opencode' is implemented.",
+            args.tool
+        );
+    }
 
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let opencode_storage = home.join(".local/share/opencode/storage/session");
