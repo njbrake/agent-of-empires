@@ -31,19 +31,6 @@ fn shell_escape(val: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
-/// Resolve an environment_values entry. If the value starts with `$`, read the
-/// named variable from the host environment (use `$$` to escape a literal `$`).
-/// Otherwise return the literal value.
-fn resolve_env_value(val: &str) -> Option<String> {
-    if let Some(rest) = val.strip_prefix("$$") {
-        Some(format!("${}", rest))
-    } else if let Some(var_name) = val.strip_prefix('$') {
-        std::env::var(var_name).ok()
-    } else {
-        Some(val.to_string())
-    }
-}
-
 /// Collect all environment variable keys from defaults, global config, and per-session extras.
 fn collect_env_keys(
     sandbox_config: &super::config::SandboxConfig,
@@ -79,14 +66,14 @@ fn collect_env_values(
     let mut values = Vec::new();
 
     for (key, val) in &sandbox_config.environment_values {
-        if let Some(resolved) = resolve_env_value(val) {
+        if let Some(resolved) = super::config::resolve_env_value(val) {
             values.push((key.clone(), resolved));
         }
     }
 
     if let Some(extra_vals) = &sandbox_info.extra_env_values {
         for (key, val) in extra_vals {
-            if let Some(resolved) = resolve_env_value(val) {
+            if let Some(resolved) = super::config::resolve_env_value(val) {
                 values.push((key.clone(), resolved));
             }
         }

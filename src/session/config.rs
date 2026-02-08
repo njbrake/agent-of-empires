@@ -9,6 +9,77 @@ use std::path::PathBuf;
 use super::get_app_dir;
 use super::repo_config::HooksConfig;
 
+/// Resolve an environment variable value.
+///
+/// If the value starts with `$`, read the named variable from the host environment
+/// (use `$$` to escape a literal `$`). Otherwise return the literal value.
+///
+/// # Examples
+/// ```ignore
+/// resolve_env_value("$HOME") => Some("/home/user")
+/// resolve_env_value("$$HOME") => Some("$HOME")
+/// resolve_env_value("literal") => Some("literal")
+/// resolve_env_value("$NONEXISTENT") => None
+/// ```
+pub fn resolve_env_value(val: &str) -> Option<String> {
+    if let Some(rest) = val.strip_prefix("$$") {
+        Some(format!("${}", rest))
+    } else if let Some(var_name) = val.strip_prefix('$') {
+        std::env::var(var_name).ok()
+    } else {
+        Some(val.to_string())
+    }
+}
+
+/// Resolve all environment variables from an environment array and environment values map.
+///
+/// Takes an array of variable names to forward through from the host, and a map of
+/// explicit key-value pairs with `$` expansion support. Returns a merged HashMap of
+/// resolved key-value pairs.
+///
+/// # Arguments
+/// * `environment` - Array of environment variable names to forward through
+/// * `environment_values` - Map of explicit KEY=VALUE pairs with `$` expansion
+///
+/// # Returns
+/// A HashMap of resolved environment variables. Variables from `environment_values`
+/// take precedence over those from `environment` if both define the same key.
+///
+/// # Examples
+/// ```ignore
+/// use std::collections::HashMap;
+///
+/// let env_vars = vec!["TERM".to_string()];
+/// let mut env_values = HashMap::new();
+/// env_values.insert("MY_VAR".to_string(), "$HOME/work".to_string());
+///
+/// let resolved = resolve_env_vars(&env_vars, &env_values);
+/// // Contains TERM from host and MY_VAR with $HOME expanded
+/// ```
+pub fn resolve_env_vars(
+    environment: &[String],
+    environment_values: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut resolved = HashMap::new();
+
+    // First, add variables from environment array (forward through from host)
+    for key in environment {
+        if let Ok(val) = std::env::var(key) {
+            resolved.insert(key.clone(), val);
+        }
+    }
+
+    // Then, add variables from environment_values (with $ expansion)
+    // These override any duplicates from the environment array
+    for (key, val) in environment_values {
+        if let Some(resolved_val) = resolve_env_value(val) {
+            resolved.insert(key.clone(), resolved_val);
+        }
+    }
+
+    resolved
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_profile")]
