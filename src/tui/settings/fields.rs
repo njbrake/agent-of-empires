@@ -346,12 +346,12 @@ fn build_sandbox_fields(
     let (environment, o4) = resolve_value(
         scope,
         global.sandbox.environment.clone(),
-        sb.and_then(|s| s.environment.clone()),
+        profile.environment.clone().or_else(|| sb.and_then(|s| s.environment.clone())),
     );
     let (environment_values, o_env_vals) = resolve_value(
         scope,
         global.sandbox.environment_values.clone(),
-        sb.and_then(|s| s.environment_values.clone()),
+        profile.environment_values.clone().or_else(|| sb.and_then(|s| s.environment_values.clone())),
     );
     let env_values_list = {
         let mut entries: Vec<String> = environment_values
@@ -946,21 +946,19 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             );
         }
         (FieldKey::Environment, FieldValue::List(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.sandbox.environment,
-                &mut config.sandbox,
-                |s, val| s.environment = val,
-            );
+            if v == &global.sandbox.environment {
+                config.environment = None;
+            } else {
+                config.environment = Some(v.clone());
+            }
         }
         (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
             let map = parse_env_values_list(v);
-            set_or_clear_override(
-                map,
-                &global.sandbox.environment_values,
-                &mut config.sandbox,
-                |s, val| s.environment_values = val,
-            );
+            if map == global.sandbox.environment_values {
+                config.environment_values = None;
+            } else {
+                config.environment_values = Some(map);
+            }
         }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => {
             set_or_clear_override(
