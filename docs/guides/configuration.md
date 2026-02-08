@@ -212,6 +212,51 @@ environment = ["CLIENT_DB_URL"]
 environment_values = { ANTHROPIC_API_KEY = "$CLIENT_A_KEY" }
 ```
 
+### Use Cases
+
+#### Use Case 1: Different API keys per client
+
+For a consulting project, use profile environment variables to avoid exposing client secrets:
+
+```toml
+# ~/.agent-of-empires/profiles/client-a/config.toml
+environment_values = { ANTHROPIC_API_KEY = "$CLIENT_A_KEY" }
+```
+
+```bash
+export CLIENT_A_KEY="sk-ant-..."
+aoe -p client-a
+```
+
+#### Use Case 2: Project-specific database URLs
+
+Different projects can have different database connections configured via profiles:
+
+```toml
+# ~/.agent-of-empires/profiles/project-alpha/config.toml
+environment = ["ALPHA_DB_URL"]
+environment_values = { NODE_ENV = "production" }
+```
+
+```bash
+export ALPHA_DB_URL="postgresql://user:pass@alpha-db.example.com/db"
+aoe -p project-alpha
+```
+
+#### Use Case 3: Different tool versions per environment
+
+Use profile environment variables to switch between development and production tooling:
+
+```toml
+# ~/.agent-of-empires/profiles/prod/config.toml
+environment_values = { NODE_ENV = "production", USE_STAGING_API = "false" }
+```
+
+```toml
+# ~/.agent-of-empires/profiles/dev/config.toml
+environment_values = { NODE_ENV = "development", USE_STAGING_API = "true" }
+```
+
 ## Repo Config
 
 Per-repo settings go in `.aoe/config.toml` at your project root. Run `aoe init` to generate a template.
