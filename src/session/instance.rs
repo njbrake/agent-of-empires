@@ -439,6 +439,25 @@ impl Instance {
             }
         };
 
+        // Resolve profile environment variables for non-sandboxed sessions
+        let profile_env_vars = if !self.is_sandboxed() {
+            let merged = super::config::Config::load().unwrap_or_default();
+            let profile_name = merged.default_profile.clone();
+            let profile_config =
+                super::profile_config::load_profile_config(&profile_name).unwrap_or_default();
+            Some(
+                super::config::resolve_env_vars(
+                    &profile_config.environment.unwrap_or_default(),
+                    &profile_config.environment_values.unwrap_or_default(),
+                )
+                .into_iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            )
+        } else {
+            None
+        };
+
         let cmd = if self.is_sandboxed() {
             self.ensure_container_running()?;
 
@@ -501,7 +520,11 @@ impl Instance {
             }
         };
 
-        session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
+        if let Some(ref env_vars) = profile_env_vars {
+            session.create_with_size_env(&self.project_path, cmd.as_deref(), size, env_vars)?;
+        } else {
+            session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
+        }
 
         // Apply all configured tmux options (status bar, mouse, etc.)
         self.apply_tmux_options();
