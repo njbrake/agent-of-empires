@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-02-07)
 
 **Core value:** Different profiles can provide different environment variables to coding agents
-**Current focus:** Phase 1 complete, Phase 2 in progress
+**Current focus:** Phase 1 complete, Phase 2 partially complete, Phase 3 complete
 
 ## Phase Status
 
@@ -13,15 +13,19 @@ See: .planning/PROJECT.md (updated 2026-02-07)
 |-------|------|--------|-------|
 | 1 | Config Data Model & Shared Resolution | Complete | 1/1 |
 | 2 | Session Launch & TUI Settings | In Progress | 1/2 |
-| 3 | Documentation | Pending | 0/0 |
+| 3 | Documentation | Complete | 1/1 |
 
-Progress: █████░░░░░░░░░░░░░░░ 50% (1.5 of 3 phases complete)
+Progress: ████████████░░░░░░░░ 66% (2.5 of 3 phases complete)
 
 ## Current Phase
 
 Phase 2: Session Launch & TUI Settings (1/2 plans complete)
 - Last activity: 2026-02-08 - Completed 02-02-PLAN.md
 - Plan 02-02: Profile env vars in docker exec commands - Partial completion, Task 3 (container creation) remaining
+
+Phase 3: Documentation (1/1 plans complete)
+- Last activity: 2026-02-08 - Completed 03-01-PLAN.md
+- Plan 03-01: Profile environment variables documentation - Complete
 
 ## Accumulated Context
 
@@ -40,6 +44,12 @@ Phase 2: Session Launch & TUI Settings (1/2 plans complete)
 - **Helper function**: Added merge_env_vars_with_profile() helper for clean merging logic
 - **Partial implementation**: Docker exec commands (container terminals) updated, container creation merge not yet complete
 
+#### Phase 3 Decisions
+
+- **Documentation pattern**: Followed sandbox.md structure for environment variable documentation to maintain consistency across the documentation site
+- **Section placement**: Positioned Profile Environment Variables section after Profiles section and before Repo Config section for logical flow
+- **Key distinction**: Documented that profile environment variables apply to BOTH sandbox and non-sandbox modes (unlike sandbox-only env vars)
+
 ### Blockers
 
 - **Container creation merge**: Need to update build_container_config() to use merge_env_vars_with_profile() instead of manual environment building
@@ -47,11 +57,9 @@ Phase 2: Session Launch & TUI Settings (1/2 plans complete)
 ### Todos
 
 - Phase 2: Complete Task 3 - Update container creation to use merged env vars (SBOX-01, LAUNCH-01)
-- Phase 3: Update documentation site with profile environment variables
-- Phase 3: Create guide page for profile environment variables with use cases
 
 ---
-*Last updated: 2026-02-08 after Phase 2 partial completion*
+*Last updated: 2026-02-08 after Phase 3 completion*
 
 ## Wave 1 Execution Summary
 
@@ -96,4 +104,31 @@ Phase 2: Session Launch & TUI Settings (1/2 plans complete)
 - Docker exec for container terminals: ✓ COMPLETE
 
 **Commits created:** 4 (eaba454, ae75fb7, 6689c43, 709b7ed, 56657fe)
+
+### Plan 03-01: Profile environment variables documentation ✓
+- **Task 1**: Add Profile Environment Variables subsection to configuration.md ✓
+  - Commits: cf0fc4b
+  - Added section after Profiles section with environment vs environment_values explanation
+  - Added table of options with defaults and descriptions
+  - Explained merge behavior and precedence (profile > sandbox on conflicts)
+
+- **Task 2**: Add use case examples for profile environment variables ✓
+  - Commits: cf0fc4b (same commit as Task 1)
+  - Added three use cases with TOML and bash examples
+  - Use Case 1: Different API keys per client
+  - Use Case 2: Project-specific database URLs
+  - Use Case 3: Different tool versions per environment
+
+- **Task 3**: Build and verify documentation ✓
+  - Installed mdbook v0.4.40 via curl
+  - Built documentation successfully with mdbook build
+  - Verified all build outputs exist and content is present
+  - No commit (build artifacts are gitignored)
+
+**Status:**
+- Documentation for profile environment variables: ✓ COMPLETE
+- Documentation builds successfully without errors
+- All must-have criteria met
+
+**Commits created:** 1 (cf0fc4b)
 
