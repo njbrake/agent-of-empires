@@ -52,3 +52,48 @@ Phase 2: Session Launch & TUI Settings (1/2 plans complete)
 
 ---
 *Last updated: 2026-02-08 after Phase 2 partial completion*
+
+## Wave 1 Execution Summary
+
+**Completed:** 2026-02-08
+
+### Plan 02-01: Add env var support to tmux session creation ✓
+- **Task 1**: Add env var parameter to tmux session creation ✓
+  - Commits: eaba454
+  - Tmux `build_create_args()` now accepts `env_vars: &[(String, String)]` parameter
+  - Each env var adds `-e KEY=VALUE` argument before tmux command
+
+- **Task 2**: Wire profile env vars to non-sandbox session launch ✓
+  - Commits: ae75fb7
+  - `start_with_size_opts()` resolves profile environment variables using `resolve_env_vars()`
+  - Non-sandbox sessions receive profile env vars via `session.create_with_size_env()`
+
+- **Task 3**: Wire profile env vars to paired terminal launch ✓
+  - Commits: ae75fb7 (combined with Task 2)
+  - `start_terminal_with_size()` resolves profile env vars for paired terminals
+  - Paired terminals have same env vars as parent session
+
+### Plan 02-02: Merge profile env vars with Docker container environment ⚠️
+- **Task 1**: Update collect_env_keys and collect_env_values to include profile env vars ✓
+  - Commits: 709b7ed
+  - Both functions accept `profile_config: Option<&ProfileConfig>` parameter
+  - Profile env vars added to docker exec commands
+
+- **Task 2**: Add merge_env_vars_with_profile helper function ✓
+  - Commits: 56657fe
+  - Helper merges sandbox and profile env vars
+  - Profile env vars override sandbox env vars on name conflicts (profile wins)
+
+- **Task 3**: Update container creation to use merged env vars ⚠️
+  - Status: NOT COMPLETE - Rust ownership/reference complexity
+  - Issue: Requires updating `build_container_config()` and related functions to use `merge_env_vars_with_profile()`
+  - Complexity: `Option<&ProfileConfig>` vs `&ProfileConfig` trait bounds, ownership issues
+  - Decision: Requires significant refactoring; deferred to follow-up
+
+**Status:**
+- Non-sandbox mode (LAUNCH-01, LAUNCH-02): ✓ COMPLETE
+- Sandbox mode (SBOX-01): ⚠️ PARTIAL - Container creation merge not implemented
+- Docker exec for container terminals: ✓ COMPLETE
+
+**Commits created:** 4 (eaba454, ae75fb7, 6689c43, 709b7ed, 56657fe)
+
