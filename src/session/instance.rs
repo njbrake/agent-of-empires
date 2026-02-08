@@ -31,6 +31,19 @@ fn shell_escape(val: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
+/// Resolve an environment_values entry. If the value starts with `$`, read the
+/// named variable from the host environment (use `$$` to escape a literal `$`).
+/// Otherwise return the literal value.
+fn resolve_env_value(val: &str) -> Option<String> {
+    if let Some(rest) = val.strip_prefix("$$") {
+        Some(format!("${}", rest))
+    } else if let Some(var_name) = val.strip_prefix('$') {
+        std::env::var(var_name).ok()
+    } else {
+        Some(val.to_string())
+    }
+}
+
 /// Collect all environment variable keys from defaults, global config, and per-session extras.
 fn collect_env_keys(
     sandbox_config: &super::config::SandboxConfig,
@@ -66,14 +79,14 @@ fn collect_env_values(
     let mut values = Vec::new();
 
     for (key, val) in &sandbox_config.environment_values {
-        if let Some(resolved) = super::config::resolve_env_value(val) {
+        if let Some(resolved) = resolve_env_value(val) {
             values.push((key.clone(), resolved));
         }
     }
 
     if let Some(extra_vals) = &sandbox_info.extra_env_values {
         for (key, val) in extra_vals {
-            if let Some(resolved) = super::config::resolve_env_value(val) {
+            if let Some(resolved) = resolve_env_value(val) {
                 values.push((key.clone(), resolved));
             }
         }
@@ -327,7 +340,7 @@ impl Instance {
         self.ensure_container_running()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox, profile_config.unwrap_or_default());
+        let env_args = build_docker_env_args(sandbox);
         let env_part = if env_args.is_empty() {
             String::new()
         } else {
@@ -409,12 +422,12 @@ impl Instance {
             return Ok(());
         }
 
-    // Resolve on_launch hooks from full config chain (global > profile > repo).
+        // Resolve on_launch hooks from the full config chain (global > profile > repo).
         // Repo hooks go through trust verification; global/profile hooks are implicitly trusted.
         let on_launch_hooks = if skip_on_launch {
             None
         } else {
-            // Start with global+profile hooks as base
+            // Start with global+profile hooks as the base
             let profile = super::config::Config::load()
                 .map(|c| c.default_profile)
                 .unwrap_or_else(|_| "default".to_string());
@@ -445,28 +458,86 @@ impl Instance {
             let profile_name = merged.default_profile.clone();
             let profile_config =
                 super::profile_config::load_profile_config(&profile_name).unwrap_or_default();
-            Some(super::config::resolve_env_vars(
-                &profile_config.environment.unwrap_or_default(),
-                &profile_config.environment_values.unwrap_or_default(),
-            ).into_iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            Some(
+                super::config::resolve_env_vars(
+                    &profile_config.environment.unwrap_or_default(),
+                    &profile_config.environment_values.unwrap_or_default(),
+                )
+                .into_iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<(String, String)>>(),
+            )
         } else {
             None
         };
 
-        let cmd = if self.is_sandboxed() {           }
+        let cmd = if self.is_sandboxed() {
+            self.ensure_container_running()?;
+
+            // Run on_launch hooks inside the container
+            if let Some(ref hook_cmds) = on_launch_hooks {
+                if let Some(ref sandbox) = self.sandbox_info {
+                    let workdir = self.container_workdir();
+                    if let Err(e) = super::repo_config::execute_hooks_in_container(
+                        hook_cmds,
+                        &sandbox.container_name,
+                        &workdir,
+                    ) {
+                        tracing::warn!("on_launch hook failed in container: {}", e);
+                    }
+                }
+            }
+            let sandbox = self.sandbox_info.as_ref().unwrap();
+            let tool_cmd = if self.is_yolo_mode() {
+                match self.tool.as_str() {
+                    "claude" => "claude --dangerously-skip-permissions".to_string(),
+                    "vibe" => "vibe --agent auto-approve".to_string(),
+                    "codex" => "codex --dangerously-bypass-approvals-and-sandbox".to_string(),
+                    "gemini" => "gemini --approval-mode yolo".to_string(),
+                    _ => self.get_tool_command().to_string(),
+                }
+            } else {
+                self.get_tool_command().to_string()
+            };
+            let env_args = build_docker_env_args(sandbox);
+            let env_part = if env_args.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", env_args)
+            };
+            Some(wrap_command_ignore_suspend(&format!(
+                "docker exec -it {}{} {}",
+                env_part, sandbox.container_name, tool_cmd
+            )))
+        } else {
+            // Run on_launch hooks on host for non-sandboxed sessions
+            if let Some(ref hook_cmds) = on_launch_hooks {
+                if let Err(e) = super::repo_config::execute_hooks(
+                    hook_cmds,
+                    std::path::Path::new(&self.project_path),
+                ) {
+                    tracing::warn!("on_launch hook failed: {}", e);
+                }
+            }
+
+            if self.command.is_empty() {
+                match self.tool.as_str() {
+                    "claude" => Some(wrap_command_ignore_suspend("claude")),
+                    "vibe" => Some(wrap_command_ignore_suspend("vibe")),
+                    "codex" => Some(wrap_command_ignore_suspend("codex")),
+                    "gemini" => Some(wrap_command_ignore_suspend("gemini")),
+                    _ => None,
+                }
             } else {
                 Some(wrap_command_ignore_suspend(&self.command))
             }
         };
 
+        // Pass profile environment variables to session creation when available
         if let Some(ref env_vars) = profile_env_vars {
             session.create_with_size_env(&self.project_path, cmd.as_deref(), size, env_vars)?;
         } else {
-            if let Some(ref env_vars) = profile_env_vars {
-            session.create_with_size_env(&self.project_path, cmd.as_deref(), size, env_vars)?;
-        } else {
             session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
-        }
         }
 
         // Apply all configured tmux options (status bar, mouse, etc.)
