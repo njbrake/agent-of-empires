@@ -46,11 +46,21 @@ impl Session {
         command: Option<&str>,
         size: Option<(u16, u16)>,
     ) -> Result<()> {
+        self.create_with_size_env(working_dir, command, size, &[])
+    }
+
+    pub fn create_with_size_env(
+        &self,
+        working_dir: &str,
+        command: Option<&str>,
+        size: Option<(u16, u16)>,
+        env_vars: &[(String, String)],
+    ) -> Result<()> {
         if self.exists() {
             return Ok(());
         }
 
-        let args = build_create_args(&self.name, working_dir, command, size);
+        let args = build_create_args(&self.name, working_dir, command, size, env_vars);
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
@@ -212,6 +222,7 @@ fn build_create_args(
     working_dir: &str,
     command: Option<&str>,
     size: Option<(u16, u16)>,
+    env_vars: &[(String, String)],
 ) -> Vec<String> {
     let mut args = vec![
         "new-session".to_string(),
@@ -221,6 +232,12 @@ fn build_create_args(
         "-c".to_string(),
         working_dir.to_string(),
     ];
+
+    // Add environment variables before size and command (must be set before shell runs)
+    for (key, value) in env_vars {
+        args.push("-e".to_string());
+        args.push(format!("{}={}", key, value));
+    }
 
     if let Some((width, height)) = size {
         args.push("-x".to_string());
