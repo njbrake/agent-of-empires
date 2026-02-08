@@ -48,6 +48,7 @@ fn resolve_env_value(val: &str) -> Option<String> {
 fn collect_env_keys(
     sandbox_config: &super::config::SandboxConfig,
     sandbox_info: &SandboxInfo,
+    profile_config: Option<&super::profile_config::ProfileConfig>,
 ) -> Vec<String> {
     let mut env_keys: Vec<String> = DEFAULT_TERMINAL_ENV_VARS
         .iter()
@@ -68,6 +69,17 @@ fn collect_env_keys(
         }
     }
 
+    // Add profile environment keys (profile overrides on conflicts)
+    if let Some(profile) = profile_config {
+        if let Some(profile_env) = &profile.environment {
+            for key in profile_env {
+                if !env_keys.contains(key) {
+                    env_keys.push(key.clone());
+                }
+            }
+        }
+    }
+
     env_keys
 }
 
@@ -75,6 +87,7 @@ fn collect_env_keys(
 fn collect_env_values(
     sandbox_config: &super::config::SandboxConfig,
     sandbox_info: &SandboxInfo,
+    profile_config: Option<&super::profile_config::ProfileConfig>,
 ) -> Vec<(String, String)> {
     let mut values = Vec::new();
 
@@ -92,16 +105,53 @@ fn collect_env_values(
         }
     }
 
+    // Add profile environment values (profile overrides on conflicts)
+    if let Some(profile) = profile_config {
+        if let Some(profile_env) = &profile.environment_values {
+            for (key, val) in profile_env {
+                values.push((key.clone(), val.clone()));
+            }
+        }
+    }
+
     values
 }
 
-/// Build docker exec environment flags from config and optional per-session extra keys.
+/// Merge environment variables from sandbox config with profile config.
+/// Profile environment variables override sandbox environment variables on name conflicts.
+fn merge_env_vars_with_profile(
+    sandbox_env: Vec<(String, String)>,
+    profile_config: &super::profile_config::ProfileConfig,
+) -> Vec<(String, String)> {
+    let mut env_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // Add sandbox environment variables first
+    for (key, value) in sandbox_env {
+        env_map.insert(key, value);
+    }
+
+    // Resolve and add profile environment variables (profile wins on conflicts)
+    let profile_env_vars = super::config::resolve_env_vars(
+        &profile_config.environment.unwrap_or_default(),
+        &profile_config.environment_values.unwrap_or_default(),
+    );
+    for (key, value) in profile_env_vars {
+        env_map.insert(key, value);
+    }
+
+    env_map.into_iter().collect()
+}
+
+/// Build docker exec environment flags from config, profile config, and per-session extra keys.
 /// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
 /// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
-fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
+fn build_docker_env_args(
+    sandbox: &SandboxInfo,
+    profile_config: Option<&super::profile_config::ProfileConfig>,
+) -> String {
     let config = super::config::Config::load().unwrap_or_default();
 
-    let env_keys = collect_env_keys(&config.sandbox, sandbox);
+    let env_keys = collect_env_keys(&config.sandbox, sandbox, profile_config.as_deref());
 
     let mut args: Vec<String> = env_keys
         .iter()
@@ -112,7 +162,7 @@ fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
         })
         .collect();
 
-    for (key, resolved) in collect_env_values(&config.sandbox, sandbox) {
+    for (key, resolved) in collect_env_values(&config.sandbox, sandbox, profile_config.as_deref()) {
         args.push(format!("-e {}={}", key, shell_escape(&resolved)));
     }
 
@@ -340,7 +390,12 @@ impl Instance {
         self.ensure_container_running()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox);
+        // Load profile config for environment variable merging
+        let profile_config = super::config::Config::load()
+            .ok()
+            .and_then(|c| super::profile_config::load_profile_config(&c.default_profile).ok());
+
+        let env_args = build_docker_env_args(sandbox, profile_config.as_deref());
         let env_part = if env_args.is_empty() {
             String::new()
         } else {
@@ -452,25 +507,6 @@ impl Instance {
             }
         };
 
-        // Resolve profile environment variables for non-sandboxed sessions
-        let profile_env_vars = if !self.is_sandboxed() {
-            let merged = super::config::Config::load().unwrap_or_default();
-            let profile_name = merged.default_profile.clone();
-            let profile_config =
-                super::profile_config::load_profile_config(&profile_name).unwrap_or_default();
-            Some(
-                super::config::resolve_env_vars(
-                    &profile_config.environment.unwrap_or_default(),
-                    &profile_config.environment_values.unwrap_or_default(),
-                )
-                .into_iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<Vec<(String, String)>>(),
-            )
-        } else {
-            None
-        };
-
         let cmd = if self.is_sandboxed() {
             self.ensure_container_running()?;
 
@@ -533,12 +569,7 @@ impl Instance {
             }
         };
 
-        // Pass profile environment variables to session creation when available
-        if let Some(ref env_vars) = profile_env_vars {
-            session.create_with_size_env(&self.project_path, cmd.as_deref(), size, env_vars)?;
-        } else {
-            session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
-        }
+        session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
         self.apply_tmux_options();
@@ -595,6 +626,11 @@ impl Instance {
             container.start()?;
             return Ok(());
         }
+
+        // Load profile config for environment variable merging
+        let profile_config = super::config::Config::load()
+            .ok()
+            .and_then(|c| super::profile_config::load_profile_config(&c.default_profile).ok());
 
         // Ensure image is available (always pulls to get latest)
         docker::ensure_image(image)?;
