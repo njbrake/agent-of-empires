@@ -15,6 +15,12 @@ use super::get_profile_dir;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_values: Option<HashMap<String, String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,7 +188,9 @@ pub fn get_profile_config_path(profile: &str) -> Result<std::path::PathBuf> {
 
 /// Check if a profile has any overrides set
 pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
-    config.theme.is_some()
+    config.environment.is_some()
+        || config.environment_values.is_some()
+        || config.theme.is_some()
         || config.claude.is_some()
         || config.updates.is_some()
         || config.worktree.is_some()
@@ -303,6 +311,14 @@ pub fn apply_tmux_overrides(target: &mut super::config::TmuxConfig, source: &Tmu
 
 /// Merge profile overrides into global config
 pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
+    if let Some(ref env) = profile.environment {
+        global.sandbox.environment = env.clone();
+    }
+
+    if let Some(ref env_vals) = profile.environment_values {
+        global.sandbox.environment_values = env_vals.clone();
+    }
+
     if let Some(ref theme_override) = profile.theme {
         if let Some(ref name) = theme_override.name {
             global.theme.name = name.clone();
