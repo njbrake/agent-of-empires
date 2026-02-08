@@ -181,6 +181,37 @@ aoe profile default work   # Set "work" as default
 
 Profile overrides go in `~/.agent-of-empires/profiles/<name>/config.toml` and use the same format as the global config.
 
+## Profile Environment Variables
+
+### environment vs environment_values
+
+Profile environment variables work identically to their sandbox counterparts, with one important difference: **they apply to BOTH sandbox and non-sandbox modes**.
+
+- **`environment`** passes host env vars by name. The host value is read at container or session start.
+- **`environment_values`** injects fixed values. Values starting with `$` reference a host env var (e.g., `"$AOE_GH_TOKEN"` reads `AOE_GH_TOKEN` from the host). Use `$$` for a literal `$`.
+
+### Table of Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `environment` | (inherited from sandbox) | Host env var names to pass through. Adds to sandbox environment, overrides on conflicts. |
+| `environment_values` | (inherited from sandbox) | Env vars with explicit values. Adds to sandbox values, overrides on conflicts. |
+
+### Merge Behavior and Precedence
+
+Profile environment variables merge with sandbox environment variables:
+
+- Profile `environment` and `environment_values` **merge** with their sandbox counterparts (they don't replace them)
+- On name conflicts, **profile values win** (profile > sandbox)
+- This allows global defaults in sandbox config with per-profile overrides
+- Example: Global sandbox has `ANTHROPIC_API_KEY`, profile can override with a different key or add project-specific vars
+
+```toml
+# ~/.agent-of-empires/profiles/client-a/config.toml
+environment = ["CLIENT_DB_URL"]
+environment_values = { ANTHROPIC_API_KEY = "$CLIENT_A_KEY" }
+```
+
 ## Repo Config
 
 Per-repo settings go in `.aoe/config.toml` at your project root. Run `aoe init` to generate a template.
