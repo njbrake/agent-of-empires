@@ -28,22 +28,34 @@ git remote add <contributor-login> https://github.com/<contributor-login>/<repo>
 git fetch <contributor-login> <head-branch-name>
 ```
 
-### 2. Analyze the Diff
+### 2. Fetch Latest Base Branch
 
-Get the full diff between base and PR branch:
+**Important**: Before analyzing the diff, ensure you have the latest base branch to avoid false positives about missing features that already exist in main:
 
 ```bash
-git diff <base-branch>...<contributor-login>/<head-branch-name>
+git fetch origin <base-branch>
 ```
 
-### 3. Read Affected Files
+### 3. Analyze the Diff
+
+Get the diff showing only what the PR changes relative to the base branch:
+
+```bash
+git diff origin/<base-branch>...<contributor-login>/<head-branch-name>
+```
+
+**Note**: Use the three-dot (`...`) syntax which shows changes in the PR branch since it diverged from the base. This ensures you're reviewing only the PR's changes, not unrelated commits that may have been merged into main since the branch was created.
+
+If the branch is behind main and has merge conflicts or outdated code, note this in your review and suggest rebasing.
+
+### 4. Read Affected Files
 
 For each file changed, read the surrounding context to understand:
 - The existing code patterns
 - How the changes integrate with the codebase
 - Whether the changes follow project conventions
 
-### 4. Check Project Conventions
+### 5. Check Project Conventions
 
 Review CLAUDE.md and any other project guidelines. Verify the PR:
 - Follows naming conventions
@@ -52,7 +64,7 @@ Review CLAUDE.md and any other project guidelines. Verify the PR:
 - Includes necessary documentation updates
 - Uses conventional commit format
 
-### 5. Identify Potential Issues
+### 6. Identify Potential Issues
 
 Look for:
 - Logic errors or edge cases not handled
@@ -62,7 +74,7 @@ Look for:
 - Code duplication that could be refactored
 - Missing tests for new functionality
 
-### 6. Provide Structured Review
+### 7. Provide Structured Review
 
 Format your review as:
 
