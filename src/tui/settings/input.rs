@@ -475,6 +475,11 @@ impl SettingsView {
                     s.default_terminal_mode = None;
                 }
             }
+            FieldKey::ExtraVolumes => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.extra_volumes = None;
+                }
+            }
             FieldKey::VolumeIgnores => {
                 if let Some(ref mut s) = config.sandbox {
                     s.volume_ignores = None;

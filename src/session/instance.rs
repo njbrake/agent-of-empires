@@ -680,10 +680,21 @@ impl Instance {
             read_only: false,
         }];
 
-        let sandbox_config = super::config::Config::load()
-            .ok()
-            .map(|c| c.sandbox)
-            .unwrap_or_default();
+        let sandbox_config = match super::config::Config::load() {
+            Ok(c) => {
+                tracing::debug!(
+                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
+                    c.sandbox.extra_volumes,
+                    c.sandbox.mount_ssh,
+                    c.sandbox.volume_ignores
+                );
+                c.sandbox
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load config, using defaults: {}", e);
+                Default::default()
+            }
+        };
 
         const CONTAINER_HOME: &str = "/root";
 
@@ -803,6 +814,29 @@ impl Instance {
             .map(|ignore| format!("{}/{}", workspace_path, ignore))
             .filter(|path| !extra_volume_container_paths.contains(path))
             .collect();
+
+        tracing::debug!(
+            "extra_volumes from config: {:?}",
+            sandbox_config.extra_volumes
+        );
+        for entry in &sandbox_config.extra_volumes {
+            let parts: Vec<&str> = entry.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                tracing::info!(
+                    "Mounting extra volume: {} -> {} (ro: {})",
+                    parts[0],
+                    parts[1],
+                    parts.get(2) == Some(&"ro")
+                );
+                volumes.push(VolumeMount {
+                    host_path: parts[0].to_string(),
+                    container_path: parts[1].to_string(),
+                    read_only: parts.get(2) == Some(&"ro"),
+                });
+            } else {
+                tracing::warn!("Ignoring malformed extra_volume entry: {}", entry);
+            }
+        }
 
         Ok(ContainerConfig {
             working_dir: workspace_path,
