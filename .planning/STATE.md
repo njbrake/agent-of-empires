@@ -12,16 +12,18 @@ See: .planning/PROJECT.md (updated 2026-02-07)
 | Phase | Name | Status | Plans |
 |-------|------|--------|-------|
 | 1 | Config Data Model & Shared Resolution | Complete | 1/1 |
-| 2 | Session Launch & TUI Settings | In Progress | 1/2 |
+| 2 | Session Launch & TUI Settings | Complete | 3/3 |
 | 3 | Documentation | Complete | 1/1 |
 
 Progress: ████████████░░░░░░░░ 66% (2.5 of 3 phases complete)
 
 ## Current Phase
 
-Phase 2: Session Launch & TUI Settings (2/2 plans complete)
-- Last activity: 2026-02-08 - Completed 03-01-PLAN.md (Phase 3 documentation)
-- Plan 02-02: Profile env vars in docker exec commands - Partial completion, Task 3 (container creation) remaining
+All planned phases complete. Next: Additional phases or milestone audit.
+
+**Phase 2: Session Launch & TUI Settings (3/3 plans complete)**
+- Last activity: 2026-02-08 - Completed 03-03-SUMMARY.md (gap closure)
+- Gap closure: Container creation already uses merged profile env vars correctly
 
 ## Accumulated Context
 

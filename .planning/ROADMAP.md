@@ -27,20 +27,18 @@ A Rust CLI/TUI application for managing tmux sessions with Docker sandboxing, su
 
 ---
 
-## Phase 2: Session Launch & TUI Settings
+## Phase 2: Session Launch & TUI Settings ✓
 
 **Goal:** Integrate profile environment variables into session launch and Docker container creation.
 
-**Status:** In Progress (1/2 complete)
+**Status:** Complete
 
 **Plans:**
 - [x] 02-01-PLAN.md — Add env var support to tmux session creation
 - [x] 02-02-PLAN.md — Merge profile env vars with Docker container environment
+- [x] 02-03-PLAN.md — Container creation env vars gap closure
 
-**Remaining Work:**
-- Task 3 from 02-02: Update container creation to use merged env vars (SBOX-01, LAUNCH-01)
-
-**Last Activity:** 2026-02-08
+**Completion:** 2026-02-08
 
 ---
 
