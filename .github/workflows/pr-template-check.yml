@@ -1,0 +1,43 @@
+name: PR Template Check
+
+on:
+  pull_request:
+    types: [opened, edited]
+
+jobs:
+  check-template:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR body for required checklist
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+
+            // Check for the checklist section with at least the required item
+            const hasChecklist = body.includes('## Checklist') &&
+                                 body.includes('- [ ] I understand the code I am submitting');
+
+            if (!hasChecklist) {
+              // Add comment explaining the issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: `This PR was automatically closed because the required checklist was removed from the PR template.
+
+Please create a new PR using the template and complete the checklist. The checklist helps maintainers review your contribution.
+
+If you're using an AI coding tool, please ensure it preserves the PR template.`
+              });
+
+              // Close the PR
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                state: 'closed'
+              });
+
+              core.setFailed('PR template checklist is missing');
+            }

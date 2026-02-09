@@ -3,6 +3,8 @@ name: Contributor Credits
 on:
   issues:
     types: [labeled, unlabeled]
+  pull_request_target:
+    types: [labeled, unlabeled]
 
 jobs:
   update-credits:
@@ -12,6 +14,7 @@ jobs:
       actions: write
       contents: write
       issues: write
+      pull-requests: write
     concurrency:
       group: credits-update
       cancel-in-progress: false
@@ -30,9 +33,11 @@ jobs:
             const fs = require('fs');
 
             const action = context.payload.action;
-            const issue = context.payload.issue;
-            const username = issue.user.login;
-            const issueNumber = issue.number;
+            // Handle both issues and pull requests
+            const item = context.payload.issue || context.payload.pull_request;
+            const username = item.user.login;
+            const itemNumber = item.number;
+            const isPR = !!context.payload.pull_request;
 
             // Read or initialize credits.json
             let data;
@@ -42,24 +47,32 @@ jobs:
               data = { contributors: [] };
             }
 
+            // Determine which list to use (issues or pull_requests)
+            const listKey = isPR ? 'pull_requests' : 'issues';
+            const itemType = isPR ? 'PR' : 'Issue';
+
             if (action === 'labeled') {
               // Find or create contributor entry
               let contributor = data.contributors.find(c => c.username === username);
               if (!contributor) {
-                contributor = { username, issues: [] };
+                contributor = { username, issues: [], pull_requests: [] };
                 data.contributors.push(contributor);
               }
 
-              // Idempotency: skip if issue already credited
-              if (contributor.issues.some(i => i.number === issueNumber)) {
-                console.log(`Issue #${issueNumber} already credited for @${username}, skipping.`);
+              // Ensure both arrays exist (for backwards compatibility)
+              if (!contributor.issues) contributor.issues = [];
+              if (!contributor.pull_requests) contributor.pull_requests = [];
+
+              // Idempotency: skip if item already credited
+              if (contributor[listKey].some(i => i.number === itemNumber)) {
+                console.log(`${itemType} #${itemNumber} already credited for @${username}, skipping.`);
                 core.setOutput('changed', 'false');
                 return;
               }
 
-              contributor.issues.push({
-                number: issueNumber,
-                title: issue.title,
+              contributor[listKey].push({
+                number: itemNumber,
+                title: item.title,
                 labeled_at: new Date().toISOString()
               });
             } else if (action === 'unlabeled') {
@@ -70,23 +83,31 @@ jobs:
                 return;
               }
 
-              const before = contributor.issues.length;
-              contributor.issues = contributor.issues.filter(i => i.number !== issueNumber);
+              // Ensure both arrays exist
+              if (!contributor.issues) contributor.issues = [];
+              if (!contributor.pull_requests) contributor.pull_requests = [];
 
-              if (contributor.issues.length === before) {
-                console.log(`Issue #${issueNumber} not found for @${username}, skipping.`);
+              const before = contributor[listKey].length;
+              contributor[listKey] = contributor[listKey].filter(i => i.number !== itemNumber);
+
+              if (contributor[listKey].length === before) {
+                console.log(`${itemType} #${itemNumber} not found for @${username}, skipping.`);
                 core.setOutput('changed', 'false');
                 return;
               }
 
-              // Remove contributor entirely if they have no remaining issues
-              if (contributor.issues.length === 0) {
+              // Remove contributor entirely if they have no remaining contributions
+              if (contributor.issues.length === 0 && contributor.pull_requests.length === 0) {
                 data.contributors = data.contributors.filter(c => c.username !== username);
               }
             }
 
-            // Sort contributors by issue count descending
-            data.contributors.sort((a, b) => b.issues.length - a.issues.length);
+            // Sort contributors by total contribution count descending
+            data.contributors.sort((a, b) => {
+              const aTotal = (a.issues?.length || 0) + (a.pull_requests?.length || 0);
+              const bTotal = (b.issues?.length || 0) + (b.pull_requests?.length || 0);
+              return bTotal - aTotal;
+            });
 
             fs.writeFileSync('credits.json', JSON.stringify(data, null, 2) + '\n');
             core.setOutput('changed', 'true');
@@ -159,10 +180,13 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const author = context.payload.issue.user.login;
+            const item = context.payload.issue || context.payload.pull_request;
+            const author = item.user.login;
+            const isPR = !!context.payload.pull_request;
+            const itemType = isPR ? 'pull request' : 'issue';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              body: `Thanks for the helpful contribution, @${author}! Your issue has been credited in our [contributors page](https://agent-of-empires.com/docs/credits.html). 🎉`
+              issue_number: item.number,
+              body: `Thanks for the helpful contribution, @${author}! Your ${itemType} has been credited in our [contributors page](https://agent-of-empires.com/docs/credits.html). 🎉`
             });

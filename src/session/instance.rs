@@ -776,10 +776,32 @@ impl Instance {
             ));
         }
 
+        // Add extra_volumes from config (host:container format)
+        for extra in &sandbox_config.extra_volumes {
+            let parts: Vec<&str> = extra.split(':').collect();
+            if parts.len() >= 2 {
+                volumes.push(VolumeMount {
+                    host_path: parts[0].to_string(),
+                    container_path: parts[1].to_string(),
+                    read_only: parts.get(2).map(|&s| s == "ro").unwrap_or(false),
+                });
+            }
+        }
+
+        // Collect container paths from extra_volumes to avoid conflicts
+        let extra_volume_container_paths: std::collections::HashSet<String> = sandbox_config
+            .extra_volumes
+            .iter()
+            .filter_map(|entry| entry.split(':').nth(1).map(|s| s.to_string()))
+            .collect();
+
+        // Filter anonymous_volumes to exclude paths that conflict with extra_volumes
+        // (extra_volumes should take precedence over volume_ignores)
         let anonymous_volumes: Vec<String> = sandbox_config
             .volume_ignores
             .iter()
             .map(|ignore| format!("{}/{}", workspace_path, ignore))
+            .filter(|path| !extra_volume_container_paths.contains(path))
             .collect();
 
         Ok(ContainerConfig {
