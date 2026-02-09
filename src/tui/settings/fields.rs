@@ -58,6 +58,7 @@ pub enum FieldKey {
     CpuLimit,
     MemoryLimit,
     DefaultTerminalMode,
+    ExtraVolumes,
     VolumeIgnores,
     MountSsh,
     // Tmux
@@ -383,6 +384,11 @@ fn build_sandbox_fields(
         global.sandbox.default_terminal_mode,
         sb.and_then(|s| s.default_terminal_mode),
     );
+    let (extra_volumes, o_ev) = resolve_value(
+        scope,
+        global.sandbox.extra_volumes.clone(),
+        sb.and_then(|s| s.extra_volumes.clone()),
+    );
     let (volume_ignores, o7) = resolve_value(
         scope,
         global.sandbox.volume_ignores.clone(),
@@ -474,6 +480,14 @@ fn build_sandbox_fields(
             },
             category: SettingsCategory::Sandbox,
             has_override: o6,
+        },
+        SettingField {
+            key: FieldKey::ExtraVolumes,
+            label: "Extra Volumes",
+            description: "Additional volume mounts (host:container or host:container:ro)",
+            value: FieldValue::List(extra_volumes),
+            category: SettingsCategory::Sandbox,
+            has_override: o_ev,
         },
         SettingField {
             key: FieldKey::VolumeIgnores,
@@ -787,6 +801,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
             config.sandbox.environment_values = parse_env_values_list(v);
         }
+        (FieldKey::ExtraVolumes, FieldValue::List(v)) => config.sandbox.extra_volumes = v.clone(),
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::MountSsh, FieldValue::Bool(v)) => config.sandbox.mount_ssh = *v,
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
@@ -960,6 +975,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.environment_values,
                 &mut config.sandbox,
                 |s, val| s.environment_values = val,
+            );
+        }
+        (FieldKey::ExtraVolumes, FieldValue::List(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.sandbox.extra_volumes,
+                &mut config.sandbox,
+                |s, val| s.extra_volumes = val,
             );
         }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => {
