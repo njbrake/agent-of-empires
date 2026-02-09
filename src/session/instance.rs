@@ -788,10 +788,13 @@ impl Instance {
         }
 
         // Add extra_volumes from config (host:container format)
+        // Also collect container paths to filter conflicting volume_ignores later
         tracing::debug!(
             "extra_volumes from config: {:?}",
             sandbox_config.extra_volumes
         );
+        let mut extra_volume_container_paths: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for entry in &sandbox_config.extra_volumes {
             let parts: Vec<&str> = entry.splitn(3, ':').collect();
             if parts.len() >= 2 {
@@ -801,6 +804,7 @@ impl Instance {
                     parts[1],
                     parts.get(2) == Some(&"ro")
                 );
+                extra_volume_container_paths.insert(parts[1].to_string());
                 volumes.push(VolumeMount {
                     host_path: parts[0].to_string(),
                     container_path: parts[1].to_string(),
@@ -810,13 +814,6 @@ impl Instance {
                 tracing::warn!("Ignoring malformed extra_volume entry: {}", entry);
             }
         }
-
-        // Collect container paths from extra_volumes to avoid conflicts
-        let extra_volume_container_paths: std::collections::HashSet<String> = sandbox_config
-            .extra_volumes
-            .iter()
-            .filter_map(|entry| entry.split(':').nth(1).map(|s| s.to_string()))
-            .collect();
 
         // Filter anonymous_volumes to exclude paths that conflict with extra_volumes
         // (extra_volumes should take precedence over volume_ignores)
