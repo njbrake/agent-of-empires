@@ -817,11 +817,21 @@ impl Instance {
 
         // Filter anonymous_volumes to exclude paths that conflict with extra_volumes
         // (extra_volumes should take precedence over volume_ignores)
+        // Conflicts include:
+        //   - Exact match: both point to same path
+        //   - Anonymous volume is parent of extra_volume (would shadow the mount)
+        //   - Anonymous volume is inside extra_volume (redundant/conflicting)
         let anonymous_volumes: Vec<String> = sandbox_config
             .volume_ignores
             .iter()
             .map(|ignore| format!("{}/{}", workspace_path, ignore))
-            .filter(|path| !extra_volume_container_paths.contains(path))
+            .filter(|anon_path| {
+                !extra_volume_container_paths.iter().any(|extra_path| {
+                    anon_path == extra_path
+                        || extra_path.starts_with(&format!("{}/", anon_path))
+                        || anon_path.starts_with(&format!("{}/", extra_path))
+                })
+            })
             .collect();
 
         Ok(ContainerConfig {
