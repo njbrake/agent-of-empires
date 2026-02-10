@@ -3,6 +3,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::docker::{
@@ -131,10 +132,10 @@ fn merge_env_vars_with_profile(
     }
 
     // Resolve and add profile environment variables (profile wins on conflicts)
-    let profile_env_vars = super::config::resolve_env_vars(
-        &profile_config.environment.unwrap_or_default(),
-        &profile_config.environment_values.unwrap_or_default(),
-    );
+    let empty_hashmap = HashMap::new();
+    let env_arr = profile_config.environment.as_deref().unwrap_or(&[][..]);
+    let profile_env_values = profile_config.environment_values.as_ref().unwrap_or(&empty_hashmap);
+    let profile_env_vars = super::config::resolve_env_vars(env_arr, profile_env_values);
     for (key, value) in profile_env_vars {
         env_map.insert(key, value);
     }
@@ -151,7 +152,7 @@ fn build_docker_env_args(
 ) -> String {
     let config = super::config::Config::load().unwrap_or_default();
 
-    let env_keys = collect_env_keys(&config.sandbox, sandbox, profile_config.as_deref());
+    let env_keys = collect_env_keys(&config.sandbox, sandbox, profile_config);
 
     let mut args: Vec<String> = env_keys
         .iter()
@@ -162,7 +163,7 @@ fn build_docker_env_args(
         })
         .collect();
 
-    for (key, resolved) in collect_env_values(&config.sandbox, sandbox, profile_config.as_deref()) {
+    for (key, resolved) in collect_env_values(&config.sandbox, sandbox, profile_config) {
         args.push(format!("-e {}={}", key, shell_escape(&resolved)));
     }
 
@@ -391,11 +392,12 @@ impl Instance {
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
         // Load profile config for environment variable merging
+        // Load profile config for environment variable merging
         let profile_config = super::config::Config::load()
             .ok()
             .and_then(|c| super::profile_config::load_profile_config(&c.default_profile).ok());
 
-        let env_args = build_docker_env_args(sandbox, profile_config.as_deref());
+        let env_args = build_docker_env_args(sandbox, profile_config.as_ref());
         let env_part = if env_args.is_empty() {
             String::new()
         } else {
@@ -535,7 +537,7 @@ impl Instance {
             } else {
                 self.get_tool_command().to_string()
             };
-            let env_args = build_docker_env_args(sandbox);
+            let env_args = build_docker_env_args(sandbox, None);
             let env_part = if env_args.is_empty() {
                 String::new()
             } else {
@@ -628,7 +630,8 @@ impl Instance {
         }
 
         // Load profile config for environment variable merging
-        let profile_config = super::config::Config::load()
+        // TODO: Integrate profile config with container creation (Phase 4 or later)
+        let _profile_config = super::config::Config::load()
             .ok()
             .and_then(|c| super::profile_config::load_profile_config(&c.default_profile).ok());
 
@@ -815,7 +818,7 @@ impl Instance {
         }
 
         let sandbox_info = self.sandbox_info.as_ref().unwrap();
-        let env_keys = collect_env_keys(&sandbox_config, sandbox_info);
+        let env_keys = collect_env_keys(&sandbox_config, sandbox_info, None);
 
         let mut environment: Vec<(String, String)> = env_keys
             .iter()
@@ -827,7 +830,7 @@ impl Instance {
             format!("{}/.claude", CONTAINER_HOME),
         ));
 
-        environment.extend(collect_env_values(&sandbox_config, sandbox_info));
+        environment.extend(collect_env_values(&sandbox_config, sandbox_info, None));
 
         if self.is_yolo_mode() && self.tool == "opencode" {
             environment.push((
