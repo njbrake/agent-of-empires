@@ -485,90 +485,99 @@ pub fn get_claude_config_dir() -> Option<PathBuf> {
     })
 }
 
-    // Tests for resolve_env_value()
-    #[test]
-    fn test_resolve_env_value_literal() {
-        // Literal value returned unchanged
-        assert_eq!(resolve_env_value("literal_value"), Some("literal_value".to_string()));
-    }
+// Tests for resolve_env_value()
+#[test]
+fn test_resolve_env_value_literal() {
+    // Literal value returned unchanged
+    assert_eq!(
+        resolve_env_value("literal_value"),
+        Some("literal_value".to_string())
+    );
+}
 
-    #[test]
-    fn test_resolve_env_value_expansion() {
-        // $VAR expands from host environment
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/test/home".to_string());
-        assert_eq!(resolve_env_value("$HOME"), Some(home));
-    }
+#[test]
+fn test_resolve_env_value_expansion() {
+    // $VAR expands from host environment
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/test/home".to_string());
+    assert_eq!(resolve_env_value("$HOME"), Some(home));
+}
 
-    #[test]
-    fn test_resolve_env_value_dollar_escape() {
-        // $$ escapes to literal $
-        assert_eq!(resolve_env_value("$$HOME"), Some("$HOME".to_string()));
-    }
+#[test]
+fn test_resolve_env_value_dollar_escape() {
+    // $$ escapes to literal $
+    assert_eq!(resolve_env_value("$$HOME"), Some("$HOME".to_string()));
+}
 
-    #[test]
-    fn test_resolve_env_value_undefined() {
-        // Undefined variable returns None
-        assert_eq!(resolve_env_value("$NONEXISTENT_VAR_12345"), None);
-    }
+#[test]
+fn test_resolve_env_value_undefined() {
+    // Undefined variable returns None
+    assert_eq!(resolve_env_value("$NONEXISTENT_VAR_12345"), None);
+}
 
-    #[test]
-    fn test_resolve_env_value_partial_expansion() {
-        // Mixed literal and expansion - only prefix $ is expanded
-        // According to our implementation, we only expand if the ENTIRE value starts with $
-        assert_eq!(resolve_env_value("$HOME/path"), None);
-        // If it's not a pure $VAR reference, it's treated as literal
-        assert_eq!(resolve_env_value("literal$VAR"), Some("literal$VAR".to_string()));
-    }
+#[test]
+fn test_resolve_env_value_partial_expansion() {
+    // Mixed literal and expansion - only prefix $ is expanded
+    // According to our implementation, we only expand if the ENTIRE value starts with $
+    assert_eq!(resolve_env_value("$HOME/path"), None);
+    // If it's not a pure $VAR reference, it's treated as literal
+    assert_eq!(
+        resolve_env_value("literal$VAR"),
+        Some("literal$VAR".to_string())
+    );
+}
 
-    // Tests for resolve_env_vars()
-    #[test]
-    fn test_resolve_env_vars_empty() {
-        // Empty inputs return empty map
-        let result = resolve_env_vars(&[], &HashMap::new());
-        assert!(result.is_empty());
-    }
+// Tests for resolve_env_vars()
+#[test]
+fn test_resolve_env_vars_empty() {
+    // Empty inputs return empty map
+    let result = resolve_env_vars(&[], &HashMap::new());
+    assert!(result.is_empty());
+}
 
-    #[test]
-    fn test_resolve_env_vars_from_environment_only() {
-        // Only environment keys
-        std::env::set_var("TEST_AOE_VAR", "test_value");
-        let env_keys = vec!["TEST_AOE_VAR".to_string()];
-        let result = resolve_env_vars(&env_keys, &HashMap::new());
-        assert_eq!(result.get("TEST_AOE_VAR"), Some(&"test_value".to_string()));
-        std::env::remove_var("TEST_AOE_VAR");
-    }
+#[test]
+fn test_resolve_env_vars_from_environment_only() {
+    // Only environment keys
+    std::env::set_var("TEST_AOE_VAR", "test_value");
+    let env_keys = vec!["TEST_AOE_VAR".to_string()];
+    let result = resolve_env_vars(&env_keys, &HashMap::new());
+    assert_eq!(result.get("TEST_AOE_VAR"), Some(&"test_value".to_string()));
+    std::env::remove_var("TEST_AOE_VAR");
+}
 
-    #[test]
-    fn test_resolve_env_vars_from_values_only() {
-        // Only explicit values
-        let mut env_values = HashMap::new();
-        env_values.insert("KEY".to_string(), "value".to_string());
-        let result = resolve_env_vars(&[], &env_values);
-        assert_eq!(result.get("KEY"), Some(&"value".to_string()));
-    }
+#[test]
+fn test_resolve_env_vars_from_values_only() {
+    // Only explicit values
+    let mut env_values = HashMap::new();
+    env_values.insert("KEY".to_string(), "value".to_string());
+    let result = resolve_env_vars(&[], &env_values);
+    assert_eq!(result.get("KEY"), Some(&"value".to_string()));
+}
 
-    #[test]
-    fn test_resolve_env_vars_expansion_in_values() {
-        // Values use $VAR expansion (only pure $VAR references)
-        std::env::set_var("TEST_AOE_EXP", "/test/home");
-        let mut env_values = HashMap::new();
-        env_values.insert("WORK_DIR".to_string(), "$TEST_AOE_EXP".to_string());
-        let result = resolve_env_vars(&[], &env_values);
-        assert_eq!(result.get("WORK_DIR"), Some(&"/test/home".to_string()));
-        std::env::remove_var("TEST_AOE_EXP");
-    }
+#[test]
+fn test_resolve_env_vars_expansion_in_values() {
+    // Values use $VAR expansion (only pure $VAR references)
+    std::env::set_var("TEST_AOE_EXP", "/test/home");
+    let mut env_values = HashMap::new();
+    env_values.insert("WORK_DIR".to_string(), "$TEST_AOE_EXP".to_string());
+    let result = resolve_env_vars(&[], &env_values);
+    assert_eq!(result.get("WORK_DIR"), Some(&"/test/home".to_string()));
+    std::env::remove_var("TEST_AOE_EXP");
+}
 
-    #[test]
-    fn test_resolve_env_vars_override() {
-        // Explicit values override environment keys (config wins)
-        std::env::set_var("OVERRIDE_AOE_VAR", "from_env");
-        let env_keys = vec!["OVERRIDE_AOE_VAR".to_string()];
-        let mut env_values = HashMap::new();
-        env_values.insert("OVERRIDE_AOE_VAR".to_string(), "from_config".to_string());
-        let result = resolve_env_vars(&env_keys, &env_values);
-        assert_eq!(result.get("OVERRIDE_AOE_VAR"), Some(&"from_config".to_string()));
-        std::env::remove_var("OVERRIDE_AOE_VAR");
-    }
+#[test]
+fn test_resolve_env_vars_override() {
+    // Explicit values override environment keys (config wins)
+    std::env::set_var("OVERRIDE_AOE_VAR", "from_env");
+    let env_keys = vec!["OVERRIDE_AOE_VAR".to_string()];
+    let mut env_values = HashMap::new();
+    env_values.insert("OVERRIDE_AOE_VAR".to_string(), "from_config".to_string());
+    let result = resolve_env_vars(&env_keys, &env_values);
+    assert_eq!(
+        result.get("OVERRIDE_AOE_VAR"),
+        Some(&"from_config".to_string())
+    );
+    std::env::remove_var("OVERRIDE_AOE_VAR");
+}
 
 #[cfg(test)]
 mod tests {

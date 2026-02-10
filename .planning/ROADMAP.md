@@ -9,8 +9,9 @@ A Rust CLI/TUI application for managing tmux sessions with Docker sandboxing, su
 | Phase | Name | Status | Plans |
 |-------|------|--------|-------|
 | 1 | Config Data Model & Shared Resolution | Complete | 1/1 |
-| 2 | Session Launch & TUI Settings | In Progress | 2/2 |
+| 2 | Session Launch & TUI Settings | Complete | 3/3 |
 | 3 | Documentation | Complete | 1/1 |
+| 4 | Testing | In Progress | 1/1 |
 
 ---
 
@@ -61,6 +62,28 @@ A Rust CLI/TUI application for managing tmux sessions with Docker sandboxing, su
 
 ---
 
+## Phase 4: Testing ⏳
+
+**Goal:** Fix compilation bugs and achieve 80%+ test coverage for all profile environment variable functionality.
+
+**Status:** In Progress
+
+**Plans:**
+- [ ] 04-01-PLAN.md — Comprehensive testing and bug fixes
+
+**Scope:**
+- Fix compilation errors from Phase 2 implementation
+- Unit tests for env var resolution logic
+- Unit tests for collection and merge functions
+- Integration tests for tmux sessions (non-sandbox mode)
+- Integration tests for Docker containers (sandbox mode)
+- Integration tests for full workflow
+- Code quality checks (fmt, clippy, coverage)
+
+**Started:** 2026-02-10
+
+---
+
 ## Future Phases
 
-All planned phases complete. Additional work to be defined.
+After Phase 4 completion, v1.0 milestone will be ready for shipping. Additional work to be defined based on user feedback.

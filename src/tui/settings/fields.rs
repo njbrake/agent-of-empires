@@ -346,12 +346,18 @@ fn build_sandbox_fields(
     let (environment, o4) = resolve_value(
         scope,
         global.sandbox.environment.clone(),
-        profile.environment.clone().or_else(|| sb.and_then(|s| s.environment.clone())),
+        profile
+            .environment
+            .clone()
+            .or_else(|| sb.and_then(|s| s.environment.clone())),
     );
     let (environment_values, o_env_vals) = resolve_value(
         scope,
         global.sandbox.environment_values.clone(),
-        profile.environment_values.clone().or_else(|| sb.and_then(|s| s.environment_values.clone())),
+        profile
+            .environment_values
+            .clone()
+            .or_else(|| sb.and_then(|s| s.environment_values.clone())),
     );
     let env_values_list = {
         let mut entries: Vec<String> = environment_values

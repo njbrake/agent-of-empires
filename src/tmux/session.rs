@@ -306,7 +306,13 @@ mod tests {
 
     #[test]
     fn test_build_create_args_with_size_and_command() {
-        let args = build_create_args("test_session", "/tmp/work", Some("claude"), Some((80, 24)), &[]);
+        let args = build_create_args(
+            "test_session",
+            "/tmp/work",
+            Some("claude"),
+            Some((80, 24)),
+            &[],
+        );
 
         // Size args should be present
         assert!(args.contains(&"-x".to_string()));
