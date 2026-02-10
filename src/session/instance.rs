@@ -1471,5 +1471,194 @@ mod tests {
             // Working dir should be set
             assert!(!working_dir.is_empty());
         }
+
+    // Tests for collect_env_keys()
+    #[test]
+    fn test_collect_env_keys_defaults_only() {
+        let sandbox_config = crate::session::config::SandboxConfig::default();
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let result = collect_env_keys(&sandbox_config, &sandbox_info, None);
+        // Should contain only DEFAULT_TERMINAL_ENV_VARS
+        assert_eq!(result.len(), 4); // TERM, COLORTERM, FORCE_COLOR, NO_COLOR
+        assert!(result.contains(&"TERM".to_string()));
+        assert!(result.contains(&"COLORTERM".to_string()));
+    }
+
+    #[test]
+    fn test_collect_env_keys_with_sandbox() {
+        let mut sandbox_config = crate::session::config::SandboxConfig::default();
+        sandbox_config.environment = vec!["CUSTOM_VAR".to_string()];
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let result = collect_env_keys(&sandbox_config, &sandbox_info, None);
+        assert!(result.contains(&"CUSTOM_VAR".to_string()));
+        // Should still include default vars
+        assert!(result.contains(&"TERM".to_string()));
+    }
+
+    #[test]
+    fn test_collect_env_keys_with_profile() {
+        use crate::session::profile_config::ProfileConfig;
+        let sandbox_config = crate::session::config::SandboxConfig::default();
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let mut profile_config = ProfileConfig::default();
+        profile_config.environment = Some(vec!["PROFILE_VAR".to_string()]);
+        let result = collect_env_keys(&sandbox_config, &sandbox_info, Some(&profile_config));
+        assert!(result.contains(&"PROFILE_VAR".to_string()));
+    }
+
+    #[test]
+    fn test_collect_env_keys_no_duplicates() {
+        let mut sandbox_config = crate::session::config::SandboxConfig::default();
+        sandbox_config.environment = vec!["TERM".to_string()]; // Duplicate of default
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let result = collect_env_keys(&sandbox_config, &sandbox_info, None);
+        // Count occurrences of TERM
+        let term_count = result.iter().filter(|x| *x == "TERM").count();
+        assert_eq!(term_count, 1, "TERM should appear only once");
+    }
+
+    // Tests for collect_env_values()
+    #[test]
+    fn test_collect_env_values_empty() {
+        let sandbox_config = crate::session::config::SandboxConfig::default();
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let result = collect_env_values(&sandbox_config, &sandbox_info, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_collect_env_values_from_sandbox() {
+        use crate::session::profile_config::ProfileConfig;
+        let mut sandbox_config = crate::session::config::SandboxConfig::default();
+        sandbox_config.environment_values = HashMap::new();
+        sandbox_config.environment_values.insert("KEY".to_string(), "val".to_string());
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let result = collect_env_values(&sandbox_config, &sandbox_info, Some(&ProfileConfig::default()));
+        assert!(result.contains(&("KEY".to_string(), "val".to_string())));
+    }
+
+    #[test]
+    fn test_collect_env_values_with_profile() {
+        use crate::session::profile_config::ProfileConfig;
+        let sandbox_config = crate::session::config::SandboxConfig::default();
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let mut profile_config = ProfileConfig::default();
+        let mut profile_values = HashMap::new();
+        profile_values.insert("PKEY".to_string(), "pval".to_string());
+        profile_config.environment_values = Some(profile_values);
+        let result = collect_env_values(&sandbox_config, &sandbox_info, Some(&profile_config));
+        assert!(result.contains(&("PKEY".to_string(), "pval".to_string())));
+    }
+
+    #[test]
+    fn test_collect_env_values_override() {
+        use crate::session::profile_config::ProfileConfig;
+        let mut sandbox_config = crate::session::config::SandboxConfig::default();
+        sandbox_config.environment_values = HashMap::new();
+        sandbox_config.environment_values.insert("VAR".to_string(), "sandbox".to_string());
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let mut profile_config = ProfileConfig::default();
+        let mut profile_values = HashMap::new();
+        profile_values.insert("VAR".to_string(), "profile".to_string());
+        profile_config.environment_values = Some(profile_values);
+        let result = collect_env_values(&sandbox_config, &sandbox_info, Some(&profile_config));
+        // Profile values are added after sandbox values, so both should be present
+        assert!(result.iter().any(|(k, v)| k == "VAR" && v == "sandbox"));
+        assert!(result.iter().any(|(k, v)| k == "VAR" && v == "profile"));
+    }
+
+    #[test]
+    fn test_collect_env_values_expansion() {
+        use crate::session::profile_config::ProfileConfig;
+        std::env::set_var("TEST_COLLECT_EXP", "expanded");
+        let mut sandbox_config = crate::session::config::SandboxConfig::default();
+        sandbox_config.environment_values = HashMap::new();
+        sandbox_config.environment_values.insert("VAR".to_string(), "$TEST_COLLECT_EXP".to_string());
+        let sandbox_info = SandboxInfo {
+            enabled: false,
+            container_id: None,
+            image: "".to_string(),
+            container_name: "".to_string(),
+            created_at: None,
+            yolo_mode: None,
+            extra_env_keys: None,
+            extra_env_values: None,
+        };
+        let result = collect_env_values(&sandbox_config, &sandbox_info, Some(&ProfileConfig::default()));
+        assert!(result.contains(&("VAR".to_string(), "expanded".to_string())));
+        std::env::remove_var("TEST_COLLECT_EXP");
+    }
     }
 }
