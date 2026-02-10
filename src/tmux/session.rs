@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_build_create_args_without_size() {
-        let args = build_create_args("test_session", "/tmp/work", None, None);
+        let args = build_create_args("test_session", "/tmp/work", None, None, &[]);
         assert_eq!(
             args,
             vec!["new-session", "-d", "-s", "test_session", "-c", "/tmp/work"]
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_build_create_args_with_size() {
-        let args = build_create_args("test_session", "/tmp/work", None, Some((120, 40)));
+        let args = build_create_args("test_session", "/tmp/work", None, Some((120, 40)), &[]);
         assert!(args.contains(&"-x".to_string()));
         assert!(args.contains(&"120".to_string()));
         assert!(args.contains(&"-y".to_string()));
@@ -300,13 +300,13 @@ mod tests {
 
     #[test]
     fn test_build_create_args_with_command() {
-        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None);
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None, &[]);
         assert_eq!(args.last().unwrap(), "claude");
     }
 
     #[test]
     fn test_build_create_args_with_size_and_command() {
-        let args = build_create_args("test_session", "/tmp/work", Some("claude"), Some((80, 24)));
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), Some((80, 24)), &[]);
 
         // Size args should be present
         assert!(args.contains(&"-x".to_string()));
