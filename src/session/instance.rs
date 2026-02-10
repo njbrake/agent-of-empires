@@ -120,6 +120,10 @@ fn collect_env_values(
 
 /// Merge environment variables from sandbox config with profile config.
 /// Profile environment variables override sandbox environment variables on name conflicts.
+///
+/// NOTE: This function is currently unused but will be integrated
+/// into container creation in a future task (see STATE.md blockers).
+#[allow(dead_code)]
 fn merge_env_vars_with_profile(
     sandbox_env: Vec<(String, String)>,
     profile_config: &super::profile_config::ProfileConfig,

@@ -84,7 +84,10 @@ fn test_env_var_override_behavior() -> Result<()> {
     let resolved = agent_of_empires::session::config::resolve_env_vars(&env_keys, &env_values);
 
     // Config values should override environment keys
-    assert_eq!(resolved.get("OVERRIDE_TEST"), Some(&"from_config".to_string()));
+    assert_eq!(
+        resolved.get("OVERRIDE_TEST"),
+        Some(&"from_config".to_string())
+    );
 
     std::env::remove_var("OVERRIDE_TEST");
 
@@ -116,8 +119,10 @@ fn test_session_persistence_with_sandbox_info() -> Result<()> {
 
     assert_eq!(loaded.len(), 1);
     assert!(loaded[0].sandbox_info.is_some());
-    assert_eq!(loaded[0].sandbox_info.as_ref().unwrap().extra_env_keys,
-               Some(vec!["SANDBOX_VAR".to_string()]));
+    assert_eq!(
+        loaded[0].sandbox_info.as_ref().unwrap().extra_env_keys,
+        Some(vec!["SANDBOX_VAR".to_string()])
+    );
 
     Ok(())
 }
