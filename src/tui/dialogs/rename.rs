@@ -19,6 +19,8 @@ pub struct RenameData {
     pub group: Option<String>,
     /// New profile (None means keep current, Some(name) means move to that profile)
     pub profile: Option<String>,
+    /// YOLO mode (None means keep current, Some(bool) means change)
+    pub yolo_mode: Option<bool>,
 }
 
 pub struct RenameDialog {
@@ -29,7 +31,13 @@ pub struct RenameDialog {
     new_title: Input,
     new_group: Input,
     profile_index: usize,
-    focused_field: usize, // 0 = title, 1 = group, 2 = profile
+    /// Whether session is sandboxed (YOLO only applies to sandboxed sessions)
+    is_sandboxed: bool,
+    /// Current YOLO mode state
+    current_yolo: bool,
+    /// New YOLO mode state
+    new_yolo: bool,
+    focused_field: usize, // 0 = title, 1 = group, 2 = profile, 3 = yolo (if sandboxed)
 }
 
 impl RenameDialog {
@@ -38,6 +46,8 @@ impl RenameDialog {
         current_group: &str,
         current_profile: &str,
         available_profiles: Vec<String>,
+        is_sandboxed: bool,
+        current_yolo: bool,
     ) -> Self {
         let profile_index = available_profiles
             .iter()
@@ -52,7 +62,18 @@ impl RenameDialog {
             new_title: Input::default(),
             new_group: Input::new(current_group.to_string()),
             profile_index,
+            is_sandboxed,
+            current_yolo,
+            new_yolo: current_yolo,
             focused_field: 0,
+        }
+    }
+
+    fn num_fields(&self) -> usize {
+        if self.is_sandboxed {
+            4 // title, group, profile, yolo
+        } else {
+            3 // title, group, profile
         }
     }
 
@@ -60,20 +81,24 @@ impl RenameDialog {
         match self.focused_field {
             0 => Some(&mut self.new_title),
             1 => Some(&mut self.new_group),
-            _ => None, // Profile field uses index selection, not text input
+            _ => None, // Profile and YOLO fields don't use text input
         }
     }
 
     fn next_field(&mut self) {
-        self.focused_field = (self.focused_field + 1) % 3;
+        self.focused_field = (self.focused_field + 1) % self.num_fields();
     }
 
     fn prev_field(&mut self) {
         self.focused_field = if self.focused_field == 0 {
-            2
+            self.num_fields() - 1
         } else {
             self.focused_field - 1
         };
+    }
+
+    fn is_yolo_field(&self) -> bool {
+        self.is_sandboxed && self.focused_field == 3
     }
 
     fn selected_profile(&self) -> &str {
@@ -88,9 +113,14 @@ impl RenameDialog {
                 let group_value = self.new_group.value().trim();
                 let selected_profile = self.selected_profile();
                 let profile_changed = selected_profile != self.current_profile;
+                let yolo_changed = self.is_sandboxed && self.new_yolo != self.current_yolo;
 
                 // If nothing has changed, cancel
-                if title_value.is_empty() && group_value == self.current_group && !profile_changed {
+                if title_value.is_empty()
+                    && group_value == self.current_group
+                    && !profile_changed
+                    && !yolo_changed
+                {
                     return DialogResult::Cancel;
                 }
 
@@ -113,10 +143,18 @@ impl RenameDialog {
                     None
                 };
 
+                // Determine YOLO mode value
+                let yolo_mode = if yolo_changed {
+                    Some(self.new_yolo)
+                } else {
+                    None
+                };
+
                 DialogResult::Submit(RenameData {
                     title: title_value,
                     group,
                     profile,
+                    yolo_mode,
                 })
             }
             KeyCode::Tab => {
@@ -149,6 +187,11 @@ impl RenameDialog {
                 self.profile_index = (self.profile_index + 1) % self.available_profiles.len();
                 DialogResult::Continue
             }
+            KeyCode::Char(' ') if self.is_yolo_field() => {
+                // Toggle YOLO mode
+                self.new_yolo = !self.new_yolo;
+                DialogResult::Continue
+            }
             _ => {
                 if let Some(input) = self.focused_input() {
                     input.handle_event(&crossterm::event::Event::Key(key));
@@ -160,7 +203,8 @@ impl RenameDialog {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = 50;
-        let dialog_area = super::centered_rect(area, dialog_width, 15);
+        let dialog_height = if self.is_sandboxed { 17 } else { 15 };
+        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
 
         frame.render_widget(Clear, dialog_area);
 
@@ -173,20 +217,25 @@ impl RenameDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
+        let mut constraints = vec![
+            Constraint::Length(1), // Current title
+            Constraint::Length(1), // Current group
+            Constraint::Length(1), // Current profile
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // New title field
+            Constraint::Length(1), // New group field
+            Constraint::Length(1), // Profile selector
+        ];
+        if self.is_sandboxed {
+            constraints.push(Constraint::Length(1)); // YOLO mode
+        }
+        constraints.push(Constraint::Length(1)); // Spacer
+        constraints.push(Constraint::Min(1)); // Hint
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
-            .constraints([
-                Constraint::Length(1), // Current title
-                Constraint::Length(1), // Current group
-                Constraint::Length(1), // Current profile
-                Constraint::Length(1), // Spacer
-                Constraint::Length(1), // New title field
-                Constraint::Length(1), // New group field
-                Constraint::Length(1), // Profile selector
-                Constraint::Length(1), // Spacer
-                Constraint::Min(1),    // Hint
-            ])
+            .constraints(constraints)
             .split(inner);
 
         // Current title
@@ -261,6 +310,39 @@ impl RenameDialog {
         ]);
         frame.render_widget(Paragraph::new(profile_line), chunks[6]);
 
+        // YOLO mode checkbox (only for sandboxed sessions)
+        let hint_chunk = if self.is_sandboxed {
+            let yolo_focused = self.focused_field == 3;
+            let yolo_label_style = if yolo_focused {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let yolo_checkbox = if self.new_yolo { "[x]" } else { "[ ]" };
+            let yolo_checkbox_style = if self.new_yolo {
+                Style::default().fg(theme.running)
+            } else {
+                Style::default().fg(theme.text)
+            };
+
+            let yolo_line = Line::from(vec![
+                Span::styled("YOLO Mode:  ", yolo_label_style),
+                Span::styled(yolo_checkbox, yolo_checkbox_style),
+                Span::styled(
+                    if self.new_yolo {
+                        " (enabled)"
+                    } else {
+                        " (disabled)"
+                    },
+                    Style::default().fg(theme.dimmed),
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(yolo_line), chunks[7]);
+            9 // Hint is at chunk 9 when sandboxed
+        } else {
+            8 // Hint is at chunk 8 when not sandboxed
+        };
+
         // Hint
         let hint = Line::from(vec![
             Span::styled("Tab", Style::default().fg(theme.hint)),
@@ -270,7 +352,7 @@ impl RenameDialog {
             Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
-        frame.render_widget(Paragraph::new(hint), chunks[8]);
+        frame.render_widget(Paragraph::new(hint), chunks[hint_chunk]);
     }
 }
 
@@ -306,6 +388,8 @@ mod tests {
             "work/frontend",
             "default",
             default_profiles(),
+            false,
+            false,
         );
         assert_eq!(dialog.current_title, "Original Title");
         assert_eq!(dialog.current_group, "work/frontend");
@@ -314,31 +398,35 @@ mod tests {
         assert_eq!(dialog.new_group.value(), "work/frontend"); // Pre-populated with current group
         assert_eq!(dialog.profile_index, 0);
         assert_eq!(dialog.focused_field, 0);
+        assert!(!dialog.is_sandboxed);
+        assert!(!dialog.current_yolo);
     }
 
     #[test]
     fn test_new_dialog_empty_group() {
-        let dialog = RenameDialog::new("Title", "", "default", default_profiles());
+        let dialog = RenameDialog::new("Title", "", "default", default_profiles(), false, false);
         assert_eq!(dialog.current_group, "");
     }
 
     #[test]
     fn test_new_dialog_with_non_default_profile() {
-        let dialog = RenameDialog::new("Title", "group", "work", multi_profiles());
+        let dialog = RenameDialog::new("Title", "group", "work", multi_profiles(), false, false);
         assert_eq!(dialog.current_profile, "work");
         assert_eq!(dialog.profile_index, 1); // "work" is at index 1
     }
 
     #[test]
     fn test_esc_cancels() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         let result = dialog.handle_key(key(KeyCode::Esc));
         assert!(matches!(result, DialogResult::Cancel));
     }
 
     #[test]
     fn test_enter_with_unchanged_fields_cancels() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         // Title is empty, group is pre-populated but unchanged, profile unchanged - should cancel
         let result = dialog.handle_key(key(KeyCode::Enter));
         assert!(matches!(result, DialogResult::Cancel));
@@ -346,7 +434,14 @@ mod tests {
 
     #[test]
     fn test_enter_with_title_only_submits() {
-        let mut dialog = RenameDialog::new("Old Title", "group", "default", default_profiles());
+        let mut dialog = RenameDialog::new(
+            "Old Title",
+            "group",
+            "default",
+            default_profiles(),
+            false,
+            false,
+        );
         dialog.handle_key(key(KeyCode::Char('N')));
         dialog.handle_key(key(KeyCode::Char('e')));
         dialog.handle_key(key(KeyCode::Char('w')));
@@ -364,7 +459,14 @@ mod tests {
 
     #[test]
     fn test_enter_with_group_only_submits() {
-        let mut dialog = RenameDialog::new("Title", "old-group", "default", default_profiles());
+        let mut dialog = RenameDialog::new(
+            "Title",
+            "old-group",
+            "default",
+            default_profiles(),
+            false,
+            false,
+        );
         // Switch to group field and clear it
         dialog.handle_key(key(KeyCode::Tab));
         for _ in 0.."old-group".len() {
@@ -388,7 +490,14 @@ mod tests {
 
     #[test]
     fn test_enter_with_both_fields_submits() {
-        let mut dialog = RenameDialog::new("Old Title", "old-group", "default", default_profiles());
+        let mut dialog = RenameDialog::new(
+            "Old Title",
+            "old-group",
+            "default",
+            default_profiles(),
+            false,
+            false,
+        );
         // Type title
         for c in "New Title".chars() {
             dialog.handle_key(key(KeyCode::Char(c)));
@@ -416,7 +525,14 @@ mod tests {
 
     #[test]
     fn test_clearing_group_removes_from_group() {
-        let mut dialog = RenameDialog::new("Title", "some-group", "default", default_profiles());
+        let mut dialog = RenameDialog::new(
+            "Title",
+            "some-group",
+            "default",
+            default_profiles(),
+            false,
+            false,
+        );
         // Switch to group field and clear it
         dialog.handle_key(key(KeyCode::Tab));
         // Clear the pre-populated value
@@ -437,7 +553,8 @@ mod tests {
 
     #[test]
     fn test_tab_switches_fields() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         assert_eq!(dialog.focused_field, 0);
 
         dialog.handle_key(key(KeyCode::Tab));
@@ -452,7 +569,8 @@ mod tests {
 
     #[test]
     fn test_shift_tab_switches_fields_backwards() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         assert_eq!(dialog.focused_field, 0);
 
         dialog.handle_key(shift_key(KeyCode::Tab));
@@ -467,7 +585,8 @@ mod tests {
 
     #[test]
     fn test_down_switches_to_next_field() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         assert_eq!(dialog.focused_field, 0);
 
         dialog.handle_key(key(KeyCode::Down));
@@ -479,7 +598,8 @@ mod tests {
 
     #[test]
     fn test_up_switches_to_previous_field() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         dialog.focused_field = 2;
 
         dialog.handle_key(key(KeyCode::Up));
@@ -491,7 +611,8 @@ mod tests {
 
     #[test]
     fn test_char_input_goes_to_focused_field() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
 
         // Type in title field
         dialog.handle_key(key(KeyCode::Char('a')));
@@ -507,7 +628,8 @@ mod tests {
 
     #[test]
     fn test_char_input_ignored_on_profile_field() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", multi_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", multi_profiles(), false, false);
         dialog.focused_field = 2; // Profile field
 
         // Typing should not affect anything
@@ -519,7 +641,8 @@ mod tests {
 
     #[test]
     fn test_backspace_removes_char_from_focused_field() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         dialog.handle_key(key(KeyCode::Char('a')));
         dialog.handle_key(key(KeyCode::Char('b')));
         dialog.handle_key(key(KeyCode::Char('c')));
@@ -530,8 +653,14 @@ mod tests {
 
     #[test]
     fn test_current_values_preserved() {
-        let mut dialog =
-            RenameDialog::new("Original", "original-group", "default", default_profiles());
+        let mut dialog = RenameDialog::new(
+            "Original",
+            "original-group",
+            "default",
+            default_profiles(),
+            false,
+            false,
+        );
         dialog.handle_key(key(KeyCode::Char('N')));
         dialog.handle_key(key(KeyCode::Char('e')));
         dialog.handle_key(key(KeyCode::Char('w')));
@@ -544,7 +673,14 @@ mod tests {
 
     #[test]
     fn test_full_workflow_type_both_and_submit() {
-        let mut dialog = RenameDialog::new("Old Name", "old/group", "default", default_profiles());
+        let mut dialog = RenameDialog::new(
+            "Old Name",
+            "old/group",
+            "default",
+            default_profiles(),
+            false,
+            false,
+        );
 
         // Type new title
         for c in "Renamed Project".chars() {
@@ -573,7 +709,14 @@ mod tests {
 
     #[test]
     fn test_full_workflow_type_and_cancel() {
-        let mut dialog = RenameDialog::new("Old Name", "group", "default", default_profiles());
+        let mut dialog = RenameDialog::new(
+            "Old Name",
+            "group",
+            "default",
+            default_profiles(),
+            false,
+            false,
+        );
 
         dialog.handle_key(key(KeyCode::Char('N')));
         dialog.handle_key(key(KeyCode::Char('e')));
@@ -585,7 +728,8 @@ mod tests {
 
     #[test]
     fn test_whitespace_is_trimmed() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         for c in "  New Title  ".chars() {
             dialog.handle_key(key(KeyCode::Char(c)));
         }
@@ -610,7 +754,8 @@ mod tests {
 
     #[test]
     fn test_left_right_arrow_moves_cursor_in_input() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", default_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", default_profiles(), false, false);
         dialog.handle_key(key(KeyCode::Char('a')));
         dialog.handle_key(key(KeyCode::Char('b')));
         dialog.handle_key(key(KeyCode::Char('c')));
@@ -624,7 +769,8 @@ mod tests {
 
     #[test]
     fn test_profile_selection_with_right_arrow() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", multi_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", multi_profiles(), false, false);
         assert_eq!(dialog.profile_index, 0);
         assert_eq!(dialog.selected_profile(), "default");
 
@@ -648,7 +794,8 @@ mod tests {
 
     #[test]
     fn test_profile_selection_with_space_key() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", multi_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", multi_profiles(), false, false);
         dialog.focused_field = 2;
 
         // Space cycles forward like Right arrow
@@ -668,7 +815,8 @@ mod tests {
 
     #[test]
     fn test_profile_selection_with_left_arrow() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", multi_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", multi_profiles(), false, false);
         dialog.focused_field = 2;
 
         // Cycle backward (should wrap to end)
@@ -687,7 +835,8 @@ mod tests {
 
     #[test]
     fn test_profile_arrows_only_work_on_profile_field() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", multi_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", multi_profiles(), false, false);
         assert_eq!(dialog.focused_field, 0); // Title field
 
         // Right arrow on title field should move cursor, not change profile
@@ -700,7 +849,8 @@ mod tests {
 
     #[test]
     fn test_submit_with_profile_change() {
-        let mut dialog = RenameDialog::new("Test", "group", "default", multi_profiles());
+        let mut dialog =
+            RenameDialog::new("Test", "group", "default", multi_profiles(), false, false);
 
         // Change profile
         dialog.focused_field = 2;
@@ -719,7 +869,14 @@ mod tests {
 
     #[test]
     fn test_submit_with_all_changes() {
-        let mut dialog = RenameDialog::new("Old Title", "old-group", "default", multi_profiles());
+        let mut dialog = RenameDialog::new(
+            "Old Title",
+            "old-group",
+            "default",
+            multi_profiles(),
+            false,
+            false,
+        );
 
         // Change title
         for c in "New Title".chars() {
@@ -752,7 +909,7 @@ mod tests {
 
     #[test]
     fn test_same_profile_returns_none() {
-        let mut dialog = RenameDialog::new("Test", "group", "work", multi_profiles());
+        let mut dialog = RenameDialog::new("Test", "group", "work", multi_profiles(), false, false);
 
         // Change title to trigger submit
         dialog.handle_key(key(KeyCode::Char('X')));

@@ -163,6 +163,7 @@ impl HomeView {
         new_title: &str,
         new_group: Option<&str>,
         new_profile: Option<&str>,
+        new_yolo_mode: Option<bool>,
     ) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
@@ -205,9 +206,14 @@ impl HomeView {
                         .cloned()
                         .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
-                    // Apply title and group changes to the instance
+                    // Apply title, group, and YOLO mode changes to the instance
                     instance.title = effective_title.clone();
                     instance.group_path = effective_group.clone();
+                    if let Some(yolo) = new_yolo_mode {
+                        if let Some(ref mut sandbox) = instance.sandbox_info {
+                            sandbox.yolo_mode = Some(yolo);
+                        }
+                    }
 
                     // Handle tmux rename if title changed
                     if let Some(orig_inst) = self.instance_map.get(&id) {
@@ -255,6 +261,11 @@ impl HomeView {
             if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                 inst.title = effective_title.clone();
                 inst.group_path = effective_group.clone();
+                if let Some(yolo) = new_yolo_mode {
+                    if let Some(ref mut sandbox) = inst.sandbox_info {
+                        sandbox.yolo_mode = Some(yolo);
+                    }
+                }
             }
 
             // Handle tmux rename if title changed

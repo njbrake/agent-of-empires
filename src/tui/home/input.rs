@@ -269,6 +269,7 @@ impl HomeView {
                         &data.title,
                         data.group.as_deref(),
                         data.profile.as_deref(),
+                        data.yolo_mode,
                     ) {
                         tracing::error!("Failed to rename session: {}", e);
                     }
@@ -467,11 +468,15 @@ impl HomeView {
                         let current_profile = self.storage.profile().to_string();
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+                        let is_sandboxed = inst.is_sandboxed();
+                        let current_yolo = inst.is_yolo_mode();
                         self.rename_dialog = Some(RenameDialog::new(
                             &inst.title,
                             &inst.group_path,
                             &current_profile,
                             profiles,
+                            is_sandboxed,
+                            current_yolo,
                         ));
                     }
                 }
