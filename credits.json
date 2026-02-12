@@ -55,6 +55,17 @@
           "labeled_at": "2026-02-11T15:10:46.379Z"
         }
       ]
+    },
+    {
+      "username": "lazyoft",
+      "issues": [],
+      "pull_requests": [
+        {
+          "number": 242,
+          "title": "feat: add `session rename` CLI command",
+          "labeled_at": "2026-02-12T00:12:55.828Z"
+        }
+      ]
     }
   ]
 }
