@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+> `CLAUDE.md` is a symlink to this file. Do not edit `CLAUDE.md` directly -- edit `AGENTS.md` instead.
+
 ## Project Structure & Module Organization
 
 - `src/main.rs`: binary entrypoint (`aoe`).
