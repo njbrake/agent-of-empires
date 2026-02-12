@@ -351,8 +351,8 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
 
-    // Tab through all fields including sandbox image, yolo mode, env keys, and env values
-    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo, 8: env keys, 9: env values
+    // Tab through all fields including sandbox image, yolo mode, env keys, env values, inherited
+    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo, 8: env keys, 9: env values, 10: inherited
     for _ in 0..6 {
         dialog.handle_key(key(KeyCode::Tab));
     }
@@ -366,6 +366,9 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 9); // env values field
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.focused_field, 10); // inherited settings field
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 0); // wrap to start

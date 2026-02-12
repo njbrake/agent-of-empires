@@ -242,9 +242,16 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub mount_ssh: bool,
 
-    /// Custom instruction text appended to the agent's system prompt in sandboxed sessions
+    /// Custom instruction text appended to the agent's system prompt in sandboxed sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instruction: Option<String>,
+
+    /// Mount host tool config directories into sandbox containers (default: false).
+    /// When enabled, host auth configs (e.g. ~/.claude, ~/.codex, ~/.gemini) are
+    /// overlay-copied instead of using Docker named volumes, so tools share the
+    /// host's existing authentication.
+    #[serde(default)]
+    pub mount_tool_configs: bool,
 }
 
 impl Default for SandboxConfig {
@@ -263,6 +270,7 @@ impl Default for SandboxConfig {
             volume_ignores: Vec::new(),
             mount_ssh: false,
             custom_instruction: None,
+            mount_tool_configs: false,
         }
     }
 }

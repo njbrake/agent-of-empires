@@ -11,6 +11,7 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::docker;
+use crate::session::config::{DefaultTerminalMode, SandboxConfig};
 use crate::session::repo_config::HookProgress;
 #[cfg(test)]
 use crate::session::Config;
@@ -72,6 +73,10 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
         name: "Environment Values",
         description: "Custom KEY=VALUE env vars injected into the sandbox container",
     },
+    FieldHelp {
+        name: "Inherited Settings",
+        description: "Read-only view of sandbox settings from global/profile config",
+    },
 ];
 
 #[derive(Clone)]
@@ -126,6 +131,10 @@ pub struct NewSessionDialog {
     pub(super) env_values_selected_index: usize,
     pub(super) env_values_editing_input: Option<Input>,
     pub(super) env_values_adding_new: bool,
+    /// Whether the inherited settings section is expanded.
+    pub(super) inherited_expanded: bool,
+    /// Pre-computed label/value pairs for non-default inherited sandbox settings.
+    pub(super) inherited_settings: Vec<(String, String)>,
     pub(super) existing_groups: Vec<String>,
     pub(super) group_picker: ListPicker,
     pub(super) branch_picker: ListPicker,
@@ -228,6 +237,39 @@ fn handle_editable_list_key(
     }
 }
 
+/// Build label/value pairs for non-default inherited sandbox settings.
+fn build_inherited_settings(sandbox: &SandboxConfig) -> Vec<(String, String)> {
+    let mut settings = Vec::new();
+    if sandbox.mount_ssh {
+        settings.push(("Mount SSH".to_string(), "yes".to_string()));
+    }
+    if sandbox.mount_tool_configs {
+        settings.push(("Mount Tool Configs".to_string(), "yes".to_string()));
+    }
+    if !sandbox.extra_volumes.is_empty() {
+        settings.push((
+            "Extra Volumes".to_string(),
+            format!("{} items", sandbox.extra_volumes.len()),
+        ));
+    }
+    if !sandbox.volume_ignores.is_empty() {
+        settings.push((
+            "Volume Ignores".to_string(),
+            format!("{} items", sandbox.volume_ignores.len()),
+        ));
+    }
+    if let Some(ref cpu) = sandbox.cpu_limit {
+        settings.push(("CPU Limit".to_string(), cpu.clone()));
+    }
+    if let Some(ref mem) = sandbox.memory_limit {
+        settings.push(("Memory Limit".to_string(), mem.clone()));
+    }
+    if sandbox.default_terminal_mode == DefaultTerminalMode::Container {
+        settings.push(("Terminal Mode".to_string(), "container".to_string()));
+    }
+    settings
+}
+
 impl NewSessionDialog {
     pub fn new(
         tools: AvailableTools,
@@ -259,17 +301,18 @@ impl NewSessionDialog {
         let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
         let yolo_mode = sandbox_enabled && config.sandbox.yolo_mode_default;
 
-        // Initialize env keys and values from config when sandbox is enabled
-        let (extra_env_keys, extra_env_values) = if sandbox_enabled {
+        // Initialize env keys, values, and inherited settings from config when sandbox is enabled
+        let (extra_env_keys, extra_env_values, inherited_settings) = if sandbox_enabled {
             let env_values: Vec<String> = config
                 .sandbox
                 .environment_values
                 .iter()
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect();
-            (config.sandbox.environment.clone(), env_values)
+            let inherited = build_inherited_settings(&config.sandbox);
+            (config.sandbox.environment.clone(), env_values, inherited)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
 
         Self {
@@ -301,6 +344,8 @@ impl NewSessionDialog {
             env_values_selected_index: 0,
             env_values_editing_input: None,
             env_values_adding_new: false,
+            inherited_expanded: false,
+            inherited_settings,
             error_message: None,
             show_help: false,
             loading: false,
@@ -392,6 +437,8 @@ impl NewSessionDialog {
             env_values_selected_index: 0,
             env_values_editing_input: None,
             env_values_adding_new: false,
+            inherited_expanded: false,
+            inherited_settings: Vec::new(),
             error_message: None,
             show_help: false,
             loading: false,
@@ -434,6 +481,8 @@ impl NewSessionDialog {
             env_values_selected_index: 0,
             env_values_editing_input: None,
             env_values_adding_new: false,
+            inherited_expanded: false,
+            inherited_settings: Vec::new(),
             error_message: None,
             show_help: false,
             loading: false,
@@ -531,8 +580,13 @@ impl NewSessionDialog {
         } else {
             usize::MAX
         };
-        let max_field = if sandbox_options_visible {
+        let inherited_field = if sandbox_options_visible {
             env_values_field + 1
+        } else {
+            usize::MAX
+        };
+        let max_field = if sandbox_options_visible {
+            inherited_field + 1
         } else if has_sandbox {
             sandbox_field + 1
         } else if has_worktree {
@@ -668,6 +722,7 @@ impl NewSessionDialog {
                         .iter()
                         .map(|(k, v)| format!("{}={}", k, v))
                         .collect();
+                    self.inherited_settings = build_inherited_settings(&config.sandbox);
                 } else {
                     self.yolo_mode = false;
                     self.extra_env_keys.clear();
@@ -676,6 +731,8 @@ impl NewSessionDialog {
                     self.extra_env_values.clear();
                     self.env_values_list_expanded = false;
                     self.env_values_editing_input = None;
+                    self.inherited_expanded = false;
+                    self.inherited_settings.clear();
                     if self.focused_field > sandbox_field {
                         self.focused_field = sandbox_field;
                     }
@@ -688,6 +745,12 @@ impl NewSessionDialog {
                 self.yolo_mode = !self.yolo_mode;
                 DialogResult::Continue
             }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.focused_field == inherited_field =>
+            {
+                self.inherited_expanded = !self.inherited_expanded;
+                DialogResult::Continue
+            }
             _ => {
                 if self.focused_field != tool_field
                     && self.focused_field != new_branch_field
@@ -695,6 +758,7 @@ impl NewSessionDialog {
                     && self.focused_field != yolo_mode_field
                     && self.focused_field != env_field
                     && self.focused_field != env_values_field
+                    && self.focused_field != inherited_field
                 {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));

@@ -1,5 +1,7 @@
 //! Session instance definition and operations
 
+use std::path::Path;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,6 +16,206 @@ use crate::tmux;
 
 fn default_true() -> bool {
     true
+}
+
+/// Base directory for sandbox tool-config overlays.
+/// Subdirectory name inside each tool's config dir for per-container overlays.
+const SANDBOX_OVERLAYS_SUBDIR: &str = "sandbox-overlays";
+
+/// Declarative definition of a tool's config directory for overlay mounting.
+struct ToolConfigMount {
+    /// Path relative to home (e.g. ".claude").
+    host_rel: &'static str,
+    /// Path suffix relative to container home (e.g. ".claude").
+    container_suffix: &'static str,
+    /// Named Docker volume used as fallback.
+    named_volume: &'static str,
+    /// Top-level entry names to skip when copying (large/recursive/unnecessary).
+    skip_entries: &'static [&'static str],
+    /// Files to seed into the overlay with static content, written before host files are
+    /// copied. Host files with the same name will overwrite seeds.
+    seed_files: &'static [(&'static str, &'static str)],
+    /// Directories to recursively copy into the overlay (e.g. plugins, skills).
+    copy_dirs: &'static [&'static str],
+    /// macOS Keychain service name and target filename. If set, credentials are extracted
+    /// from the Keychain and written to the overlay as the specified file.
+    keychain_credential: Option<(&'static str, &'static str)>,
+    /// Files to seed at the container home directory level (outside the config dir).
+    /// Each (filename, content) pair is written to the overlay root and mounted as
+    /// a separate file at CONTAINER_HOME/filename.
+    home_seed_files: &'static [(&'static str, &'static str)],
+}
+
+/// Tool config overlay definitions. Each entry describes one tool's config directory.
+/// To add a new tool, add an entry here - no code changes needed.
+const TOOL_CONFIG_MOUNTS: &[ToolConfigMount] = &[
+    ToolConfigMount {
+        host_rel: ".claude",
+        container_suffix: ".claude",
+        named_volume: CLAUDE_AUTH_VOLUME,
+        skip_entries: &["sandbox-overlays", "projects"],
+        seed_files: &[],
+        copy_dirs: &["plugins", "skills"],
+        // On macOS, OAuth tokens live in the Keychain. Extract and write as .credentials.json
+        // so the container can authenticate without re-login.
+        keychain_credential: Some(("Claude Code-credentials", ".credentials.json")),
+        // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
+        // state. Seeding hasCompletedOnboarding skips the first-run wizard.
+        home_seed_files: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
+    },
+    ToolConfigMount {
+        host_rel: ".local/share/opencode",
+        container_suffix: ".local/share/opencode",
+        named_volume: OPENCODE_AUTH_VOLUME,
+        skip_entries: &["sandbox-overlays"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+    },
+    ToolConfigMount {
+        host_rel: ".codex",
+        container_suffix: ".codex",
+        named_volume: CODEX_AUTH_VOLUME,
+        skip_entries: &["sandbox-overlays"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+    },
+    ToolConfigMount {
+        host_rel: ".gemini",
+        container_suffix: ".gemini",
+        named_volume: GEMINI_AUTH_VOLUME,
+        skip_entries: &["sandbox-overlays"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+    },
+];
+
+/// Create an overlay copy of a tool config directory. Copies top-level files,
+/// recursively copies directories listed in `copy_dirs`, writes seed files,
+/// and skips entries in `skip_entries`.
+fn create_tool_config_overlay(
+    host_dir: &Path,
+    overlay_dir: &Path,
+    skip_entries: &[&str],
+    seed_files: &[(&str, &str)],
+    copy_dirs: &[&str],
+) -> Result<()> {
+    std::fs::create_dir_all(overlay_dir)?;
+
+    for &(name, content) in seed_files {
+        std::fs::write(overlay_dir.join(name), content)?;
+    }
+
+    for entry in std::fs::read_dir(host_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        if skip_entries.iter().any(|&s| s == name_str.as_ref()) {
+            continue;
+        }
+
+        // Follow symlinks so symlinked dirs are treated as dirs.
+        let metadata = match std::fs::metadata(entry.path()) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("Skipping {}: {}", entry.path().display(), e);
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
+            if copy_dirs.iter().any(|&d| d == name_str.as_ref()) {
+                let dest = overlay_dir.join(&name);
+                if let Err(e) = copy_dir_recursive(&entry.path(), &dest) {
+                    tracing::warn!("Failed to copy dir {}: {}", name_str, e);
+                }
+            }
+            continue;
+        }
+
+        if let Err(e) = std::fs::copy(entry.path(), overlay_dir.join(&name)) {
+            tracing::warn!("Failed to copy {}: {}", name_str, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively copy a directory tree, following symlinks.
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dest.join(entry.file_name());
+        // Follow symlinks so symlinked dirs/files are handled correctly.
+        let metadata = std::fs::metadata(entry.path())?;
+        if metadata.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Extract credentials from the macOS Keychain and write to a file.
+/// Returns Ok(true) if credentials were written, Ok(false) if not available.
+#[cfg(target_os = "macos")]
+fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
+    use std::process::Command;
+
+    let output = Command::new("security")
+        .args(["find-generic-password", "-a"])
+        .arg(std::env::var("USER").unwrap_or_default())
+        .args(["-w", "-s", service])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    let content = String::from_utf8_lossy(&output.stdout);
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+
+    std::fs::write(dest, trimmed)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn extract_keychain_credential(_service: &str, _dest: &Path) -> Result<bool> {
+    Ok(false)
+}
+
+/// Remove overlay directories for a given container name from all tool config dirs.
+/// Non-fatal on failure.
+pub fn cleanup_sandbox_overlay(container_name: &str) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    for mount in TOOL_CONFIG_MOUNTS {
+        let overlay_dir = home
+            .join(mount.host_rel)
+            .join(SANDBOX_OVERLAYS_SUBDIR)
+            .join(container_name);
+        if overlay_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&overlay_dir) {
+                tracing::warn!(
+                    "Failed to remove sandbox overlay {}: {}",
+                    overlay_dir.display(),
+                    e
+                );
+            }
+        }
+    }
 }
 
 /// Terminal environment variables that are always passed through for proper UI/theming
@@ -571,6 +773,65 @@ impl Instance {
         );
     }
 
+    /// Refresh overlay copies of host tool config directories so the container
+    /// picks up any credential changes (e.g. re-auth) since it was created.
+    fn refresh_tool_config_overlays(&self) {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let Some(sandbox) = self.sandbox_info.as_ref() else {
+            return;
+        };
+
+        let sandbox_config = match super::config::Config::load() {
+            Ok(c) => c.sandbox,
+            Err(_) => return,
+        };
+
+        if !sandbox_config.mount_tool_configs {
+            return;
+        }
+
+        for mount in TOOL_CONFIG_MOUNTS {
+            let host_dir = home.join(mount.host_rel);
+            if !host_dir.exists() {
+                continue;
+            }
+
+            let overlay_dir = home
+                .join(mount.host_rel)
+                .join(SANDBOX_OVERLAYS_SUBDIR)
+                .join(&sandbox.container_name);
+
+            if let Err(e) = create_tool_config_overlay(
+                &host_dir,
+                &overlay_dir,
+                mount.skip_entries,
+                mount.seed_files,
+                mount.copy_dirs,
+            ) {
+                tracing::warn!("Failed to refresh overlay for {}: {}", mount.host_rel, e);
+            }
+
+            if let Some((service, filename)) = mount.keychain_credential {
+                if let Err(e) = extract_keychain_credential(service, &overlay_dir.join(filename)) {
+                    tracing::warn!(
+                        "Failed to extract keychain credential for {}: {}",
+                        mount.host_rel,
+                        e
+                    );
+                }
+            }
+
+            // Refresh home-level seed files.
+            for &(filename, content) in mount.home_seed_files {
+                if let Err(e) = std::fs::write(overlay_dir.join(filename), content) {
+                    tracing::warn!("Failed to refresh home seed file {}: {}", filename, e);
+                }
+            }
+        }
+    }
+
     pub fn ensure_container_running(&mut self) -> Result<()> {
         let sandbox = self
             .sandbox_info
@@ -581,10 +842,12 @@ impl Instance {
         let container = DockerContainer::new(&self.id, image);
 
         if container.is_running()? {
+            self.refresh_tool_config_overlays();
             return Ok(());
         }
 
         if container.exists()? {
+            self.refresh_tool_config_overlays();
             container.start()?;
             return Ok(());
         }
@@ -700,9 +963,10 @@ impl Instance {
         let sandbox_config = match super::config::Config::load() {
             Ok(c) => {
                 tracing::debug!(
-                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
+                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, mount_tool_configs={}, volume_ignores={:?}",
                     c.sandbox.extra_volumes,
                     c.sandbox.mount_ssh,
+                    c.sandbox.mount_tool_configs,
                     c.sandbox.volume_ignores
                 );
                 c.sandbox
@@ -754,27 +1018,106 @@ impl Instance {
             });
         }
 
-        let mut named_volumes = vec![
-            (
-                CLAUDE_AUTH_VOLUME.to_string(),
-                format!("{}/.claude", CONTAINER_HOME),
-            ),
-            (
-                OPENCODE_AUTH_VOLUME.to_string(),
-                format!("{}/.local/share/opencode", CONTAINER_HOME),
-            ),
-            (
-                CODEX_AUTH_VOLUME.to_string(),
-                format!("{}/.codex", CONTAINER_HOME),
-            ),
-            (
-                GEMINI_AUTH_VOLUME.to_string(),
-                format!("{}/.gemini", CONTAINER_HOME),
-            ),
-        ];
+        // When mount_tool_configs is enabled, create an overlay copy of each host tool config
+        // directory inside ~/.claude/sandbox-overlays/<container-name>/ and mount the overlay
+        // read-write. This shares auth credentials without exposing the host config to writes.
+        // Tool definitions are in TOOL_CONFIG_MOUNTS - add new tools there, not here.
+        let mut named_volumes = Vec::new();
+        let container_name = &self.sandbox_info.as_ref().unwrap().container_name;
 
-        // Only add vibe auth volume if we didn't already mount the host config
-        // (can't have duplicate mount points)
+        for mount in TOOL_CONFIG_MOUNTS {
+            let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
+
+            if !sandbox_config.mount_tool_configs {
+                tracing::debug!(
+                    "mount_tool_configs disabled, using named volume for {}",
+                    mount.host_rel
+                );
+                named_volumes.push((mount.named_volume.to_string(), container_path));
+                continue;
+            }
+
+            let host_dir = home.join(mount.host_rel);
+            if !host_dir.exists() {
+                tracing::debug!(
+                    "Host dir {} does not exist, using named volume",
+                    host_dir.display()
+                );
+                named_volumes.push((mount.named_volume.to_string(), container_path));
+                continue;
+            }
+
+            let overlay_dir = home
+                .join(mount.host_rel)
+                .join(SANDBOX_OVERLAYS_SUBDIR)
+                .join(container_name);
+
+            tracing::debug!(
+                "Creating tool config overlay: {} -> {}",
+                host_dir.display(),
+                overlay_dir.display()
+            );
+
+            match create_tool_config_overlay(
+                &host_dir,
+                &overlay_dir,
+                mount.skip_entries,
+                mount.seed_files,
+                mount.copy_dirs,
+            ) {
+                Ok(()) => {
+                    if let Some((service, filename)) = mount.keychain_credential {
+                        if let Err(e) =
+                            extract_keychain_credential(service, &overlay_dir.join(filename))
+                        {
+                            tracing::warn!(
+                                "Failed to extract keychain credential for {}: {}",
+                                mount.host_rel,
+                                e
+                            );
+                        }
+                    }
+
+                    tracing::debug!(
+                        "Overlay ready for {}, binding {} -> {}",
+                        mount.host_rel,
+                        overlay_dir.display(),
+                        container_path
+                    );
+                    volumes.push(VolumeMount {
+                        host_path: overlay_dir.to_string_lossy().to_string(),
+                        container_path,
+                        read_only: false,
+                    });
+
+                    // Write home-level seed files into the overlay dir and mount each as
+                    // a separate file at the container home directory.
+                    for &(filename, content) in mount.home_seed_files {
+                        let file_path = overlay_dir.join(filename);
+                        if let Err(e) = std::fs::write(&file_path, content) {
+                            tracing::warn!("Failed to write home seed file {}: {}", filename, e);
+                            continue;
+                        }
+                        volumes.push(VolumeMount {
+                            host_path: file_path.to_string_lossy().to_string(),
+                            container_path: format!("{}/{}", CONTAINER_HOME, filename),
+                            read_only: false,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create overlay for {}, falling back to named volume: {}",
+                        mount.host_rel,
+                        e
+                    );
+                    named_volumes.push((mount.named_volume.to_string(), container_path));
+                }
+            }
+        }
+
+        // Vibe: already bind-mounted from host when ~/.vibe exists.
+        // Only add named volume when the host dir wasn't mounted.
         if !has_vibe_host_mount {
             named_volumes.push((
                 VIBE_AUTH_VOLUME.to_string(),
@@ -1483,6 +1826,347 @@ mod tests {
 
             // Working dir should be set
             assert!(!working_dir.is_empty());
+        }
+    }
+
+    mod overlay_tests {
+        use super::*;
+        use std::fs;
+        use tempfile::TempDir;
+
+        fn setup_host_dir(dir: &TempDir) -> std::path::PathBuf {
+            let host = dir.path().join("host");
+            fs::create_dir_all(&host).unwrap();
+            fs::write(host.join("auth.json"), r#"{"token":"abc"}"#).unwrap();
+            fs::write(host.join("settings.json"), "{}").unwrap();
+            fs::create_dir_all(host.join("subdir")).unwrap();
+            fs::write(host.join("subdir").join("nested.txt"), "nested").unwrap();
+            host
+        }
+
+        #[test]
+        fn test_copies_top_level_files_only() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+
+            assert!(overlay.join("auth.json").exists());
+            assert!(overlay.join("settings.json").exists());
+            assert!(!overlay.join("subdir").exists());
+        }
+
+        #[test]
+        fn test_skips_entries_in_skip_list() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            create_tool_config_overlay(&host, &overlay, &["auth.json"], &[], &[]).unwrap();
+
+            assert!(!overlay.join("auth.json").exists());
+            assert!(overlay.join("settings.json").exists());
+        }
+
+        #[test]
+        fn test_writes_seed_files() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            let seeds = [("seed.json", r#"{"seeded":true}"#)];
+            create_tool_config_overlay(&host, &overlay, &[], &seeds, &[]).unwrap();
+
+            let content = fs::read_to_string(overlay.join("seed.json")).unwrap();
+            assert_eq!(content, r#"{"seeded":true}"#);
+        }
+
+        #[test]
+        fn test_host_files_overwrite_seeds() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            let seeds = [("auth.json", "seed-content")];
+            create_tool_config_overlay(&host, &overlay, &[], &seeds, &[]).unwrap();
+
+            let content = fs::read_to_string(overlay.join("auth.json")).unwrap();
+            assert_eq!(content, r#"{"token":"abc"}"#);
+        }
+
+        #[test]
+        fn test_seed_survives_when_no_host_equivalent() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            let seeds = [(".claude.json", r#"{"hasCompletedOnboarding":true}"#)];
+            create_tool_config_overlay(&host, &overlay, &[], &seeds, &[]).unwrap();
+
+            let content = fs::read_to_string(overlay.join(".claude.json")).unwrap();
+            assert_eq!(content, r#"{"hasCompletedOnboarding":true}"#);
+        }
+
+        #[test]
+        fn test_creates_overlay_dir_if_missing() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("deep").join("nested").join("overlay");
+
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+
+            assert!(overlay.exists());
+            assert!(overlay.join("auth.json").exists());
+        }
+
+        #[test]
+        fn test_cleanup_removes_overlay_dir() {
+            let dir = TempDir::new().unwrap();
+            let container_name = "aoe-sandbox-test1234";
+
+            // Create overlay dirs inside multiple tool config dirs.
+            let claude_overlay = dir
+                .path()
+                .join(".claude")
+                .join(SANDBOX_OVERLAYS_SUBDIR)
+                .join(container_name);
+            let codex_overlay = dir
+                .path()
+                .join(".codex")
+                .join(SANDBOX_OVERLAYS_SUBDIR)
+                .join(container_name);
+            fs::create_dir_all(&claude_overlay).unwrap();
+            fs::create_dir_all(&codex_overlay).unwrap();
+            fs::write(claude_overlay.join("file.txt"), "data").unwrap();
+            fs::write(codex_overlay.join("file.txt"), "data").unwrap();
+
+            let original_home = std::env::var("HOME").ok();
+            std::env::set_var("HOME", dir.path());
+
+            cleanup_sandbox_overlay(container_name);
+
+            assert!(!claude_overlay.exists());
+            assert!(!codex_overlay.exists());
+
+            if let Some(h) = original_home {
+                std::env::set_var("HOME", h);
+            }
+        }
+
+        #[test]
+        fn test_cleanup_noop_when_dir_missing() {
+            let dir = TempDir::new().unwrap();
+            let original_home = std::env::var("HOME").ok();
+            std::env::set_var("HOME", dir.path());
+
+            // Should not panic or error.
+            cleanup_sandbox_overlay("nonexistent-container");
+
+            if let Some(h) = original_home {
+                std::env::set_var("HOME", h);
+            }
+        }
+
+        #[test]
+        fn test_tool_config_mounts_have_valid_entries() {
+            for mount in TOOL_CONFIG_MOUNTS {
+                assert!(!mount.host_rel.is_empty());
+                assert!(!mount.container_suffix.is_empty());
+                assert!(!mount.named_volume.is_empty());
+            }
+        }
+
+        #[test]
+        fn test_home_seed_files_written_to_overlay_root() {
+            let dir = TempDir::new().unwrap();
+            let overlay_base = dir.path().join("overlay-root");
+            fs::create_dir_all(&overlay_base).unwrap();
+
+            let home_seeds: &[(&str, &str)] =
+                &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)];
+
+            for &(filename, content) in home_seeds {
+                fs::write(overlay_base.join(filename), content).unwrap();
+            }
+
+            // The file lives at the overlay root (per-container dir), not inside a tool subdir.
+            let written = fs::read_to_string(overlay_base.join(".claude.json")).unwrap();
+            assert_eq!(written, r#"{"hasCompletedOnboarding":true}"#);
+
+            // Verify it's NOT inside a tool config subdirectory.
+            assert!(!overlay_base.join(".claude").join(".claude.json").exists());
+        }
+
+        #[test]
+        fn test_refresh_updates_changed_host_files() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            assert_eq!(
+                fs::read_to_string(overlay.join("auth.json")).unwrap(),
+                r#"{"token":"abc"}"#
+            );
+
+            // Host file changes between sessions.
+            fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
+
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            assert_eq!(
+                fs::read_to_string(overlay.join("auth.json")).unwrap(),
+                r#"{"token":"refreshed"}"#
+            );
+        }
+
+        #[test]
+        fn test_refresh_picks_up_new_host_files() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            assert!(!overlay.join("new_cred.json").exists());
+
+            // New credential file appears on host.
+            fs::write(host.join("new_cred.json"), "new").unwrap();
+
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            assert_eq!(
+                fs::read_to_string(overlay.join("new_cred.json")).unwrap(),
+                "new"
+            );
+        }
+
+        #[test]
+        fn test_refresh_preserves_container_written_files() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let overlay = dir.path().join("overlay");
+
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+
+            // Container writes a runtime file into the overlay.
+            fs::write(overlay.join("runtime.log"), "container-state").unwrap();
+
+            // Refresh from host.
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+
+            // Container-written file survives (host has no file with that name).
+            assert_eq!(
+                fs::read_to_string(overlay.join("runtime.log")).unwrap(),
+                "container-state"
+            );
+        }
+
+        #[test]
+        fn test_copies_listed_dirs_recursively() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+
+            // Create a "plugins" dir with nested content.
+            let plugins = host.join("plugins");
+            fs::create_dir_all(plugins.join("lsp")).unwrap();
+            fs::write(plugins.join("config.json"), "{}").unwrap();
+            fs::write(plugins.join("lsp").join("gopls.wasm"), "binary").unwrap();
+
+            let overlay = dir.path().join("overlay");
+            create_tool_config_overlay(&host, &overlay, &[], &[], &["plugins"]).unwrap();
+
+            assert!(overlay.join("plugins").join("config.json").exists());
+            assert!(overlay
+                .join("plugins")
+                .join("lsp")
+                .join("gopls.wasm")
+                .exists());
+            // "subdir" is NOT in copy_dirs, so still skipped.
+            assert!(!overlay.join("subdir").exists());
+        }
+
+        #[test]
+        fn test_unlisted_dirs_still_skipped() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+
+            // "subdir" exists from setup_host_dir but is not in copy_dirs.
+            let overlay = dir.path().join("overlay");
+            create_tool_config_overlay(&host, &overlay, &[], &[], &["nonexistent"]).unwrap();
+
+            assert!(!overlay.join("subdir").exists());
+            assert!(overlay.join("auth.json").exists());
+        }
+
+        #[test]
+        fn test_copy_dir_recursive() {
+            let dir = TempDir::new().unwrap();
+            let src = dir.path().join("src");
+            fs::create_dir_all(src.join("a").join("b")).unwrap();
+            fs::write(src.join("root.txt"), "root").unwrap();
+            fs::write(src.join("a").join("mid.txt"), "mid").unwrap();
+            fs::write(src.join("a").join("b").join("deep.txt"), "deep").unwrap();
+
+            let dest = dir.path().join("dest");
+            copy_dir_recursive(&src, &dest).unwrap();
+
+            assert_eq!(fs::read_to_string(dest.join("root.txt")).unwrap(), "root");
+            assert_eq!(
+                fs::read_to_string(dest.join("a").join("mid.txt")).unwrap(),
+                "mid"
+            );
+            assert_eq!(
+                fs::read_to_string(dest.join("a").join("b").join("deep.txt")).unwrap(),
+                "deep"
+            );
+        }
+
+        #[test]
+        fn test_symlinked_dirs_are_followed() {
+            let dir = TempDir::new().unwrap();
+            let host = dir.path().join("host");
+            fs::create_dir_all(&host).unwrap();
+            fs::write(host.join("config.json"), "{}").unwrap();
+
+            // Create a real dir with content, then symlink to it from copy_dirs.
+            let real_dir = dir.path().join("real-skills");
+            fs::create_dir_all(&real_dir).unwrap();
+            fs::write(real_dir.join("skill.md"), "# Skill").unwrap();
+
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&real_dir, host.join("skills")).unwrap();
+
+            let overlay = dir.path().join("overlay");
+            create_tool_config_overlay(&host, &overlay, &[], &[], &["skills"]).unwrap();
+
+            assert!(overlay.join("config.json").exists());
+            #[cfg(unix)]
+            {
+                assert!(overlay.join("skills").exists());
+                assert_eq!(
+                    fs::read_to_string(overlay.join("skills").join("skill.md")).unwrap(),
+                    "# Skill"
+                );
+            }
+        }
+
+        #[test]
+        fn test_bad_entry_does_not_fail_overlay() {
+            let dir = TempDir::new().unwrap();
+            let host = dir.path().join("host");
+            fs::create_dir_all(&host).unwrap();
+            fs::write(host.join("good.json"), "ok").unwrap();
+
+            // Create a symlink pointing to a nonexistent target.
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("/nonexistent/path", host.join("broken-link")).unwrap();
+
+            let overlay = dir.path().join("overlay");
+            // Should succeed despite the broken symlink.
+            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+
+            assert_eq!(fs::read_to_string(overlay.join("good.json")).unwrap(), "ok");
+            // Broken symlink is skipped, not copied.
+            assert!(!overlay.join("broken-link").exists());
         }
     }
 }

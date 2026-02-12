@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 
 use crate::docker::DockerContainer;
-use crate::session::{Config, GroupTree, Instance, Storage};
+use crate::session::{cleanup_sandbox_overlay, Config, GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -130,6 +130,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                                 println!("✓ Container removed");
                             }
                         }
+                        cleanup_sandbox_overlay(&sandbox.container_name);
                     } else {
                         println!(
                             "Container preserved: {} (auto_cleanup disabled in config)",

@@ -39,6 +39,15 @@ impl NewSessionDialog {
         } else {
             0
         };
+        let inherited_height: u16 = if sandbox_options_visible {
+            if self.inherited_expanded {
+                3 + self.inherited_settings.len().max(1) as u16
+            } else {
+                2
+            }
+        } else {
+            0
+        };
 
         // Build constraints dynamically based on visible fields only
         let mut constraints = vec![
@@ -59,6 +68,7 @@ impl NewSessionDialog {
             constraints.push(Constraint::Length(2)); // YOLO mode checkbox
             constraints.push(Constraint::Length(env_list_height)); // Env vars field
             constraints.push(Constraint::Length(env_values_list_height)); // Env values field
+            constraints.push(Constraint::Length(inherited_height)); // Inherited settings
         }
         constraints.push(Constraint::Min(1)); // Hints/errors
 
@@ -313,6 +323,11 @@ impl NewSessionDialog {
                 // Environment values field (KEY=VALUE)
                 let env_values_field = env_field + 1;
                 self.render_env_values_field(frame, chunks[ci], env_values_field, theme);
+                ci += 1;
+
+                // Inherited settings (read-only)
+                let inherited_field = env_values_field + 1;
+                self.render_inherited_field(frame, chunks[ci], inherited_field, theme);
                 ci += 1;
             }
         }
@@ -596,6 +611,75 @@ impl NewSessionDialog {
         }
     }
 
+    fn render_inherited_field(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        field_idx: usize,
+        theme: &Theme,
+    ) {
+        let is_focused = self.focused_field == field_idx;
+        let label_style = if is_focused {
+            Style::default().fg(theme.accent).underlined()
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        let count = self.inherited_settings.len();
+        let arrow = if self.inherited_expanded {
+            "▾"
+        } else {
+            "▸"
+        };
+        let summary = if count == 0 {
+            "(all defaults)".to_string()
+        } else {
+            format!("({} active)", count)
+        };
+
+        if !self.inherited_expanded {
+            let summary_style = if count > 0 {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let line = Line::from(vec![
+                Span::styled(format!("  {} ", arrow), label_style),
+                Span::styled("Inherited Settings ", label_style),
+                Span::styled(summary, summary_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+        } else {
+            let mut lines: Vec<Line> = Vec::new();
+
+            let header = Line::from(vec![
+                Span::styled(format!("  {} ", arrow), label_style),
+                Span::styled("Inherited Settings", label_style),
+            ]);
+            lines.push(header);
+            lines.push(Line::from(""));
+
+            if self.inherited_settings.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "    (all defaults)",
+                    Style::default().fg(theme.dimmed),
+                )));
+            } else {
+                for (label, value) in &self.inherited_settings {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    {}: ", label),
+                            Style::default().fg(theme.dimmed),
+                        ),
+                        Span::styled(value.as_str(), Style::default().fg(theme.accent)),
+                    ]));
+                }
+            }
+
+            frame.render_widget(Paragraph::new(lines), area);
+        }
+    }
+
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
@@ -606,7 +690,7 @@ impl NewSessionDialog {
         let dialog_height: u16 = base_height
             + if has_tool_selection { 3 } else { 0 }
             + if has_sandbox { 3 } else { 0 }
-            + if show_sandbox_options_help { 12 } else { 0 }; // Image, YOLO, Env, Env Values
+            + if show_sandbox_options_help { 15 } else { 0 }; // Image, YOLO, Env, Env Values, Inherited
 
         let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
 
@@ -640,6 +724,9 @@ impl NewSessionDialog {
                 continue;
             }
             if idx == 10 && !show_sandbox_options_help {
+                continue;
+            }
+            if idx == 11 && !show_sandbox_options_help {
                 continue;
             }
 

@@ -6,7 +6,7 @@ use std::thread;
 
 use crate::docker::DockerContainer;
 use crate::git::GitWorktree;
-use crate::session::Instance;
+use crate::session::{cleanup_sandbox_overlay, Instance};
 
 pub struct DeletionRequest {
     pub session_id: String,
@@ -113,6 +113,7 @@ impl DeletionPoller {
                             errors.push(format!("Container: {}", e));
                         }
                     }
+                    cleanup_sandbox_overlay(&sandbox.container_name);
                 }
             }
         }

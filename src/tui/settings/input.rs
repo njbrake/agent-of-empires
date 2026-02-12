@@ -490,6 +490,11 @@ impl SettingsView {
                     s.mount_ssh = None;
                 }
             }
+            FieldKey::MountToolConfigs => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.mount_tool_configs = None;
+                }
+            }
             FieldKey::CpuLimit => {
                 if let Some(ref mut s) = config.sandbox {
                     s.cpu_limit = None;

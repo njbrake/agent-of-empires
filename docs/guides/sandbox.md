@@ -68,6 +68,8 @@ environment = ["ANTHROPIC_API_KEY"]
 | `environment_values` | `{}` | Env vars with explicit values to inject (see below) |
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
+| `mount_ssh` | `true` | Mount `~/.ssh/` read-only into containers |
+| `mount_tool_configs` | `false` | Share host tool auth via overlay copies (see below) |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` (on host machine) or `"container"` (inside Docker) |
 
 ## Volume Mounts
@@ -93,6 +95,48 @@ environment = ["ANTHROPIC_API_KEY"]
 | `aoe-gemini-auth` | `/root/.gemini/` | Gemini CLI credentials |
 
 **Note:** Auth persists across containers. First session requires authentication, subsequent sessions reuse it.
+
+### Tool Config Overlays (`mount_tool_configs`)
+
+When `mount_tool_configs = true`, AOE shares your host tool credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported tools: Claude Code, Codex, Gemini, and OpenCode.
+
+Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates **overlay copies**:
+
+1. For each tool whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`), AOE copies credential files into a per-container overlay directory.
+2. Each tool's overlay is mounted read-write into the container at the expected path.
+3. The container can read credentials and write runtime state freely without affecting your host config.
+4. When the session is removed, the overlay directory is cleaned up automatically.
+
+If a tool's config directory doesn't exist on the host, that tool falls back to a named Docker volume (same behavior as when `mount_tool_configs` is disabled). Tools you don't use are simply skipped.
+
+```toml
+[sandbox]
+mount_tool_configs = true
+```
+
+**What gets copied:**
+
+- **Top-level files** from each tool's config directory (auth tokens, credentials, config files). Subdirectories are skipped by default to keep overlays small.
+- **Specific subdirectories** listed per tool (e.g. Claude Code's `plugins/` and `skills/` are copied recursively so extensions work inside the container).
+- **Seed files** where needed (e.g. Claude Code gets a minimal `hasCompletedOnboarding` flag to skip the first-run wizard).
+
+**Platform-specific authentication:**
+
+- **Linux:** Credential files (e.g. `.credentials.json`) live directly in the tool's config directory and are copied into the overlay automatically.
+- **macOS:** Some tools store credentials in the macOS Keychain rather than on disk. AOE extracts these at overlay creation time and writes them as files in the overlay so the container can authenticate. For example, Claude Code OAuth tokens are extracted from the Keychain and written as `.credentials.json`. If no Keychain entry is found (e.g. you authenticate via `ANTHROPIC_API_KEY`), the overlay still works - just pass your API key via the `environment` config.
+
+**Overlay refresh:** Overlays are refreshed every time a session starts (not just on first creation). If you re-authenticate on the host or update credentials, the next session start picks up the changes.
+
+**Overlay location:** Each tool's overlays live inside that tool's own config directory under a `sandbox-overlays/` subdirectory:
+
+```
+~/.claude/sandbox-overlays/<container-name>/   # Claude Code overlay
+~/.codex/sandbox-overlays/<container-name>/    # Codex overlay
+~/.gemini/sandbox-overlays/<container-name>/   # Gemini overlay
+~/.local/share/opencode/sandbox-overlays/<container-name>/  # OpenCode overlay
+```
+
+Deleting a tool's config directory (e.g. `rm -rf ~/.codex/`) removes everything related to that tool, including overlays. The `sandbox-overlays/` subdirectories are safe to delete manually if cleanup was missed (e.g. after a crash).
 
 ## Container Naming
 
