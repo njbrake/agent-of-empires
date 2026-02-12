@@ -61,6 +61,9 @@ pub struct AppStateConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_file_list_width: Option<u16>,
+
+    #[serde(default)]
+    pub has_seen_custom_instruction_warning: bool,
 }
 
 /// Session-related configuration defaults
@@ -238,6 +241,10 @@ pub struct SandboxConfig {
     /// Mount ~/.ssh into sandbox containers (default: false)
     #[serde(default)]
     pub mount_ssh: bool,
+
+    /// Custom instruction text appended to the agent's system prompt in sandboxed sessions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_instruction: Option<String>,
 }
 
 impl Default for SandboxConfig {
@@ -255,6 +262,7 @@ impl Default for SandboxConfig {
             default_terminal_mode: DefaultTerminalMode::default(),
             volume_ignores: Vec::new(),
             mount_ssh: false,
+            custom_instruction: None,
         }
     }
 }

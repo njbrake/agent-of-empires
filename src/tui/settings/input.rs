@@ -500,6 +500,11 @@ impl SettingsView {
                     s.memory_limit = None;
                 }
             }
+            FieldKey::CustomInstruction => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.custom_instruction = None;
+                }
+            }
             // Sound
             FieldKey::SoundEnabled => {
                 if let Some(ref mut s) = config.sound {

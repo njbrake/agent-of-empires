@@ -785,6 +785,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
         yolo_mode: None,
         extra_env_keys: None,
         extra_env_values: None,
+        custom_instruction: None,
     });
     instances.push(inst3);
 
@@ -866,6 +867,7 @@ fn test_group_has_containers() {
         yolo_mode: None,
         extra_env_keys: None,
         extra_env_values: None,
+        custom_instruction: None,
     });
 
     let mut inst2 = Instance::new("other-session", "/tmp/other");
@@ -1043,6 +1045,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
         yolo_mode: None,
         extra_env_keys: None,
         extra_env_values: None,
+        custom_instruction: None,
     });
 
     storage.save(&[inst1]).unwrap();

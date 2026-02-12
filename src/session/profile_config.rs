@@ -127,6 +127,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount_ssh: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -240,6 +243,9 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(mount_ssh) = source.mount_ssh {
         target.mount_ssh = mount_ssh;
+    }
+    if let Some(ref custom_instruction) = source.custom_instruction {
+        target.custom_instruction = Some(custom_instruction.clone());
     }
 }
 

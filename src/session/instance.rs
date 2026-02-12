@@ -166,6 +166,9 @@ pub struct SandboxInfo {
     /// Additional KEY=VALUE environment variables (session-specific overrides)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env_values: Option<std::collections::HashMap<String, String>>,
+    /// Custom instruction text to inject into agent launch command
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -469,7 +472,7 @@ impl Instance {
                 }
             }
             let sandbox = self.sandbox_info.as_ref().unwrap();
-            let tool_cmd = if self.is_yolo_mode() {
+            let mut tool_cmd = if self.is_yolo_mode() {
                 match self.tool.as_str() {
                     "claude" => "claude --dangerously-skip-permissions".to_string(),
                     "vibe" => "vibe --agent auto-approve".to_string(),
@@ -480,6 +483,20 @@ impl Instance {
             } else {
                 self.get_tool_command().to_string()
             };
+            // Inject custom instruction CLI flags for supported agents
+            if let Some(ref instruction) = sandbox.custom_instruction {
+                if !instruction.is_empty() {
+                    let escaped = shell_escape(instruction);
+                    tool_cmd = match self.tool.as_str() {
+                        "claude" => format!("{} --append-system-prompt {}", tool_cmd, escaped),
+                        "codex" => {
+                            format!("{} --config developer_instructions={}", tool_cmd, escaped)
+                        }
+                        _ => tool_cmd,
+                    };
+                }
+            }
+
             let env_args = build_docker_env_args(sandbox);
             let env_part = if env_args.is_empty() {
                 String::new()
@@ -952,6 +969,9 @@ pub const SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "g
 /// - `build_container_config()` for environment variables (OpenCode uses env var)
 pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "gemini"];
 
+/// Tools that support custom instruction injection via CLI flags.
+pub const INSTRUCTION_SUPPORTED_TOOLS: &[&str] = &["claude", "codex"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,6 +1032,7 @@ mod tests {
             yolo_mode: Some(true),
             extra_env_keys: None,
             extra_env_values: None,
+            custom_instruction: None,
         });
         assert!(inst.is_yolo_mode());
 
@@ -1041,6 +1062,7 @@ mod tests {
             yolo_mode: None,
             extra_env_keys: None,
             extra_env_values: None,
+            custom_instruction: None,
         });
         assert!(!inst.is_sandboxed());
     }
@@ -1057,6 +1079,7 @@ mod tests {
             yolo_mode: None,
             extra_env_keys: None,
             extra_env_values: None,
+            custom_instruction: None,
         });
         assert!(inst.is_sandboxed());
     }
@@ -1189,6 +1212,7 @@ mod tests {
             yolo_mode: Some(true),
             extra_env_keys: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
             extra_env_values: None,
+            custom_instruction: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();

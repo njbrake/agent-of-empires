@@ -61,6 +61,7 @@ pub enum FieldKey {
     ExtraVolumes,
     VolumeIgnores,
     MountSsh,
+    CustomInstruction,
     // Tmux
     StatusBar,
     Mouse,
@@ -399,6 +400,12 @@ fn build_sandbox_fields(
         global.sandbox.mount_ssh,
         sb.and_then(|s| s.mount_ssh),
     );
+    let (custom_instruction, o_ci) = resolve_optional(
+        scope,
+        global.sandbox.custom_instruction.clone(),
+        sb.and_then(|s| s.custom_instruction.clone()),
+        sb.map(|s| s.custom_instruction.is_some()).unwrap_or(false),
+    );
 
     let terminal_mode_selected = match default_terminal_mode {
         DefaultTerminalMode::Host => 0,
@@ -504,6 +511,14 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(mount_ssh),
             category: SettingsCategory::Sandbox,
             has_override: o8,
+        },
+        SettingField {
+            key: FieldKey::CustomInstruction,
+            label: "Custom Instruction",
+            description: "Custom instruction text appended to the agent's system prompt in sandboxed sessions (Claude, Codex only)",
+            value: FieldValue::OptionalText(custom_instruction),
+            category: SettingsCategory::Sandbox,
+            has_override: o_ci,
         },
     ]
 }
@@ -811,6 +826,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
             config.sandbox.memory_limit = v.clone();
         }
+        (FieldKey::CustomInstruction, FieldValue::OptionalText(v)) => {
+            config.sandbox.custom_instruction = v.clone();
+        }
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
             config.sandbox.default_terminal_mode = match selected {
                 0 => DefaultTerminalMode::Host,
@@ -1033,6 +1051,19 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                     .sandbox
                     .get_or_insert_with(SandboxConfigOverride::default);
                 s.memory_limit = v.clone();
+            }
+        }
+        (FieldKey::CustomInstruction, FieldValue::OptionalText(v)) => {
+            if *v == global.sandbox.custom_instruction {
+                if let Some(ref mut s) = config.sandbox {
+                    s.custom_instruction = None;
+                }
+            } else {
+                use crate::session::SandboxConfigOverride;
+                let s = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                s.custom_instruction = v.clone();
             }
         }
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {

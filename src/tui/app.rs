@@ -352,6 +352,41 @@ impl App {
         let tmux_session = instance.tmux_session()?;
 
         if !tmux_session.exists() {
+            // Show warning (once) if custom instruction is configured for an unsupported agent
+            if instance.is_sandboxed() {
+                let has_instruction = instance
+                    .sandbox_info
+                    .as_ref()
+                    .and_then(|s| s.custom_instruction.as_ref())
+                    .is_some_and(|i| !i.is_empty());
+
+                if has_instruction
+                    && !crate::session::INSTRUCTION_SUPPORTED_TOOLS
+                        .contains(&instance.tool.as_str())
+                {
+                    let config = load_config()?.unwrap_or_default();
+                    if !config.app_state.has_seen_custom_instruction_warning {
+                        self.home.info_dialog = Some(
+                            crate::tui::dialogs::InfoDialog::new(
+                                "Custom Instruction Not Supported",
+                                &format!(
+                                    "'{}' does not support custom instruction injection. The session will launch without the custom instruction.",
+                                    instance.tool
+                                ),
+                            ),
+                        );
+                        self.home.pending_attach_after_warning = Some(session_id.to_string());
+
+                        // Persist the "seen" flag so it only shows once
+                        let mut config = config;
+                        config.app_state.has_seen_custom_instruction_warning = true;
+                        save_config(&config)?;
+
+                        return Ok(());
+                    }
+                }
+            }
+
             // Get terminal size to pass to tmux session creation
             // This ensures the session starts at the correct size instead of 80x24 default
             let size = crate::terminal::get_size();
