@@ -69,7 +69,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
 | `mount_ssh` | `true` | Mount `~/.ssh/` read-only into containers |
-| `mount_tool_configs` | `false` | Share host tool auth via overlay copies (see below) |
+| `mount_agent_configs` | `false` | Share host agent auth via overlay copies (see below) |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` (on host machine) or `"container"` (inside Docker) |
 
 ## Volume Mounts
@@ -96,9 +96,9 @@ environment = ["ANTHROPIC_API_KEY"]
 
 **Note:** Auth persists across containers. First session requires authentication, subsequent sessions reuse it.
 
-### Tool Config Overlays (`mount_tool_configs`)
+### Agent Config Overlays (`mount_agent_configs`)
 
-When `mount_tool_configs = true`, AOE shares your host tool credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported tools: Claude Code, Codex, Gemini, and OpenCode.
+When `mount_agent_configs = true`, AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents: Claude Code, Codex, Gemini, and OpenCode.
 
 Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates **overlay copies**:
 
@@ -107,11 +107,11 @@ Rather than bind-mounting your actual host config directories (which would let c
 3. The container can read credentials and write runtime state freely without affecting your host config.
 4. When the session is removed, the overlay directory is cleaned up automatically.
 
-If a tool's config directory doesn't exist on the host, that tool falls back to a named Docker volume (same behavior as when `mount_tool_configs` is disabled). Tools you don't use are simply skipped.
+If an agent's config directory doesn't exist on the host, that agent falls back to a named Docker volume (same behavior as when `mount_agent_configs` is disabled). Agents you don't use are simply skipped.
 
 ```toml
 [sandbox]
-mount_tool_configs = true
+mount_agent_configs = true
 ```
 
 **What gets copied:**

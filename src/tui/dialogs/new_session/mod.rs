@@ -243,8 +243,8 @@ fn build_inherited_settings(sandbox: &SandboxConfig) -> Vec<(String, String)> {
     if sandbox.mount_ssh {
         settings.push(("Mount SSH".to_string(), "yes".to_string()));
     }
-    if sandbox.mount_tool_configs {
-        settings.push(("Mount Tool Configs".to_string(), "yes".to_string()));
+    if sandbox.mount_agent_configs {
+        settings.push(("Mount Agent Configs".to_string(), "yes".to_string()));
     }
     if !sandbox.extra_volumes.is_empty() {
         settings.push((

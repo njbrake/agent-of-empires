@@ -490,9 +490,9 @@ impl SettingsView {
                     s.mount_ssh = None;
                 }
             }
-            FieldKey::MountToolConfigs => {
+            FieldKey::MountAgentConfigs => {
                 if let Some(ref mut s) = config.sandbox {
-                    s.mount_tool_configs = None;
+                    s.mount_agent_configs = None;
                 }
             }
             FieldKey::CpuLimit => {

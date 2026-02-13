@@ -788,7 +788,7 @@ impl Instance {
             Err(_) => return,
         };
 
-        if !sandbox_config.mount_tool_configs {
+        if !sandbox_config.mount_agent_configs {
             return;
         }
 
@@ -963,10 +963,10 @@ impl Instance {
         let sandbox_config = match super::config::Config::load() {
             Ok(c) => {
                 tracing::debug!(
-                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, mount_tool_configs={}, volume_ignores={:?}",
+                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, mount_agent_configs={}, volume_ignores={:?}",
                     c.sandbox.extra_volumes,
                     c.sandbox.mount_ssh,
-                    c.sandbox.mount_tool_configs,
+                    c.sandbox.mount_agent_configs,
                     c.sandbox.volume_ignores
                 );
                 c.sandbox
@@ -1018,19 +1018,19 @@ impl Instance {
             });
         }
 
-        // When mount_tool_configs is enabled, create an overlay copy of each host tool config
-        // directory inside ~/.claude/sandbox-overlays/<container-name>/ and mount the overlay
-        // read-write. This shares auth credentials without exposing the host config to writes.
-        // Tool definitions are in TOOL_CONFIG_MOUNTS - add new tools there, not here.
+        // When mount_agent_configs is enabled, create an overlay copy of each host agent config
+        // directory and mount the overlay read-write. This shares auth credentials without
+        // exposing the host config to writes.
+        // Agent definitions are in TOOL_CONFIG_MOUNTS - add new agents there, not here.
         let mut named_volumes = Vec::new();
         let container_name = &self.sandbox_info.as_ref().unwrap().container_name;
 
         for mount in TOOL_CONFIG_MOUNTS {
             let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
 
-            if !sandbox_config.mount_tool_configs {
+            if !sandbox_config.mount_agent_configs {
                 tracing::debug!(
-                    "mount_tool_configs disabled, using named volume for {}",
+                    "mount_agent_configs disabled, using named volume for {}",
                     mount.host_rel
                 );
                 named_volumes.push((mount.named_volume.to_string(), container_path));
