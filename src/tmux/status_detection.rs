@@ -6,15 +6,21 @@ use super::utils::strip_ansi;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
+pub fn detect_status_from_content(
+    content: &str,
+    pane_title: &str,
+    tool: &str,
+    _fg_pid: Option<u32>,
+) -> Status {
     let content_lower = content.to_lowercase();
+    let title_lower = pane_title.to_lowercase();
 
     match tool {
         "claude" => detect_claude_status(content),
         "opencode" => detect_opencode_status(&content_lower),
         "vibe" => detect_vibe_status(&content_lower),
         "codex" => detect_codex_status(&content_lower),
-        "gemini" => detect_gemini_status(&content_lower),
+        "gemini" => detect_gemini_status(&content_lower, &title_lower),
         _ => detect_claude_status(content),
     }
 }
@@ -408,64 +414,24 @@ pub fn detect_codex_status(content: &str) -> Status {
     Status::Idle
 }
 
-pub fn detect_gemini_status(content: &str) -> Status {
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    let last_lines: String = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
-    // RUNNING: Gemini shows activity indicators
-    if last_lines_lower.contains("esc to interrupt")
-        || last_lines_lower.contains("ctrl+c to interrupt")
-    {
-        return Status::Running;
-    }
-
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
+// expect both to be in lowercase.
+pub fn detect_gemini_status(_content: &str, pane_title: &str) -> Status {
+    // Possible Titles:
+    // `◇  ready`
+    // `✋  action required`
+    // `⏲  working…`
+    // `✦  ${displayStatus}${activeSuffix}`
+    //
+    match pane_title {
+        _ if pane_title.starts_with("◇  ready") => Status::Idle,
+        _ if pane_title.starts_with("✋  action required") => Status::Waiting,
+        _ if pane_title.starts_with("⏲  working…") => Status::Running,
+        _ if pane_title.starts_with("✦  ") => Status::Running,
+        _ => {
+            tracing::warn!("unknown gemini title, treat as running");
+            Status::Running
         }
     }
-
-    // WAITING: Approval prompts
-    let approval_prompts = [
-        "(y/n)",
-        "[y/n]",
-        "allow",
-        "approve",
-        "execute?",
-        "enter to select",
-        "esc to cancel",
-    ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Input prompt
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
-            return Status::Waiting;
-        }
-    }
-
-    Status::Idle
 }
 
 #[cfg(test)]
@@ -561,7 +527,7 @@ mod tests {
     #[test]
     fn test_detect_status_from_content_falls_back_to_claude() {
         let content = "Processing ⠋";
-        let status = detect_status_from_content(content, "unknown_tool", None);
+        let status = detect_status_from_content(content, "", "unknown_tool", None);
         assert_eq!(status, Status::Running);
     }
 
@@ -709,32 +675,26 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_gemini_status_running() {
+    fn test_detect_gemini_status_from_title() {
         assert_eq!(
-            detect_gemini_status("processing request\nesc to interrupt"),
+            detect_gemini_status("random output text", "✋  action required (repo)"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_gemini_status("random output text", "◇  ready (repo)"),
+            Status::Idle
+        );
+        assert_eq!(
+            detect_gemini_status("random output text", "✦  working… (repo)"),
             Status::Running
         );
-        assert_eq!(detect_gemini_status("generating ⠋"), Status::Running);
-        assert_eq!(detect_gemini_status("working ⠹"), Status::Running);
-    }
-
-    #[test]
-    fn test_detect_gemini_status_waiting() {
         assert_eq!(
-            detect_gemini_status("run this command? (y/n)"),
-            Status::Waiting
+            detect_gemini_status("random output text", "⏲  working… (repo)"),
+            Status::Running
         );
-        assert_eq!(detect_gemini_status("approve changes?"), Status::Waiting);
         assert_eq!(
-            detect_gemini_status("execute this action? [y/n]"),
-            Status::Waiting
+            detect_gemini_status("random output text", "Gemini CLI (repo)"),
+            Status::Running
         );
-        assert_eq!(detect_gemini_status("ready\n>"), Status::Waiting);
-    }
-
-    #[test]
-    fn test_detect_gemini_status_idle() {
-        assert_eq!(detect_gemini_status("file saved"), Status::Idle);
-        assert_eq!(detect_gemini_status("random output text"), Status::Idle);
     }
 }
