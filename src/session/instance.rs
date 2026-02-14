@@ -18,12 +18,11 @@ fn default_true() -> bool {
     true
 }
 
-/// Base directory for sandbox tool-config overlays.
-/// Subdirectory name inside each tool's config dir for per-container overlays.
+/// Subdirectory name inside each agent's config dir for per-container overlays.
 const SANDBOX_OVERLAYS_SUBDIR: &str = "sandbox-overlays";
 
-/// Declarative definition of a tool's config directory for overlay mounting.
-struct ToolConfigMount {
+/// Declarative definition of an agent CLI's config directory for overlay mounting.
+struct AgentConfigMount {
     /// Path relative to home (e.g. ".claude").
     host_rel: &'static str,
     /// Path suffix relative to container home (e.g. ".claude").
@@ -46,10 +45,10 @@ struct ToolConfigMount {
     home_seed_files: &'static [(&'static str, &'static str)],
 }
 
-/// Tool config overlay definitions. Each entry describes one tool's config directory.
-/// To add a new tool, add an entry here - no code changes needed.
-const TOOL_CONFIG_MOUNTS: &[ToolConfigMount] = &[
-    ToolConfigMount {
+/// Agent config overlay definitions. Each entry describes one agent CLI's config directory.
+/// To add a new agent, add an entry here -- no code changes needed.
+const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
+    AgentConfigMount {
         host_rel: ".claude",
         container_suffix: ".claude",
         named_volume: CLAUDE_AUTH_VOLUME,
@@ -63,7 +62,7 @@ const TOOL_CONFIG_MOUNTS: &[ToolConfigMount] = &[
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
         home_seed_files: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
     },
-    ToolConfigMount {
+    AgentConfigMount {
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
         named_volume: OPENCODE_AUTH_VOLUME,
@@ -73,7 +72,7 @@ const TOOL_CONFIG_MOUNTS: &[ToolConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
     },
-    ToolConfigMount {
+    AgentConfigMount {
         host_rel: ".codex",
         container_suffix: ".codex",
         named_volume: CODEX_AUTH_VOLUME,
@@ -83,7 +82,7 @@ const TOOL_CONFIG_MOUNTS: &[ToolConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
     },
-    ToolConfigMount {
+    AgentConfigMount {
         host_rel: ".gemini",
         container_suffix: ".gemini",
         named_volume: GEMINI_AUTH_VOLUME,
@@ -95,10 +94,10 @@ const TOOL_CONFIG_MOUNTS: &[ToolConfigMount] = &[
     },
 ];
 
-/// Create an overlay copy of a tool config directory. Copies top-level files,
+/// Create an overlay copy of an agent config directory. Copies top-level files,
 /// recursively copies directories listed in `copy_dirs`, writes seed files,
 /// and skips entries in `skip_entries`.
-fn create_tool_config_overlay(
+fn sync_agent_config(
     host_dir: &Path,
     overlay_dir: &Path,
     skip_entries: &[&str],
@@ -195,13 +194,13 @@ fn extract_keychain_credential(_service: &str, _dest: &Path) -> Result<bool> {
     Ok(false)
 }
 
-/// Remove overlay directories for a given container name from all tool config dirs.
+/// Remove overlay directories for a given container name from all agent config dirs.
 /// Non-fatal on failure.
 pub fn cleanup_sandbox_overlay(container_name: &str) {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    for mount in TOOL_CONFIG_MOUNTS {
+    for mount in AGENT_CONFIG_MOUNTS {
         let overlay_dir = home
             .join(mount.host_rel)
             .join(SANDBOX_OVERLAYS_SUBDIR)
@@ -773,9 +772,9 @@ impl Instance {
         );
     }
 
-    /// Refresh overlay copies of host tool config directories so the container
+    /// Refresh overlay copies of host agent config directories so the container
     /// picks up any credential changes (e.g. re-auth) since it was created.
-    fn refresh_tool_config_overlays(&self) {
+    fn refresh_agent_configs(&self) {
         let Some(home) = dirs::home_dir() else {
             return;
         };
@@ -792,7 +791,7 @@ impl Instance {
             return;
         }
 
-        for mount in TOOL_CONFIG_MOUNTS {
+        for mount in AGENT_CONFIG_MOUNTS {
             let host_dir = home.join(mount.host_rel);
             if !host_dir.exists() {
                 continue;
@@ -803,7 +802,7 @@ impl Instance {
                 .join(SANDBOX_OVERLAYS_SUBDIR)
                 .join(&sandbox.container_name);
 
-            if let Err(e) = create_tool_config_overlay(
+            if let Err(e) = sync_agent_config(
                 &host_dir,
                 &overlay_dir,
                 mount.skip_entries,
@@ -842,12 +841,12 @@ impl Instance {
         let container = DockerContainer::new(&self.id, image);
 
         if container.is_running()? {
-            self.refresh_tool_config_overlays();
+            self.refresh_agent_configs();
             return Ok(());
         }
 
         if container.exists()? {
-            self.refresh_tool_config_overlays();
+            self.refresh_agent_configs();
             container.start()?;
             return Ok(());
         }
@@ -1021,11 +1020,11 @@ impl Instance {
         // When mount_agent_configs is enabled, create an overlay copy of each host agent config
         // directory and mount the overlay read-write. This shares auth credentials without
         // exposing the host config to writes.
-        // Agent definitions are in TOOL_CONFIG_MOUNTS - add new agents there, not here.
+        // Agent definitions are in AGENT_CONFIG_MOUNTS - add new agents there, not here.
         let mut named_volumes = Vec::new();
         let container_name = &self.sandbox_info.as_ref().unwrap().container_name;
 
-        for mount in TOOL_CONFIG_MOUNTS {
+        for mount in AGENT_CONFIG_MOUNTS {
             let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
 
             if !sandbox_config.mount_agent_configs {
@@ -1053,12 +1052,12 @@ impl Instance {
                 .join(container_name);
 
             tracing::debug!(
-                "Creating tool config overlay: {} -> {}",
+                "Creating agent config overlay: {} -> {}",
                 host_dir.display(),
                 overlay_dir.display()
             );
 
-            match create_tool_config_overlay(
+            match sync_agent_config(
                 &host_dir,
                 &overlay_dir,
                 mount.skip_entries,
@@ -1829,7 +1828,7 @@ mod tests {
         }
     }
 
-    mod overlay_tests {
+    mod sandbox_config_tests {
         use super::*;
         use std::fs;
         use tempfile::TempDir;
@@ -1850,7 +1849,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let overlay = dir.path().join("overlay");
 
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
 
             assert!(overlay.join("auth.json").exists());
             assert!(overlay.join("settings.json").exists());
@@ -1863,7 +1862,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let overlay = dir.path().join("overlay");
 
-            create_tool_config_overlay(&host, &overlay, &["auth.json"], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &["auth.json"], &[], &[]).unwrap();
 
             assert!(!overlay.join("auth.json").exists());
             assert!(overlay.join("settings.json").exists());
@@ -1876,7 +1875,7 @@ mod tests {
             let overlay = dir.path().join("overlay");
 
             let seeds = [("seed.json", r#"{"seeded":true}"#)];
-            create_tool_config_overlay(&host, &overlay, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &seeds, &[]).unwrap();
 
             let content = fs::read_to_string(overlay.join("seed.json")).unwrap();
             assert_eq!(content, r#"{"seeded":true}"#);
@@ -1889,7 +1888,7 @@ mod tests {
             let overlay = dir.path().join("overlay");
 
             let seeds = [("auth.json", "seed-content")];
-            create_tool_config_overlay(&host, &overlay, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &seeds, &[]).unwrap();
 
             let content = fs::read_to_string(overlay.join("auth.json")).unwrap();
             assert_eq!(content, r#"{"token":"abc"}"#);
@@ -1902,7 +1901,7 @@ mod tests {
             let overlay = dir.path().join("overlay");
 
             let seeds = [(".claude.json", r#"{"hasCompletedOnboarding":true}"#)];
-            create_tool_config_overlay(&host, &overlay, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &seeds, &[]).unwrap();
 
             let content = fs::read_to_string(overlay.join(".claude.json")).unwrap();
             assert_eq!(content, r#"{"hasCompletedOnboarding":true}"#);
@@ -1914,7 +1913,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let overlay = dir.path().join("deep").join("nested").join("overlay");
 
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
 
             assert!(overlay.exists());
             assert!(overlay.join("auth.json").exists());
@@ -1925,7 +1924,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let container_name = "aoe-sandbox-test1234";
 
-            // Create overlay dirs inside multiple tool config dirs.
+            // Create overlay dirs inside multiple agent config dirs.
             let claude_overlay = dir
                 .path()
                 .join(".claude")
@@ -1969,8 +1968,8 @@ mod tests {
         }
 
         #[test]
-        fn test_tool_config_mounts_have_valid_entries() {
-            for mount in TOOL_CONFIG_MOUNTS {
+        fn test_agent_config_mounts_have_valid_entries() {
+            for mount in AGENT_CONFIG_MOUNTS {
                 assert!(!mount.host_rel.is_empty());
                 assert!(!mount.container_suffix.is_empty());
                 assert!(!mount.named_volume.is_empty());
@@ -1994,7 +1993,7 @@ mod tests {
             let written = fs::read_to_string(overlay_base.join(".claude.json")).unwrap();
             assert_eq!(written, r#"{"hasCompletedOnboarding":true}"#);
 
-            // Verify it's NOT inside a tool config subdirectory.
+            // Verify it's NOT inside an agent config subdirectory.
             assert!(!overlay_base.join(".claude").join(".claude.json").exists());
         }
 
@@ -2004,7 +2003,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let overlay = dir.path().join("overlay");
 
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(overlay.join("auth.json")).unwrap(),
                 r#"{"token":"abc"}"#
@@ -2013,7 +2012,7 @@ mod tests {
             // Host file changes between sessions.
             fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
 
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(overlay.join("auth.json")).unwrap(),
                 r#"{"token":"refreshed"}"#
@@ -2026,13 +2025,13 @@ mod tests {
             let host = setup_host_dir(&dir);
             let overlay = dir.path().join("overlay");
 
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
             assert!(!overlay.join("new_cred.json").exists());
 
             // New credential file appears on host.
             fs::write(host.join("new_cred.json"), "new").unwrap();
 
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(overlay.join("new_cred.json")).unwrap(),
                 "new"
@@ -2045,13 +2044,13 @@ mod tests {
             let host = setup_host_dir(&dir);
             let overlay = dir.path().join("overlay");
 
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
 
             // Container writes a runtime file into the overlay.
             fs::write(overlay.join("runtime.log"), "container-state").unwrap();
 
             // Refresh from host.
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
 
             // Container-written file survives (host has no file with that name).
             assert_eq!(
@@ -2072,7 +2071,7 @@ mod tests {
             fs::write(plugins.join("lsp").join("gopls.wasm"), "binary").unwrap();
 
             let overlay = dir.path().join("overlay");
-            create_tool_config_overlay(&host, &overlay, &[], &[], &["plugins"]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &["plugins"]).unwrap();
 
             assert!(overlay.join("plugins").join("config.json").exists());
             assert!(overlay
@@ -2091,7 +2090,7 @@ mod tests {
 
             // "subdir" exists from setup_host_dir but is not in copy_dirs.
             let overlay = dir.path().join("overlay");
-            create_tool_config_overlay(&host, &overlay, &[], &[], &["nonexistent"]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &["nonexistent"]).unwrap();
 
             assert!(!overlay.join("subdir").exists());
             assert!(overlay.join("auth.json").exists());
@@ -2136,7 +2135,7 @@ mod tests {
             std::os::unix::fs::symlink(&real_dir, host.join("skills")).unwrap();
 
             let overlay = dir.path().join("overlay");
-            create_tool_config_overlay(&host, &overlay, &[], &[], &["skills"]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &["skills"]).unwrap();
 
             assert!(overlay.join("config.json").exists());
             #[cfg(unix)]
@@ -2162,7 +2161,7 @@ mod tests {
 
             let overlay = dir.path().join("overlay");
             // Should succeed despite the broken symlink.
-            create_tool_config_overlay(&host, &overlay, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &overlay, &[], &[], &[]).unwrap();
 
             assert_eq!(fs::read_to_string(overlay.join("good.json")).unwrap(), "ok");
             // Broken symlink is skipped, not copied.
