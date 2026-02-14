@@ -12,10 +12,10 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 
 ## File Locations
 
-| Platform | Global Config |
-|----------|--------------|
-| Linux | `$XDG_CONFIG_HOME/agent-of-empires/config.toml` (defaults to `~/.config/agent-of-empires/`) |
-| macOS | `~/.agent-of-empires/config.toml` |
+| Platform | Global Config                                                                               |
+| -------- | ------------------------------------------------------------------------------------------- |
+| Linux    | `$XDG_CONFIG_HOME/agent-of-empires/config.toml` (defaults to `~/.config/agent-of-empires/`) |
+| macOS    | `~/.agent-of-empires/config.toml`                                                           |
 
 ```
 ~/.agent-of-empires/
@@ -32,10 +32,10 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `AGENT_OF_EMPIRES_PROFILE` | Default profile to use |
-| `AGENT_OF_EMPIRES_DEBUG` | Enable debug logging (`1` to enable) |
+| Variable                   | Description                          |
+| -------------------------- | ------------------------------------ |
+| `AGENT_OF_EMPIRES_PROFILE` | Default profile to use               |
+| `AGENT_OF_EMPIRES_DEBUG`   | Enable debug logging (`1` to enable) |
 
 ## Session
 
@@ -44,8 +44,8 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 default_tool = "claude"   # claude, opencode, vibe, codex, gemini
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
+| Option         | Default       | Description                                                                                     |
+| -------------- | ------------- | ----------------------------------------------------------------------------------------------- |
 | `default_tool` | (auto-detect) | Default agent for new sessions. Falls back to the first available tool if unset or unavailable. |
 
 ## Worktree
@@ -60,22 +60,22 @@ show_branch_in_tui = true
 delete_branch_on_cleanup = false
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `false` | Enable worktree support for new sessions |
-| `path_template` | `../{repo-name}-worktrees/{branch}` | Path template for worktrees in regular repos |
-| `bare_repo_path_template` | `./{branch}` | Path template for worktrees in bare repos |
-| `auto_cleanup` | `true` | Prompt to remove worktree when deleting a session |
-| `show_branch_in_tui` | `true` | Display branch name in the TUI session list |
-| `delete_branch_on_cleanup` | `false` | Also delete the git branch when removing a worktree |
+| Option                     | Default                             | Description                                         |
+| -------------------------- | ----------------------------------- | --------------------------------------------------- |
+| `enabled`                  | `false`                             | Enable worktree support for new sessions            |
+| `path_template`            | `../{repo-name}-worktrees/{branch}` | Path template for worktrees in regular repos        |
+| `bare_repo_path_template`  | `./{branch}`                        | Path template for worktrees in bare repos           |
+| `auto_cleanup`             | `true`                              | Prompt to remove worktree when deleting a session   |
+| `show_branch_in_tui`       | `true`                              | Display branch name in the TUI session list         |
+| `delete_branch_on_cleanup` | `false`                             | Also delete the git branch when removing a worktree |
 
 **Template variables:**
 
-| Variable | Description |
-|----------|-------------|
-| `{repo-name}` | Repository folder name |
-| `{branch}` | Branch name (slashes converted to hyphens) |
-| `{session-id}` | First 8 characters of session UUID |
+| Variable       | Description                                |
+| -------------- | ------------------------------------------ |
+| `{repo-name}`  | Repository folder name                     |
+| `{branch}`     | Branch name (slashes converted to hyphens) |
+| `{session-id}` | First 8 characters of session UUID         |
 
 ## Sandbox (Docker)
 
@@ -94,19 +94,19 @@ auto_cleanup = true
 default_terminal_mode = "host"
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled_by_default` | `false` | Auto-enable sandbox for new sessions |
-| `yolo_mode_default` | `false` | Skip agent permission prompts in sandbox |
-| `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image for containers |
-| `cpu_limit` | (none) | CPU limit (e.g., `"4"`) |
-| `memory_limit` | (none) | Memory limit (e.g., `"8g"`) |
-| `environment` | `["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"]` | Host env var names to pass through |
-| `environment_values` | `{}` | Env vars with explicit values (see below) |
-| `extra_volumes` | `[]` | Additional Docker volume mounts |
-| `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
-| `auto_cleanup` | `true` | Remove containers when sessions are deleted |
-| `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` or `"container"` |
+| Option                  | Default                                            | Description                                                         |
+| ----------------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
+| `enabled_by_default`    | `false`                                            | Auto-enable sandbox for new sessions                                |
+| `yolo_mode_default`     | `false`                                            | Skip agent permission prompts in sandbox                            |
+| `default_image`         | `ghcr.io/njbrake/aoe-sandbox:latest`               | Docker image for containers                                         |
+| `cpu_limit`             | (none)                                             | CPU limit (e.g., `"4"`)                                             |
+| `memory_limit`          | (none)                                             | Memory limit (e.g., `"8g"`)                                         |
+| `environment`           | `["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"]` | Host env var names to pass through                                  |
+| `environment_values`    | `{}`                                               | Env vars with explicit values (see below)                           |
+| `extra_volumes`         | `[]`                                               | Additional Docker volume mounts                                     |
+| `volume_ignores`        | `[]`                                               | Directories to exclude from the project mount via anonymous volumes |
+| `auto_cleanup`          | `true`                                             | Remove containers when sessions are deleted                         |
+| `default_terminal_mode` | `"host"`                                           | Paired terminal location: `"host"` or `"container"`                 |
 
 ### environment vs environment_values
 
@@ -121,10 +121,10 @@ status_bar = "auto"
 mouse = "auto"
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
+| Option       | Default  | Description                                                                                |
+| ------------ | -------- | ------------------------------------------------------------------------------------------ |
 | `status_bar` | `"auto"` | `"auto"`: apply if no `~/.tmux.conf`; `"enabled"`: always apply; `"disabled"`: never apply |
-| `mouse` | `"auto"` | Same modes as `status_bar`. Controls mouse support in aoe tmux sessions. |
+| `mouse`      | `"auto"` | Same modes as `status_bar`. Controls mouse support in aoe tmux sessions.                   |
 
 ## Diff
 
@@ -134,10 +134,10 @@ default_branch = "main"
 context_lines = 3
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `default_branch` | (auto-detect) | Base branch for diffs |
-| `context_lines` | `3` | Lines of context around changes |
+| Option           | Default       | Description                     |
+| ---------------- | ------------- | ------------------------------- |
+| `default_branch` | (auto-detect) | Base branch for diffs           |
+| `context_lines`  | `3`           | Lines of context around changes |
 
 ## Updates
 
@@ -149,12 +149,12 @@ check_interval_hours = 24
 notify_in_cli = true
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `check_enabled` | `true` | Check for new versions |
-| `auto_update` | `false` | Automatically install updates |
-| `check_interval_hours` | `24` | Hours between update checks |
-| `notify_in_cli` | `true` | Show update notifications in CLI output |
+| Option                 | Default | Description                             |
+| ---------------------- | ------- | --------------------------------------- |
+| `check_enabled`        | `true`  | Check for new versions                  |
+| `auto_update`          | `false` | Automatically install updates           |
+| `check_interval_hours` | `24`    | Hours between update checks             |
+| `notify_in_cli`        | `true`  | Show update notifications in CLI output |
 
 ## Claude
 
@@ -163,9 +163,9 @@ notify_in_cli = true
 config_dir = "~/.claude"
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `config_dir` | (none) | Custom Claude Code config directory. Supports `~/` prefix. |
+| Option       | Default | Description                                                |
+| ------------ | ------- | ---------------------------------------------------------- |
+| `config_dir` | (none)  | Custom Claude Code config directory. Supports `~/` prefix. |
 
 ## Profiles
 
@@ -192,10 +192,10 @@ Profile environment variables work identically to their sandbox counterparts, wi
 
 ### Table of Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `environment` | (inherited from sandbox) | Host env var names to pass through. Adds to sandbox environment, overrides on conflicts. |
-| `environment_values` | (inherited from sandbox) | Env vars with explicit values. Adds to sandbox values, overrides on conflicts. |
+| Option               | Default                  | Description                                                                              |
+| -------------------- | ------------------------ | ---------------------------------------------------------------------------------------- |
+| `environment`        | (inherited from sandbox) | Host env var names to pass through. Adds to sandbox environment, overrides on conflicts. |
+| `environment_values` | (inherited from sandbox) | Env vars with explicit values. Adds to sandbox values, overrides on conflicts.           |
 
 ### Merge Behavior and Precedence
 
@@ -263,14 +263,6 @@ Configure a profile to use a custom or alternative API endpoint with different m
 
 ```toml
 # ~/.agent-of-empires/profiles/custom-provider/config.toml
-environment = [
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL"
-]
-
 [environment_values]
 ANTHROPIC_BASE_URL = "https://api.example.com/api/anthropic"
 ANTHROPIC_AUTH_TOKEN = "$MY_PROVIDER_TOKEN"
