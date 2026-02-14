@@ -11,6 +11,7 @@ use crate::session::{
     repo_config_to_profile, save_config, save_profile_config, save_repo_config, Config,
     ProfileConfig, RepoConfig,
 };
+use crate::tui::dialogs::CustomInstructionDialog;
 
 pub use fields::{FieldKey, FieldValue, SettingField, SettingsCategory};
 pub use input::SettingsAction;
@@ -87,6 +88,9 @@ pub struct SettingsView {
     /// State for list editing
     pub(super) list_edit_state: Option<ListEditState>,
 
+    /// Custom instruction editor dialog
+    pub(super) custom_instruction_dialog: Option<CustomInstructionDialog>,
+
     /// Scroll offset for the fields panel (in lines)
     pub(super) fields_scroll_offset: u16,
 
@@ -144,6 +148,7 @@ impl SettingsView {
             profile_config,
             editing_input: None,
             list_edit_state: None,
+            custom_instruction_dialog: None,
             fields_scroll_offset: 0,
             fields_viewport_height: 0,
             has_changes: false,
@@ -280,8 +285,10 @@ impl SettingsView {
         self.has_changes
     }
 
-    /// Check if currently in an editing state (text field, list, etc.)
+    /// Check if currently in an editing state (text field, list, dialog, etc.)
     pub fn is_editing(&self) -> bool {
-        self.editing_input.is_some() || self.list_edit_state.is_some()
+        self.editing_input.is_some()
+            || self.list_edit_state.is_some()
+            || self.custom_instruction_dialog.is_some()
     }
 }
