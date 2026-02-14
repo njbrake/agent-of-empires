@@ -32,7 +32,7 @@ serde_json = "1.0"
 toml = "0.8"
 
 # File watching
-notify = "7.0"
+notify = "8.2"
 
 # PTY handling
 portable-pty = "0.8"
