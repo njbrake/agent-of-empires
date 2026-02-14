@@ -12,7 +12,7 @@ on:
 
 jobs:
   check-template:
-    if: github.event_name == 'pull_request_target'
+    if: github.event_name == 'pull_request_target' && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -116,6 +116,12 @@ jobs:
             for (const pr of prs) {
               // Only process pull requests (not issues)
               if (!pr.pull_request) continue;
+
+              // Skip Dependabot PRs
+              if (pr.user?.login === 'dependabot[bot]') {
+                console.log(`Skipping Dependabot PR #${pr.number}`);
+                continue;
+              }
 
               // Check when the label was added by looking at timeline events
               const { data: events } = await github.rest.issues.listEventsForTimeline({
