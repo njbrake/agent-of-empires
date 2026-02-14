@@ -573,10 +573,13 @@ mod tests {
         // Initial commit on default branch (master from git init)
         commit_file(&repo, "shared.txt", "shared content\n", "Initial commit");
 
-        // Create "main" and "feature" branches at this point
+        // Create "main" (if not already the default) and "feature" branches at this point
         {
             let head = repo.head().unwrap().peel_to_commit().unwrap();
-            repo.branch("main", &head, false).unwrap();
+            // git init may already create "main" as default branch
+            if repo.find_branch("main", git2::BranchType::Local).is_err() {
+                repo.branch("main", &head, false).unwrap();
+            }
             repo.branch("feature", &head, false).unwrap();
         }
 
@@ -659,10 +662,12 @@ mod tests {
         // Initial commit
         commit_file(&repo, "shared.txt", "shared\n", "Initial commit");
 
-        // Create main branch and feature branch
+        // Ensure main branch exists (git init may already create it)
         {
             let head = repo.head().unwrap().peel_to_commit().unwrap();
-            repo.branch("main", &head, false).unwrap();
+            if repo.find_branch("main", git2::BranchType::Local).is_err() {
+                repo.branch("main", &head, false).unwrap();
+            }
         }
 
         // Add a commit to main

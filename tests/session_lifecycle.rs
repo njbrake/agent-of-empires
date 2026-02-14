@@ -19,7 +19,7 @@ fn test_create_session_persists() -> Result<()> {
     let _temp = setup_temp_home();
 
     let storage = Storage::new("default")?;
-    let instance = Instance::new("My Project", "/home/user/project");
+    let instance = Instance::new("My Project", "/home/user/project", "default");
     let group_tree = GroupTree::new_with_groups(std::slice::from_ref(&instance), &[]);
 
     storage.save_with_groups(std::slice::from_ref(&instance), &group_tree)?;
@@ -40,9 +40,9 @@ fn test_create_multiple_sessions() -> Result<()> {
 
     let storage = Storage::new("default")?;
     let instances = vec![
-        Instance::new("Project A", "/path/a"),
-        Instance::new("Project B", "/path/b"),
-        Instance::new("Project C", "/path/c"),
+        Instance::new("Project A", "/path/a", "default"),
+        Instance::new("Project B", "/path/b", "default"),
+        Instance::new("Project C", "/path/c", "default"),
     ];
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
 
@@ -63,8 +63,8 @@ fn test_remove_session_by_id() -> Result<()> {
     let _temp = setup_temp_home();
 
     let storage = Storage::new("default")?;
-    let inst_a = Instance::new("Keep Me", "/path/keep");
-    let inst_b = Instance::new("Remove Me", "/path/remove");
+    let inst_a = Instance::new("Keep Me", "/path/keep", "default");
+    let inst_b = Instance::new("Remove Me", "/path/remove", "default");
     let remove_id = inst_b.id.clone();
 
     let instances = vec![inst_a, inst_b];
@@ -90,7 +90,7 @@ fn test_create_session_with_group() -> Result<()> {
     let _temp = setup_temp_home();
 
     let storage = Storage::new("default")?;
-    let mut instance = Instance::new("Grouped Session", "/path/grouped");
+    let mut instance = Instance::new("Grouped Session", "/path/grouped", "default");
     instance.group_path = "work".to_string();
 
     let mut group_tree = GroupTree::new_with_groups(std::slice::from_ref(&instance), &[]);
@@ -116,11 +116,11 @@ fn test_session_backup_created() -> Result<()> {
     let storage = Storage::new("default")?;
 
     // First save
-    let instances = vec![Instance::new("First", "/path/first")];
+    let instances = vec![Instance::new("First", "/path/first", "default")];
     storage.save(&instances)?;
 
     // Second save triggers backup of the first
-    let instances2 = vec![Instance::new("Second", "/path/second")];
+    let instances2 = vec![Instance::new("Second", "/path/second", "default")];
     storage.save(&instances2)?;
 
     // Verify backup exists by checking the profile directory
@@ -143,7 +143,7 @@ fn test_storage_defaults_to_default_profile() -> Result<()> {
     assert_eq!(storage.profile(), "default");
 
     // Verify it can save and load
-    let instances = vec![Instance::new("Test", "/path/test")];
+    let instances = vec![Instance::new("Test", "/path/test", "default")];
     storage.save(&instances)?;
     let loaded = storage.load()?;
     assert_eq!(loaded.len(), 1);

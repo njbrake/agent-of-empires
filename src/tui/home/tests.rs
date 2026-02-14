@@ -50,6 +50,7 @@ fn create_test_env_with_sessions(count: usize) -> TestEnv {
         instances.push(Instance::new(
             &format!("session{}", i),
             &format!("/tmp/{}", i),
+            "default",
         ));
     }
     storage.save(&instances).unwrap();
@@ -71,14 +72,14 @@ fn create_test_env_with_groups() -> TestEnv {
     let storage = Storage::new("test").unwrap();
     let mut instances = Vec::new();
 
-    let inst1 = Instance::new("ungrouped", "/tmp/u");
+    let inst1 = Instance::new("ungrouped", "/tmp/u", "default");
     instances.push(inst1);
 
-    let mut inst2 = Instance::new("work-project", "/tmp/work");
+    let mut inst2 = Instance::new("work-project", "/tmp/work", "default");
     inst2.group_path = "work".to_string();
     instances.push(inst2);
 
-    let mut inst3 = Instance::new("personal-project", "/tmp/personal");
+    let mut inst3 = Instance::new("personal-project", "/tmp/personal", "default");
     inst3.group_path = "personal".to_string();
     instances.push(inst3);
 
@@ -766,15 +767,15 @@ fn create_test_env_with_group_sessions() -> TestEnv {
     let mut instances = Vec::new();
 
     // Ungrouped session
-    let inst1 = Instance::new("ungrouped", "/tmp/u");
+    let inst1 = Instance::new("ungrouped", "/tmp/u", "default");
     instances.push(inst1);
 
     // Sessions in "work" group
-    let mut inst2 = Instance::new("work-session-1", "/tmp/work1");
+    let mut inst2 = Instance::new("work-session-1", "/tmp/work1", "default");
     inst2.group_path = "work".to_string();
     instances.push(inst2);
 
-    let mut inst3 = Instance::new("work-session-2", "/tmp/work2");
+    let mut inst3 = Instance::new("work-session-2", "/tmp/work2", "default");
     inst3.group_path = "work".to_string();
     inst3.sandbox_info = Some(SandboxInfo {
         enabled: true,
@@ -789,7 +790,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
     instances.push(inst3);
 
     // Session in nested group
-    let mut inst4 = Instance::new("work-nested", "/tmp/work/nested");
+    let mut inst4 = Instance::new("work-nested", "/tmp/work/nested", "default");
     inst4.group_path = "work/projects".to_string();
     instances.push(inst4);
 
@@ -818,7 +819,7 @@ fn test_group_has_managed_worktrees() {
     setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
 
-    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    let mut inst1 = Instance::new("work-session", "/tmp/work", "default");
     inst1.group_path = "work".to_string();
     inst1.worktree_info = Some(WorktreeInfo {
         branch: "feature-branch".to_string(),
@@ -828,7 +829,7 @@ fn test_group_has_managed_worktrees() {
         cleanup_on_delete: true,
     });
 
-    let mut inst2 = Instance::new("other-session", "/tmp/other");
+    let mut inst2 = Instance::new("other-session", "/tmp/other", "default");
     inst2.group_path = "other".to_string();
 
     storage.save(&[inst1, inst2]).unwrap();
@@ -855,7 +856,7 @@ fn test_group_has_containers() {
     setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
 
-    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    let mut inst1 = Instance::new("work-session", "/tmp/work", "default");
     inst1.group_path = "work".to_string();
     inst1.sandbox_info = Some(SandboxInfo {
         enabled: true,
@@ -868,7 +869,7 @@ fn test_group_has_containers() {
         extra_env_values: None,
     });
 
-    let mut inst2 = Instance::new("other-session", "/tmp/other");
+    let mut inst2 = Instance::new("other-session", "/tmp/other", "default");
     inst2.group_path = "other".to_string();
 
     storage.save(&[inst1, inst2]).unwrap();
@@ -982,7 +983,7 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
     setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
 
-    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    let mut inst1 = Instance::new("work-session", "/tmp/work", "default");
     inst1.group_path = "work".to_string();
     inst1.worktree_info = Some(WorktreeInfo {
         branch: "feature".to_string(),
@@ -1032,7 +1033,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
     setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
 
-    let mut inst1 = Instance::new("work-session", "/tmp/work");
+    let mut inst1 = Instance::new("work-session", "/tmp/work", "default");
     inst1.group_path = "work".to_string();
     inst1.sandbox_info = Some(SandboxInfo {
         enabled: true,

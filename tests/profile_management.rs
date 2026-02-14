@@ -95,7 +95,7 @@ fn test_profile_session_isolation() -> Result<()> {
 
     // Save a session in profile alpha
     let storage_a = Storage::new("alpha")?;
-    let instance = Instance::new("Alpha Session", "/path/alpha");
+    let instance = Instance::new("Alpha Session", "/path/alpha", "default");
     storage_a.save(&[instance])?;
 
     // Load from profile beta - should be empty

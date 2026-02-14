@@ -155,7 +155,7 @@ mod tests {
     use std::time::Duration;
 
     fn create_test_instance() -> Instance {
-        Instance::new("Test Session", "/tmp/test-project")
+        Instance::new("Test Session", "/tmp/test-project", "default")
     }
 
     #[test]

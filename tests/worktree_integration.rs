@@ -42,7 +42,7 @@ fn test_add_session_with_worktree_flag() {
         .create_worktree("test-feature", &wt_path, false)
         .unwrap();
 
-    let mut instance = Instance::new("Test Session", wt_path.to_str().unwrap());
+    let mut instance = Instance::new("Test Session", wt_path.to_str().unwrap(), "default");
     instance.worktree_info = Some(WorktreeInfo {
         branch: "test-feature".to_string(),
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
@@ -62,7 +62,7 @@ fn test_add_session_with_worktree_flag() {
 fn test_session_has_worktree_info_after_creation() {
     let (repo_dir, _repo, _config_dir) = setup_test_environment();
 
-    let mut instance = Instance::new("Test Session", repo_dir.path().to_str().unwrap());
+    let mut instance = Instance::new("Test Session", repo_dir.path().to_str().unwrap(), "default");
     let now = Utc::now();
 
     instance.worktree_info = Some(WorktreeInfo {
@@ -91,7 +91,7 @@ fn test_worktree_info_persists_across_save_load() {
 
     let storage = Storage::new("worktree-test-profile").unwrap();
 
-    let mut instance = Instance::new("Worktree Session", "/tmp/test");
+    let mut instance = Instance::new("Worktree Session", "/tmp/test", "default");
     instance.worktree_info = Some(WorktreeInfo {
         branch: "feature-branch".to_string(),
         main_repo_path: "/original/repo".to_string(),
@@ -114,7 +114,7 @@ fn test_worktree_info_persists_across_save_load() {
 
 #[test]
 fn test_session_without_worktree_has_none_worktree_info() {
-    let instance = Instance::new("Regular Session", "/tmp/project");
+    let instance = Instance::new("Regular Session", "/tmp/project", "default");
 
     assert!(instance.worktree_info.is_none());
 }
@@ -159,7 +159,7 @@ fn test_worktree_cleanup_on_session_removal() {
         .unwrap();
     assert!(wt_path.exists());
 
-    let mut instance = Instance::new("Cleanup Session", wt_path.to_str().unwrap());
+    let mut instance = Instance::new("Cleanup Session", wt_path.to_str().unwrap(), "default");
     instance.worktree_info = Some(WorktreeInfo {
         branch: "test-feature".to_string(),
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
@@ -186,7 +186,7 @@ fn test_worktree_preserved_when_keep_flag_used() {
         .unwrap();
     assert!(wt_path.exists());
 
-    let mut instance = Instance::new("Keep Session", wt_path.to_str().unwrap());
+    let mut instance = Instance::new("Keep Session", wt_path.to_str().unwrap(), "default");
     instance.worktree_info = Some(WorktreeInfo {
         branch: "test-feature".to_string(),
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),

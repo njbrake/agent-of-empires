@@ -113,8 +113,8 @@ mod tests {
         let storage = Storage::new("test-profile")?;
 
         let instances = vec![
-            Instance::new("test1", "/tmp/test1"),
-            Instance::new("test2", "/tmp/test2"),
+            Instance::new("test1", "/tmp/test1", "default"),
+            Instance::new("test2", "/tmp/test2", "default"),
         ];
 
         storage.save(&instances)?;
@@ -204,11 +204,11 @@ mod tests {
         let storage = Storage::new("test-backup")?;
 
         // First save
-        let instances = vec![Instance::new("test1", "/tmp/test1")];
+        let instances = vec![Instance::new("test1", "/tmp/test1", "default")];
         storage.save(&instances)?;
 
         // Second save (should create backup)
-        let instances2 = vec![Instance::new("test2", "/tmp/test2")];
+        let instances2 = vec![Instance::new("test2", "/tmp/test2", "default")];
         storage.save(&instances2)?;
 
         // Check backup exists
@@ -243,7 +243,7 @@ mod tests {
 
         let storage = Storage::new("test-no-groups")?;
 
-        let instances = vec![Instance::new("test", "/tmp/test")];
+        let instances = vec![Instance::new("test", "/tmp/test", "default")];
         storage.save(&instances)?;
 
         let (loaded_instances, loaded_groups) = storage.load_with_groups()?;
@@ -260,7 +260,7 @@ mod tests {
 
         let storage = Storage::new("test-with-groups")?;
 
-        let mut instances = vec![Instance::new("test", "/tmp/test")];
+        let mut instances = vec![Instance::new("test", "/tmp/test", "default")];
         instances[0].group_path = "work/projects".to_string();
 
         let groups = vec![Group::new("projects", "work/projects")];
@@ -299,7 +299,7 @@ mod tests {
 
         let storage = Storage::new("test-fields")?;
 
-        let mut instance = Instance::new("Test Project", "/home/user/project");
+        let mut instance = Instance::new("Test Project", "/home/user/project", "default");
         instance.tool = "opencode".to_string();
         instance.command = "opencode --config test".to_string();
         instance.group_path = "work/clients".to_string();
@@ -344,7 +344,7 @@ mod tests {
         let storage = Storage::new("test-empty-groups")?;
 
         // Save sessions
-        storage.save(&[Instance::new("test", "/tmp/test")])?;
+        storage.save(&[Instance::new("test", "/tmp/test", "default")])?;
 
         // Create empty groups file
         let groups_path = storage.sessions_path.with_file_name("groups.json");

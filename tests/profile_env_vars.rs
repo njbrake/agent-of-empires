@@ -7,7 +7,6 @@ use agent_of_empires::session::Storage;
 use anyhow::Result;
 use serial_test::serial;
 use std::collections::HashMap;
-use std::fs;
 
 fn setup_temp_home() -> tempfile::TempDir {
     let temp = tempfile::TempDir::new().unwrap();
@@ -102,7 +101,7 @@ fn test_session_persistence_with_sandbox_info() -> Result<()> {
     let storage = Storage::new("default")?;
 
     // Create session with sandbox config
-    let mut inst = agent_of_empires::session::Instance::new("Sandbox Test", "/tmp/test");
+    let mut inst = agent_of_empires::session::Instance::new("Sandbox Test", "/tmp/test", "default");
     inst.sandbox_info = Some(agent_of_empires::session::SandboxInfo {
         enabled: true,
         container_id: None,

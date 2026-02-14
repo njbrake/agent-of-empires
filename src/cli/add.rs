@@ -152,7 +152,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         civilizations::generate_random_title(&existing_titles)
     };
 
-    let mut instance = Instance::new(&final_title, path.to_str().unwrap_or(""));
+    let mut instance = Instance::new(&final_title, path.to_str().unwrap_or(""), profile);
 
     if let Some(group) = &group_path {
         instance.group_path = group.trim().to_string();
