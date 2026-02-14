@@ -54,7 +54,7 @@ uuid = { version = "1.11", features = ["v4"] }
 rand = "0.8"
 
 # Directory utilities
-dirs = "5.0"
+dirs = "6.0"
 
 # Logging
 tracing = "0.1"
