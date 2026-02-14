@@ -79,7 +79,7 @@ unicode-width = "0.2"
 regex = "1.10"
 
 # Git operations
-git2 = { version = "0.19", features = ["vendored-openssl"] }
+git2 = { version = "0.20", features = ["vendored-openssl"] }
 
 # Diff computation
 similar = "2.6"
