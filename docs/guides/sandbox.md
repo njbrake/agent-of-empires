@@ -69,7 +69,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
 | `mount_ssh` | `true` | Mount `~/.ssh/` read-only into containers |
-| `mount_agent_configs` | `false` | Share host agent auth via overlay copies (see below) |
+| `mount_agent_configs` | `false` | Share host agent auth via sandbox copies (see below) |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` (on host machine) or `"container"` (inside Docker) |
 
 ## Volume Mounts
@@ -96,16 +96,17 @@ environment = ["ANTHROPIC_API_KEY"]
 
 **Note:** Auth persists across containers. First session requires authentication, subsequent sessions reuse it.
 
-### Agent Config Overlays (`mount_agent_configs`)
+### Shared Agent Config Directories (`mount_agent_configs`)
 
 When `mount_agent_configs = true`, AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents: Claude Code, Codex, Gemini, and OpenCode.
 
-Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates **overlay copies**:
+Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates a **shared sandbox directory** per agent:
 
-1. For each tool whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`), AOE copies credential files into a per-container overlay directory.
-2. Each tool's overlay is mounted read-write into the container at the expected path.
-3. The container can read credentials and write runtime state freely without affecting your host config.
-4. When the session is removed, the overlay directory is cleaned up automatically.
+1. For each agent whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`), AOE syncs credential files into a shared sandbox directory.
+2. The sandbox directory is mounted read-write into **all** containers that use that agent.
+3. Containers can read credentials and write runtime state freely without affecting your host config.
+4. In-container changes (e.g. permission approvals, settings tweaks) persist across sessions since all containers share the same directory.
+5. Sandbox directories are **never automatically deleted** -- not even when you remove all sandboxed sessions. This is intentional: if you later create a new sandbox, your accumulated state (permission approvals, settings) is still there so you don't have to set things up again.
 
 If an agent's config directory doesn't exist on the host, that agent falls back to a named Docker volume (same behavior as when `mount_agent_configs` is disabled). Agents you don't use are simply skipped.
 
@@ -114,29 +115,29 @@ If an agent's config directory doesn't exist on the host, that agent falls back 
 mount_agent_configs = true
 ```
 
-**What gets copied:**
+**What gets synced:**
 
-- **Top-level files** from each tool's config directory (auth tokens, credentials, config files). Subdirectories are skipped by default to keep overlays small.
-- **Specific subdirectories** listed per tool (e.g. Claude Code's `plugins/` and `skills/` are copied recursively so extensions work inside the container).
-- **Seed files** where needed (e.g. Claude Code gets a minimal `hasCompletedOnboarding` flag to skip the first-run wizard).
+- **Top-level files** from each agent's config directory (auth tokens, credentials, config files). Subdirectories are skipped by default to keep the sandbox dir small.
+- **Specific subdirectories** listed per agent (e.g. Claude Code's `plugins/` and `skills/` are copied recursively so extensions work inside the container).
+- **Seed files** (write-once) where needed (e.g. Claude Code gets a minimal `hasCompletedOnboarding` flag to skip the first-run wizard). Seed files are only written if they don't already exist, so any changes made inside the container are preserved.
 
 **Platform-specific authentication:**
 
-- **Linux:** Credential files (e.g. `.credentials.json`) live directly in the tool's config directory and are copied into the overlay automatically.
-- **macOS:** Some tools store credentials in the macOS Keychain rather than on disk. AOE extracts these at overlay creation time and writes them as files in the overlay so the container can authenticate. For example, Claude Code OAuth tokens are extracted from the Keychain and written as `.credentials.json`. If no Keychain entry is found (e.g. you authenticate via `ANTHROPIC_API_KEY`), the overlay still works - just pass your API key via the `environment` config.
+- **Linux:** Credential files (e.g. `.credentials.json`) live directly in the agent's config directory and are synced automatically.
+- **macOS:** Some agents store credentials in the macOS Keychain rather than on disk. AOE extracts these at sync time and writes them as files in the sandbox directory so the container can authenticate. For example, Claude Code OAuth tokens are extracted from the Keychain and written as `.credentials.json`. If no Keychain entry is found (e.g. you authenticate via `ANTHROPIC_API_KEY`), the sandbox dir still works -- just pass your API key via the `environment` config.
 
-**Overlay refresh:** Overlays are refreshed every time a session starts (not just on first creation). If you re-authenticate on the host or update credentials, the next session start picks up the changes.
+**Credential refresh:** Host credentials are re-synced every time a session starts (not just on first creation). If you re-authenticate on the host or update credentials, the next session start picks up the changes. Container-specific state (permission approvals, runtime config) is not overwritten during refresh.
 
-**Overlay location:** Each tool's overlays live inside that tool's own config directory under a `sandbox-overlays/` subdirectory:
+**Sandbox directory location:** Each agent's shared sandbox directory lives inside that agent's own config directory:
 
 ```
-~/.claude/sandbox-overlays/<container-name>/   # Claude Code overlay
-~/.codex/sandbox-overlays/<container-name>/    # Codex overlay
-~/.gemini/sandbox-overlays/<container-name>/   # Gemini overlay
-~/.local/share/opencode/sandbox-overlays/<container-name>/  # OpenCode overlay
+~/.claude/sandbox/                    # Claude Code (shared by all containers)
+~/.codex/sandbox/                     # Codex (shared by all containers)
+~/.gemini/sandbox/                    # Gemini (shared by all containers)
+~/.local/share/opencode/sandbox/      # OpenCode (shared by all containers)
 ```
 
-Deleting a tool's config directory (e.g. `rm -rf ~/.codex/`) removes everything related to that tool, including overlays. The `sandbox-overlays/` subdirectories are safe to delete manually if cleanup was missed (e.g. after a crash).
+Deleting an agent's config directory (e.g. `rm -rf ~/.codex/`) removes everything related to that agent, including the sandbox directory. To reset just the sandbox state for an agent, delete its `sandbox/` subdirectory (e.g. `rm -rf ~/.claude/sandbox/`) -- it will be re-created on the next session start.
 
 ## Container Naming
 

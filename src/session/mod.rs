@@ -17,8 +17,8 @@ pub use config::{
 };
 pub use groups::{flatten_tree, Group, GroupTree, Item};
 pub use instance::{
-    cleanup_sandbox_overlay, Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo,
-    INSTRUCTION_SUPPORTED_TOOLS, SUPPORTED_TOOLS, YOLO_SUPPORTED_TOOLS,
+    Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo, INSTRUCTION_SUPPORTED_TOOLS,
+    SUPPORTED_TOOLS, YOLO_SUPPORTED_TOOLS,
 };
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,

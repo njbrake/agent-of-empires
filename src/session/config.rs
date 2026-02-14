@@ -248,8 +248,8 @@ pub struct SandboxConfig {
 
     /// Mount host agent config directories into sandbox containers (default: false).
     /// When enabled, host auth configs (e.g. ~/.claude, ~/.codex, ~/.gemini) are
-    /// overlay-copied instead of using Docker named volumes, so agents share the
-    /// host's existing authentication.
+    /// synced into a shared sandbox directory instead of using Docker named volumes,
+    /// so agents share the host's existing authentication.
     #[serde(default)]
     pub mount_agent_configs: bool,
 }
