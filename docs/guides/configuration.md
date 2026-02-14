@@ -257,6 +257,38 @@ environment_values = { NODE_ENV = "production", USE_STAGING_API = "false" }
 environment_values = { NODE_ENV = "development", USE_STAGING_API = "true" }
 ```
 
+#### Use Case 4: Custom API provider
+
+Configure a profile to use a custom or alternative API endpoint with different model names. This works for any Claude-compatible API:
+
+```toml
+# ~/.agent-of-empires/profiles/custom-provider/config.toml
+environment = [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL"
+]
+
+[environment_values]
+ANTHROPIC_BASE_URL = "https://api.example.com/api/anthropic"
+ANTHROPIC_AUTH_TOKEN = "$MY_PROVIDER_TOKEN"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "fast-model"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "balanced-model"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "powerful-model"
+```
+
+```bash
+# Store the token in your shell profile (not in the config file)
+export MY_PROVIDER_TOKEN="your-api-token"
+
+# Run with the custom provider profile
+aoe -p custom-provider
+```
+
+This pattern lets you switch between API providers (official Anthropic, hosted proxies, self-hosted) without changing your workflow.
+
 ## Repo Config
 
 Per-repo settings go in `.aoe/config.toml` at your project root. Run `aoe init` to generate a template.

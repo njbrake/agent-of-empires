@@ -148,6 +148,12 @@ If the referenced host env var is not set, the entry is silently skipped.
 
 To use a literal value starting with `$`, double it: `$$LITERAL` is injected as `$LITERAL`.
 
+### Environment Variables for Non-Sandboxed Sessions
+
+The `environment` and `environment_values` options above only apply to sandboxed (Docker) sessions. If you need environment variables passed to **non-sandboxed** sessions (regular tmux sessions on the host), use **profile environment variables** instead.
+
+Profile environment variables work for both sandboxed and non-sandboxed sessions. See [Profile Environment Variables](configuration.md#profile-environment-variables) in the Configuration Reference for details.
+
 ## Available Images
 
 AOE provides two official sandbox images:
