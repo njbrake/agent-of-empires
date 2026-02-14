@@ -58,8 +58,10 @@ pub enum FieldKey {
     CpuLimit,
     MemoryLimit,
     DefaultTerminalMode,
+    ExtraVolumes,
     VolumeIgnores,
     MountSsh,
+    CustomInstruction,
     // Tmux
     StatusBar,
     Mouse,
@@ -389,6 +391,11 @@ fn build_sandbox_fields(
         global.sandbox.default_terminal_mode,
         sb.and_then(|s| s.default_terminal_mode),
     );
+    let (extra_volumes, o_ev) = resolve_value(
+        scope,
+        global.sandbox.extra_volumes.clone(),
+        sb.and_then(|s| s.extra_volumes.clone()),
+    );
     let (volume_ignores, o7) = resolve_value(
         scope,
         global.sandbox.volume_ignores.clone(),
@@ -398,6 +405,12 @@ fn build_sandbox_fields(
         scope,
         global.sandbox.mount_ssh,
         sb.and_then(|s| s.mount_ssh),
+    );
+    let (custom_instruction, o_ci) = resolve_optional(
+        scope,
+        global.sandbox.custom_instruction.clone(),
+        sb.and_then(|s| s.custom_instruction.clone()),
+        sb.map(|s| s.custom_instruction.is_some()).unwrap_or(false),
     );
 
     let terminal_mode_selected = match default_terminal_mode {
@@ -482,6 +495,14 @@ fn build_sandbox_fields(
             has_override: o6,
         },
         SettingField {
+            key: FieldKey::ExtraVolumes,
+            label: "Extra Volumes",
+            description: "Additional volume mounts (host:container or host:container:ro)",
+            value: FieldValue::List(extra_volumes),
+            category: SettingsCategory::Sandbox,
+            has_override: o_ev,
+        },
+        SettingField {
             key: FieldKey::VolumeIgnores,
             label: "Volume Ignores",
             description: "Directories to exclude from host mount (e.g. target, node_modules)",
@@ -496,6 +517,14 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(mount_ssh),
             category: SettingsCategory::Sandbox,
             has_override: o8,
+        },
+        SettingField {
+            key: FieldKey::CustomInstruction,
+            label: "Custom Instruction",
+            description: "Custom instruction text appended to the agent's system prompt in sandboxed sessions (Claude, Codex only)",
+            value: FieldValue::OptionalText(custom_instruction),
+            category: SettingsCategory::Sandbox,
+            has_override: o_ci,
         },
     ]
 }
@@ -793,6 +822,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
             config.sandbox.environment_values = parse_env_values_list(v);
         }
+        (FieldKey::ExtraVolumes, FieldValue::List(v)) => config.sandbox.extra_volumes = v.clone(),
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::MountSsh, FieldValue::Bool(v)) => config.sandbox.mount_ssh = *v,
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
@@ -801,6 +831,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
             config.sandbox.memory_limit = v.clone();
+        }
+        (FieldKey::CustomInstruction, FieldValue::OptionalText(v)) => {
+            config.sandbox.custom_instruction = v.clone();
         }
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
             config.sandbox.default_terminal_mode = match selected {
@@ -966,6 +999,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 config.environment_values = Some(map);
             }
         }
+        (FieldKey::ExtraVolumes, FieldValue::List(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.sandbox.extra_volumes,
+                &mut config.sandbox,
+                |s, val| s.extra_volumes = val,
+            );
+        }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => {
             set_or_clear_override(
                 v.clone(),
@@ -1014,6 +1055,19 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                     .sandbox
                     .get_or_insert_with(SandboxConfigOverride::default);
                 s.memory_limit = v.clone();
+            }
+        }
+        (FieldKey::CustomInstruction, FieldValue::OptionalText(v)) => {
+            if *v == global.sandbox.custom_instruction {
+                if let Some(ref mut s) = config.sandbox {
+                    s.custom_instruction = None;
+                }
+            } else {
+                use crate::session::SandboxConfigOverride;
+                let s = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                s.custom_instruction = v.clone();
             }
         }
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {

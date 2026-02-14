@@ -1,0 +1,169 @@
+name: PR Template Check
+
+on:
+  # Use pull_request_target to have write access for PRs from forks
+  # This is safe because we only read the PR body from the event payload
+  # and don't checkout or execute any code from the fork
+  pull_request_target:
+    types: [opened, edited]
+  schedule:
+    # Run daily at midnight UTC to close stale PRs missing the template
+    - cron: '0 0 * * *'
+
+jobs:
+  check-template:
+    if: github.event_name == 'pull_request_target' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check PR body for required checklist
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+
+            // Check for the checklist section with at least the required item
+            // Match both checked and unchecked boxes: - [ ] or - [x] or - [X]
+            const hasChecklist = body.includes('## Checklist') &&
+                                 body.includes('I understand the code I am submitting');
+
+            const prNumber = context.payload.pull_request.number;
+            const labelName = 'missing-template';
+
+            if (!hasChecklist) {
+              // Check if we already labeled this PR
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber
+              });
+
+              if (labels.some(l => l.name === labelName)) {
+                console.log('PR already labeled, skipping comment');
+                return;
+              }
+
+              // Ensure the label exists
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: labelName,
+                  color: 'e11d21',
+                  description: 'PR is missing required template checklist'
+                });
+              } catch (e) {
+                // Label already exists, ignore
+              }
+
+              // Add label to track when this was flagged
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: [labelName]
+              });
+
+              // Add comment explaining the issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `⚠️ **PR Template Missing**\n\nThis PR appears to be missing the required checklist from the PR template.\n\nPlease edit your PR description to include the checklist section. The checklist helps maintainers review your contribution.\n\n**This PR will be automatically closed in 24 hours if the template is not restored.**\n\nIf you're using an AI coding tool, please ensure it preserves the PR template.`
+              });
+
+              core.setFailed('PR template checklist is missing');
+            } else {
+              // Template is present, remove the label if it exists
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: labelName
+                });
+                console.log('Removed missing-template label');
+              } catch (e) {
+                // Label wasn't present, ignore
+              }
+            }
+
+  close-stale:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Close PRs missing template for over 24 hours
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labelName = 'missing-template';
+            const cutoffMs = 24 * 60 * 60 * 1000; // 24 hours
+
+            // Find open PRs with the missing-template label
+            const { data: prs } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: labelName,
+              per_page: 100
+            });
+
+            for (const pr of prs) {
+              // Only process pull requests (not issues)
+              if (!pr.pull_request) continue;
+
+              // Skip Dependabot PRs
+              if (pr.user?.login === 'dependabot[bot]') {
+                console.log(`Skipping Dependabot PR #${pr.number}`);
+                continue;
+              }
+
+              // Check when the label was added by looking at timeline events
+              const { data: events } = await github.rest.issues.listEventsForTimeline({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100
+              });
+
+              const labelEvent = events
+                .filter(e => e.event === 'labeled' && e.label?.name === labelName)
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+
+              if (!labelEvent) {
+                console.log(`No label event found for PR #${pr.number}, skipping`);
+                continue;
+              }
+
+              const labeledAt = new Date(labelEvent.created_at);
+              const now = new Date();
+              const ageMs = now - labeledAt;
+
+              if (ageMs < cutoffMs) {
+                console.log(`PR #${pr.number} labeled ${Math.round(ageMs / 3600000)}h ago, not yet 24h`);
+                continue;
+              }
+
+              console.log(`Closing PR #${pr.number} - missing template for over 24 hours`);
+
+              // Add closing comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: `This PR has been automatically closed because the required checklist was not restored within 24 hours.\n\nPlease create a new PR using the template and complete the checklist. The checklist helps maintainers review your contribution.`
+              });
+
+              // Close the PR
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                state: 'closed'
+              });
+            }

@@ -116,6 +116,8 @@ pub struct HomeView {
     pub(super) welcome_dialog: Option<WelcomeDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
+    /// Session to attach after the custom instruction warning dialog is dismissed
+    pub(super) pending_attach_after_warning: Option<String>,
 
     // Search
     pub(super) search_active: bool,
@@ -215,6 +217,7 @@ impl HomeView {
             welcome_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
+            pending_attach_after_warning: None,
             search_active: false,
             search_query: Input::default(),
             filtered_items: None,

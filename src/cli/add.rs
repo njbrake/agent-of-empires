@@ -200,6 +200,9 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: Config::load()
+                    .ok()
+                    .and_then(|c| c.sandbox.custom_instruction),
             });
         }
     }

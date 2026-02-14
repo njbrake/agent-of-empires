@@ -112,6 +112,26 @@ impl DirPicker {
         result
     }
 
+    /// Resolve a filtered list entry name to an absolute path.
+    fn resolve_path(&self, name: &str) -> PathBuf {
+        if name == "../" {
+            self.cwd
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.cwd.clone())
+        } else {
+            self.cwd.join(name)
+        }
+    }
+
+    /// Navigate into a directory: update cwd, clear filter, reset selection, refresh listing.
+    fn navigate_to(&mut self, path: PathBuf) {
+        self.cwd = path;
+        self.filter = Input::default();
+        self.selected = 0;
+        self.refresh_dirs();
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> DirPickerResult {
         if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.show_hidden = !self.show_hidden;
@@ -129,42 +149,27 @@ impl DirPicker {
                 DirPickerResult::Cancelled
             }
             KeyCode::Enter => {
+                let path = if self.selected < filtered_len {
+                    self.resolve_path(&filtered[self.selected])
+                } else {
+                    self.cwd.clone()
+                };
+                self.active = false;
+                DirPickerResult::Selected(path.to_string_lossy().to_string())
+            }
+            KeyCode::Tab => {
                 if filtered_len == 0 {
                     return DirPickerResult::Continue;
                 }
-                if self.selected < filtered_len {
-                    let selected_name = &filtered[self.selected];
-                    if selected_name == "../" {
-                        if let Some(parent) = self.cwd.parent() {
-                            self.active = false;
-                            return DirPickerResult::Selected(parent.to_string_lossy().to_string());
-                        }
-                    } else {
-                        self.active = false;
-                        let path = self.cwd.join(selected_name);
-                        return DirPickerResult::Selected(path.to_string_lossy().to_string());
-                    }
-                }
-                self.active = false;
-                DirPickerResult::Selected(self.cwd.to_string_lossy().to_string())
-            }
-            KeyCode::Tab => {
-                if filtered_len > 0 && self.selected < filtered_len {
-                    let selected_name = &filtered[self.selected];
-                    if selected_name == "../" {
-                        if let Some(parent) = self.cwd.parent() {
-                            self.cwd = parent.to_path_buf();
-                            self.filter = Input::default();
-                            self.selected = 0;
-                            self.refresh_dirs();
-                        }
-                    } else {
-                        self.cwd = self.cwd.join(selected_name);
-                        self.filter = Input::default();
-                        self.selected = 0;
-                        self.refresh_dirs();
-                    }
-                }
+                // Single match: autocomplete into it (ignore highlight)
+                // Multiple matches: use highlighted item from filtered list
+                let name = if filtered_len == 1 {
+                    &filtered[0]
+                } else {
+                    &filtered[self.selected.min(filtered_len - 1)]
+                };
+                let path = self.resolve_path(name);
+                self.navigate_to(path);
                 DirPickerResult::Continue
             }
             KeyCode::Up => {
@@ -182,9 +187,7 @@ impl DirPicker {
             KeyCode::Backspace => {
                 if self.filter.value().is_empty() {
                     if let Some(parent) = self.cwd.parent() {
-                        self.cwd = parent.to_path_buf();
-                        self.selected = 0;
-                        self.refresh_dirs();
+                        self.navigate_to(parent.to_path_buf());
                     }
                 } else {
                     self.filter.handle_event(&crossterm::event::Event::Key(key));
@@ -343,7 +346,7 @@ impl DirPicker {
             Span::styled("Type", Style::default().fg(theme.hint)),
             Span::raw(" filter  "),
             Span::styled("Tab", Style::default().fg(theme.hint)),
-            Span::raw(" cd  "),
+            Span::raw(" enter dir  "),
             Span::styled("C-h", Style::default().fg(theme.hint)),
             Span::raw(if self.show_hidden {
                 " hide ."
@@ -669,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enter_on_empty_filtered_list_does_nothing() {
+    fn test_enter_on_empty_filtered_list_selects_cwd() {
         let (_tmp, base) = setup_tempdir();
         let mut picker = DirPicker::new();
         picker.activate(&base.to_string_lossy());
@@ -682,8 +685,13 @@ mod tests {
         assert!(filtered.is_empty());
 
         let result = picker.handle_key(key(KeyCode::Enter));
-        assert!(matches!(result, DirPickerResult::Continue));
-        assert!(picker.is_active());
+        match result {
+            DirPickerResult::Selected(path) => {
+                assert_eq!(path, base.to_string_lossy());
+            }
+            _ => panic!("Expected Selected"),
+        }
+        assert!(!picker.is_active());
     }
 
     #[test]
@@ -711,6 +719,44 @@ mod tests {
         picker.handle_key(key(KeyCode::Char('/')));
         let filtered = picker.filtered_dirs();
         assert!(!filtered.contains(&"../".to_string()));
+    }
+
+    #[test]
+    fn test_tab_single_match_autocompletes() {
+        let (_tmp, base) = setup_tempdir();
+        let mut picker = DirPicker::new();
+        picker.activate(&base.to_string_lossy());
+
+        // Type "al" to filter down to just "alpha"
+        picker.handle_key(key(KeyCode::Char('a')));
+        picker.handle_key(key(KeyCode::Char('l')));
+        let filtered = picker.filtered_dirs();
+        assert_eq!(filtered, vec!["alpha"]);
+
+        // Tab should navigate into "alpha" regardless of highlight
+        picker.handle_key(key(KeyCode::Tab));
+        assert_eq!(picker.cwd, base.join("alpha"));
+        assert_eq!(picker.filter.value(), "");
+        assert_eq!(picker.selected, 0);
+    }
+
+    #[test]
+    fn test_tab_no_match_does_nothing() {
+        let (_tmp, base) = setup_tempdir();
+        let mut picker = DirPicker::new();
+        picker.activate(&base.to_string_lossy());
+        let original_cwd = picker.cwd.clone();
+
+        // Type filter that matches nothing
+        picker.handle_key(key(KeyCode::Char('z')));
+        picker.handle_key(key(KeyCode::Char('z')));
+        picker.handle_key(key(KeyCode::Char('z')));
+        assert!(picker.filtered_dirs().is_empty());
+
+        // Tab should do nothing
+        let result = picker.handle_key(key(KeyCode::Tab));
+        assert!(matches!(result, DirPickerResult::Continue));
+        assert_eq!(picker.cwd, original_cwd);
     }
 
     #[test]

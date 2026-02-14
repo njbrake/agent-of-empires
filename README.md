@@ -126,6 +126,10 @@ cargo build --release  # Release build
 AGENT_OF_EMPIRES_DEBUG=1 cargo run
 ```
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=njbrake/agent-of-empires&type=date&legend=top-left)](https://www.star-history.com/#njbrake/agent-of-empires&type=date&legend=top-left)
+
 ## Acknowledgments
 
 Inspired by [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go + Bubble Tea).

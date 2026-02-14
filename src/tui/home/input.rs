@@ -105,6 +105,9 @@ impl HomeView {
                 DialogResult::Continue => {}
                 DialogResult::Cancel | DialogResult::Submit(_) => {
                     self.info_dialog = None;
+                    if let Some(session_id) = self.pending_attach_after_warning.take() {
+                        return Some(Action::AttachSession(session_id));
+                    }
                 }
             }
             return None;

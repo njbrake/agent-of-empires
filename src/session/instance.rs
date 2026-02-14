@@ -278,6 +278,9 @@ pub struct SandboxInfo {
     /// Additional KEY=VALUE environment variables (session-specific overrides)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env_values: Option<std::collections::HashMap<String, String>>,
+    /// Custom instruction text to inject into agent launch command
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_instruction: Option<String>,
 }
 
 fn default_profile() -> String {
@@ -608,7 +611,7 @@ impl Instance {
                 }
             }
             let sandbox = self.sandbox_info.as_ref().unwrap();
-            let tool_cmd = if self.is_yolo_mode() {
+            let mut tool_cmd = if self.is_yolo_mode() {
                 match self.tool.as_str() {
                     "claude" => "claude --dangerously-skip-permissions".to_string(),
                     "vibe" => "vibe --agent auto-approve".to_string(),
@@ -619,8 +622,21 @@ impl Instance {
             } else {
                 self.get_tool_command().to_string()
             };
+            // Inject custom instruction CLI flags for supported agents
+            if let Some(ref instruction) = sandbox.custom_instruction {
+                if !instruction.is_empty() {
+                    let escaped = shell_escape(instruction);
+                    tool_cmd = match self.tool.as_str() {
+                        "claude" => format!("{} --append-system-prompt {}", tool_cmd, escaped),
+                        "codex" => {
+                            format!("{} --config developer_instructions={}", tool_cmd, escaped)
+                        }
+                        _ => tool_cmd,
+                    };
+                }
+            }
+
             let env_args = build_docker_env_args(sandbox, profile_config.as_ref());
-            tracing::info!(env_args = %env_args, "Docker environment args for sandboxed session");
             let env_part = if env_args.is_empty() {
                 String::new()
             } else {
@@ -826,10 +842,21 @@ impl Instance {
             read_only: false,
         }];
 
-        let sandbox_config = super::config::Config::load()
-            .ok()
-            .map(|c| c.sandbox)
-            .unwrap_or_default();
+        let sandbox_config = match super::config::Config::load() {
+            Ok(c) => {
+                tracing::debug!(
+                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
+                    c.sandbox.extra_volumes,
+                    c.sandbox.mount_ssh,
+                    c.sandbox.volume_ignores
+                );
+                c.sandbox
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load config, using defaults: {}", e);
+                Default::default()
+            }
+        };
 
         const CONTAINER_HOME: &str = "/root";
 
@@ -922,10 +949,51 @@ impl Instance {
             ));
         }
 
+        // Add extra_volumes from config (host:container format)
+        // Also collect container paths to filter conflicting volume_ignores later
+        tracing::debug!(
+            "extra_volumes from config: {:?}",
+            sandbox_config.extra_volumes
+        );
+        let mut extra_volume_container_paths: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for entry in &sandbox_config.extra_volumes {
+            let parts: Vec<&str> = entry.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                tracing::info!(
+                    "Mounting extra volume: {} -> {} (ro: {})",
+                    parts[0],
+                    parts[1],
+                    parts.get(2) == Some(&"ro")
+                );
+                extra_volume_container_paths.insert(parts[1].to_string());
+                volumes.push(VolumeMount {
+                    host_path: parts[0].to_string(),
+                    container_path: parts[1].to_string(),
+                    read_only: parts.get(2) == Some(&"ro"),
+                });
+            } else {
+                tracing::warn!("Ignoring malformed extra_volume entry: {}", entry);
+            }
+        }
+
+        // Filter anonymous_volumes to exclude paths that conflict with extra_volumes
+        // (extra_volumes should take precedence over volume_ignores)
+        // Conflicts include:
+        //   - Exact match: both point to same path
+        //   - Anonymous volume is parent of extra_volume (would shadow the mount)
+        //   - Anonymous volume is inside extra_volume (redundant/conflicting)
         let anonymous_volumes: Vec<String> = sandbox_config
             .volume_ignores
             .iter()
             .map(|ignore| format!("{}/{}", workspace_path, ignore))
+            .filter(|anon_path| {
+                !extra_volume_container_paths.iter().any(|extra_path| {
+                    anon_path == extra_path
+                        || extra_path.starts_with(&format!("{}/", anon_path))
+                        || anon_path.starts_with(&format!("{}/", extra_path))
+                })
+            })
             .collect();
 
         Ok(ContainerConfig {
@@ -1046,6 +1114,9 @@ pub const SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "g
 /// - `build_container_config()` for environment variables (OpenCode uses env var)
 pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "gemini"];
 
+/// Tools that support custom instruction injection via CLI flags.
+pub const INSTRUCTION_SUPPORTED_TOOLS: &[&str] = &["claude", "codex"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1106,6 +1177,7 @@ mod tests {
             yolo_mode: Some(true),
             extra_env_keys: None,
             extra_env_values: None,
+            custom_instruction: None,
         });
         assert!(inst.is_yolo_mode());
 
@@ -1135,6 +1207,7 @@ mod tests {
             yolo_mode: None,
             extra_env_keys: None,
             extra_env_values: None,
+            custom_instruction: None,
         });
         assert!(!inst.is_sandboxed());
     }
@@ -1151,6 +1224,7 @@ mod tests {
             yolo_mode: None,
             extra_env_keys: None,
             extra_env_values: None,
+            custom_instruction: None,
         });
         assert!(inst.is_sandboxed());
     }
@@ -1283,6 +1357,7 @@ mod tests {
             yolo_mode: Some(true),
             extra_env_keys: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
             extra_env_values: None,
+            custom_instruction: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -1570,6 +1645,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let result = collect_env_keys(&sandbox_config, &sandbox_info, None);
             // Should contain only DEFAULT_TERMINAL_ENV_VARS
@@ -1591,6 +1667,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let result = collect_env_keys(&sandbox_config, &sandbox_info, None);
             assert!(result.contains(&"CUSTOM_VAR".to_string()));
@@ -1611,6 +1688,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let mut profile_config = ProfileConfig::default();
             profile_config.environment = Some(vec!["PROFILE_VAR".to_string()]);
@@ -1631,6 +1709,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let result = collect_env_keys(&sandbox_config, &sandbox_info, None);
             // Count occurrences of TERM
@@ -1651,6 +1730,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let result = collect_env_values(&sandbox_config, &sandbox_info, None);
             assert!(result.is_empty());
@@ -1673,6 +1753,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let result = collect_env_values(
                 &sandbox_config,
@@ -1695,6 +1776,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let mut profile_config = ProfileConfig::default();
             let mut profile_values = HashMap::new();
@@ -1721,6 +1803,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let mut profile_config = ProfileConfig::default();
             let mut profile_values = HashMap::new();
@@ -1750,6 +1833,7 @@ mod tests {
                 yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
+                custom_instruction: None,
             };
             let result = collect_env_values(
                 &sandbox_config,

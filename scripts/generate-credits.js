@@ -27,13 +27,22 @@ if (data.contributors.length === 0) {
   data.contributors.forEach((c, i) => {
     const rank = i + 1;
     const rankClass = rank <= 3 ? ` rank-${rank}` : "";
-    const issueLinks = c.issues
+    const issues = c.issues || [];
+    const prs = c.pull_requests || [];
+    const issueLinks = issues
       .map(
         (issue) =>
           `      <a href="${repoUrl}/issues/${issue.number}">#${issue.number}</a>`
       )
       .join("\n");
-    const count = c.issues.length;
+    const prLinks = prs
+      .map(
+        (pr) =>
+          `      <a href="${repoUrl}/pull/${pr.number}">#${pr.number}</a>`
+      )
+      .join("\n");
+    const allLinks = [issueLinks, prLinks].filter(Boolean).join("\n");
+    const count = issues.length + prs.length;
     const word = count === 1 ? "contribution" : "contributions";
     md += `<div class="contributor-row${rankClass}">
   <div class="contributor-rank">${rank}</div>
@@ -42,7 +51,7 @@ if (data.contributors.length === 0) {
     <div class="contributor-name"><a href="https://github.com/${c.username}">${c.username}</a></div>
     <div class="contributor-stats">${count} ${word}</div>
     <div class="contributor-issues">
-${issueLinks}
+${allLinks}
     </div>
   </div>
 </div>

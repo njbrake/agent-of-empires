@@ -111,6 +111,7 @@ fn test_session_persistence_with_sandbox_info() -> Result<()> {
         yolo_mode: None,
         extra_env_keys: Some(vec!["SANDBOX_VAR".to_string()]),
         extra_env_values: None,
+        custom_instruction: None,
     });
 
     storage.save(std::slice::from_ref(&inst))?;

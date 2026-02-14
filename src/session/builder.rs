@@ -193,6 +193,9 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
                     Some(map)
                 }
             },
+            custom_instruction: Config::load()
+                .ok()
+                .and_then(|c| c.sandbox.custom_instruction),
         });
     }
 

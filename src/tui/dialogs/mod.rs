@@ -2,6 +2,7 @@
 
 mod changelog;
 mod confirm;
+mod custom_instruction;
 mod delete_options;
 mod group_delete_options;
 mod hook_trust;
@@ -12,6 +13,7 @@ mod welcome;
 
 pub use changelog::ChangelogDialog;
 pub use confirm::ConfirmDialog;
+pub use custom_instruction::CustomInstructionDialog;
 pub use delete_options::{DeleteDialogConfig, DeleteOptions, UnifiedDeleteDialog};
 pub use group_delete_options::{GroupDeleteOptions, GroupDeleteOptionsDialog};
 pub use hook_trust::{HookTrustAction, HookTrustDialog};
