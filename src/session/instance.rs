@@ -930,6 +930,13 @@ impl Instance {
             return;
         }
 
+        // If pane is dead (command exited but preserved by remain-on-exit), mark as error
+        if let Ok(true) = session.is_pane_dead() {
+            self.status = Status::Error;
+            self.last_error_check = Some(std::time::Instant::now());
+            return;
+        }
+
         // Detect status from pane content
         self.status = match session.detect_status(&self.tool) {
             Ok(status) => status,
