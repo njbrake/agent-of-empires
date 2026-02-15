@@ -9,13 +9,14 @@
 //! 3. Add it to the `MIGRATIONS` array below
 
 mod v001_xdg_linux;
+mod v002_seed_sandbox_from_volumes;
 
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 const VERSION_FILE: &str = ".schema_version";
 
 struct Migration {
@@ -24,11 +25,18 @@ struct Migration {
     run: fn() -> Result<()>,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "xdg_linux",
-    run: v001_xdg_linux::run,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "xdg_linux",
+        run: v001_xdg_linux::run,
+    },
+    Migration {
+        version: 2,
+        name: "seed_sandbox_from_volumes",
+        run: v002_seed_sandbox_from_volumes::run,
+    },
+];
 
 /// Run all pending migrations. Call this early in app startup.
 pub fn run_migrations() -> Result<()> {
