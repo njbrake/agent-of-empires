@@ -12,11 +12,18 @@ use super::config::{Config, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMod
 use super::get_profile_dir;
 
 /// Profile-specific settings. All fields are Option<T> - None means "inherit from global"
+///
+/// Note: `environment` and `environment_values` are stored at the top level (not in
+/// `SandboxConfigOverride`) because they are user-facing configuration that applies
+/// broadly. During merge, they are applied to `global.sandbox.environment`. This design
+/// keeps them accessible in the settings TUI while maintaining the override pattern.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileConfig {
+    /// Environment variable keys to pass through from host (e.g., ["TERM", "HOME"])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<Vec<String>>,
 
+    /// Environment key-value pairs with optional $ expansion (e.g., {"API_KEY": "$MY_KEY"})
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_values: Option<HashMap<String, String>>,
 

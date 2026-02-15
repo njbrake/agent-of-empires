@@ -457,15 +457,13 @@ impl SettingsView {
                     s.default_image = None;
                 }
             }
+            // Environment fields are at ProfileConfig top-level (not in sandbox override)
+            // because they are stored independently and merged into global.sandbox.environment
             FieldKey::Environment => {
-                if let Some(ref mut s) = config.sandbox {
-                    s.environment = None;
-                }
+                config.environment = None;
             }
             FieldKey::EnvironmentValues => {
-                if let Some(ref mut s) = config.sandbox {
-                    s.environment_values = None;
-                }
+                config.environment_values = None;
             }
             FieldKey::SandboxAutoCleanup => {
                 if let Some(ref mut s) = config.sandbox {
