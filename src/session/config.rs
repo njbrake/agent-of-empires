@@ -245,13 +245,6 @@ pub struct SandboxConfig {
     /// Custom instruction text appended to the agent's system prompt in sandboxed sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instruction: Option<String>,
-
-    /// Mount host agent config directories into sandbox containers (default: false).
-    /// When enabled, host auth configs (e.g. ~/.claude, ~/.codex, ~/.gemini) are
-    /// synced into a shared sandbox directory instead of using Docker named volumes,
-    /// so agents share the host's existing authentication.
-    #[serde(default)]
-    pub mount_agent_configs: bool,
 }
 
 impl Default for SandboxConfig {
@@ -270,7 +263,6 @@ impl Default for SandboxConfig {
             volume_ignores: Vec::new(),
             mount_ssh: false,
             custom_instruction: None,
-            mount_agent_configs: false,
         }
     }
 }

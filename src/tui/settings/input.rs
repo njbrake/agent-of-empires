@@ -519,11 +519,6 @@ impl SettingsView {
                     s.mount_ssh = None;
                 }
             }
-            FieldKey::MountAgentConfigs => {
-                if let Some(ref mut s) = config.sandbox {
-                    s.mount_agent_configs = None;
-                }
-            }
             FieldKey::CpuLimit => {
                 if let Some(ref mut s) = config.sandbox {
                     s.cpu_limit = None;

@@ -7,10 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::docker::{
-    self, ContainerConfig, DockerContainer, VolumeMount, CLAUDE_AUTH_VOLUME, CODEX_AUTH_VOLUME,
-    GEMINI_AUTH_VOLUME, OPENCODE_AUTH_VOLUME, VIBE_AUTH_VOLUME,
-};
+use crate::docker::{self, ContainerConfig, DockerContainer, VolumeMount};
 use crate::git::GitWorktree;
 use crate::tmux;
 
@@ -27,8 +24,6 @@ struct AgentConfigMount {
     host_rel: &'static str,
     /// Path suffix relative to container home (e.g. ".claude").
     container_suffix: &'static str,
-    /// Named Docker volume used as fallback.
-    named_volume: &'static str,
     /// Top-level entry names to skip when copying (large/recursive/unnecessary).
     skip_entries: &'static [&'static str],
     /// Files to seed into the sandbox dir with static content (write-once: only written
@@ -51,7 +46,6 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
     AgentConfigMount {
         host_rel: ".claude",
         container_suffix: ".claude",
-        named_volume: CLAUDE_AUTH_VOLUME,
         skip_entries: &["sandbox", "projects"],
         seed_files: &[],
         copy_dirs: &["plugins", "skills"],
@@ -65,7 +59,6 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
     AgentConfigMount {
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
-        named_volume: OPENCODE_AUTH_VOLUME,
         skip_entries: &["sandbox"],
         seed_files: &[],
         copy_dirs: &[],
@@ -75,7 +68,6 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
     AgentConfigMount {
         host_rel: ".codex",
         container_suffix: ".codex",
-        named_volume: CODEX_AUTH_VOLUME,
         skip_entries: &["sandbox"],
         seed_files: &[],
         copy_dirs: &[],
@@ -85,7 +77,15 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
     AgentConfigMount {
         host_rel: ".gemini",
         container_suffix: ".gemini",
-        named_volume: GEMINI_AUTH_VOLUME,
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+    },
+    AgentConfigMount {
+        host_rel: ".vibe",
+        container_suffix: ".vibe",
         skip_entries: &["sandbox"],
         seed_files: &[],
         copy_dirs: &[],
@@ -763,15 +763,6 @@ impl Instance {
             return;
         };
 
-        let sandbox_config = match super::config::Config::load() {
-            Ok(c) => c.sandbox,
-            Err(_) => return,
-        };
-
-        if !sandbox_config.mount_agent_configs {
-            return;
-        }
-
         for mount in AGENT_CONFIG_MOUNTS {
             let host_dir = home.join(mount.host_rel);
             if !host_dir.exists() {
@@ -838,12 +829,6 @@ impl Instance {
 
         // Ensure image is available (always pulls to get latest)
         docker::ensure_image(image)?;
-
-        docker::ensure_named_volume(CLAUDE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(OPENCODE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(VIBE_AUTH_VOLUME)?;
-        docker::ensure_named_volume(CODEX_AUTH_VOLUME)?;
-        docker::ensure_named_volume(GEMINI_AUTH_VOLUME)?;
 
         let config = self.build_container_config()?;
         let container_id = container.create(&config)?;
@@ -947,10 +932,9 @@ impl Instance {
         let sandbox_config = match super::config::Config::load() {
             Ok(c) => {
                 tracing::debug!(
-                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, mount_agent_configs={}, volume_ignores={:?}",
+                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
                     c.sandbox.extra_volumes,
                     c.sandbox.mount_ssh,
-                    c.sandbox.mount_agent_configs,
                     c.sandbox.volume_ignores
                 );
                 c.sandbox
@@ -992,123 +976,85 @@ impl Instance {
             });
         }
 
-        let vibe_config = home.join(".vibe");
-        let has_vibe_host_mount = vibe_config.exists();
-        if has_vibe_host_mount {
-            volumes.push(VolumeMount {
-                host_path: vibe_config.to_string_lossy().to_string(),
-                container_path: format!("{}/.vibe", CONTAINER_HOME),
-                read_only: false,
-            });
-        }
-
-        // When mount_agent_configs is enabled, sync host agent config into a shared
-        // sandbox directory per agent and bind-mount it read-write. All containers
-        // share the same directory (1:N), so in-container changes persist.
+        // Sync host agent config into a shared sandbox directory per agent and
+        // bind-mount it read-write. All containers share the same directory (1:N),
+        // so in-container changes persist.
         // Agent definitions are in AGENT_CONFIG_MOUNTS -- add new agents there, not here.
-        let mut named_volumes = Vec::new();
-
         for mount in AGENT_CONFIG_MOUNTS {
             let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
-
-            if !sandbox_config.mount_agent_configs {
-                tracing::debug!(
-                    "mount_agent_configs disabled, using named volume for {}",
-                    mount.host_rel
-                );
-                named_volumes.push((mount.named_volume.to_string(), container_path));
-                continue;
-            }
-
             let host_dir = home.join(mount.host_rel);
-            if !host_dir.exists() {
-                tracing::debug!(
-                    "Host dir {} does not exist, using named volume",
-                    host_dir.display()
-                );
-                named_volumes.push((mount.named_volume.to_string(), container_path));
-                continue;
-            }
-
             let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
 
-            tracing::debug!(
-                "Syncing agent config: {} -> {}",
-                host_dir.display(),
-                sandbox_dir.display()
-            );
+            if host_dir.exists() {
+                tracing::debug!(
+                    "Syncing agent config: {} -> {}",
+                    host_dir.display(),
+                    sandbox_dir.display()
+                );
 
-            match sync_agent_config(
-                &host_dir,
-                &sandbox_dir,
-                mount.skip_entries,
-                mount.seed_files,
-                mount.copy_dirs,
-            ) {
-                Ok(()) => {
-                    if let Some((service, filename)) = mount.keychain_credential {
-                        if let Err(e) =
-                            extract_keychain_credential(service, &sandbox_dir.join(filename))
-                        {
-                            tracing::warn!(
-                                "Failed to extract keychain credential for {}: {}",
-                                mount.host_rel,
-                                e
-                            );
-                        }
-                    }
-
-                    tracing::debug!(
-                        "Sandbox dir ready for {}, binding {} -> {}",
-                        mount.host_rel,
-                        sandbox_dir.display(),
-                        container_path
-                    );
-                    volumes.push(VolumeMount {
-                        host_path: sandbox_dir.to_string_lossy().to_string(),
-                        container_path,
-                        read_only: false,
-                    });
-
-                    // Write-once: home-level seed files mounted as individual files
-                    // at the container home directory.
-                    for &(filename, content) in mount.home_seed_files {
-                        let file_path = sandbox_dir.join(filename);
-                        if !file_path.exists() {
-                            if let Err(e) = std::fs::write(&file_path, content) {
-                                tracing::warn!(
-                                    "Failed to write home seed file {}: {}",
-                                    filename,
-                                    e
-                                );
-                                continue;
-                            }
-                        }
-                        volumes.push(VolumeMount {
-                            host_path: file_path.to_string_lossy().to_string(),
-                            container_path: format!("{}/{}", CONTAINER_HOME, filename),
-                            read_only: false,
-                        });
-                    }
-                }
-                Err(e) => {
+                if let Err(e) = sync_agent_config(
+                    &host_dir,
+                    &sandbox_dir,
+                    mount.skip_entries,
+                    mount.seed_files,
+                    mount.copy_dirs,
+                ) {
                     tracing::warn!(
-                        "Failed to sync agent config for {}, falling back to named volume: {}",
+                        "Failed to sync agent config for {}, skipping: {}",
                         mount.host_rel,
                         e
                     );
-                    named_volumes.push((mount.named_volume.to_string(), container_path));
+                    continue;
+                }
+
+                if let Some((service, filename)) = mount.keychain_credential {
+                    if let Err(e) =
+                        extract_keychain_credential(service, &sandbox_dir.join(filename))
+                    {
+                        tracing::warn!(
+                            "Failed to extract keychain credential for {}: {}",
+                            mount.host_rel,
+                            e
+                        );
+                    }
+                }
+            } else {
+                // Host dir doesn't exist but we still create the sandbox dir so the
+                // agent can write auth/state inside the container and have it persist.
+                if let Err(e) = std::fs::create_dir_all(&sandbox_dir) {
+                    tracing::warn!("Failed to create sandbox dir for {}: {}", mount.host_rel, e);
+                    continue;
                 }
             }
-        }
 
-        // Vibe: already bind-mounted from host when ~/.vibe exists.
-        // Only add named volume when the host dir wasn't mounted.
-        if !has_vibe_host_mount {
-            named_volumes.push((
-                VIBE_AUTH_VOLUME.to_string(),
-                format!("{}/.vibe", CONTAINER_HOME),
-            ));
+            tracing::debug!(
+                "Sandbox dir ready for {}, binding {} -> {}",
+                mount.host_rel,
+                sandbox_dir.display(),
+                container_path
+            );
+            volumes.push(VolumeMount {
+                host_path: sandbox_dir.to_string_lossy().to_string(),
+                container_path,
+                read_only: false,
+            });
+
+            // Write-once: home-level seed files mounted as individual files
+            // at the container home directory.
+            for &(filename, content) in mount.home_seed_files {
+                let file_path = sandbox_dir.join(filename);
+                if !file_path.exists() {
+                    if let Err(e) = std::fs::write(&file_path, content) {
+                        tracing::warn!("Failed to write home seed file {}: {}", filename, e);
+                        continue;
+                    }
+                }
+                volumes.push(VolumeMount {
+                    host_path: file_path.to_string_lossy().to_string(),
+                    container_path: format!("{}/{}", CONTAINER_HOME, filename),
+                    read_only: false,
+                });
+            }
         }
 
         let sandbox_info = self.sandbox_info.as_ref().unwrap();
@@ -1183,7 +1129,6 @@ impl Instance {
         Ok(ContainerConfig {
             working_dir: workspace_path,
             volumes,
-            named_volumes,
             anonymous_volumes,
             environment,
             cpu_limit: sandbox_config.cpu_limit,
@@ -1998,7 +1943,6 @@ mod tests {
             for mount in AGENT_CONFIG_MOUNTS {
                 assert!(!mount.host_rel.is_empty());
                 assert!(!mount.container_suffix.is_empty());
-                assert!(!mount.named_volume.is_empty());
             }
         }
 

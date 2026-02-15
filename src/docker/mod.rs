@@ -6,12 +6,6 @@ pub use error::{DockerError, Result};
 
 use std::process::Command;
 
-pub const CLAUDE_AUTH_VOLUME: &str = "aoe-claude-auth";
-pub const OPENCODE_AUTH_VOLUME: &str = "aoe-opencode-auth";
-pub const VIBE_AUTH_VOLUME: &str = "aoe-vibe-auth";
-pub const CODEX_AUTH_VOLUME: &str = "aoe-codex-auth";
-pub const GEMINI_AUTH_VOLUME: &str = "aoe-gemini-auth";
-
 pub fn is_docker_available() -> bool {
     Command::new("docker")
         .arg("--version")
@@ -72,28 +66,6 @@ pub fn ensure_image(image: &str) -> Result<()> {
 
     tracing::info!("Pulling Docker image '{}'", image);
     pull_image(image)
-}
-
-pub fn ensure_named_volume(name: &str) -> Result<()> {
-    let check = Command::new("docker")
-        .args(["volume", "inspect", name])
-        .output()?;
-
-    if !check.status.success() {
-        let create = Command::new("docker")
-            .args(["volume", "create", name])
-            .output()?;
-
-        if !create.status.success() {
-            let stderr = String::from_utf8_lossy(&create.stderr);
-            return Err(DockerError::CommandFailed(format!(
-                "Failed to create volume {}: {}",
-                name, stderr
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 /// The hardcoded fallback sandbox image.

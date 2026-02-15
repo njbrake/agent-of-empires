@@ -11,7 +11,6 @@ pub struct VolumeMount {
 pub struct ContainerConfig {
     pub working_dir: String,
     pub volumes: Vec<VolumeMount>,
-    pub named_volumes: Vec<(String, String)>,
     pub anonymous_volumes: Vec<String>,
     pub environment: Vec<(String, String)>,
     pub cpu_limit: Option<String>,
@@ -89,11 +88,6 @@ impl DockerContainer {
             };
             args.push("-v".to_string());
             args.push(mount);
-        }
-
-        for (vol_name, container_path) in &config.named_volumes {
-            args.push("-v".to_string());
-            args.push(format!("{}:{}", vol_name, container_path));
         }
 
         for path in &config.anonymous_volumes {
@@ -245,7 +239,7 @@ mod tests {
         let config = ContainerConfig {
             working_dir: "/workspace/myproject".to_string(),
             volumes: vec![],
-            named_volumes: vec![],
+
             anonymous_volumes: vec![
                 "/workspace/myproject/target".to_string(),
                 "/workspace/myproject/node_modules".to_string(),
@@ -277,7 +271,7 @@ mod tests {
         let config = ContainerConfig {
             working_dir: "/workspace".to_string(),
             volumes: vec![],
-            named_volumes: vec![],
+
             anonymous_volumes: vec![],
             environment: vec![],
             cpu_limit: None,

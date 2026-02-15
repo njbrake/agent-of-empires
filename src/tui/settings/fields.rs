@@ -62,7 +62,6 @@ pub enum FieldKey {
     VolumeIgnores,
     MountSsh,
     CustomInstruction,
-    MountAgentConfigs,
     // Tmux
     StatusBar,
     Mouse,
@@ -407,12 +406,6 @@ fn build_sandbox_fields(
         sb.and_then(|s| s.custom_instruction.clone()),
         sb.map(|s| s.custom_instruction.is_some()).unwrap_or(false),
     );
-    let (mount_agent_configs, o9) = resolve_value(
-        scope,
-        global.sandbox.mount_agent_configs,
-        sb.and_then(|s| s.mount_agent_configs),
-    );
-
     let terminal_mode_selected = match default_terminal_mode {
         DefaultTerminalMode::Host => 0,
         DefaultTerminalMode::Container => 1,
@@ -525,14 +518,6 @@ fn build_sandbox_fields(
             value: FieldValue::OptionalText(custom_instruction),
             category: SettingsCategory::Sandbox,
             has_override: o_ci,
-        },
-        SettingField {
-            key: FieldKey::MountAgentConfigs,
-            label: "Mount Agent Configs",
-            description: "Mount host agent configs (e.g. ~/.claude) into sandbox (shares auth, avoids re-login)",
-            value: FieldValue::Bool(mount_agent_configs),
-            category: SettingsCategory::Sandbox,
-            has_override: o9,
         },
     ]
 }
@@ -833,9 +818,6 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::ExtraVolumes, FieldValue::List(v)) => config.sandbox.extra_volumes = v.clone(),
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::MountSsh, FieldValue::Bool(v)) => config.sandbox.mount_ssh = *v,
-        (FieldKey::MountAgentConfigs, FieldValue::Bool(v)) => {
-            config.sandbox.mount_agent_configs = *v
-        }
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
         (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => {
             config.sandbox.cpu_limit = v.clone();
@@ -1034,14 +1016,6 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.mount_ssh,
                 &mut config.sandbox,
                 |s, val| s.mount_ssh = val,
-            );
-        }
-        (FieldKey::MountAgentConfigs, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.sandbox.mount_agent_configs,
-                &mut config.sandbox,
-                |s, val| s.mount_agent_configs = val,
             );
         }
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => {
