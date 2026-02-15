@@ -190,6 +190,47 @@ impl Session {
             &content, tool, fg_pid,
         ))
     }
+
+    /// Check if the pane is dead (command has exited but pane preserved by remain-on-exit).
+    pub fn is_pane_dead(&self) -> Result<bool> {
+        if !self.exists() {
+            return Ok(false);
+        }
+
+        let output = Command::new("tmux")
+            .args(["display", "-p", "-t", &self.name, "#{pane_dead}"])
+            .output()?;
+
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ok(value == "1")
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Respawn a dead pane (for use with remain-on-exit sessions).
+    pub fn respawn_pane(&self) -> Result<()> {
+        if !self.exists() {
+            bail!("Session does not exist: {}", self.name);
+        }
+
+        let output = Command::new("tmux")
+            .args(["respawn-pane", "-k", "-t", &self.name])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Failed to respawn pane: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    /// Get the session name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 fn sanitize_session_name(name: &str) -> String {

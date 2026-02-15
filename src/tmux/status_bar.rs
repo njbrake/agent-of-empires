@@ -84,6 +84,13 @@ pub fn apply_mouse_option(session_name: &str, enabled: bool) -> Result<()> {
     set_session_option(session_name, "mouse", value)
 }
 
+/// Apply remain-on-exit option to a tmux session.
+/// Always enabled for aoe sessions to preserve output when commands exit/crash,
+/// allowing users to see error messages before the pane disappears.
+pub fn apply_remain_on_exit(session_name: &str) -> Result<()> {
+    set_session_option(session_name, "remain-on-exit", "on")
+}
+
 /// Apply all configured tmux options to a session.
 /// This is a unified entry point that applies status bar styling and mouse settings.
 pub fn apply_all_tmux_options(
@@ -104,6 +111,11 @@ pub fn apply_all_tmux_options(
         if let Err(e) = apply_mouse_option(session_name, mouse_enabled) {
             tracing::debug!("Failed to apply tmux mouse option: {}", e);
         }
+    }
+
+    // Always enable remain-on-exit to preserve output when sessions crash
+    if let Err(e) = apply_remain_on_exit(session_name) {
+        tracing::debug!("Failed to apply tmux remain-on-exit option: {}", e);
     }
 }
 
