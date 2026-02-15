@@ -3,7 +3,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::docker::{
@@ -167,38 +166,6 @@ fn collect_host_env_vars(
         "Collected env vars for host session"
     );
     result
-}
-
-/// Merge environment variables from sandbox config with profile config.
-/// Profile environment variables override sandbox environment variables on name conflicts.
-///
-/// NOTE: This function is currently unused but will be integrated
-/// into container creation in a future task (see STATE.md blockers).
-#[allow(dead_code)]
-fn merge_env_vars_with_profile(
-    sandbox_env: Vec<(String, String)>,
-    profile_config: &super::profile_config::ProfileConfig,
-) -> Vec<(String, String)> {
-    let mut env_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
-    // Add sandbox environment variables first
-    for (key, value) in sandbox_env {
-        env_map.insert(key, value);
-    }
-
-    // Resolve and add profile environment variables (profile wins on conflicts)
-    let empty_hashmap = HashMap::new();
-    let env_arr = profile_config.environment.as_deref().unwrap_or(&[][..]);
-    let profile_env_values = profile_config
-        .environment_values
-        .as_ref()
-        .unwrap_or(&empty_hashmap);
-    let profile_env_vars = super::config::resolve_env_vars(env_arr, profile_env_values);
-    for (key, value) in profile_env_vars {
-        env_map.insert(key, value);
-    }
-
-    env_map.into_iter().collect()
 }
 
 /// Build docker exec environment flags from config, profile config, and per-session extra keys.
@@ -842,7 +809,7 @@ impl Instance {
             read_only: false,
         }];
 
-        let sandbox_config = match super::config::Config::load() {
+        let (sandbox_config, profile_config) = match super::config::Config::load() {
             Ok(c) => {
                 tracing::debug!(
                     "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
@@ -850,11 +817,12 @@ impl Instance {
                     c.sandbox.mount_ssh,
                     c.sandbox.volume_ignores
                 );
-                c.sandbox
+                let profile_cfg = super::profile_config::load_profile_config(&self.profile).ok();
+                (c.sandbox, profile_cfg)
             }
             Err(e) => {
                 tracing::warn!("Failed to load config, using defaults: {}", e);
-                Default::default()
+                (Default::default(), None)
             }
         };
 
@@ -928,7 +896,7 @@ impl Instance {
         }
 
         let sandbox_info = self.sandbox_info.as_ref().unwrap();
-        let env_keys = collect_env_keys(&sandbox_config, sandbox_info, None);
+        let env_keys = collect_env_keys(&sandbox_config, sandbox_info, profile_config.as_ref());
 
         let mut environment: Vec<(String, String)> = env_keys
             .iter()
@@ -940,7 +908,11 @@ impl Instance {
             format!("{}/.claude", CONTAINER_HOME),
         ));
 
-        environment.extend(collect_env_values(&sandbox_config, sandbox_info, None));
+        environment.extend(collect_env_values(
+            &sandbox_config,
+            sandbox_info,
+            profile_config.as_ref(),
+        ));
 
         if self.is_yolo_mode() && self.tool == "opencode" {
             environment.push((
@@ -1120,6 +1092,7 @@ pub const INSTRUCTION_SUPPORTED_TOOLS: &[&str] = &["claude", "codex"];
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_new_instance() {
@@ -1844,109 +1817,98 @@ mod tests {
             std::env::remove_var("TEST_COLLECT_EXP");
         }
 
-        // Tests for merge_env_vars_with_profile()
         #[test]
-        fn test_merge_env_vars_with_profile_empty_sandbox() {
+        fn test_collect_env_values_profile_dollar_escape() {
             use crate::session::profile_config::ProfileConfig;
-            let sandbox_env = vec![];
-            let mut profile_config = ProfileConfig::default();
-            let mut profile_values = HashMap::new();
-            profile_values.insert("KEY".to_string(), "value".to_string());
-            profile_config.environment_values = Some(profile_values);
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
-            assert!(result.contains(&("KEY".to_string(), "value".to_string())));
-        }
-
-        #[test]
-        fn test_merge_env_vars_with_profile_empty_profile() {
-            use crate::session::profile_config::ProfileConfig;
-            let sandbox_env = vec![("A".to_string(), "1".to_string())];
-            let profile_config = ProfileConfig::default();
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
-            assert!(result.contains(&("A".to_string(), "1".to_string())));
-        }
-
-        #[test]
-        fn test_merge_env_vars_with_profile_both() {
-            use crate::session::profile_config::ProfileConfig;
-            let sandbox_env = vec![
-                ("A".to_string(), "1".to_string()),
-                ("B".to_string(), "2".to_string()),
-            ];
-            let mut profile_config = ProfileConfig::default();
-            let mut profile_values = HashMap::new();
-            profile_values.insert("C".to_string(), "3".to_string());
-            profile_values.insert("D".to_string(), "4".to_string());
-            profile_config.environment_values = Some(profile_values);
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
-            assert!(result.contains(&("A".to_string(), "1".to_string())));
-            assert!(result.contains(&("B".to_string(), "2".to_string())));
-            assert!(result.contains(&("C".to_string(), "3".to_string())));
-            assert!(result.contains(&("D".to_string(), "4".to_string())));
-        }
-
-        #[test]
-        fn test_merge_env_vars_with_profile_conflict() {
-            use crate::session::profile_config::ProfileConfig;
-            let sandbox_env = vec![("VAR".to_string(), "sandbox".to_string())];
-            let mut profile_config = ProfileConfig::default();
-            let mut profile_values = HashMap::new();
-            profile_values.insert("VAR".to_string(), "profile".to_string());
-            profile_config.environment_values = Some(profile_values);
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
-            // Profile wins on conflict
-            assert!(result.contains(&("VAR".to_string(), "profile".to_string())));
-            assert!(!result.contains(&("VAR".to_string(), "sandbox".to_string())));
-        }
-
-        #[test]
-        fn test_merge_env_vars_with_profile_environment_array() {
-            use crate::session::profile_config::ProfileConfig;
-            std::env::set_var("TEST_MERGE_HOST", "from_host");
-            let sandbox_env = vec![];
-            let mut profile_config = ProfileConfig::default();
-            profile_config.environment = Some(vec!["TEST_MERGE_HOST".to_string()]);
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
-            assert!(result.contains(&("TEST_MERGE_HOST".to_string(), "from_host".to_string())));
-            std::env::remove_var("TEST_MERGE_HOST");
-        }
-
-        #[test]
-        fn test_merge_env_vars_with_profile_environment_values() {
-            use crate::session::profile_config::ProfileConfig;
-            let sandbox_env = vec![];
-            let mut profile_config = ProfileConfig::default();
-            let mut profile_values = HashMap::new();
-            profile_values.insert("STATIC".to_string(), "value".to_string());
-            profile_config.environment_values = Some(profile_values);
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
-            assert!(result.contains(&("STATIC".to_string(), "value".to_string())));
-        }
-
-        #[test]
-        fn test_merge_env_vars_with_profile_expansion() {
-            use crate::session::profile_config::ProfileConfig;
-            std::env::set_var("TEST_MERGE_EXP", "expanded_value");
-            let sandbox_env = vec![];
-            let mut profile_config = ProfileConfig::default();
-            let mut profile_values = HashMap::new();
-            profile_values.insert("KEY".to_string(), "$TEST_MERGE_EXP".to_string());
-            profile_config.environment_values = Some(profile_values);
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
-            assert!(result.contains(&("KEY".to_string(), "expanded_value".to_string())));
-            std::env::remove_var("TEST_MERGE_EXP");
-        }
-
-        #[test]
-        fn test_merge_env_vars_with_profile_dollar_escape() {
-            use crate::session::profile_config::ProfileConfig;
-            let sandbox_env = vec![];
+            let sandbox_config = crate::session::config::SandboxConfig::default();
+            let sandbox_info = SandboxInfo {
+                enabled: false,
+                container_id: None,
+                image: "".to_string(),
+                container_name: "".to_string(),
+                created_at: None,
+                yolo_mode: None,
+                extra_env_keys: None,
+                extra_env_values: None,
+                custom_instruction: None,
+            };
             let mut profile_config = ProfileConfig::default();
             let mut profile_values = HashMap::new();
             profile_values.insert("LITERAL".to_string(), "$$HOME".to_string());
             profile_config.environment_values = Some(profile_values);
-            let result = merge_env_vars_with_profile(sandbox_env, &profile_config);
+            let result = collect_env_values(&sandbox_config, &sandbox_info, Some(&profile_config));
             assert!(result.contains(&("LITERAL".to_string(), "$HOME".to_string())));
+        }
+
+        #[test]
+        fn test_collect_env_keys_profile_environment_array() {
+            use crate::session::profile_config::ProfileConfig;
+            std::env::set_var("TEST_PROFILE_HOST", "from_host");
+            let sandbox_config = crate::session::config::SandboxConfig::default();
+            let sandbox_info = SandboxInfo {
+                enabled: false,
+                container_id: None,
+                image: "".to_string(),
+                container_name: "".to_string(),
+                created_at: None,
+                yolo_mode: None,
+                extra_env_keys: None,
+                extra_env_values: None,
+                custom_instruction: None,
+            };
+            let mut profile_config = ProfileConfig::default();
+            profile_config.environment = Some(vec!["TEST_PROFILE_HOST".to_string()]);
+            let keys = collect_env_keys(&sandbox_config, &sandbox_info, Some(&profile_config));
+            assert!(keys.contains(&"TEST_PROFILE_HOST".to_string()));
+            std::env::remove_var("TEST_PROFILE_HOST");
+        }
+
+        #[test]
+        fn test_collect_env_values_profile_expansion() {
+            use crate::session::profile_config::ProfileConfig;
+            std::env::set_var("TEST_PROFILE_EXP", "expanded_value");
+            let sandbox_config = crate::session::config::SandboxConfig::default();
+            let sandbox_info = SandboxInfo {
+                enabled: false,
+                container_id: None,
+                image: "".to_string(),
+                container_name: "".to_string(),
+                created_at: None,
+                yolo_mode: None,
+                extra_env_keys: None,
+                extra_env_values: None,
+                custom_instruction: None,
+            };
+            let mut profile_config = ProfileConfig::default();
+            let mut profile_values = HashMap::new();
+            profile_values.insert("KEY".to_string(), "$TEST_PROFILE_EXP".to_string());
+            profile_config.environment_values = Some(profile_values);
+            let result = collect_env_values(&sandbox_config, &sandbox_info, Some(&profile_config));
+            assert!(result.contains(&("KEY".to_string(), "expanded_value".to_string())));
+            std::env::remove_var("TEST_PROFILE_EXP");
+        }
+
+        #[test]
+        fn test_collect_env_keys_merges_sandbox_and_profile() {
+            use crate::session::profile_config::ProfileConfig;
+            let mut sandbox_config = crate::session::config::SandboxConfig::default();
+            sandbox_config.environment = vec!["SANDBOX_VAR".to_string()];
+            let sandbox_info = SandboxInfo {
+                enabled: false,
+                container_id: None,
+                image: "".to_string(),
+                container_name: "".to_string(),
+                created_at: None,
+                yolo_mode: None,
+                extra_env_keys: None,
+                extra_env_values: None,
+                custom_instruction: None,
+            };
+            let mut profile_config = ProfileConfig::default();
+            profile_config.environment = Some(vec!["PROFILE_VAR".to_string()]);
+            let keys = collect_env_keys(&sandbox_config, &sandbox_info, Some(&profile_config));
+            assert!(keys.contains(&"SANDBOX_VAR".to_string()));
+            assert!(keys.contains(&"PROFILE_VAR".to_string()));
         }
     }
 }
