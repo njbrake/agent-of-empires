@@ -27,6 +27,7 @@ use super::dialogs::{
 use super::diff::DiffView;
 use super::settings::SettingsView;
 use super::status_poller::StatusPoller;
+use super::summary_poller::{SummaryCache, SummaryPoller, SummaryRequest};
 
 /// View mode for the home screen
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -131,6 +132,10 @@ pub struct HomeView {
     pub(super) status_poller: StatusPoller,
     pub(super) pending_status_refresh: bool,
 
+    // AI summary of terminal output
+    pub(super) summary_poller: SummaryPoller,
+    pub(super) summary_cache: SummaryCache,
+
     // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
 
@@ -224,6 +229,8 @@ impl HomeView {
             available_tools,
             status_poller: StatusPoller::new(),
             pending_status_refresh: false,
+            summary_poller: SummaryPoller::new(),
+            summary_cache: SummaryCache::default(),
             deletion_poller: DeletionPoller::new(),
             creation_poller: CreationPoller::new(),
             creation_cancelled: false,
@@ -623,5 +630,77 @@ impl HomeView {
         }
         // Don't save terminal info for container terminals - it's ephemeral
         Ok(())
+    }
+
+    /// Trigger a summary request if the session changed or enough time elapsed.
+    /// Only fires in Agent view when preview content is non-empty.
+    pub fn refresh_summary_if_needed(&mut self) {
+        use std::time::Duration;
+        const SUMMARY_INTERVAL: Duration = Duration::from_secs(15);
+
+        if self.view_mode != ViewMode::Agent {
+            return;
+        }
+
+        let session_id = match &self.selected_session {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        if self.preview_cache.content.is_empty() {
+            return;
+        }
+
+        let session_changed = self.summary_cache.session_id.as_ref() != Some(&session_id);
+        let time_elapsed = self.summary_cache.last_request.elapsed() >= SUMMARY_INTERVAL;
+
+        if session_changed || time_elapsed {
+            self.summary_poller.request_summary(SummaryRequest {
+                session_id: session_id.clone(),
+                terminal_output: self.preview_cache.content.clone(),
+            });
+            self.summary_cache.is_loading = true;
+            if session_changed {
+                self.summary_cache.session_id = Some(session_id);
+                self.summary_cache.summary.clear();
+                self.summary_cache.is_error = false;
+            }
+            self.summary_cache.last_request = Instant::now();
+        }
+    }
+
+    /// Force a summary refresh regardless of timing, for manual trigger via keybinding.
+    pub fn force_summary_refresh(&mut self) {
+        let session_id = match &self.selected_session {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        if self.preview_cache.content.is_empty() {
+            return;
+        }
+
+        self.summary_poller.request_summary(SummaryRequest {
+            session_id: session_id.clone(),
+            terminal_output: self.preview_cache.content.clone(),
+        });
+        self.summary_cache.is_loading = true;
+        self.summary_cache.session_id = Some(session_id);
+        self.summary_cache.last_request = Instant::now();
+    }
+
+    /// Apply results from the background summary thread.
+    /// Returns true if a result was applied.
+    pub fn apply_summary_results(&mut self) -> bool {
+        if let Some(result) = self.summary_poller.try_recv_result() {
+            // Discard stale results (wrong session_id)
+            if self.summary_cache.session_id.as_ref() == Some(&result.session_id) {
+                self.summary_cache.summary = result.summary;
+                self.summary_cache.is_error = result.is_error;
+                self.summary_cache.is_loading = false;
+                return true;
+            }
+        }
+        false
     }
 }

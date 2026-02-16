@@ -197,6 +197,12 @@ impl App {
                 refresh_needed = true;
             }
 
+            // AI summary polling
+            self.home.refresh_summary_if_needed();
+            if self.home.apply_summary_results() {
+                refresh_needed = true;
+            }
+
             // Tick the dialog spinner if loading
             if self.home.is_creation_pending() {
                 self.home.tick_dialog();

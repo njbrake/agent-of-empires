@@ -9,5 +9,5 @@ mod text_input;
 pub use dir_picker::{DirPicker, DirPickerResult};
 pub use help::HelpOverlay;
 pub use list_picker::{ListPicker, ListPickerResult};
-pub use preview::Preview;
+pub use preview::{Preview, SummaryDisplay};
 pub use text_input::render_text_field;

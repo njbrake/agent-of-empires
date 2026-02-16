@@ -8,6 +8,13 @@ use crate::tui::styles::Theme;
 
 pub struct Preview;
 
+/// Data transfer object for rendering the AI summary box
+pub struct SummaryDisplay {
+    pub text: String,
+    pub is_loading: bool,
+    pub is_error: bool,
+}
+
 impl Preview {
     pub fn render_terminal_preview(
         frame: &mut Frame,
@@ -119,6 +126,7 @@ impl Preview {
         instance: &Instance,
         cached_output: &str,
         theme: &Theme,
+        summary: Option<&SummaryDisplay>,
     ) {
         // Adjust height based on whether worktree info is present
         let info_height = if instance.worktree_info.is_some() {
@@ -127,16 +135,22 @@ impl Preview {
             6 // Standard height
         };
 
+        let summary_height = if summary.is_some() { 8 } else { 0 };
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(info_height), // Info section
-                Constraint::Min(1),              // Output section
+                Constraint::Length(info_height),    // Info section
+                Constraint::Length(summary_height), // AI summary section
+                Constraint::Min(1),                 // Output section
             ])
             .split(area);
 
         Self::render_info(frame, chunks[0], instance, theme);
-        Self::render_output_cached(frame, chunks[1], instance, cached_output, theme);
+        if let Some(summary) = summary {
+            Self::render_summary(frame, chunks[1], summary, theme);
+        }
+        Self::render_output_cached(frame, chunks[2], instance, cached_output, theme);
     }
 
     fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
@@ -223,6 +237,34 @@ impl Preview {
 
         let paragraph = Paragraph::new(info_lines);
         frame.render_widget(paragraph, area);
+    }
+
+    fn render_summary(frame: &mut Frame, area: Rect, summary: &SummaryDisplay, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .title(" AI Summary ")
+            .title_style(Style::default().fg(theme.dimmed))
+            .padding(Padding::new(0, 0, 1, 1));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if summary.is_loading && summary.text.is_empty() {
+            let text = Paragraph::new("Generating summary...")
+                .style(Style::default().fg(theme.dimmed).italic());
+            frame.render_widget(text, inner);
+        } else {
+            let style = if summary.is_error {
+                Style::default().fg(theme.dimmed)
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let text = Paragraph::new(summary.text.as_str())
+                .style(style)
+                .wrap(Wrap { trim: false });
+            frame.render_widget(text, inner);
+        }
     }
 
     fn render_output_cached(

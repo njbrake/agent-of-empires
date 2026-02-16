@@ -9,7 +9,7 @@ use super::{
     ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_WAITING,
 };
 use crate::session::{Item, Status};
-use crate::tui::components::{HelpOverlay, Preview};
+use crate::tui::components::{HelpOverlay, Preview, SummaryDisplay};
 use crate::tui::styles::Theme;
 use crate::update::UpdateInfo;
 
@@ -447,12 +447,24 @@ impl HomeView {
 
                 if let Some(id) = &self.selected_session {
                     if let Some(inst) = self.instance_map.get(id) {
+                        let summary_display = if !self.summary_cache.summary.is_empty()
+                            || self.summary_cache.is_loading
+                        {
+                            Some(SummaryDisplay {
+                                text: self.summary_cache.summary.clone(),
+                                is_loading: self.summary_cache.is_loading,
+                                is_error: self.summary_cache.is_error,
+                            })
+                        } else {
+                            None
+                        };
                         Preview::render_with_cache(
                             frame,
                             inner,
                             inst,
                             &self.preview_cache.content,
                             theme,
+                            summary_display.as_ref(),
                         );
                     }
                 } else {

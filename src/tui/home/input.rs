@@ -528,6 +528,12 @@ impl HomeView {
                     self.toggle_group_collapsed(&path);
                 }
             }
+            KeyCode::Char('S') => {
+                // Manually trigger AI summary refresh (Agent view only)
+                if self.view_mode == ViewMode::Agent {
+                    self.force_summary_refresh();
+                }
+            }
             KeyCode::Char('H') => {
                 self.shrink_list();
             }
