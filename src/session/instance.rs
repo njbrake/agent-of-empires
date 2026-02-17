@@ -355,29 +355,31 @@ fn collect_env_keys(
     env_keys
 }
 
-/// Collect all key=value environment pairs from global config and per-session extras.
+/// Collect all key=value environment pairs from global config, per-session extras, and profile.
+/// Later sources override earlier ones for the same key (profile > session > global).
 fn collect_env_values(
     sandbox_config: &super::config::SandboxConfig,
     sandbox_info: &SandboxInfo,
     profile_config: Option<&super::profile_config::ProfileConfig>,
 ) -> Vec<(String, String)> {
-    let mut values = Vec::new();
+    use std::collections::HashMap;
+
+    let mut map: HashMap<String, String> = HashMap::new();
 
     for (key, val) in &sandbox_config.environment_values {
         if let Some(resolved) = resolve_env_value(val) {
-            values.push((key.clone(), resolved));
+            map.insert(key.clone(), resolved);
         }
     }
 
     if let Some(extra_vals) = &sandbox_info.extra_env_values {
         for (key, val) in extra_vals {
             if let Some(resolved) = resolve_env_value(val) {
-                values.push((key.clone(), resolved));
+                map.insert(key.clone(), resolved);
             }
         }
     }
 
-    // Add profile environment values (profile overrides on conflicts)
     if let Some(profile) = profile_config {
         if let Some(profile_env) = &profile.environment_values {
             tracing::debug!(
@@ -385,20 +387,17 @@ fn collect_env_values(
                 "Adding profile environment_values"
             );
             for (key, val) in profile_env {
-                // Resolve env value to handle $VAR and $$VAR syntax
                 if let Some(resolved) = resolve_env_value(val) {
                     tracing::debug!(key = %key, resolved = %resolved, "Profile env value resolved");
-                    values.push((key.clone(), resolved));
+                    map.insert(key.clone(), resolved);
                 } else {
                     tracing::warn!(key = %key, val = %val, "Profile env value could not be resolved");
                 }
             }
-        } else {
-            tracing::debug!("Profile has no environment_values");
         }
     }
 
-    values
+    map.into_iter().collect()
 }
 
 /// Collect environment variables from profile config for non-sandboxed (host) sessions.
@@ -911,8 +910,13 @@ impl Instance {
         };
 
         tracing::debug!("container cmd: {}", cmd.as_ref().map_or("none", |v| v));
-        // Collect profile env vars for both sandboxed and host sessions
-        let host_env_vars = collect_host_env_vars(profile_config.as_ref());
+        // Only pass profile env vars to the host tmux session for non-sandboxed sessions.
+        // Sandboxed sessions receive env vars through Docker instead.
+        let host_env_vars = if self.sandbox_info.is_none() {
+            collect_host_env_vars(profile_config.as_ref())
+        } else {
+            Vec::new()
+        };
         session.create_with_size_env(&self.project_path, cmd.as_deref(), size, &host_env_vars)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
@@ -2135,9 +2139,9 @@ mod tests {
             profile_values.insert("VAR".to_string(), "profile".to_string());
             profile_config.environment_values = Some(profile_values);
             let result = collect_env_values(&sandbox_config, &sandbox_info, Some(&profile_config));
-            // Profile values are added after sandbox values, so both should be present
-            assert!(result.iter().any(|(k, v)| k == "VAR" && v == "sandbox"));
+            // Profile values override sandbox values for the same key
             assert!(result.iter().any(|(k, v)| k == "VAR" && v == "profile"));
+            assert!(!result.iter().any(|(k, v)| k == "VAR" && v == "sandbox"));
         }
 
         #[test]

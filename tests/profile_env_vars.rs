@@ -23,12 +23,22 @@ fn test_env_var_resolution_with_host_vars() -> Result<()> {
 
     std::env::set_var("TEST_HOST_VAR", "from_host_env");
 
+    let env_keys = vec!["TEST_HOST_VAR".to_string()];
     let mut env_values = HashMap::new();
     env_values.insert("CONFIG_VAR".to_string(), "literal_value".to_string());
 
-    let resolved = agent_of_empires::session::config::resolve_env_vars(&[], &env_values);
+    let resolved = agent_of_empires::session::config::resolve_env_vars(&env_keys, &env_values);
 
-    assert!(resolved.contains_key("CONFIG_VAR"));
+    // Host var forwarded via environment array
+    assert_eq!(
+        resolved.get("TEST_HOST_VAR"),
+        Some(&"from_host_env".to_string())
+    );
+    // Literal value from environment_values
+    assert_eq!(
+        resolved.get("CONFIG_VAR"),
+        Some(&"literal_value".to_string())
+    );
 
     std::env::remove_var("TEST_HOST_VAR");
 

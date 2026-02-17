@@ -120,12 +120,6 @@ pub struct SandboxConfigOverride {
     pub extra_volumes: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<Vec<String>>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_values: Option<HashMap<String, String>>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_cleanup: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -239,12 +233,6 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(ref extra_volumes) = source.extra_volumes {
         target.extra_volumes = extra_volumes.clone();
-    }
-    if let Some(ref environment) = source.environment {
-        target.environment = environment.clone();
-    }
-    if let Some(ref environment_values) = source.environment_values {
-        target.environment_values = environment_values.clone();
     }
     if let Some(auto_cleanup) = source.auto_cleanup {
         target.auto_cleanup = auto_cleanup;

@@ -309,6 +309,31 @@ mod tests {
     }
 
     #[test]
+    fn test_build_create_args_with_env_vars() {
+        let env_vars = vec![
+            ("API_KEY".to_string(), "secret123".to_string()),
+            ("DB_HOST".to_string(), "localhost".to_string()),
+        ];
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None, &env_vars);
+
+        // Env vars should appear as -e KEY=VALUE pairs
+        let e_indices: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-e")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(e_indices.len(), 2);
+        assert_eq!(args[e_indices[0] + 1], "API_KEY=secret123");
+        assert_eq!(args[e_indices[1] + 1], "DB_HOST=localhost");
+
+        // Env vars should come after -c working_dir but before command
+        let c_idx = args.iter().position(|a| a == "-c").unwrap();
+        assert!(e_indices[0] > c_idx + 1);
+        assert_eq!(args.last().unwrap(), "claude");
+    }
+
+    #[test]
     fn test_build_create_args_with_size_and_command() {
         let args = build_create_args(
             "test_session",
