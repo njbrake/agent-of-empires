@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 use std::path::{Path, PathBuf};
 
-use crate::docker::{self, DockerContainer};
+use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::repo_config;
 use crate::session::{civilizations, Config, GroupTree, Instance, SandboxInfo, Storage};
 
@@ -175,22 +175,24 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
     let config = Config::load()?;
 
+    let runtime = containers::get_container_runtime();
     if use_sandbox || config.sandbox.enabled_by_default {
-        if !docker::is_docker_available() {
+        if !runtime.is_available() {
             if use_sandbox {
                 bail!(
-                    "Docker is not installed or not accessible.\n\
+                    "Container runtime is not installed or not accessible.\n\
                      Install Docker: https://docs.docker.com/get-docker/\n\
+                     Or on macOS: Apple Container\n\
                      Tip: Use 'aoe add' without --sandbox to run directly on host"
                 );
             }
         } else {
-            let container_name = DockerContainer::generate_name(&instance.id);
+            let container_name = containers::DockerContainer::generate_name(&instance.id);
             let image = args
                 .sandbox_image
                 .as_ref()
                 .map(|s| s.trim().to_string())
-                .unwrap_or_else(docker::effective_default_image);
+                .unwrap_or_else(|| runtime.effective_default_image());
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,
