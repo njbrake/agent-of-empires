@@ -16,6 +16,13 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
+
+    // Handle completion before migrations - no database setup needed
+    if let Some(Commands::Completion { shell }) = cli.command {
+        generate(shell, &mut Cli::command(), "aoe", &mut std::io::stdout());
+        return Ok(());
+    }
+
     let profile = cli.profile.unwrap_or_default();
 
     // TUI mode handles migrations with a spinner; CLI runs them silently
@@ -41,10 +48,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Sounds { command }) => cli::sounds::run(command).await,
         Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
-        Some(Commands::Completion { shell }) => {
-            generate(shell, &mut Cli::command(), "aoe", &mut std::io::stdout());
-            Ok(())
-        }
+        Some(Commands::Completion { .. }) => unreachable!(),
         None => tui::run(&profile).await,
     }
 }
