@@ -6,6 +6,7 @@
     <a href="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml"><img src="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://github.com/njbrake/agent-of-empires/releases"><img src="https://img.shields.io/github/v/release/njbrake/agent-of-empires" alt="GitHub release"></a>
+    <a href="https://formulae.brew.sh/formula/aoe"><img src="https://img.shields.io/homebrew/v/aoe" alt="Homebrew"></a>
     <a href="https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html"><img src="https://img.shields.io/badge/MSRV-1.74-blue?logo=rust" alt="MSRV"></a>
     <a href="https://github.com/njbrake/agent-of-empires/stargazers"><img src="https://img.shields.io/github/stars/njbrake/agent-of-empires?style=social" alt="GitHub stars"></a>
     <a href="https://agent-of-empires.com/docs/credits.html"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnjbrake%2Fagent-of-empires%2Fcredit%2Fcredits.json&query=%24.contributors.length&label=contributors&color=blue&logo=github" alt="Contributors"></a>

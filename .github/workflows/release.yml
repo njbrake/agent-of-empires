@@ -241,3 +241,19 @@ jobs:
           git add Formula/aoe.rb
           git commit -m "Update aoe to ${VERSION}"
           git push
+
+  update-homebrew-core:
+    name: Update Homebrew Core Formula
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - name: Update homebrew-core formula
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.HOMEBREW_CORE_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          brew tap homebrew/core
+          brew bump-formula-pr aoe \
+            --url "https://github.com/njbrake/agent-of-empires/archive/refs/tags/${VERSION}.tar.gz" \
+            --no-browse \
+            --no-audit

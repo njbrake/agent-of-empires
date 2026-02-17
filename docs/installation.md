@@ -20,10 +20,8 @@ curl -fsSL \
 ### Homebrew
 
 ```bash
-brew install njbrake/aoe/aoe
+brew install aoe
 ```
-
-Update via `brew update && brew upgrade aoe`.
 
 ### Build from Source
 
