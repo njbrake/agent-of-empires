@@ -233,6 +233,9 @@ impl RuntimeBase {
         if force {
             args.push("-f".to_string());
         }
+        // Remove anonymous volumes with the container to prevent orphaned volume buildup.
+        // This does NOT affect named volumes (like auth volumes).
+        args.push("-v".to_string());
         args.push(name.to_string());
 
         let output = self.command().args(&args).output()?;
