@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use crate::session::{
-    validate_check_interval, Config, DefaultTerminalMode, ProfileConfig, TmuxMouseMode,
-    TmuxStatusBarMode,
+    validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
+    TmuxMouseMode, TmuxStatusBarMode,
 };
 use crate::sound::{validate_sound_exists, SoundMode};
 
@@ -62,6 +62,7 @@ pub enum FieldKey {
     VolumeIgnores,
     MountSsh,
     CustomInstruction,
+    ContainerRuntime,
     // Tmux
     StatusBar,
     Mouse,
@@ -406,10 +407,20 @@ fn build_sandbox_fields(
         sb.and_then(|s| s.custom_instruction.clone()),
         sb.map(|s| s.custom_instruction.is_some()).unwrap_or(false),
     );
+    let (container_runtime, o_cr) = resolve_value(
+        scope,
+        global.sandbox.container_runtime,
+        sb.and_then(|s| s.container_runtime),
+    );
 
     let terminal_mode_selected = match default_terminal_mode {
         DefaultTerminalMode::Host => 0,
         DefaultTerminalMode::Container => 1,
+    };
+
+    let container_runtime_selected = match container_runtime {
+        ContainerRuntimeName::Docker => 0,
+        ContainerRuntimeName::AppleContainer => 1,
     };
 
     vec![
@@ -519,6 +530,17 @@ fn build_sandbox_fields(
             value: FieldValue::OptionalText(custom_instruction),
             category: SettingsCategory::Sandbox,
             has_override: o_ci,
+        },
+        SettingField {
+            key: FieldKey::ContainerRuntime,
+            label: "Container Runtime",
+            description: "Container runtime for sandboxing (Docker or Apple Container on macOS)",
+            value: FieldValue::Select {
+                selected: container_runtime_selected,
+                options: vec!["Docker".into(), "Apple Container".into()],
+            },
+            category: SettingsCategory::Sandbox,
+            has_override: o_cr,
         },
     ]
 }
@@ -835,6 +857,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => DefaultTerminalMode::Container,
             };
         }
+        (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
+            config.sandbox.container_runtime = match selected {
+                0 => ContainerRuntimeName::Docker,
+                _ => ContainerRuntimeName::AppleContainer,
+            };
+        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             config.tmux.status_bar = match selected {
@@ -1076,6 +1104,18 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.default_terminal_mode,
                 &mut config.sandbox,
                 |s, val| s.default_terminal_mode = val,
+            );
+        }
+        (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
+            let runtime = match selected {
+                0 => ContainerRuntimeName::Docker,
+                _ => ContainerRuntimeName::AppleContainer,
+            };
+            set_or_clear_override(
+                runtime,
+                &global.sandbox.container_runtime,
+                &mut config.sandbox,
+                |s, val| s.container_runtime = val,
             );
         }
         // Tmux

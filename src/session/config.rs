@@ -1,13 +1,12 @@
 //! User configuration management
 
+use super::get_app_dir;
+use super::repo_config::HooksConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-
-use super::get_app_dir;
-use super::repo_config::HooksConfig;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -245,6 +244,19 @@ pub struct SandboxConfig {
     /// Custom instruction text appended to the agent's system prompt in sandboxed sessions
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instruction: Option<String>,
+
+    /// Container runtime to use for sandboxing (docker or apple_container)
+    #[serde(default)]
+    pub container_runtime: ContainerRuntimeName,
+}
+
+/// Container runtime options for sandboxing
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerRuntimeName {
+    AppleContainer,
+    #[default]
+    Docker,
 }
 
 impl Default for SandboxConfig {
@@ -263,12 +275,13 @@ impl Default for SandboxConfig {
             volume_ignores: Vec::new(),
             mount_ssh: false,
             custom_instruction: None,
+            container_runtime: ContainerRuntimeName::default(),
         }
     }
 }
 
 fn default_sandbox_image() -> String {
-    crate::docker::default_sandbox_image().to_string()
+    "ghcr.io/njbrake/aoe-sandbox:latest".to_string()
 }
 
 fn default_sandbox_environment() -> Vec<String> {
