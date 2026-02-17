@@ -38,6 +38,11 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+/// Check whether there are any pending migrations to run.
+pub fn has_pending_migrations() -> bool {
+    get_current_version() < CURRENT_VERSION
+}
+
 /// Run all pending migrations. Call this early in app startup.
 pub fn run_migrations() -> Result<()> {
     let current = get_current_version();

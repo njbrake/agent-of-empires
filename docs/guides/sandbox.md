@@ -68,7 +68,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | `environment_values` | `{}` | Env vars with explicit values to inject (see below) |
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
-| `mount_ssh` | `true` | Mount `~/.ssh/` read-only into containers |
+| `mount_ssh` | `false` | Mount `~/.ssh/` read-only into containers |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` (on host machine) or `"container"` (inside Docker) |
 
 ## Volume Mounts

@@ -40,6 +40,10 @@ struct AgentConfigMount {
     /// Each (filename, content) pair is written to the sandbox dir root and mounted as
     /// a separate file at CONTAINER_HOME/filename (write-once).
     home_seed_files: &'static [(&'static str, &'static str)],
+    /// Files that should only be copied from the host if they don't already exist in the
+    /// sandbox. Protects credentials placed by the v002 migration or by in-container
+    /// authentication from being overwritten by stale host copies.
+    preserve_files: &'static [&'static str],
 }
 
 /// Agent config definitions. Each entry describes one agent CLI's config directory.
@@ -57,6 +61,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
         home_seed_files: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
+        preserve_files: &[".credentials.json"],
     },
     AgentConfigMount {
         host_rel: ".local/share/opencode",
@@ -66,6 +71,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         copy_dirs: &[],
         keychain_credential: None,
         home_seed_files: &[],
+        preserve_files: &[],
     },
     AgentConfigMount {
         host_rel: ".codex",
@@ -75,6 +81,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         copy_dirs: &[],
         keychain_credential: None,
         home_seed_files: &[],
+        preserve_files: &[],
     },
     AgentConfigMount {
         host_rel: ".gemini",
@@ -84,6 +91,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         copy_dirs: &[],
         keychain_credential: None,
         home_seed_files: &[],
+        preserve_files: &[],
     },
     AgentConfigMount {
         host_rel: ".vibe",
@@ -93,6 +101,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         copy_dirs: &[],
         keychain_credential: None,
         home_seed_files: &[],
+        preserve_files: &[],
     },
 ];
 
@@ -106,6 +115,7 @@ fn sync_agent_config(
     skip_entries: &[&str],
     seed_files: &[(&str, &str)],
     copy_dirs: &[&str],
+    preserve_files: &[&str],
 ) -> Result<()> {
     std::fs::create_dir_all(sandbox_dir)?;
 
@@ -145,7 +155,16 @@ fn sync_agent_config(
             continue;
         }
 
-        if let Err(e) = std::fs::copy(entry.path(), sandbox_dir.join(&name)) {
+        let dest = sandbox_dir.join(&name);
+
+        // Preserved files are only seeded from the host when they don't already exist
+        // in the sandbox. This protects credentials placed by migration or in-container
+        // authentication from being overwritten by stale host copies.
+        if preserve_files.iter().any(|&p| p == name_str.as_ref()) && dest.exists() {
+            continue;
+        }
+
+        if let Err(e) = std::fs::copy(entry.path(), &dest) {
             tracing::warn!("Failed to copy {}: {}", name_str, e);
         }
     }
@@ -237,6 +256,45 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
 #[cfg(not(target_os = "macos"))]
 fn extract_keychain_credential(_service: &str, _dest: &Path) -> Result<bool> {
     Ok(false)
+}
+
+/// Sync a single agent's host config into its shared sandbox directory.
+/// Handles config file sync, keychain credential extraction, and home-level seed files.
+fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::path::PathBuf> {
+    let host_dir = home.join(mount.host_rel);
+    let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
+
+    if host_dir.exists() {
+        sync_agent_config(
+            &host_dir,
+            &sandbox_dir,
+            mount.skip_entries,
+            mount.seed_files,
+            mount.copy_dirs,
+            mount.preserve_files,
+        )?;
+
+        if let Some((service, filename)) = mount.keychain_credential {
+            if let Err(e) = extract_keychain_credential(service, &sandbox_dir.join(filename)) {
+                tracing::warn!(
+                    "Failed to extract keychain credential for {}: {}",
+                    mount.host_rel,
+                    e
+                );
+            }
+        }
+    } else {
+        std::fs::create_dir_all(&sandbox_dir)?;
+    }
+
+    for &(filename, content) in mount.home_seed_files {
+        let path = sandbox_dir.join(filename);
+        if !path.exists() {
+            std::fs::write(&path, content)?;
+        }
+    }
+
+    Ok(sandbox_dir)
 }
 
 /// Terminal environment variables that are always passed through for proper UI/theming
@@ -806,45 +864,12 @@ impl Instance {
         };
 
         for mount in AGENT_CONFIG_MOUNTS {
-            let host_dir = home.join(mount.host_rel);
-            if !host_dir.exists() {
-                continue;
-            }
-
-            let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
-
-            if let Err(e) = sync_agent_config(
-                &host_dir,
-                &sandbox_dir,
-                mount.skip_entries,
-                mount.seed_files,
-                mount.copy_dirs,
-            ) {
+            if let Err(e) = prepare_sandbox_dir(mount, &home) {
                 tracing::warn!(
                     "Failed to refresh agent config for {}: {}",
                     mount.host_rel,
                     e
                 );
-            }
-
-            if let Some((service, filename)) = mount.keychain_credential {
-                if let Err(e) = extract_keychain_credential(service, &sandbox_dir.join(filename)) {
-                    tracing::warn!(
-                        "Failed to extract keychain credential for {}: {}",
-                        mount.host_rel,
-                        e
-                    );
-                }
-            }
-
-            // Write-once: only seed home-level files that don't already exist.
-            for &(filename, content) in mount.home_seed_files {
-                let path = sandbox_dir.join(filename);
-                if !path.exists() {
-                    if let Err(e) = std::fs::write(&path, content) {
-                        tracing::warn!("Failed to write home seed file {}: {}", filename, e);
-                    }
-                }
             }
         }
     }
@@ -1025,50 +1050,18 @@ impl Instance {
         // Agent definitions are in AGENT_CONFIG_MOUNTS -- add new agents there, not here.
         for mount in AGENT_CONFIG_MOUNTS {
             let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
-            let host_dir = home.join(mount.host_rel);
-            let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
 
-            if host_dir.exists() {
-                tracing::debug!(
-                    "Syncing agent config: {} -> {}",
-                    host_dir.display(),
-                    sandbox_dir.display()
-                );
-
-                if let Err(e) = sync_agent_config(
-                    &host_dir,
-                    &sandbox_dir,
-                    mount.skip_entries,
-                    mount.seed_files,
-                    mount.copy_dirs,
-                ) {
+            let sandbox_dir = match prepare_sandbox_dir(mount, &home) {
+                Ok(dir) => dir,
+                Err(e) => {
                     tracing::warn!(
-                        "Failed to sync agent config for {}, skipping: {}",
+                        "Failed to prepare sandbox dir for {}, skipping: {}",
                         mount.host_rel,
                         e
                     );
                     continue;
                 }
-
-                if let Some((service, filename)) = mount.keychain_credential {
-                    if let Err(e) =
-                        extract_keychain_credential(service, &sandbox_dir.join(filename))
-                    {
-                        tracing::warn!(
-                            "Failed to extract keychain credential for {}: {}",
-                            mount.host_rel,
-                            e
-                        );
-                    }
-                }
-            } else {
-                // Host dir doesn't exist but we still create the sandbox dir so the
-                // agent can write auth/state inside the container and have it persist.
-                if let Err(e) = std::fs::create_dir_all(&sandbox_dir) {
-                    tracing::warn!("Failed to create sandbox dir for {}: {}", mount.host_rel, e);
-                    continue;
-                }
-            }
+            };
 
             tracing::debug!(
                 "Sandbox dir ready for {}, binding {} -> {}",
@@ -1082,21 +1075,17 @@ impl Instance {
                 read_only: false,
             });
 
-            // Write-once: home-level seed files mounted as individual files
-            // at the container home directory.
-            for &(filename, content) in mount.home_seed_files {
+            // Home-level seed files are mounted as individual files at the container
+            // home directory (already written by prepare_sandbox_dir).
+            for &(filename, _) in mount.home_seed_files {
                 let file_path = sandbox_dir.join(filename);
-                if !file_path.exists() {
-                    if let Err(e) = std::fs::write(&file_path, content) {
-                        tracing::warn!("Failed to write home seed file {}: {}", filename, e);
-                        continue;
-                    }
+                if file_path.exists() {
+                    volumes.push(VolumeMount {
+                        host_path: file_path.to_string_lossy().to_string(),
+                        container_path: format!("{}/{}", CONTAINER_HOME, filename),
+                        read_only: false,
+                    });
                 }
-                volumes.push(VolumeMount {
-                    host_path: file_path.to_string_lossy().to_string(),
-                    container_path: format!("{}/{}", CONTAINER_HOME, filename),
-                    read_only: false,
-                });
             }
         }
 
@@ -1885,7 +1874,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let sandbox = dir.path().join("sandbox");
 
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
 
             assert!(sandbox.join("auth.json").exists());
             assert!(sandbox.join("settings.json").exists());
@@ -1898,7 +1887,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let sandbox = dir.path().join("sandbox");
 
-            sync_agent_config(&host, &sandbox, &["auth.json"], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &["auth.json"], &[], &[], &[]).unwrap();
 
             assert!(!sandbox.join("auth.json").exists());
             assert!(sandbox.join("settings.json").exists());
@@ -1911,7 +1900,7 @@ mod tests {
             let sandbox = dir.path().join("sandbox");
 
             let seeds = [("seed.json", r#"{"seeded":true}"#)];
-            sync_agent_config(&host, &sandbox, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
 
             let content = fs::read_to_string(sandbox.join("seed.json")).unwrap();
             assert_eq!(content, r#"{"seeded":true}"#);
@@ -1925,7 +1914,7 @@ mod tests {
 
             // First sync writes the seed.
             let seeds = [("seed.json", r#"{"seeded":true}"#)];
-            sync_agent_config(&host, &sandbox, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(sandbox.join("seed.json")).unwrap(),
                 r#"{"seeded":true}"#
@@ -1935,7 +1924,7 @@ mod tests {
             fs::write(sandbox.join("seed.json"), r#"{"modified":true}"#).unwrap();
 
             // Re-sync should NOT overwrite the container's changes.
-            sync_agent_config(&host, &sandbox, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(sandbox.join("seed.json")).unwrap(),
                 r#"{"modified":true}"#
@@ -1950,7 +1939,7 @@ mod tests {
 
             // Seed has the same name as a host file -- host copy wins.
             let seeds = [("auth.json", "seed-content")];
-            sync_agent_config(&host, &sandbox, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
 
             let content = fs::read_to_string(sandbox.join("auth.json")).unwrap();
             assert_eq!(content, r#"{"token":"abc"}"#);
@@ -1963,7 +1952,7 @@ mod tests {
             let sandbox = dir.path().join("sandbox");
 
             let seeds = [(".claude.json", r#"{"hasCompletedOnboarding":true}"#)];
-            sync_agent_config(&host, &sandbox, &[], &seeds, &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
 
             let content = fs::read_to_string(sandbox.join(".claude.json")).unwrap();
             assert_eq!(content, r#"{"hasCompletedOnboarding":true}"#);
@@ -1975,7 +1964,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let sandbox = dir.path().join("deep").join("nested").join("sandbox");
 
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
 
             assert!(sandbox.exists());
             assert!(sandbox.join("auth.json").exists());
@@ -2040,7 +2029,7 @@ mod tests {
             let host = setup_host_dir(&dir);
             let sandbox = dir.path().join("sandbox");
 
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(sandbox.join("auth.json")).unwrap(),
                 r#"{"token":"abc"}"#
@@ -2049,7 +2038,7 @@ mod tests {
             // Host file changes between sessions.
             fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
 
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(sandbox.join("auth.json")).unwrap(),
                 r#"{"token":"refreshed"}"#
@@ -2062,13 +2051,13 @@ mod tests {
             let host = setup_host_dir(&dir);
             let sandbox = dir.path().join("sandbox");
 
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
             assert!(!sandbox.join("new_cred.json").exists());
 
             // New credential file appears on host.
             fs::write(host.join("new_cred.json"), "new").unwrap();
 
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
             assert_eq!(
                 fs::read_to_string(sandbox.join("new_cred.json")).unwrap(),
                 "new"
@@ -2081,13 +2070,13 @@ mod tests {
             let host = setup_host_dir(&dir);
             let sandbox = dir.path().join("sandbox");
 
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
 
             // Container writes a runtime file into the sandbox dir.
             fs::write(sandbox.join("runtime.log"), "container-state").unwrap();
 
             // Refresh from host.
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
 
             // Container-written file survives (host has no file with that name).
             assert_eq!(
@@ -2108,7 +2097,7 @@ mod tests {
             fs::write(plugins.join("lsp").join("gopls.wasm"), "binary").unwrap();
 
             let sandbox = dir.path().join("sandbox");
-            sync_agent_config(&host, &sandbox, &[], &[], &["plugins"]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &["plugins"], &[]).unwrap();
 
             assert!(sandbox.join("plugins").join("config.json").exists());
             assert!(sandbox
@@ -2127,7 +2116,7 @@ mod tests {
 
             // "subdir" exists from setup_host_dir but is not in copy_dirs.
             let sandbox = dir.path().join("sandbox");
-            sync_agent_config(&host, &sandbox, &[], &[], &["nonexistent"]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &["nonexistent"], &[]).unwrap();
 
             assert!(!sandbox.join("subdir").exists());
             assert!(sandbox.join("auth.json").exists());
@@ -2172,7 +2161,7 @@ mod tests {
             std::os::unix::fs::symlink(&real_dir, host.join("skills")).unwrap();
 
             let sandbox = dir.path().join("sandbox");
-            sync_agent_config(&host, &sandbox, &[], &[], &["skills"]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &["skills"], &[]).unwrap();
 
             assert!(sandbox.join("config.json").exists());
             #[cfg(unix)]
@@ -2198,11 +2187,60 @@ mod tests {
 
             let sandbox = dir.path().join("sandbox");
             // Should succeed despite the broken symlink.
-            sync_agent_config(&host, &sandbox, &[], &[], &[]).unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
 
             assert_eq!(fs::read_to_string(sandbox.join("good.json")).unwrap(), "ok");
             // Broken symlink is skipped, not copied.
             assert!(!sandbox.join("broken-link").exists());
+        }
+
+        #[test]
+        fn test_preserve_files_not_overwritten() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let sandbox = dir.path().join("sandbox");
+
+            // First sync seeds the preserved file from host.
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
+            assert_eq!(
+                fs::read_to_string(sandbox.join("auth.json")).unwrap(),
+                r#"{"token":"abc"}"#
+            );
+
+            // Simulate migration or in-container auth writing a different credential.
+            fs::write(sandbox.join("auth.json"), r#"{"token":"container"}"#).unwrap();
+
+            // Host file changes.
+            fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
+
+            // Re-sync should NOT overwrite the preserved file.
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
+            assert_eq!(
+                fs::read_to_string(sandbox.join("auth.json")).unwrap(),
+                r#"{"token":"container"}"#
+            );
+
+            // Non-preserved files are still overwritten.
+            fs::write(host.join("settings.json"), "updated").unwrap();
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
+            assert_eq!(
+                fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+                "updated"
+            );
+        }
+
+        #[test]
+        fn test_preserve_files_seeded_when_missing() {
+            let dir = TempDir::new().unwrap();
+            let host = setup_host_dir(&dir);
+            let sandbox = dir.path().join("sandbox");
+
+            // Preserved file is copied when sandbox doesn't have it yet.
+            sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
+            assert_eq!(
+                fs::read_to_string(sandbox.join("auth.json")).unwrap(),
+                r#"{"token":"abc"}"#
+            );
         }
     }
 }

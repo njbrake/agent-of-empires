@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus};
 use tracing::info;
 
 /// Mapping from legacy named volume to the host-relative sandbox directory.
@@ -66,10 +66,15 @@ fn volume_exists(name: &str) -> bool {
 }
 
 /// Find a container image available locally to use for volume extraction.
-/// Tries the AOE sandbox image first, then alpine, then falls back to
-/// whatever is locally available.
+/// Tries the AOE sandbox image first, then small well-known images, then
+/// falls back to whatever is locally available.
 fn find_local_image() -> Option<String> {
-    let candidates = ["alpine", "busybox", "ubuntu"];
+    let candidates = [
+        "ghcr.io/njbrake/aoe-sandbox:latest",
+        "alpine",
+        "busybox",
+        "ubuntu",
+    ];
 
     // Check well-known small images first.
     for candidate in candidates {
@@ -160,6 +165,28 @@ fn merge_into(src: &Path, dest: &Path) -> Result<u32> {
     Ok(count)
 }
 
+/// Wait for a child process with a timeout. Kills the process if it exceeds the deadline.
+fn wait_with_timeout(
+    mut child: Child,
+    timeout: std::time::Duration,
+) -> std::io::Result<ExitStatus> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(status),
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "process timed out",
+                ));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     if !docker_available() {
         info!("Docker not available, skipping volume migration");
@@ -179,11 +206,15 @@ pub fn run() -> Result<()> {
             img
         }
         None => {
-            // Try pulling alpine as a last resort.
-            info!("No local images found, attempting to pull alpine");
-            let pull = Command::new("docker").args(["pull", "alpine"]).output();
+            // Try pulling alpine as a last resort, with a timeout so we don't hang
+            // on slow/absent networks.
+            info!("No local images found, attempting to pull alpine (15s timeout)");
+            let pull = Command::new("docker")
+                .args(["pull", "alpine"])
+                .spawn()
+                .and_then(|child| wait_with_timeout(child, std::time::Duration::from_secs(15)));
             match pull {
-                Ok(o) if o.status.success() => "alpine".to_string(),
+                Ok(status) if status.success() => "alpine".to_string(),
                 _ => {
                     tracing::warn!(
                         "No container images available for volume migration. \

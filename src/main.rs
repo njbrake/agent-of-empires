@@ -14,10 +14,13 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    migrations::run_migrations()?;
-
     let cli = Cli::parse();
     let profile = cli.profile.unwrap_or_default();
+
+    // TUI mode handles migrations with a spinner; CLI runs them silently
+    if cli.command.is_some() {
+        migrations::run_migrations()?;
+    }
 
     match cli.command {
         Some(Commands::Add(args)) => cli::add::run(&profile, args).await,
