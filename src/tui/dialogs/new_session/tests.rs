@@ -336,12 +336,12 @@ fn test_sandbox_disabled_by_default() {
 
 #[test]
 fn test_sandbox_image_initialized_with_effective_default() {
-    use crate::docker;
+    use crate::containers;
     let dialog = multi_tool_dialog();
     // The sandbox image input is initialized with the effective default
     assert_eq!(
         dialog.sandbox_image.value(),
-        docker::effective_default_image()
+        containers::get_container_runtime().effective_default_image()
     );
 }
 
@@ -351,8 +351,8 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
 
-    // Tab through all fields including sandbox image, yolo mode, env keys, and env values
-    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo, 8: env keys, 9: env values
+    // Tab through all fields including sandbox image, yolo mode, env keys, env values, inherited
+    // 0: title, 1: path, 2: group, 3: tool, 4: worktree, 5: sandbox, 6: image, 7: yolo, 8: env keys, 9: env values, 10: inherited
     for _ in 0..6 {
         dialog.handle_key(key(KeyCode::Tab));
     }
@@ -366,6 +366,9 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 9); // env values field
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.focused_field, 10); // inherited settings field
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 0); // wrap to start
@@ -408,7 +411,7 @@ fn test_submit_with_custom_sandbox_image() {
 
 #[test]
 fn test_submit_with_default_image_passes_through() {
-    use crate::docker;
+    use crate::containers;
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
@@ -419,7 +422,10 @@ fn test_submit_with_default_image_passes_through() {
         DialogResult::Submit(data) => {
             assert!(data.sandbox);
             // The image value from the input field is always passed through
-            assert_eq!(data.sandbox_image, docker::effective_default_image());
+            assert_eq!(
+                data.sandbox_image,
+                containers::get_container_runtime().effective_default_image()
+            );
         }
         _ => panic!("Expected Submit"),
     }
@@ -465,7 +471,7 @@ fn test_submit_sandbox_image_always_included() {
 
 #[test]
 fn test_sandbox_image_input_works() {
-    use crate::docker;
+    use crate::containers;
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
@@ -475,7 +481,10 @@ fn test_sandbox_image_input_works() {
     dialog.handle_key(key(KeyCode::Char('b')));
     dialog.handle_key(key(KeyCode::Char('c')));
 
-    let expected = format!("{}abc", docker::effective_default_image());
+    let expected = format!(
+        "{}abc",
+        containers::get_container_runtime().effective_default_image()
+    );
     assert_eq!(dialog.sandbox_image.value(), expected);
 }
 

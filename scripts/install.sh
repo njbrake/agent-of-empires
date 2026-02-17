@@ -81,6 +81,8 @@ main() {
 
     echo ""
     success "Run 'aoe' to get started!"
+    echo ""
+    info "For shell completions, run: aoe completion --help"
 }
 
 main "$@"

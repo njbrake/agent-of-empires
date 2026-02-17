@@ -16,6 +16,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session restart`↴](#aoe-session-restart)
 * [`aoe session attach`↴](#aoe-session-attach)
 * [`aoe session show`↴](#aoe-session-show)
+* [`aoe session rename`↴](#aoe-session-rename)
 * [`aoe session current`↴](#aoe-session-current)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
@@ -31,13 +32,14 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe worktree list`↴](#aoe-worktree-list)
 * [`aoe worktree info`↴](#aoe-worktree-info)
 * [`aoe worktree cleanup`↴](#aoe-worktree-cleanup)
+* [`aoe tmux`↴](#aoe-tmux)
+* [`aoe tmux status`↴](#aoe-tmux-status)
 * [`aoe sounds`↴](#aoe-sounds)
 * [`aoe sounds install`↴](#aoe-sounds-install)
 * [`aoe sounds list`↴](#aoe-sounds-list)
 * [`aoe sounds test`↴](#aoe-sounds-test)
-* [`aoe tmux`↴](#aoe-tmux)
-* [`aoe tmux status`↴](#aoe-tmux-status)
 * [`aoe uninstall`↴](#aoe-uninstall)
+* [`aoe completion`↴](#aoe-completion)
 
 ## `aoe`
 
@@ -58,9 +60,10 @@ Run without arguments to launch the TUI dashboard.
 * `group` — Manage groups for organizing sessions
 * `profile` — Manage profiles (separate workspaces)
 * `worktree` — Manage git worktrees for parallel development
-* `sounds` — Manage sound effects for agent state transitions
 * `tmux` — tmux integration utilities
+* `sounds` — Manage sound effects for agent state transitions
 * `uninstall` — Uninstall Agent of Empires
+* `completion` — Generate shell completions
 
 ###### **Options:**
 
@@ -166,6 +169,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `restart` — Restart session
 * `attach` — Attach to session interactively
 * `show` — Show session details
+* `rename` — Rename a session
 * `current` — Auto-detect current session
 
 
@@ -231,6 +235,23 @@ Show session details
 ###### **Options:**
 
 * `--json` — Output as JSON
+
+
+
+## `aoe session rename`
+
+Rename a session
+
+**Usage:** `aoe session rename [OPTIONS] [IDENTIFIER]`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title (optional, auto-detects in tmux)
+
+###### **Options:**
+
+* `-t`, `--title <TITLE>` — New title for the session
+* `-g`, `--group <GROUP>` — New group for the session (empty string to ungroup)
 
 
 
@@ -424,6 +445,34 @@ Cleanup orphaned worktrees
 
 
 
+## `aoe tmux`
+
+tmux integration utilities
+
+**Usage:** `aoe tmux <COMMAND>`
+
+###### **Subcommands:**
+
+* `status` — Output session info for use in custom tmux status bar
+
+
+
+## `aoe tmux status`
+
+Output session info for use in custom tmux status bar
+
+Add this to your ~/.tmux.conf: set -g status-right "#(aoe tmux status)"
+
+**Usage:** `aoe tmux status [OPTIONS]`
+
+###### **Options:**
+
+* `-f`, `--format <FORMAT>` — Output format (text or json)
+
+  Default value: `text`
+
+
+
 ## `aoe sounds`
 
 Manage sound effects for agent state transitions
@@ -466,34 +515,6 @@ Test a sound by playing it
 
 
 
-## `aoe tmux`
-
-tmux integration utilities
-
-**Usage:** `aoe tmux <COMMAND>`
-
-###### **Subcommands:**
-
-* `status` — Output session info for use in custom tmux status bar
-
-
-
-## `aoe tmux status`
-
-Output session info for use in custom tmux status bar
-
-Add this to your ~/.tmux.conf: set -g status-right "#(aoe tmux status)"
-
-**Usage:** `aoe tmux status [OPTIONS]`
-
-###### **Options:**
-
-* `-f`, `--format <FORMAT>` — Output format (text or json)
-
-  Default value: `text`
-
-
-
 ## `aoe uninstall`
 
 Uninstall Agent of Empires
@@ -506,6 +527,21 @@ Uninstall Agent of Empires
 * `--keep-tmux-config` — Keep tmux configuration
 * `--dry-run` — Show what would be removed without removing
 * `-y` — Skip confirmation prompts
+
+
+
+## `aoe completion`
+
+Generate shell completions
+
+**Usage:** `aoe completion <SHELL>`
+
+###### **Arguments:**
+
+* `<SHELL>` — Shell to generate completions for
+
+  Possible values: `bash`, `elvish`, `fish`, `powershell`, `zsh`
+
 
 
 

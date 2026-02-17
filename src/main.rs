@@ -4,7 +4,8 @@ use agent_of_empires::cli::{self, Cli, Commands};
 use agent_of_empires::migrations;
 use agent_of_empires::tui;
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,10 +15,13 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    migrations::run_migrations()?;
-
     let cli = Cli::parse();
     let profile = cli.profile.unwrap_or_default();
+
+    // TUI mode handles migrations with a spinner; CLI runs them silently
+    if cli.command.is_some() {
+        migrations::run_migrations()?;
+    }
 
     match cli.command {
         Some(Commands::Add(args)) => cli::add::run(&profile, args).await,
@@ -37,6 +41,10 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Sounds { command }) => cli::sounds::run(command).await,
         Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
+        Some(Commands::Completion { shell }) => {
+            generate(shell, &mut Cli::command(), "aoe", &mut std::io::stdout());
+            Ok(())
+        }
         None => tui::run(&profile).await,
     }
 }

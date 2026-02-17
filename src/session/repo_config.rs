@@ -420,7 +420,8 @@ fn build_hook_command(cmd: &str, target: &HookTarget, merge_stderr: bool) -> std
             container_name,
             workdir,
         } => {
-            let mut command = std::process::Command::new("docker");
+            let binary = crate::containers::runtime_binary();
+            let mut command = std::process::Command::new(binary);
             command.args([
                 "exec",
                 "--workdir",

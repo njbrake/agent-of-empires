@@ -4,6 +4,7 @@
 //! They're separated from main.rs so xtask can generate documentation.
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 use super::add::AddArgs;
 use super::group::GroupCommands;
@@ -95,4 +96,11 @@ pub enum Commands {
 
     /// Uninstall Agent of Empires
     Uninstall(UninstallArgs),
+
+    /// Generate shell completions
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }

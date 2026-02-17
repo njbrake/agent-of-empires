@@ -68,6 +68,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | `environment_values` | `{}` | Env vars with explicit values to inject (see below) |
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
+| `mount_ssh` | `false` | Mount `~/.ssh/` read-only into containers |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` (on host machine) or `"container"` (inside Docker) |
 
 ## Volume Mounts
@@ -80,19 +81,51 @@ environment = ["ANTHROPIC_API_KEY"]
 | `~/.gitconfig` | `/root/.gitconfig` | RO | Git config |
 | `~/.ssh/` | `/root/.ssh/` | RO | SSH keys |
 | `~/.config/opencode/` | `/root/.config/opencode/` | RO | OpenCode config |
-| `~/.vibe/` | `/root/.vibe/` | RW | Vibe config (if exists) |
 
-### Persistent Auth Volumes
+### Shared Agent Config Directories
 
-| Volume Name | Container Path | Purpose |
-|-------------|----------------|---------|
-| `aoe-claude-auth` | `/root/.claude/` | Claude Code credentials |
-| `aoe-opencode-auth` | `/root/.local/share/opencode/` | OpenCode credentials |
-| `aoe-vibe-auth` | `/root/.vibe/` | Mistral Vibe credentials |
-| `aoe-codex-auth` | `/root/.codex/` | Codex CLI credentials |
-| `aoe-gemini-auth` | `/root/.gemini/` | Gemini CLI credentials |
+AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents: Claude Code, OpenCode, Codex, Gemini, and Vibe.
 
-**Note:** Auth persists across containers. First session requires authentication, subsequent sessions reuse it.
+Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates a **shared sandbox directory** per agent:
+
+1. For each agent whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`, `~/.vibe/`), AOE syncs credential files into a shared sandbox directory.
+2. The sandbox directory is mounted read-write into **all** containers that use that agent.
+3. Containers can read credentials and write runtime state freely without affecting your host config.
+4. In-container changes (e.g. permission approvals, settings tweaks) persist across sessions since all containers share the same directory.
+5. Sandbox directories are **never automatically deleted** -- not even when you remove all sandboxed sessions. This is intentional: if you later create a new sandbox, your accumulated state (permission approvals, settings) is still there so you don't have to set things up again.
+
+If an agent's config directory doesn't exist on the host (e.g. you haven't installed that agent locally), AOE still creates the sandbox directory and mounts it. This way the agent can write auth and state inside the container and have it persist across sessions.
+
+**What gets synced:**
+
+- **Top-level files** from each agent's config directory (auth tokens, credentials, config files). Subdirectories are skipped by default to keep the sandbox dir small.
+- **Specific subdirectories** listed per agent (e.g. Claude Code's `plugins/` and `skills/` are copied recursively so extensions work inside the container).
+- **Seed files** (write-once) where needed (e.g. Claude Code gets a minimal `hasCompletedOnboarding` flag to skip the first-run wizard). Seed files are only written if they don't already exist, so any changes made inside the container are preserved.
+
+**Platform-specific authentication:**
+
+- **Linux:** Credential files (e.g. `.credentials.json`) live directly in the agent's config directory and are synced automatically.
+- **macOS:** Some agents store credentials in the macOS Keychain rather than on disk. AOE extracts these at sync time and writes them as files in the sandbox directory so the container can authenticate. For example, Claude Code OAuth tokens are extracted from the Keychain and written as `.credentials.json`. If no Keychain entry is found (e.g. you authenticate via `ANTHROPIC_API_KEY`), the sandbox dir still works -- just pass your API key via the `environment` config.
+
+**Credential refresh:** Host credentials are re-synced every time a session starts (not just on first creation). If you re-authenticate on the host or update credentials, the next session start picks up the changes. Container-specific state (permission approvals, runtime config) is not overwritten during refresh.
+
+**Sandbox directory location:** Each agent's shared sandbox directory lives inside that agent's own config directory:
+
+```
+~/.claude/sandbox/                    # Claude Code (shared by all containers)
+~/.codex/sandbox/                     # Codex (shared by all containers)
+~/.gemini/sandbox/                    # Gemini (shared by all containers)
+~/.local/share/opencode/sandbox/      # OpenCode (shared by all containers)
+~/.vibe/sandbox/                      # Vibe (shared by all containers)
+```
+
+Deleting an agent's config directory (e.g. `rm -rf ~/.codex/`) removes everything related to that agent, including the sandbox directory. To reset just the sandbox state for an agent, delete its `sandbox/` subdirectory (e.g. `rm -rf ~/.claude/sandbox/`) -- it will be re-created on the next session start.
+
+**Upgrading from named volumes:** Older versions of AOE stored agent auth in named Docker volumes (e.g. `aoe-claude-auth`). On upgrade, AOE automatically migrates data from these volumes into the sandbox directories. The old volumes are intentionally **not** deleted -- you can remove them manually once you've confirmed everything works:
+
+```bash
+docker volume rm aoe-claude-auth aoe-opencode-auth aoe-codex-auth aoe-gemini-auth aoe-vibe-auth
+```
 
 ## Container Naming
 

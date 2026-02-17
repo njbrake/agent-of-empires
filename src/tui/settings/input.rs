@@ -532,6 +532,11 @@ impl SettingsView {
                     s.custom_instruction = None;
                 }
             }
+            FieldKey::ContainerRuntime => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.container_runtime = None;
+                }
+            }
             // Sound
             FieldKey::SoundEnabled => {
                 if let Some(ref mut s) = config.sound {
