@@ -182,6 +182,9 @@ impl DockerContainer {
         if force {
             args.push("-f".to_string());
         }
+        // Remove anonymous volumes with the container to prevent orphaned volume buildup.
+        // This does NOT affect named volumes (like auth volumes).
+        args.push("-v".to_string());
         args.push(self.name.clone());
 
         let output = Command::new("docker").args(&args).output()?;
