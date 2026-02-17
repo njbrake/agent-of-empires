@@ -4,6 +4,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
+use crate::tui::dialogs::{CustomInstructionDialog, DialogResult};
+
 use super::{FieldKey, FieldValue, ListEditState, SettingsFocus, SettingsScope, SettingsView};
 
 /// Result of handling a key event in the settings view
@@ -20,6 +22,28 @@ impl SettingsView {
     pub fn handle_key(&mut self, key: KeyEvent) -> SettingsAction {
         // Clear transient messages on any key
         self.success_message = None;
+
+        // Handle custom instruction dialog
+        if let Some(ref mut dialog) = self.custom_instruction_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Submit(value) => {
+                    let field = &mut self.fields[self.selected_field];
+                    if let FieldValue::OptionalText(ref mut v) = field.value {
+                        *v = value;
+                    }
+                    self.apply_field_to_config(self.selected_field);
+                    self.custom_instruction_dialog = None;
+                    return SettingsAction::Continue;
+                }
+                DialogResult::Cancel => {
+                    self.custom_instruction_dialog = None;
+                    return SettingsAction::Continue;
+                }
+                DialogResult::Continue => {
+                    return SettingsAction::Continue;
+                }
+            }
+        }
 
         // Handle text editing mode
         if self.editing_input.is_some() {
@@ -155,8 +179,13 @@ impl SettingsView {
                             self.editing_input = Some(Input::new(value.clone()));
                         }
                         FieldValue::OptionalText(value) => {
-                            self.editing_input =
-                                Some(Input::new(value.clone().unwrap_or_default()));
+                            if field.key == FieldKey::CustomInstruction {
+                                self.custom_instruction_dialog =
+                                    Some(CustomInstructionDialog::new(value.clone()));
+                            } else {
+                                self.editing_input =
+                                    Some(Input::new(value.clone().unwrap_or_default()));
+                            }
                         }
                         FieldValue::Number(value) => {
                             self.editing_input = Some(Input::new(value.to_string()));

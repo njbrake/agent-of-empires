@@ -28,7 +28,9 @@ fn shell_escape(val: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('$', "\\$")
-        .replace('`', "\\`");
+        .replace('`', "\\`")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
     format!("\"{}\"", escaped)
 }
 
@@ -987,6 +989,67 @@ mod tests {
         assert_eq!(inst.project_path, "/tmp/test");
         assert_eq!(inst.status, Status::Idle);
         assert_eq!(inst.id.len(), 16);
+    }
+
+    #[test]
+    fn test_shell_escape_simple() {
+        assert_eq!(shell_escape("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn test_shell_escape_quotes() {
+        assert_eq!(shell_escape("say \"hello\""), "\"say \\\"hello\\\"\"");
+    }
+
+    #[test]
+    fn test_shell_escape_backslash() {
+        assert_eq!(shell_escape("path\\to\\file"), "\"path\\\\to\\\\file\"");
+    }
+
+    #[test]
+    fn test_shell_escape_dollar() {
+        assert_eq!(shell_escape("$HOME/path"), "\"\\$HOME/path\"");
+    }
+
+    #[test]
+    fn test_shell_escape_backtick() {
+        assert_eq!(shell_escape("run `cmd`"), "\"run \\`cmd\\`\"");
+    }
+
+    #[test]
+    fn test_shell_escape_newline() {
+        assert_eq!(shell_escape("line1\nline2"), "\"line1\\nline2\"");
+    }
+
+    #[test]
+    fn test_shell_escape_carriage_return() {
+        assert_eq!(shell_escape("line1\rline2"), "\"line1\\rline2\"");
+    }
+
+    #[test]
+    fn test_shell_escape_multiline_instruction() {
+        let instruction = "First instruction.\nSecond instruction.\nThird instruction.";
+        let escaped = shell_escape(instruction);
+        assert_eq!(
+            escaped,
+            "\"First instruction.\\nSecond instruction.\\nThird instruction.\""
+        );
+        // Verify no actual newlines in the escaped string
+        assert!(!escaped.contains('\n'));
+    }
+
+    #[test]
+    fn test_shell_escape_crlf() {
+        assert_eq!(shell_escape("line1\r\nline2"), "\"line1\\r\\nline2\"");
+    }
+
+    #[test]
+    fn test_shell_escape_combined() {
+        // Test a complex string with multiple special characters
+        let input = "Say \"hello\"\nRun `echo $HOME`";
+        let escaped = shell_escape(input);
+        assert_eq!(escaped, "\"Say \\\"hello\\\"\\nRun \\`echo \\$HOME\\`\"");
+        assert!(!escaped.contains('\n'));
     }
 
     #[test]

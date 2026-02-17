@@ -3,8 +3,6 @@
 !.claude/skills/
 # Rust build artifacts
 /target/
-Cargo.lock
-
 # Documentation build output
 /book/
 

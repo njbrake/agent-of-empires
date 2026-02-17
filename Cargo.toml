@@ -32,7 +32,7 @@ serde_json = "1.0"
 toml = "0.8"
 
 # File watching
-notify = "7.0"
+notify = "8.2"
 
 # PTY handling
 portable-pty = "0.8"
@@ -54,7 +54,7 @@ uuid = { version = "1.11", features = ["v4"] }
 rand = "0.8"
 
 # Directory utilities
-dirs = "5.0"
+dirs = "6.0"
 
 # Logging
 tracing = "0.1"
@@ -70,7 +70,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 cfg-if = "1.0"
 
 # Process handling
-nix = { version = "0.29", features = ["signal", "process"] }
+nix = { version = "0.31", features = ["signal", "process"] }
 
 # Unicode width
 unicode-width = "0.2"
@@ -79,7 +79,7 @@ unicode-width = "0.2"
 regex = "1.10"
 
 # Git operations
-git2 = { version = "0.19", features = ["vendored-openssl"] }
+git2 = { version = "0.20", features = ["vendored-openssl"] }
 enum_dispatch = "0.3.13"
 
 # Diff computation
