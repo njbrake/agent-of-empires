@@ -2,6 +2,7 @@ mod apple_container;
 pub mod container_interface;
 mod docker;
 pub mod error;
+pub(crate) mod runtime_base;
 
 use crate::cli::truncate_id;
 use crate::session::{Config, ContainerRuntimeName};
@@ -25,7 +26,7 @@ pub enum ContainerRuntime {
 
 impl Default for ContainerRuntime {
     fn default() -> Self {
-        Docker.into()
+        Docker::default().into()
     }
 }
 
@@ -44,8 +45,8 @@ pub fn runtime_binary() -> &'static str {
 pub fn get_container_runtime() -> ContainerRuntime {
     if let Ok(cfg) = Config::load() {
         match cfg.sandbox.container_runtime {
-            ContainerRuntimeName::AppleContainer => AppleContainer.into(),
-            ContainerRuntimeName::Docker => Docker.into(),
+            ContainerRuntimeName::AppleContainer => AppleContainer::default().into(),
+            ContainerRuntimeName::Docker => Docker::default().into(),
         }
     } else {
         ContainerRuntime::default()

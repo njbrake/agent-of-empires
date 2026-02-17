@@ -1,118 +1,69 @@
 use super::container_interface::{ContainerConfig, ContainerRuntimeInterface};
 use super::error::{DockerError, Result};
-use std::process::Command;
+use super::runtime_base::RuntimeBase;
 
-#[derive(Default)]
-pub struct Docker;
+pub struct Docker {
+    base: RuntimeBase,
+}
+
+impl Default for Docker {
+    fn default() -> Self {
+        Self {
+            base: RuntimeBase::DOCKER,
+        }
+    }
+}
 
 impl ContainerRuntimeInterface for Docker {
     fn is_available(&self) -> bool {
-        Command::new("docker")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.base.is_available()
     }
 
     fn is_daemon_running(&self) -> bool {
-        Command::new("docker")
-            .args(["info"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.base.is_daemon_running()
     }
 
     fn get_version(&self) -> Result<String> {
-        let output = Command::new("docker").arg("--version").output()?;
-
-        if !output.status.success() {
-            return Err(DockerError::NotInstalled);
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        self.base.get_version()
     }
 
     fn image_exists_locally(&self, image: &str) -> bool {
-        Command::new("docker")
-            .args(["image", "inspect", image])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.base.image_exists_locally(image)
     }
 
     fn pull_image(&self, image: &str) -> Result<()> {
-        let output = Command::new("docker").args(["pull", image]).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DockerError::ImageNotFound(format!(
-                "{}: {}",
-                image,
-                stderr.trim()
-            )));
-        }
-
-        Ok(())
+        self.base.pull_image(image)
     }
 
-    /// Ensure an image is available locally.
-    /// If the image exists locally, uses it as-is (supports local-only images).
-    /// If not, attempts to pull from the registry.
     fn ensure_image(&self, image: &str) -> Result<()> {
-        if self.image_exists_locally(image) {
-            tracing::info!("Using local Docker image '{}'", image);
-            return Ok(());
-        }
-
-        tracing::info!("Pulling Docker image '{}'", image);
-        self.pull_image(image)
+        self.base.ensure_image(image)
     }
 
     fn ensure_named_volume(&self, name: &str) -> Result<()> {
-        let check = Command::new("docker")
-            .args(["volume", "inspect", name])
-            .output()?;
-
-        if !check.status.success() {
-            let create = Command::new("docker")
-                .args(["volume", "create", name])
-                .output()?;
-
-            if !create.status.success() {
-                let stderr = String::from_utf8_lossy(&create.stderr);
-                return Err(DockerError::CommandFailed(format!(
-                    "Failed to create volume {}: {}",
-                    name, stderr
-                )));
-            }
-        }
-
-        Ok(())
+        self.base.ensure_named_volume(name)
     }
 
-    /// The hardcoded fallback sandbox image.
     fn default_sandbox_image(&self) -> &'static str {
-        "ghcr.io/njbrake/aoe-sandbox:latest"
+        self.base.default_sandbox_image()
     }
 
-    /// Returns the effective default sandbox image, checking user config first.
     fn effective_default_image(&self) -> String {
-        crate::session::Config::load()
-            .ok()
-            .map(|c| c.sandbox.default_image)
-            .unwrap_or_else(|| self.default_sandbox_image().to_string())
+        self.base.effective_default_image()
     }
 
     fn does_container_exist(&self, name: &str) -> Result<bool> {
-        let output = Command::new("docker")
+        let output = self
+            .base
+            .command()
             .args(["container", "inspect", name])
             .output()?;
-
         Ok(output.status.success())
     }
 
     fn is_container_running(&self, name: &str) -> Result<bool> {
-        let output = Command::new("docker")
+        let output = self
+            .base
+            .command()
             .args(["container", "inspect", "-f", "{{.State.Running}}", name])
             .output()?;
 
@@ -124,6 +75,10 @@ impl ContainerRuntimeInterface for Docker {
         Ok(stdout.trim() == "true")
     }
 
+    fn build_create_args(&self, name: &str, image: &str, config: &ContainerConfig) -> Vec<String> {
+        self.base.build_create_args(name, image, config)
+    }
+
     fn create_container(
         &self,
         name: &str,
@@ -133,142 +88,27 @@ impl ContainerRuntimeInterface for Docker {
         if self.does_container_exist(name)? {
             return Err(DockerError::ContainerAlreadyExists(name.to_string()));
         }
-
-        let args = self.build_create_args(name, image, config);
-        tracing::debug!("Docker create args: {}", args.join(" "));
-        let output = Command::new("docker").args(&args).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::debug!("stderr: {}", stderr);
-            if stderr.contains("permission denied") {
-                return Err(DockerError::PermissionDenied);
-            }
-            if stderr.contains("Cannot connect to the Docker daemon") {
-                return Err(DockerError::DaemonNotRunning);
-            }
-            if stderr.contains("No such image") || stderr.contains("Unable to find image") {
-                return Err(DockerError::ImageNotFound(image.to_string()));
-            }
-            return Err(DockerError::CreateFailed(stderr.to_string()));
-        }
-
-        let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(container_id)
-    }
-
-    fn build_create_args(&self, name: &str, image: &str, config: &ContainerConfig) -> Vec<String> {
-        let mut args = vec![
-            "run".to_string(),
-            "-d".to_string(),
-            "--name".to_string(),
-            name.to_string(),
-            "-w".to_string(),
-            config.working_dir.clone(),
-        ];
-
-        for vol in &config.volumes {
-            let mount = if vol.read_only {
-                format!("{}:{}:ro", vol.host_path, vol.container_path)
-            } else {
-                format!("{}:{}", vol.host_path, vol.container_path)
-            };
-            args.push("-v".to_string());
-            args.push(mount);
-        }
-
-        for (vol_name, container_path) in &config.named_volumes {
-            args.push("-v".to_string());
-            args.push(format!("{}:{}", vol_name, container_path));
-        }
-
-        for path in &config.anonymous_volumes {
-            args.push("-v".to_string());
-            args.push(path.clone());
-        }
-
-        for (key, value) in &config.environment {
-            args.push("-e".to_string());
-            args.push(format!("{}={}", key, value));
-        }
-
-        if let Some(cpu) = &config.cpu_limit {
-            args.push("--cpus".to_string());
-            args.push(cpu.clone());
-        }
-
-        if let Some(mem) = &config.memory_limit {
-            args.push("-m".to_string());
-            args.push(mem.clone());
-        }
-
-        args.push(image.to_string());
-        args.push("sleep".to_string());
-        args.push("infinity".to_string());
-
-        args
+        self.base.run_create(name, image, config)
     }
 
     fn start_container(&self, name: &str) -> Result<()> {
-        let output = Command::new("docker").args(["start", name]).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DockerError::StartFailed(stderr.to_string()));
-        }
-
-        Ok(())
+        self.base.start_container(name)
     }
 
     fn stop_container(&self, name: &str) -> Result<()> {
-        let output = Command::new("docker").args(["stop", name]).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("No such container") {
-                return Err(DockerError::ContainerNotFound(name.to_string()));
-            }
-            return Err(DockerError::StopFailed(stderr.to_string()));
-        }
-
-        Ok(())
+        self.base.stop_container(name)
     }
 
     fn remove(&self, name: &str, force: bool) -> Result<()> {
-        let mut args = vec!["rm".to_string()];
-        if force {
-            args.push("-f".to_string());
-        }
-        args.push(name.to_string());
-
-        let output = Command::new("docker").args(&args).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("No such container") {
-                return Err(DockerError::ContainerNotFound(name.to_string()));
-            }
-            return Err(DockerError::RemoveFailed(stderr.to_string()));
-        }
-
-        Ok(())
+        self.base.remove(name, force)
     }
 
     fn exec_command(&self, name: &str, options: Option<&str>) -> String {
-        if let Some(opt_str) = options {
-            ["docker", "exec", "-it", opt_str, name].join(" ")
-        } else {
-            ["docker", "exec", "-it", name].join(" ")
-        }
+        self.base.exec_command(name, options)
     }
 
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output> {
-        let mut args = vec!["exec", name];
-        args.extend(cmd);
-
-        let output = Command::new("docker").args(&args).output()?;
-
-        Ok(output)
+        self.base.exec(name, cmd)
     }
 }
 
@@ -277,7 +117,7 @@ mod tests {
     use super::*;
 
     fn get_docker_runtime_if_available() -> Option<Docker> {
-        let docker = Docker;
+        let docker = Docker::default();
         if !docker.is_available() || !docker.is_daemon_running() {
             None
         } else {
