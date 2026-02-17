@@ -314,18 +314,7 @@ fn shell_escape(val: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
-/// Resolve an environment_values entry. If the value starts with `$`, read the
-/// named variable from the host environment (use `$$` to escape a literal `$`).
-/// Otherwise return the literal value.
-fn resolve_env_value(val: &str) -> Option<String> {
-    if let Some(rest) = val.strip_prefix("$$") {
-        Some(format!("${}", rest))
-    } else if let Some(var_name) = val.strip_prefix('$') {
-        std::env::var(var_name).ok()
-    } else {
-        Some(val.to_string())
-    }
-}
+use super::config::resolve_env_value;
 
 /// Collect all environment variable keys from defaults, global config, and per-session extras.
 fn collect_env_keys(
@@ -444,7 +433,7 @@ fn collect_host_env_vars(
         }
     }
 
-    tracing::info!(
+    tracing::debug!(
         env_count = result.len(),
         "Collected env vars for host session"
     );
@@ -797,7 +786,7 @@ impl Instance {
             return Ok(());
         }
 
-        tracing::info!(
+        tracing::debug!(
             session_id = %self.id,
             session_title = %self.title,
             profile = %self.profile,
@@ -807,14 +796,14 @@ impl Instance {
         // Load profile config for environment variables
         let profile_config = super::profile_config::load_profile_config(&self.profile).ok();
         if let Some(ref pc) = profile_config {
-            tracing::info!(
+            tracing::debug!(
                 profile = %self.profile,
                 env_keys = ?pc.environment,
                 env_values = ?pc.environment_values,
                 "Loaded profile config with environment settings"
             );
         } else {
-            tracing::info!(profile = %self.profile, "No profile config found or profile has no env vars");
+            tracing::debug!(profile = %self.profile, "No profile config found or profile has no env vars");
         }
 
         // Resolve on_launch hooks from the full config chain (global > profile > repo).
@@ -1001,10 +990,6 @@ impl Instance {
             container.start()?;
             return Ok(container);
         }
-
-        // Load profile config for environment variable merging
-        // TODO: Integrate profile config with container creation (Phase 4 or later)
-        let _profile_config = super::profile_config::load_profile_config(&self.profile).ok();
 
         // Ensure image is available (always pulls to get latest)
         let runtime = containers::get_container_runtime();
