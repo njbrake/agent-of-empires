@@ -261,11 +261,11 @@ mod tests {
 
     #[test]
     fn test_group_tree_creation() {
-        let mut inst1 = Instance::new("test1", "/tmp/1");
+        let mut inst1 = Instance::new("test1", "/tmp/1", "default");
         inst1.group_path = "work".to_string();
-        let mut inst2 = Instance::new("test2", "/tmp/2");
+        let mut inst2 = Instance::new("test2", "/tmp/2", "default");
         inst2.group_path = "work/frontend".to_string();
-        let mut inst3 = Instance::new("test3", "/tmp/3");
+        let mut inst3 = Instance::new("test3", "/tmp/3", "default");
         inst3.group_path = "personal".to_string();
 
         let instances = vec![inst1, inst2, inst3];
@@ -279,10 +279,10 @@ mod tests {
 
     #[test]
     fn test_flatten_tree() {
-        let ungrouped = Instance::new("ungrouped", "/tmp/u");
-        let mut inst1 = Instance::new("test1", "/tmp/1");
+        let ungrouped = Instance::new("ungrouped", "/tmp/u", "default");
+        let mut inst1 = Instance::new("test1", "/tmp/1", "default");
         inst1.group_path = "work".to_string();
-        let mut inst2 = Instance::new("test2", "/tmp/2");
+        let mut inst2 = Instance::new("test2", "/tmp/2", "default");
         inst2.group_path = "work".to_string();
 
         let instances = vec![ungrouped, inst1, inst2];
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_toggle_collapsed() {
-        let mut inst = Instance::new("test", "/tmp/t");
+        let mut inst = Instance::new("test", "/tmp/t", "default");
         inst.group_path = "work".to_string();
         let instances = vec![inst];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_collapsed_group_hides_sessions_in_flatten() {
-        let mut inst1 = Instance::new("work-session", "/tmp/w");
+        let mut inst1 = Instance::new("work-session", "/tmp/w", "default");
         inst1.group_path = "work".to_string();
         let instances = vec![inst1];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_collapsed_group_still_shows_in_flatten() {
-        let mut inst = Instance::new("test", "/tmp/t");
+        let mut inst = Instance::new("test", "/tmp/t", "default");
         inst.group_path = "work".to_string();
         let instances = vec![inst];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_collapsed_state_in_flattened_item() {
-        let mut inst = Instance::new("test", "/tmp/t");
+        let mut inst = Instance::new("test", "/tmp/t", "default");
         inst.group_path = "work".to_string();
         let instances = vec![inst];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
@@ -390,9 +390,9 @@ mod tests {
 
     #[test]
     fn test_nested_group_collapse_hides_children() {
-        let mut inst1 = Instance::new("parent-session", "/tmp/p");
+        let mut inst1 = Instance::new("parent-session", "/tmp/p", "default");
         inst1.group_path = "parent".to_string();
-        let mut inst2 = Instance::new("child-session", "/tmp/c");
+        let mut inst2 = Instance::new("child-session", "/tmp/c", "default");
         inst2.group_path = "parent/child".to_string();
         let instances = vec![inst1, inst2];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
@@ -415,9 +415,9 @@ mod tests {
 
     #[test]
     fn test_session_count_includes_nested() {
-        let mut inst1 = Instance::new("parent-session", "/tmp/p");
+        let mut inst1 = Instance::new("parent-session", "/tmp/p", "default");
         inst1.group_path = "parent".to_string();
-        let mut inst2 = Instance::new("child-session", "/tmp/c");
+        let mut inst2 = Instance::new("child-session", "/tmp/c", "default");
         inst2.group_path = "parent/child".to_string();
         let instances = vec![inst1, inst2];
         let tree = GroupTree::new_with_groups(&instances, &[]);
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_delete_group() {
-        let mut inst = Instance::new("test", "/tmp/t");
+        let mut inst = Instance::new("test", "/tmp/t", "default");
         inst.group_path = "work".to_string();
         let instances = vec![inst];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
@@ -445,9 +445,9 @@ mod tests {
 
     #[test]
     fn test_delete_group_removes_children() {
-        let mut inst1 = Instance::new("parent-session", "/tmp/p");
+        let mut inst1 = Instance::new("parent-session", "/tmp/p", "default");
         inst1.group_path = "parent".to_string();
-        let mut inst2 = Instance::new("child-session", "/tmp/c");
+        let mut inst2 = Instance::new("child-session", "/tmp/c", "default");
         inst2.group_path = "parent/child".to_string();
         let instances = vec![inst1, inst2];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
@@ -484,10 +484,10 @@ mod tests {
 
     #[test]
     fn test_item_depth() {
-        let ungrouped = Instance::new("ungrouped", "/tmp/u");
-        let mut inst1 = Instance::new("root-level", "/tmp/r");
+        let ungrouped = Instance::new("ungrouped", "/tmp/u", "default");
+        let mut inst1 = Instance::new("root-level", "/tmp/r", "default");
         inst1.group_path = "root".to_string();
-        let mut inst2 = Instance::new("nested", "/tmp/n");
+        let mut inst2 = Instance::new("nested", "/tmp/n", "default");
         inst2.group_path = "root/child".to_string();
         let instances = vec![ungrouped, inst1, inst2];
         let tree = GroupTree::new_with_groups(&instances, &[]);
@@ -515,11 +515,11 @@ mod tests {
 
     #[test]
     fn test_get_roots_returns_only_top_level() {
-        let mut inst1 = Instance::new("test1", "/tmp/1");
+        let mut inst1 = Instance::new("test1", "/tmp/1", "default");
         inst1.group_path = "alpha".to_string();
-        let mut inst2 = Instance::new("test2", "/tmp/2");
+        let mut inst2 = Instance::new("test2", "/tmp/2", "default");
         inst2.group_path = "alpha/nested".to_string();
-        let mut inst3 = Instance::new("test3", "/tmp/3");
+        let mut inst3 = Instance::new("test3", "/tmp/3", "default");
         inst3.group_path = "beta".to_string();
         let instances = vec![inst1, inst2, inst3];
         let tree = GroupTree::new_with_groups(&instances, &[]);
@@ -534,11 +534,11 @@ mod tests {
 
     #[test]
     fn test_groups_sorted_alphabetically() {
-        let mut inst1 = Instance::new("z-session", "/tmp/z");
+        let mut inst1 = Instance::new("z-session", "/tmp/z", "default");
         inst1.group_path = "zebra".to_string();
-        let mut inst2 = Instance::new("a-session", "/tmp/a");
+        let mut inst2 = Instance::new("a-session", "/tmp/a", "default");
         inst2.group_path = "apple".to_string();
-        let mut inst3 = Instance::new("m-session", "/tmp/m");
+        let mut inst3 = Instance::new("m-session", "/tmp/m", "default");
         inst3.group_path = "mango".to_string();
         let instances = vec![inst1, inst2, inst3];
         let tree = GroupTree::new_with_groups(&instances, &[]);

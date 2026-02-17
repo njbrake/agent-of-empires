@@ -42,7 +42,7 @@ fn test_sandbox_info_serialization() {
 
 #[test]
 fn test_instance_is_sandboxed() {
-    let mut inst = Instance::new("test", "/tmp/test");
+    let mut inst = Instance::new("test", "/tmp/test", "default");
     assert!(!inst.is_sandboxed());
 
     inst.sandbox_info = Some(SandboxInfo {
@@ -79,7 +79,7 @@ fn test_sandbox_info_persists_across_save_load() {
 
     let storage = Storage::new("sandbox_test").unwrap();
 
-    let mut inst = Instance::new("sandbox-session", "/tmp/project");
+    let mut inst = Instance::new("sandbox-session", "/tmp/project", "default");
     inst.sandbox_info = Some(SandboxInfo {
         enabled: true,
         container_id: Some("container123".to_string()),

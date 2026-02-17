@@ -46,11 +46,21 @@ impl Session {
         command: Option<&str>,
         size: Option<(u16, u16)>,
     ) -> Result<()> {
+        self.create_with_size_env(working_dir, command, size, &[])
+    }
+
+    pub fn create_with_size_env(
+        &self,
+        working_dir: &str,
+        command: Option<&str>,
+        size: Option<(u16, u16)>,
+        env_vars: &[(String, String)],
+    ) -> Result<()> {
         if self.exists() {
             return Ok(());
         }
 
-        let args = build_create_args(&self.name, working_dir, command, size);
+        let args = build_create_args(&self.name, working_dir, command, size, env_vars);
         let output = Command::new("tmux").args(&args).output()?;
 
         // Note: With -d flag, tmux new-session returns 0 even if the shell command fails.
@@ -216,6 +226,7 @@ fn build_create_args(
     working_dir: &str,
     command: Option<&str>,
     size: Option<(u16, u16)>,
+    env_vars: &[(String, String)],
 ) -> Vec<String> {
     let mut args = vec![
         "new-session".to_string(),
@@ -225,6 +236,12 @@ fn build_create_args(
         "-c".to_string(),
         working_dir.to_string(),
     ];
+
+    // Add environment variables before size and command (must be set before shell runs)
+    for (key, value) in env_vars {
+        args.push("-e".to_string());
+        args.push(format!("{}={}", key, value));
+    }
 
     if let Some((width, height)) = size {
         args.push("-x".to_string());
@@ -261,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_build_create_args_without_size() {
-        let args = build_create_args("test_session", "/tmp/work", None, None);
+        let args = build_create_args("test_session", "/tmp/work", None, None, &[]);
         assert_eq!(
             args,
             vec!["new-session", "-d", "-s", "test_session", "-c", "/tmp/work"]
@@ -272,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_build_create_args_with_size() {
-        let args = build_create_args("test_session", "/tmp/work", None, Some((120, 40)));
+        let args = build_create_args("test_session", "/tmp/work", None, Some((120, 40)), &[]);
         assert!(args.contains(&"-x".to_string()));
         assert!(args.contains(&"120".to_string()));
         assert!(args.contains(&"-y".to_string()));
@@ -287,13 +304,44 @@ mod tests {
 
     #[test]
     fn test_build_create_args_with_command() {
-        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None);
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None, &[]);
+        assert_eq!(args.last().unwrap(), "claude");
+    }
+
+    #[test]
+    fn test_build_create_args_with_env_vars() {
+        let env_vars = vec![
+            ("API_KEY".to_string(), "secret123".to_string()),
+            ("DB_HOST".to_string(), "localhost".to_string()),
+        ];
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None, &env_vars);
+
+        // Env vars should appear as -e KEY=VALUE pairs
+        let e_indices: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-e")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(e_indices.len(), 2);
+        assert_eq!(args[e_indices[0] + 1], "API_KEY=secret123");
+        assert_eq!(args[e_indices[1] + 1], "DB_HOST=localhost");
+
+        // Env vars should come after -c working_dir but before command
+        let c_idx = args.iter().position(|a| a == "-c").unwrap();
+        assert!(e_indices[0] > c_idx + 1);
         assert_eq!(args.last().unwrap(), "claude");
     }
 
     #[test]
     fn test_build_create_args_with_size_and_command() {
-        let args = build_create_args("test_session", "/tmp/work", Some("claude"), Some((80, 24)));
+        let args = build_create_args(
+            "test_session",
+            "/tmp/work",
+            Some("claude"),
+            Some((80, 24)),
+            &[],
+        );
 
         // Size args should be present
         assert!(args.contains(&"-x".to_string()));

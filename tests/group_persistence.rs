@@ -86,7 +86,7 @@ fn test_move_session_between_groups() -> Result<()> {
     let _temp = setup_temp_home();
 
     let storage = Storage::new("default")?;
-    let mut instance = Instance::new("Movable", "/path/movable");
+    let mut instance = Instance::new("Movable", "/path/movable", "default");
     instance.group_path = "group-a".to_string();
 
     let mut group_tree = GroupTree::new_with_groups(&[instance.clone()], &[]);
@@ -116,11 +116,11 @@ fn test_group_with_sessions_round_trip() -> Result<()> {
 
     let storage = Storage::new("default")?;
 
-    let mut inst1 = Instance::new("Frontend", "/path/frontend");
+    let mut inst1 = Instance::new("Frontend", "/path/frontend", "default");
     inst1.group_path = "work".to_string();
-    let mut inst2 = Instance::new("Backend", "/path/backend");
+    let mut inst2 = Instance::new("Backend", "/path/backend", "default");
     inst2.group_path = "work".to_string();
-    let mut inst3 = Instance::new("Hobby", "/path/hobby");
+    let mut inst3 = Instance::new("Hobby", "/path/hobby", "default");
     inst3.group_path = "personal".to_string();
 
     let instances = vec![inst1, inst2, inst3];

@@ -72,6 +72,24 @@ aoe add -c gemini .
 
 In the TUI, select the tool from the dropdown in the new session dialog.
 
+## Use Profiles for Different Configurations
+
+Profiles are separate workspaces with their own sessions and settings. Use them to switch between projects, clients, or API providers:
+
+```bash
+aoe profile create client-a
+aoe -p client-a
+```
+
+Profiles can override any setting, including environment variables. This is useful for switching between API keys or custom endpoints:
+
+```toml
+# ~/.agent-of-empires/profiles/client-a/config.toml
+environment_values = { ANTHROPIC_API_KEY = "$CLIENT_A_KEY" }
+```
+
+See [Configuration Reference](guides/configuration.md#profiles) for details.
+
 ## TUI Keyboard Reference
 
 | Key | Action |

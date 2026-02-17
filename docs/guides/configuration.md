@@ -181,6 +181,30 @@ aoe profile default work   # Set "work" as default
 
 Profile overrides go in `~/.agent-of-empires/profiles/<name>/config.toml` and use the same format as the global config.
 
+## Profile Environment Variables
+
+Profiles can define their own `environment` and `environment_values` at the top level of the profile config. These work identically to their [sandbox counterparts](#environment-vs-environment_values), with one key difference: **they apply to both sandbox and non-sandbox sessions**.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `environment` | (inherited from sandbox) | Host env var names to pass through |
+| `environment_values` | (inherited from sandbox) | Env vars with explicit values (`$VAR` expansion supported) |
+
+Profile env vars **merge** with sandbox env vars. On conflicts, profile wins.
+
+```toml
+# ~/.agent-of-empires/profiles/client-a/config.toml
+environment = ["CLIENT_DB_URL"]
+environment_values = { ANTHROPIC_API_KEY = "$CLIENT_A_KEY" }
+```
+
+```bash
+export CLIENT_A_KEY="sk-ant-..."
+aoe -p client-a
+```
+
+This is useful for switching API keys between clients, configuring project-specific database URLs, or pointing to custom API providers without changing your global config.
+
 ## Repo Config
 
 Per-repo settings go in `.aoe/config.toml` at your project root. Run `aoe init` to generate a template.

@@ -8,6 +8,78 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// Resolve an environment variable value.
+///
+/// If the value starts with `$`, read the named variable from the host environment.
+/// Only pure `$VAR` references are expanded (not `$VAR/path`).
+/// Use `$$` to escape a literal `$`. Otherwise return the literal value.
+///
+/// # Examples
+/// ```ignore
+/// resolve_env_value("$HOME") => Some("/home/user")
+/// resolve_env_value("$$HOME") => Some("$HOME")
+/// resolve_env_value("literal") => Some("literal")
+/// resolve_env_value("$NONEXISTENT") => None
+/// ```
+pub fn resolve_env_value(val: &str) -> Option<String> {
+    if let Some(rest) = val.strip_prefix("$$") {
+        Some(format!("${}", rest))
+    } else if let Some(var_name) = val.strip_prefix('$') {
+        std::env::var(var_name).ok()
+    } else {
+        Some(val.to_string())
+    }
+}
+
+/// Resolve all environment variables from an environment array and environment values map.
+///
+/// Takes an array of variable names to forward through from the host, and a map of
+/// explicit key-value pairs with `$` expansion support. Returns a merged HashMap of
+/// resolved key-value pairs.
+///
+/// # Arguments
+/// * `environment` - Array of environment variable names to forward through
+/// * `environment_values` - Map of explicit KEY=VALUE pairs with `$` expansion
+///
+/// # Returns
+/// A HashMap of resolved environment variables. Variables from `environment_values`
+/// take precedence over those from `environment` if both define the same key.
+///
+/// # Examples
+/// ```ignore
+/// use std::collections::HashMap;
+///
+/// let env_vars = vec!["TERM".to_string()];
+/// let mut env_values = HashMap::new();
+/// env_values.insert("MY_VAR".to_string(), "$HOME/work".to_string());
+///
+/// let resolved = resolve_env_vars(&env_vars, &env_values);
+/// // Contains TERM from host and MY_VAR with $HOME expanded
+/// ```
+pub fn resolve_env_vars(
+    environment: &[String],
+    environment_values: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut resolved = HashMap::new();
+
+    // First, add variables from environment array (forward through from host)
+    for key in environment {
+        if let Ok(val) = std::env::var(key) {
+            resolved.insert(key.clone(), val);
+        }
+    }
+
+    // Then, add variables from environment_values (with $ expansion)
+    // These override any duplicates from the environment array
+    for (key, val) in environment_values {
+        if let Some(resolved_val) = resolve_env_value(val) {
+            resolved.insert(key.clone(), resolved_val);
+        }
+    }
+
+    resolved
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_profile")]
@@ -438,6 +510,87 @@ pub fn get_claude_config_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_env_value_literal() {
+        assert_eq!(
+            resolve_env_value("literal_value"),
+            Some("literal_value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_env_value_expansion() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/test/home".to_string());
+        assert_eq!(resolve_env_value("$HOME"), Some(home));
+    }
+
+    #[test]
+    fn test_resolve_env_value_dollar_escape() {
+        assert_eq!(resolve_env_value("$$HOME"), Some("$HOME".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_env_value_undefined() {
+        assert_eq!(resolve_env_value("$NONEXISTENT_VAR_12345"), None);
+    }
+
+    #[test]
+    fn test_resolve_env_value_partial_expansion() {
+        // Only pure $VAR references are expanded (not $VAR/path)
+        assert_eq!(resolve_env_value("$HOME/path"), None);
+        assert_eq!(
+            resolve_env_value("literal$VAR"),
+            Some("literal$VAR".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_env_vars_empty() {
+        let result = resolve_env_vars(&[], &HashMap::new());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_env_vars_from_environment_only() {
+        std::env::set_var("TEST_AOE_VAR", "test_value");
+        let env_keys = vec!["TEST_AOE_VAR".to_string()];
+        let result = resolve_env_vars(&env_keys, &HashMap::new());
+        assert_eq!(result.get("TEST_AOE_VAR"), Some(&"test_value".to_string()));
+        std::env::remove_var("TEST_AOE_VAR");
+    }
+
+    #[test]
+    fn test_resolve_env_vars_from_values_only() {
+        let mut env_values = HashMap::new();
+        env_values.insert("KEY".to_string(), "value".to_string());
+        let result = resolve_env_vars(&[], &env_values);
+        assert_eq!(result.get("KEY"), Some(&"value".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_env_vars_expansion_in_values() {
+        std::env::set_var("TEST_AOE_EXP", "/test/home");
+        let mut env_values = HashMap::new();
+        env_values.insert("WORK_DIR".to_string(), "$TEST_AOE_EXP".to_string());
+        let result = resolve_env_vars(&[], &env_values);
+        assert_eq!(result.get("WORK_DIR"), Some(&"/test/home".to_string()));
+        std::env::remove_var("TEST_AOE_EXP");
+    }
+
+    #[test]
+    fn test_resolve_env_vars_override() {
+        std::env::set_var("OVERRIDE_AOE_VAR", "from_env");
+        let env_keys = vec!["OVERRIDE_AOE_VAR".to_string()];
+        let mut env_values = HashMap::new();
+        env_values.insert("OVERRIDE_AOE_VAR".to_string(), "from_config".to_string());
+        let result = resolve_env_vars(&env_keys, &env_values);
+        assert_eq!(
+            result.get("OVERRIDE_AOE_VAR"),
+            Some(&"from_config".to_string())
+        );
+        std::env::remove_var("OVERRIDE_AOE_VAR");
+    }
 
     // Tests for Config defaults
     #[test]

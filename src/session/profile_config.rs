@@ -14,8 +14,21 @@ use super::config::{
 use super::get_profile_dir;
 
 /// Profile-specific settings. All fields are Option<T> - None means "inherit from global"
+///
+/// Note: `environment` and `environment_values` are stored at the top level (not in
+/// `SandboxConfigOverride`) because they are user-facing configuration that applies
+/// broadly. During merge, they are applied to `global.sandbox.environment`. This design
+/// keeps them accessible in the settings TUI while maintaining the override pattern.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileConfig {
+    /// Environment variable keys to pass through from host (e.g., ["TERM", "HOME"])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Vec<String>>,
+
+    /// Environment key-value pairs with optional $ expansion (e.g., {"API_KEY": "$MY_KEY"})
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_values: Option<HashMap<String, String>>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeConfigOverride>,
 
@@ -107,12 +120,6 @@ pub struct SandboxConfigOverride {
     pub extra_volumes: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<Vec<String>>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_values: Option<HashMap<String, String>>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_cleanup: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -190,7 +197,9 @@ pub fn get_profile_config_path(profile: &str) -> Result<std::path::PathBuf> {
 
 /// Check if a profile has any overrides set
 pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
-    config.theme.is_some()
+    config.environment.is_some()
+        || config.environment_values.is_some()
+        || config.theme.is_some()
         || config.claude.is_some()
         || config.updates.is_some()
         || config.worktree.is_some()
@@ -224,12 +233,6 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(ref extra_volumes) = source.extra_volumes {
         target.extra_volumes = extra_volumes.clone();
-    }
-    if let Some(ref environment) = source.environment {
-        target.environment = environment.clone();
-    }
-    if let Some(ref environment_values) = source.environment_values {
-        target.environment_values = environment_values.clone();
     }
     if let Some(auto_cleanup) = source.auto_cleanup {
         target.auto_cleanup = auto_cleanup;
@@ -317,6 +320,14 @@ pub fn apply_tmux_overrides(target: &mut super::config::TmuxConfig, source: &Tmu
 
 /// Merge profile overrides into global config
 pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
+    if let Some(ref env) = profile.environment {
+        global.sandbox.environment = env.clone();
+    }
+
+    if let Some(ref env_vals) = profile.environment_values {
+        global.sandbox.environment_values = env_vals.clone();
+    }
+
     if let Some(ref theme_override) = profile.theme {
         if let Some(ref name) = theme_override.name {
             global.theme.name = name.clone();

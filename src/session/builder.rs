@@ -21,6 +21,7 @@ pub struct InstanceParams {
     pub path: String,
     pub group: String,
     pub tool: String,
+    pub profile: String,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
@@ -154,7 +155,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         params.title.clone()
     };
 
-    let mut instance = Instance::new(&final_title, &final_path);
+    let mut instance = Instance::new(&final_title, &final_path, &params.profile);
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
     instance.command = match params.tool.as_str() {
