@@ -10,7 +10,7 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::DialogResult;
-use crate::docker;
+use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::config::{DefaultTerminalMode, SandboxConfig};
 use crate::session::repo_config::HookProgress;
 #[cfg(test)]
@@ -279,7 +279,7 @@ impl NewSessionDialog {
             .unwrap_or_default();
 
         let available_tools = tools.available_list();
-        let docker_available = docker::is_docker_available();
+        let docker_available = containers::get_container_runtime().is_available();
 
         // Load resolved config (global merged with profile overrides)
         let config = resolve_config(profile).unwrap_or_default();
@@ -328,7 +328,9 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled,
-            sandbox_image: Input::new(docker::effective_default_image()),
+            sandbox_image: Input::new(
+                containers::get_container_runtime().effective_default_image(),
+            ),
             docker_available,
             yolo_mode,
             extra_env_keys,
@@ -379,7 +381,8 @@ impl NewSessionDialog {
             // Check if image pull will be needed (only relevant for sandbox sessions)
             if self.sandbox_enabled {
                 let image = self.sandbox_image.value().trim();
-                self.needs_image_pull = !docker::image_exists_locally(image);
+                self.needs_image_pull =
+                    !containers::get_container_runtime().image_exists_locally(image);
             }
         }
     }
@@ -421,7 +424,9 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
-            sandbox_image: Input::new(docker::effective_default_image()),
+            sandbox_image: Input::new(
+                containers::get_container_runtime().effective_default_image(),
+            ),
             docker_available: false,
             yolo_mode: false,
             extra_env_keys: Vec::new(),
@@ -465,7 +470,9 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             sandbox_enabled: false,
-            sandbox_image: Input::new(docker::effective_default_image()),
+            sandbox_image: Input::new(
+                containers::get_container_runtime().effective_default_image(),
+            ),
             docker_available: false,
             yolo_mode: false,
             extra_env_keys: Vec::new(),

@@ -80,6 +80,7 @@ regex = "1.10"
 
 # Git operations
 git2 = { version = "0.20", features = ["vendored-openssl"] }
+enum_dispatch = "0.3.13"
 
 # Diff computation
 similar = "2.6"

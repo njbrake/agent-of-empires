@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::docker::{self, ContainerConfig, DockerContainer, VolumeMount};
+use crate::containers::{
+    self, ContainerConfig, ContainerRuntimeInterface, DockerContainer, VolumeMount,
+};
 use crate::git::GitWorktree;
 use crate::tmux;
 
@@ -525,7 +527,7 @@ impl Instance {
             anyhow::bail!("Cannot create container terminal for non-sandboxed session");
         }
 
-        self.ensure_container_running()?;
+        let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
         let env_args = build_docker_env_args(sandbox);
@@ -540,8 +542,8 @@ impl Instance {
         let (_, _, container_workdir) = self.compute_volume_paths(project_path)?;
 
         let cmd = format!(
-            "docker exec -it -w {} {}{} /bin/bash",
-            container_workdir, env_part, sandbox.container_name
+            "{} /bin/bash",
+            container.exec_command(Some(&format!("-w {} {}", container_workdir, env_part)))
         );
 
         let session = self.container_terminal_tmux_session()?;
@@ -641,8 +643,7 @@ impl Instance {
         };
 
         let cmd = if self.is_sandboxed() {
-            self.ensure_container_running()?;
-
+            let container = self.get_container_for_instance()?;
             // Run on_launch hooks inside the container
             if let Some(ref hook_cmds) = on_launch_hooks {
                 if let Some(ref sandbox) = self.sandbox_info {
@@ -656,6 +657,7 @@ impl Instance {
                     }
                 }
             }
+
             let sandbox = self.sandbox_info.as_ref().unwrap();
             let mut tool_cmd = if self.is_yolo_mode() {
                 match self.tool.as_str() {
@@ -689,8 +691,9 @@ impl Instance {
                 format!("{} ", env_args)
             };
             Some(wrap_command_ignore_suspend(&format!(
-                "docker exec -it {}{} {}",
-                env_part, sandbox.container_name, tool_cmd
+                "{} {}",
+                container.exec_command(Some(&env_part)),
+                tool_cmd
             )))
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
@@ -716,6 +719,7 @@ impl Instance {
             }
         };
 
+        tracing::debug!("container cmd: {}", cmd.as_ref().map_or("none", |v| v));
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
@@ -807,7 +811,7 @@ impl Instance {
         }
     }
 
-    pub fn ensure_container_running(&mut self) -> Result<()> {
+    pub fn get_container_for_instance(&mut self) -> Result<containers::DockerContainer> {
         let sandbox = self
             .sandbox_info
             .as_ref()
@@ -818,17 +822,18 @@ impl Instance {
 
         if container.is_running()? {
             self.refresh_agent_configs();
-            return Ok(());
+            return Ok(container);
         }
 
         if container.exists()? {
             self.refresh_agent_configs();
             container.start()?;
-            return Ok(());
+            return Ok(container);
         }
 
         // Ensure image is available (always pulls to get latest)
-        docker::ensure_image(image)?;
+        let runtime = containers::get_container_runtime();
+        runtime.ensure_image(image)?;
 
         let config = self.build_container_config()?;
         let container_id = container.create(&config)?;
@@ -838,7 +843,7 @@ impl Instance {
             sandbox.created_at = Some(Utc::now());
         }
 
-        Ok(())
+        Ok(container)
     }
 
     /// Compute volume mount paths for Docker container.

@@ -129,7 +129,7 @@ impl CreationPoller {
                 // Ensure the container is running so we can exec hooks inside it.
                 // Don't create the tmux session yet -- that happens at attach time
                 // where the terminal size is available.
-                if let Err(e) = instance.ensure_container_running() {
+                if let Err(e) = instance.get_container_for_instance() {
                     builder::cleanup_instance(&instance, created_worktree.as_ref());
                     return CreationResult::Error(format!("{:#}", e));
                 }
@@ -162,7 +162,7 @@ impl CreationPoller {
             let hooks = hooks.as_ref().unwrap();
             if data.sandbox {
                 if !container_started {
-                    if let Err(e) = instance.ensure_container_running() {
+                    if let Err(e) = instance.get_container_for_instance() {
                         let msg = format!("Container startup warning: {:#}", e);
                         tracing::warn!("{}", msg);
                         let _ = progress_tx.send(HookProgress::Output(msg));
@@ -193,10 +193,10 @@ impl CreationPoller {
         }
 
         if data.sandbox && !container_started {
-            // Only ensure the Docker container is running here if hooks didn't already
+            // Only ensure the container is running here if hooks didn't already
             // start it. Don't create the tmux session yet -- that happens at attach time
             // where the terminal size is available.
-            if let Err(e) = instance.ensure_container_running() {
+            if let Err(e) = instance.get_container_for_instance() {
                 builder::cleanup_instance(&instance, created_worktree.as_ref());
                 return CreationResult::Error(format!("{:#}", e));
             }
