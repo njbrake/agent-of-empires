@@ -24,13 +24,13 @@ gh pr view <pr-number> --json title,body,author,baseRefName,headRefName,headRepo
 If the PR is from a fork, add the contributor's remote and fetch:
 
 ```bash
-git remote add <contributor-login> https://github.com/<contributor-login>/<repo>.git 2>/dev/null || true
+git remote add <contributor-login> git@github.com:<contributor-login>/<repo>.git 2>/dev/null || true
 git fetch <contributor-login> <head-branch-name>
 ```
 
 ### 2. Fetch Latest Base Branch
 
-**Important**: Before analyzing the diff, ensure you have the latest base branch to avoid false positives about missing features that already exist in main:
+**Important**: Before analyzing the diff, fetch the latest base branch so the three-dot diff has an accurate merge-base:
 
 ```bash
 git fetch origin <base-branch>
@@ -46,7 +46,12 @@ git diff origin/<base-branch>...<contributor-login>/<head-branch-name>
 
 **Note**: Use the three-dot (`...`) syntax which shows changes in the PR branch since it diverged from the base. This ensures you're reviewing only the PR's changes, not unrelated commits that may have been merged into main since the branch was created.
 
-If the branch is behind main and has merge conflicts or outdated code, note this in your review and suggest rebasing.
+**Important**: The PR branch may not be up to date with the base branch. This is normal and should NOT be flagged as an issue. Focus your review exclusively on the changes introduced by the PR. Do not comment on:
+- The branch being "behind main" or needing a rebase
+- Features or fixes in main that haven't been merged into the PR branch yet
+- Diff noise from the branch not including recent base branch changes
+
+Only mention merge status if there are actual merge conflicts that prevent the PR from being merged.
 
 ### 4. Read Affected Files
 
