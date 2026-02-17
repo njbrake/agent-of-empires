@@ -1,21 +1,6 @@
 {
   "contributors": [
     {
-      "username": "jlamberts",
-      "issues": [
-        {
-          "number": 208,
-          "title": "Feature: Pass env vars through to Tmux session when not in sandbox mode",
-          "labeled_at": "2026-02-02T08:52:42.570Z"
-        },
-        {
-          "number": 209,
-          "title": "Discussion: easier way to create new session in existing group via TUI",
-          "labeled_at": "2026-02-02T14:22:34.263Z"
-        }
-      ]
-    },
-    {
       "username": "jerome-benoit",
       "issues": [
         {
@@ -29,6 +14,26 @@
           "number": 261,
           "title": "feat: add shell completion support",
           "labeled_at": "2026-02-17T16:38:58.377Z"
+        },
+        {
+          "number": 275,
+          "title": "fix: skip migrations for completion command",
+          "labeled_at": "2026-02-17T18:52:01.233Z"
+        }
+      ]
+    },
+    {
+      "username": "jlamberts",
+      "issues": [
+        {
+          "number": 208,
+          "title": "Feature: Pass env vars through to Tmux session when not in sandbox mode",
+          "labeled_at": "2026-02-02T08:52:42.570Z"
+        },
+        {
+          "number": 209,
+          "title": "Discussion: easier way to create new session in existing group via TUI",
+          "labeled_at": "2026-02-02T14:22:34.263Z"
         }
       ]
     },
