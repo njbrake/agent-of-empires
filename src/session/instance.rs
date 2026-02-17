@@ -176,23 +176,61 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
 fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
     use std::process::Command;
 
+    let user = std::env::var("USER").unwrap_or_default();
     let output = Command::new("security")
         .args(["find-generic-password", "-a"])
-        .arg(std::env::var("USER").unwrap_or_default())
+        .arg(&user)
         .args(["-w", "-s", service])
         .output()?;
 
     if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Exit code 36 = errSecInteractionNotAllowed (keychain locked or ACL denied)
+        // Exit code 44 = errSecItemNotFound
+        if code == 36 {
+            tracing::warn!(
+                "Keychain access denied for service '{}' (exit code 36). \
+                 The keychain may be locked. Run 'security unlock-keychain' and restart. \
+                 Stderr: {}",
+                service,
+                stderr.trim()
+            );
+        } else if code == 44 {
+            tracing::debug!(
+                "No keychain entry found for service '{}' (account '{}')",
+                service,
+                user
+            );
+        } else {
+            tracing::warn!(
+                "Failed to extract keychain credential for service '{}' \
+                 (account '{}', exit code {}): {}",
+                service,
+                user,
+                code,
+                stderr.trim()
+            );
+        }
         return Ok(false);
     }
 
     let content = String::from_utf8_lossy(&output.stdout);
     let trimmed = content.trim();
     if trimmed.is_empty() {
+        tracing::warn!(
+            "Keychain entry for service '{}' exists but has empty content",
+            service
+        );
         return Ok(false);
     }
 
     std::fs::write(dest, trimmed)?;
+    tracing::debug!(
+        "Extracted keychain credential for '{}' -> {}",
+        service,
+        dest.display()
+    );
     Ok(true)
 }
 
