@@ -33,7 +33,8 @@ jobs:
           echo "Cargo.toml version: $CARGO_VERSION"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::Version mismatch! Cargo.toml has $CARGO_VERSION but tag is $TAG"
-            echo "Please update Cargo.toml to version $TAG_VERSION before releasing."
+            echo "Use the 'Prepare Release' workflow to bump the version automatically."
+            echo "Or manually update Cargo.toml and Cargo.lock to version $TAG_VERSION before tagging."
             exit 1
           fi
           echo "✓ Versions match"

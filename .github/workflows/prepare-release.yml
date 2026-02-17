@@ -1,0 +1,70 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.13.0) - without the "v" prefix'
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    name: Bump Version & Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Use the default GITHUB_TOKEN. If you have branch protection rules
+          # that block pushes, you may need to use a PAT instead:
+          #   token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Invalid version format: '$VERSION'. Expected semver like 0.13.0"
+            exit 1
+          fi
+
+      - name: Check tag does not already exist
+        run: |
+          if git rev-parse "v${{ github.event.inputs.version }}" >/dev/null 2>&1; then
+            echo "::error::Tag v${{ github.event.inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Update Cargo.toml version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          # Replace the first version = "..." line (the [package] version, not dependencies)
+          sed -i '0,/^version = ".*"/s//version = "'"${VERSION}"'"/' Cargo.toml
+          echo "Cargo.toml updated:"
+          grep '^version = ' Cargo.toml | head -1
+
+      - name: Update Cargo.lock version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          # Update the version for the agent-of-empires package (always first in lockfile)
+          sed -i '/^name = "agent-of-empires"/{n;s/^version = ".*"/version = "'"${VERSION}"'"/}' Cargo.lock
+          echo "Cargo.lock updated:"
+          head -8 Cargo.lock
+
+      - name: Commit version bump
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${VERSION}"
+
+      - name: Create tag and push
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          git tag "v${VERSION}"
+          git push origin main "v${VERSION}"
+          echo "Pushed commit and tag v${VERSION}"
+          echo "Release workflow will now trigger automatically."
