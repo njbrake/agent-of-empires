@@ -17,10 +17,23 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Handle completion before migrations - no database setup needed
-    if let Some(Commands::Completion { shell }) = cli.command {
-        generate(shell, &mut Cli::command(), "aoe", &mut std::io::stdout());
-        return Ok(());
+    // Handle commands that don't need app data or migrations.
+    // These work in read-only/sandboxed environments (e.g. Nix builds).
+    match cli.command {
+        Some(Commands::Completion { shell }) => {
+            generate(shell, &mut Cli::command(), "aoe", &mut std::io::stdout());
+            return Ok(());
+        }
+        Some(Commands::Init(args)) => return cli::init::run(args).await,
+        Some(Commands::Tmux { command }) => {
+            use cli::tmux::TmuxCommands;
+            return match command {
+                TmuxCommands::Status(args) => cli::tmux::run_status(args),
+            };
+        }
+        Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
+        Some(Commands::Uninstall(args)) => return cli::uninstall::run(args).await,
+        _ => {}
     }
 
     let profile = cli.profile.unwrap_or_default();
@@ -32,7 +45,6 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Add(args)) => cli::add::run(&profile, args).await,
-        Some(Commands::Init(args)) => cli::init::run(args).await,
         Some(Commands::List(args)) => cli::list::run(&profile, args).await,
         Some(Commands::Remove(args)) => cli::remove::run(&profile, args).await,
         Some(Commands::Status(args)) => cli::status::run(&profile, args).await,
@@ -40,15 +52,7 @@ async fn main() -> Result<()> {
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
-        Some(Commands::Tmux { command }) => {
-            use cli::tmux::TmuxCommands;
-            match command {
-                TmuxCommands::Status(args) => cli::tmux::run_status(args),
-            }
-        }
-        Some(Commands::Sounds { command }) => cli::sounds::run(command).await,
-        Some(Commands::Uninstall(args)) => cli::uninstall::run(args).await,
-        Some(Commands::Completion { .. }) => unreachable!(),
         None => tui::run(&profile).await,
+        _ => unreachable!(),
     }
 }
