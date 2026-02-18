@@ -19,7 +19,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 
 # TUI
-ratatui = { version = "0.29", features = ["crossterm"] }
+ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = "0.28"
 tui-textarea = "0.7"
 tui-input = "0.11"
