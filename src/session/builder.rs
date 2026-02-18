@@ -157,11 +157,10 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
     let mut instance = Instance::new(&final_title, &final_path);
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
-    instance.command = match params.tool.as_str() {
-        "opencode" => "opencode".to_string(),
-        "codex" => "codex".to_string(),
-        _ => String::new(),
-    };
+    instance.command = crate::agents::get_agent(&params.tool)
+        .filter(|a| a.set_default_command)
+        .map(|a| a.binary.to_string())
+        .unwrap_or_default();
     instance.worktree_info = worktree_info;
 
     if params.sandbox {

@@ -613,31 +613,16 @@ fn build_session_fields(
         session.map(|s| s.default_tool.is_some()).unwrap_or(false),
     );
 
-    // Map tool name to selected index: 0=Auto, 1=claude, 2=opencode, 3=vibe, 4=codex, 5=gemini
-    let selected = match default_tool.as_deref() {
-        Some("claude") => 1,
-        Some("opencode") => 2,
-        Some("vibe") => 3,
-        Some("codex") => 4,
-        Some("gemini") => 5,
-        _ => 0, // Auto (use first available)
-    };
+    let selected = crate::agents::settings_index_from_name(default_tool.as_deref());
+
+    let mut options = vec!["Auto (first available)".to_string()];
+    options.extend(crate::agents::agent_names().iter().map(|n| n.to_string()));
 
     vec![SettingField {
         key: FieldKey::DefaultTool,
         label: "Default Tool",
         description: "Default coding tool for new sessions",
-        value: FieldValue::Select {
-            selected,
-            options: vec![
-                "Auto (first available)".into(),
-                "claude".into(),
-                "opencode".into(),
-                "vibe".into(),
-                "codex".into(),
-                "gemini".into(),
-            ],
-        },
+        value: FieldValue::Select { selected, options },
         category: SettingsCategory::Session,
         has_override,
     }]
@@ -880,14 +865,8 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
-            config.session.default_tool = match selected {
-                1 => Some("claude".to_string()),
-                2 => Some("opencode".to_string()),
-                3 => Some("vibe".to_string()),
-                4 => Some("codex".to_string()),
-                5 => Some("gemini".to_string()),
-                _ => None, // Auto
-            };
+            config.session.default_tool =
+                crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
@@ -1141,15 +1120,7 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
         }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
-            let tool = match selected {
-                1 => Some("claude".to_string()),
-                2 => Some("opencode".to_string()),
-                3 => Some("vibe".to_string()),
-                4 => Some("codex".to_string()),
-                5 => Some("gemini".to_string()),
-                _ => None, // Auto
-            };
-            // Compare with global and set/clear override accordingly
+            let tool = crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
             if tool == global.session.default_tool {
                 if let Some(ref mut session) = config.session {
                     session.default_tool = None;
@@ -1366,9 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn test_default_tool_options_include_all_supported_tools() {
-        use crate::session::SUPPORTED_TOOLS;
-
+    fn test_default_tool_options_include_all_registered_agents() {
         let global = Config::default();
         let profile = ProfileConfig::default();
 
@@ -1389,26 +1358,22 @@ mod tests {
             _ => panic!("DefaultTool should be a Select field"),
         };
 
-        // First option is "Auto (first available)", rest should be tool names
         let tool_options: Vec<&str> = options.iter().skip(1).map(|s| s.as_str()).collect();
+        let agent_names = crate::agents::agent_names();
 
-        for tool in SUPPORTED_TOOLS {
+        for name in &agent_names {
             assert!(
-                tool_options.contains(tool),
-                "Settings UI missing tool '{}'. Update default_tool_fields() in fields.rs \
-                 when adding new tools. Supported tools: {:?}, UI options: {:?}",
-                tool,
-                SUPPORTED_TOOLS,
+                tool_options.contains(name),
+                "Settings UI missing agent '{}'. UI options: {:?}",
+                name,
                 tool_options
             );
         }
 
-        // Also verify we don't have extra unknown tools in the UI
         for option in &tool_options {
             assert!(
-                SUPPORTED_TOOLS.contains(option),
-                "Settings UI has unknown tool '{}' not in SUPPORTED_TOOLS. \
-                 Either add to SUPPORTED_TOOLS or remove from UI.",
+                agent_names.contains(option),
+                "Settings UI has unknown agent '{}' not in registry.",
                 option
             );
         }

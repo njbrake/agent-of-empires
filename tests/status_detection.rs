@@ -14,8 +14,8 @@
 //! 3. Update detection logic if needed
 //! 4. Re-run tests
 
+use agent_of_empires::agents;
 use agent_of_empires::session::Status;
-use agent_of_empires::tmux::{detect_claude_status, detect_opencode_status};
 use std::fs;
 use std::path::PathBuf;
 
@@ -87,22 +87,17 @@ fn identity(s: String) -> String {
     s
 }
 
-fn lowercase(s: String) -> String {
-    s.to_lowercase()
-}
-
 mod claude_code {
     use super::*;
 
+    fn detect(content: &str) -> Status {
+        let agent = agents::get_agent("claude").unwrap();
+        (agent.detect_status)(content)
+    }
+
     #[test]
     fn test_running_state() {
-        test_all_fixtures_in_dir(
-            "claude_code",
-            "running",
-            Status::Running,
-            identity,
-            detect_claude_status,
-        );
+        test_all_fixtures_in_dir("claude_code", "running", Status::Running, identity, detect);
     }
 
     #[test]
@@ -112,7 +107,7 @@ mod claude_code {
             "waiting_question",
             Status::Waiting,
             identity,
-            detect_claude_status,
+            detect,
         );
     }
 
@@ -123,34 +118,27 @@ mod claude_code {
             "waiting_permission",
             Status::Waiting,
             identity,
-            detect_claude_status,
+            detect,
         );
     }
 
     #[test]
     fn test_idle_state() {
-        test_all_fixtures_in_dir(
-            "claude_code",
-            "idle",
-            Status::Idle,
-            identity,
-            detect_claude_status,
-        );
+        test_all_fixtures_in_dir("claude_code", "idle", Status::Idle, identity, detect);
     }
 }
 
 mod opencode {
     use super::*;
 
+    fn detect(content: &str) -> Status {
+        let agent = agents::get_agent("opencode").unwrap();
+        (agent.detect_status)(content)
+    }
+
     #[test]
     fn test_running_state() {
-        test_all_fixtures_in_dir(
-            "opencode",
-            "running",
-            Status::Running,
-            lowercase,
-            detect_opencode_status,
-        );
+        test_all_fixtures_in_dir("opencode", "running", Status::Running, identity, detect);
     }
 
     #[test]
@@ -159,19 +147,13 @@ mod opencode {
             "opencode",
             "waiting_permission",
             Status::Waiting,
-            lowercase,
-            detect_opencode_status,
+            identity,
+            detect,
         );
     }
 
     #[test]
     fn test_idle_state() {
-        test_all_fixtures_in_dir(
-            "opencode",
-            "idle",
-            Status::Idle,
-            lowercase,
-            detect_opencode_status,
-        );
+        test_all_fixtures_in_dir("opencode", "idle", Status::Idle, identity, detect);
     }
 }

@@ -361,8 +361,8 @@ impl App {
                     .is_some_and(|i| !i.is_empty());
 
                 if has_instruction
-                    && !crate::session::INSTRUCTION_SUPPORTED_TOOLS
-                        .contains(&instance.tool.as_str())
+                    && !crate::agents::get_agent(&instance.tool)
+                        .is_some_and(|a| a.instruction_flag.is_some())
                 {
                     let config = load_config()?.unwrap_or_default();
                     if !config.app_state.has_seen_custom_instruction_warning {

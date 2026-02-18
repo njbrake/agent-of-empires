@@ -52,7 +52,7 @@ curl -fsSL \
   | bash
 
 # Homebrew
-brew install njbrake/aoe/aoe
+brew install aoe
 
 # Build from source
 git clone https://github.com/njbrake/agent-of-empires

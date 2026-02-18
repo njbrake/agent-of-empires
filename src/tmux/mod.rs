@@ -2,16 +2,13 @@
 
 mod session;
 pub mod status_bar;
-mod status_detection;
+pub(crate) mod status_detection;
 mod terminal_session;
 mod utils;
 
 pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
-pub use status_detection::{
-    detect_claude_status, detect_codex_status, detect_gemini_status, detect_opencode_status,
-    detect_vibe_status,
-};
+pub use status_detection::detect_status_from_content;
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
 
 use std::collections::HashMap;
@@ -97,83 +94,45 @@ pub fn is_tmux_available() -> bool {
     Command::new("tmux").arg("-V").output().is_ok()
 }
 
-pub fn is_claude_available() -> bool {
-    Command::new("which")
-        .arg("claude")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-pub fn is_opencode_available() -> bool {
-    Command::new("which")
-        .arg("opencode")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-pub fn is_codex_available() -> bool {
-    Command::new("which")
-        .arg("codex")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-pub fn is_vibe_available() -> bool {
-    Command::new("vibe").arg("--version").output().is_ok()
-}
-
-pub fn is_gemini_available() -> bool {
-    Command::new("which")
-        .arg("gemini")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
+    use crate::agents::DetectionMethod;
+    match &agent.detection {
+        DetectionMethod::Which(binary) => Command::new("which")
+            .arg(binary)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false),
+        DetectionMethod::RunWithArg(binary, arg) => Command::new(binary).arg(arg).output().is_ok(),
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AvailableTools {
-    pub claude: bool,
-    pub opencode: bool,
-    pub vibe: bool,
-    pub codex: bool,
-    pub gemini: bool,
+    available: Vec<&'static str>,
 }
 
 impl AvailableTools {
     pub fn detect() -> Self {
-        Self {
-            claude: is_claude_available(),
-            opencode: is_opencode_available(),
-            vibe: is_vibe_available(),
-            codex: is_codex_available(),
-            gemini: is_gemini_available(),
-        }
+        let available = crate::agents::AGENTS
+            .iter()
+            .filter(|a| is_agent_available(a))
+            .map(|a| a.name)
+            .collect();
+        Self { available }
     }
 
     pub fn any_available(&self) -> bool {
-        self.claude || self.opencode || self.vibe || self.codex || self.gemini
+        !self.available.is_empty()
     }
 
     pub fn available_list(&self) -> Vec<&'static str> {
-        let mut tools = Vec::new();
-        if self.claude {
-            tools.push("claude");
+        self.available.clone()
+    }
+
+    #[cfg(test)]
+    pub fn with_tools(tools: &[&'static str]) -> Self {
+        Self {
+            available: tools.to_vec(),
         }
-        if self.opencode {
-            tools.push("opencode");
-        }
-        if self.vibe {
-            tools.push("vibe");
-        }
-        if self.codex {
-            tools.push("codex");
-        }
-        if self.gemini {
-            tools.push("gemini");
-        }
-        tools
     }
 }

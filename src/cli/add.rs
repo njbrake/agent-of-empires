@@ -344,23 +344,15 @@ fn trust_and_run_on_create(
 }
 
 fn detect_tool(cmd: &str) -> Result<String> {
-    let cmd_lower = cmd.to_lowercase();
-    if cmd_lower.is_empty() || cmd_lower.contains("claude") {
-        Ok("claude".to_string())
-    } else if cmd_lower.contains("opencode") || cmd_lower.contains("open-code") {
-        Ok("opencode".to_string())
-    } else if cmd_lower.contains("vibe") || cmd_lower.contains("mistral-vibe") {
-        Ok("vibe".to_string())
-    } else if cmd_lower.contains("codex") {
-        Ok("codex".to_string())
-    } else if cmd_lower.contains("gemini") {
-        Ok("gemini".to_string())
-    } else {
-        bail!(
-            "Unknown tool in command: {}\n\
-             Supported tools: claude, opencode, vibe, codex, gemini\n\
-             Tip: Command must contain one of the supported tool names",
-            cmd
-        )
-    }
+    crate::agents::resolve_tool_name(cmd)
+        .map(|name| name.to_string())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown tool in command: {}\n\
+                 Supported tools: {}\n\
+                 Tip: Command must contain one of the supported tool names",
+                cmd,
+                crate::agents::agent_names().join(", ")
+            )
+        })
 }

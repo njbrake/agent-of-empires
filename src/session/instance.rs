@@ -162,14 +162,9 @@ impl Instance {
 
     pub fn get_tool_command(&self) -> &str {
         if self.command.is_empty() {
-            match self.tool.as_str() {
-                "claude" => "claude",
-                "opencode" => "opencode",
-                "vibe" => "vibe",
-                "codex" => "codex",
-                "gemini" => "gemini",
-                _ => "bash",
-            }
+            crate::agents::get_agent(&self.tool)
+                .map(|a| a.binary)
+                .unwrap_or("bash")
         } else {
             &self.command
         }
@@ -371,28 +366,28 @@ impl Instance {
             }
 
             let sandbox = self.sandbox_info.as_ref().unwrap();
+            let agent = crate::agents::get_agent(&self.tool);
             let mut tool_cmd = if self.is_yolo_mode() {
-                match self.tool.as_str() {
-                    "claude" => "claude --dangerously-skip-permissions".to_string(),
-                    "vibe" => "vibe --agent auto-approve".to_string(),
-                    "codex" => "codex --dangerously-bypass-approvals-and-sandbox".to_string(),
-                    "gemini" => "gemini --approval-mode yolo".to_string(),
-                    _ => self.get_tool_command().to_string(),
+                if let Some(ref yolo) = agent.and_then(|a| a.yolo.as_ref()) {
+                    match yolo {
+                        crate::agents::YoloMode::CliFlag(flag) => {
+                            format!("{} {}", self.get_tool_command(), flag)
+                        }
+                        crate::agents::YoloMode::EnvVar(..) => self.get_tool_command().to_string(),
+                    }
+                } else {
+                    self.get_tool_command().to_string()
                 }
             } else {
                 self.get_tool_command().to_string()
             };
-            // Inject custom instruction CLI flags for supported agents
             if let Some(ref instruction) = sandbox.custom_instruction {
                 if !instruction.is_empty() {
-                    let escaped = shell_escape(instruction);
-                    tool_cmd = match self.tool.as_str() {
-                        "claude" => format!("{} --append-system-prompt {}", tool_cmd, escaped),
-                        "codex" => {
-                            format!("{} --config developer_instructions={}", tool_cmd, escaped)
-                        }
-                        _ => tool_cmd,
-                    };
+                    if let Some(flag_template) = agent.and_then(|a| a.instruction_flag) {
+                        let escaped = shell_escape(instruction);
+                        let flag = flag_template.replace("{}", &escaped);
+                        tool_cmd = format!("{} {}", tool_cmd, flag);
+                    }
                 }
             }
 
@@ -418,13 +413,9 @@ impl Instance {
             }
 
             if self.command.is_empty() {
-                match self.tool.as_str() {
-                    "claude" => Some(wrap_command_ignore_suspend("claude")),
-                    "vibe" => Some(wrap_command_ignore_suspend("vibe")),
-                    "codex" => Some(wrap_command_ignore_suspend("codex")),
-                    "gemini" => Some(wrap_command_ignore_suspend("gemini")),
-                    _ => None,
-                }
+                crate::agents::get_agent(&self.tool)
+                    .filter(|a| a.supports_host_launch)
+                    .map(|a| wrap_command_ignore_suspend(a.binary))
             } else {
                 Some(wrap_command_ignore_suspend(&self.command))
             }
@@ -595,24 +586,6 @@ fn wrap_command_ignore_suspend(cmd: &str) -> String {
     format!("bash -c 'stty susp undef; exec {}'", cmd)
 }
 
-/// All supported coding tools.
-/// When adding a new tool, update:
-/// - This constant
-/// - `detect_tool()` in cli/add.rs
-/// - `detect_status_from_content()` in tmux/status_detection.rs
-/// - `default_tool_fields()` in tui/settings/fields.rs (options list and match statements)
-/// - `apply_field_to_global()` and `apply_field_to_profile()` in tui/settings/fields.rs
-pub const SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "gemini"];
-
-/// Tools that have YOLO mode support configured.
-/// When adding a new tool, add it here and implement YOLO support in:
-/// - `start()` for command construction (Claude uses CLI flag, Vibe uses --auto-approve, Codex uses CLI flag)
-/// - `build_container_config()` for environment variables (OpenCode uses env var)
-pub const YOLO_SUPPORTED_TOOLS: &[&str] = &["claude", "opencode", "vibe", "codex", "gemini"];
-
-/// Tools that support custom instruction injection via CLI flags.
-pub const INSTRUCTION_SUPPORTED_TOOLS: &[&str] = &["claude", "codex"];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,25 +609,12 @@ mod tests {
     }
 
     #[test]
-    fn test_all_available_tools_have_yolo_support() {
-        // This test ensures that when a new tool is added to AvailableTools,
-        // YOLO mode support is also configured for it.
-        // If this test fails, add the new tool to YOLO_SUPPORTED_TOOLS and
-        // implement YOLO support in start() and/or build_container_config().
-        let available_tools = crate::tmux::AvailableTools {
-            claude: true,
-            opencode: true,
-            vibe: true,
-            codex: true,
-            gemini: true,
-        };
-        for tool in available_tools.available_list() {
+    fn test_all_agents_have_yolo_support() {
+        for agent in crate::agents::AGENTS {
             assert!(
-                YOLO_SUPPORTED_TOOLS.contains(&tool),
-                "Tool '{}' is available but not in YOLO_SUPPORTED_TOOLS. \
-                 Add YOLO mode support for this tool in start() and/or build_container_config(), \
-                 then add it to YOLO_SUPPORTED_TOOLS.",
-                tool
+                agent.yolo.is_some(),
+                "Agent '{}' should have YOLO mode configured",
+                agent.name
             );
         }
     }

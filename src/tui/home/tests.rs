@@ -30,13 +30,7 @@ fn create_test_env_empty() -> TestEnv {
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
     let storage = Storage::new("test").unwrap();
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
 }
@@ -54,13 +48,7 @@ fn create_test_env_with_sessions(count: usize) -> TestEnv {
     }
     storage.save(&instances).unwrap();
 
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
 }
@@ -84,13 +72,7 @@ fn create_test_env_with_groups() -> TestEnv {
 
     storage.save(&instances).unwrap();
 
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
 }
@@ -169,13 +151,7 @@ fn test_n_opens_new_dialog() {
 fn test_has_dialog_returns_true_for_new_dialog() {
     let mut env = create_test_env_empty();
     env.view.new_dialog = Some(NewSessionDialog::new(
-        AvailableTools {
-            claude: true,
-            opencode: false,
-            vibe: false,
-            codex: false,
-            gemini: false,
-        },
+        AvailableTools::with_tools(&["claude"]),
         Vec::new(),
         Vec::new(),
         "default",
@@ -599,13 +575,7 @@ fn test_get_next_profile_cycles_through_profiles() {
     crate::session::create_profile("gamma").unwrap();
 
     let storage = Storage::new("alpha").unwrap();
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
 
     // From alpha -> beta
@@ -623,13 +593,7 @@ fn test_get_next_profile_wraps_around() {
 
     // Start on beta (last alphabetically)
     let storage = Storage::new("beta").unwrap();
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
 
     // From beta -> alpha (wraps)
@@ -646,13 +610,7 @@ fn test_uppercase_p_returns_switch_profile_action() {
     crate::session::create_profile("second").unwrap();
 
     let storage = Storage::new("first").unwrap();
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(storage, tools).unwrap();
 
     let action = view.handle_key(key(KeyCode::Char('P')));
@@ -798,13 +756,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
     storage.save_with_groups(&instances, &group_tree).unwrap();
 
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
 }
@@ -834,13 +786,7 @@ fn test_group_has_managed_worktrees() {
 
     storage.save(&[inst1, inst2]).unwrap();
 
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
 
     assert!(view.group_has_managed_worktrees("work", "work/"));
@@ -875,13 +821,7 @@ fn test_group_has_containers() {
 
     storage.save(&[inst1, inst2]).unwrap();
 
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
 
     assert!(view.group_has_containers("work", "work/"));
@@ -996,13 +936,7 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
 
     storage.save(&[inst1]).unwrap();
 
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(storage, tools).unwrap();
 
     // Select the work group
@@ -1050,13 +984,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
 
     storage.save(&[inst1]).unwrap();
 
-    let tools = AvailableTools {
-        claude: true,
-        opencode: false,
-        vibe: false,
-        codex: false,
-        gemini: false,
-    };
+    let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(storage, tools).unwrap();
 
     // Select the work group
