@@ -42,28 +42,31 @@ impl GitWorktree {
     }
 
     pub fn find_main_repo(path: &Path) -> Result<PathBuf> {
-        if let Some(main_repo) = Self::find_main_repo_from_linked_worktree_gitfile(path) {
-            return Ok(main_repo);
+        if let Ok(repo) = git2::Repository::discover(path) {
+            if let Some(main_repo) = Self::find_main_repo_from_worktree_gitdir(repo.path()) {
+                return Ok(main_repo);
+            }
+
+            // For regular repos with a working directory, return it
+            if let Some(workdir) = repo.workdir() {
+                return Ok(workdir.to_path_buf());
+            }
+
+            let bare_repo_path = repo.path().to_path_buf();
+            let parent_dir = bare_repo_path.parent().ok_or(GitError::NotAGitRepo)?;
+
+            // For linked setups where the parent has a `.git` entry pointing to the bare repo
+            // (e.g. `/repo/.git -> ./.bare`), use the parent as the main repo path.
+            if parent_dir.join(".git").exists() {
+                return Ok(parent_dir.to_path_buf());
+            }
+
+            // For direct bare repos (e.g. `/repo/foo.git`), use the bare repo itself.
+            return Ok(bare_repo_path);
         }
 
-        let repo = git2::Repository::discover(path)?;
-
-        // For regular repos with a working directory, return it
-        if let Some(workdir) = repo.workdir() {
-            return Ok(workdir.to_path_buf());
-        }
-
-        let bare_repo_path = repo.path().to_path_buf();
-        let parent_dir = bare_repo_path.parent().ok_or(GitError::NotAGitRepo)?;
-
-        // For linked setups where the parent has a `.git` entry pointing to the bare repo
-        // (e.g. `/repo/.git -> ./.bare`), use the parent as the main repo path.
-        if parent_dir.join(".git").exists() {
-            return Ok(parent_dir.to_path_buf());
-        }
-
-        // For direct bare repos (e.g. `/repo/foo.git`), use the bare repo itself.
-        Ok(bare_repo_path)
+        // Fallback for linked worktree layouts that git2::Repository::discover doesn't handle.
+        Self::find_main_repo_from_linked_worktree_gitfile(path).ok_or(GitError::NotAGitRepo)
     }
 
     /// For linked worktrees, `.git` is a file containing `gitdir: <path>`.
