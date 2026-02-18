@@ -1,5 +1,6 @@
 // Git worktree operations module
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 pub mod diff;
@@ -29,6 +30,7 @@ impl GitWorktree {
 
     pub fn is_git_repo(path: &Path) -> bool {
         git2::Repository::discover(path).is_ok()
+            || Self::find_main_repo_from_linked_worktree_gitfile(path).is_some()
     }
 
     /// Returns true if the repository is a bare repo (including linked worktree bare repo setups).
@@ -40,15 +42,11 @@ impl GitWorktree {
     }
 
     pub fn find_main_repo(path: &Path) -> Result<PathBuf> {
-        let repo = git2::Repository::discover(path)?;
-
-        // Check if this is a worktree of a bare repo setup.
-        // For worktrees of bare repos, repo.path() returns something like:
-        // /project/.bare/worktrees/main/
-        // We want to return /project/ (the parent of .bare).
-        if let Some(bare_repo_root) = Self::find_bare_repo_root_from_gitdir(repo.path()) {
-            return Ok(bare_repo_root);
+        if let Some(main_repo) = Self::find_main_repo_from_linked_worktree_gitfile(path) {
+            return Ok(main_repo);
         }
+
+        let repo = git2::Repository::discover(path)?;
 
         // For regular repos with a working directory, return it
         if let Some(workdir) = repo.workdir() {
@@ -65,26 +63,45 @@ impl GitWorktree {
             .ok_or(GitError::NotAGitRepo)
     }
 
-    /// If gitdir is inside a worktrees/ directory of a bare repo (e.g., /project/.bare/worktrees/main/),
-    /// returns the parent of the bare repo (e.g., /project/).
-    /// Returns None if not a bare repo worktree setup.
-    fn find_bare_repo_root_from_gitdir(gitdir: &Path) -> Option<PathBuf> {
-        // Look for a "worktrees" ancestor directory
-        let mut current = gitdir;
-        while let Some(parent) = current.parent() {
-            if current
-                .file_name()
-                .map(|n| n == "worktrees")
-                .unwrap_or(false)
-            {
-                // current is the "worktrees" directory
-                // parent is the bare repo directory (e.g., .bare)
-                // parent.parent() is the main repo root
-                return parent.parent().map(|p| p.to_path_buf());
+    /// For linked worktrees, `.git` is a file containing `gitdir: <path>`.
+    /// If that path points to `.../worktrees/<name>`, return the repository root.
+    fn find_main_repo_from_linked_worktree_gitfile(path: &Path) -> Option<PathBuf> {
+        let mut current = if path.is_file() { path.parent()? } else { path };
+        loop {
+            let git_entry = current.join(".git");
+            if git_entry.is_file() {
+                let gitdir = Self::read_gitdir_from_file(&git_entry)?;
+                return Self::find_main_repo_from_worktree_gitdir(&gitdir);
             }
-            current = parent;
+
+            if git_entry.exists() {
+                return None;
+            }
+
+            current = current.parent()?;
         }
-        None
+    }
+
+    fn read_gitdir_from_file(git_file: &Path) -> Option<PathBuf> {
+        let content = std::fs::read_to_string(git_file).ok()?;
+        let gitdir = content
+            .lines()
+            .find_map(|line| line.strip_prefix("gitdir:").map(str::trim))?;
+        let gitdir_path = PathBuf::from(gitdir);
+        let resolved = if gitdir_path.is_absolute() {
+            gitdir_path
+        } else {
+            git_file.parent()?.join(gitdir_path)
+        };
+        resolved.canonicalize().ok()
+    }
+
+    fn find_main_repo_from_worktree_gitdir(gitdir: &Path) -> Option<PathBuf> {
+        let worktrees_dir = gitdir.parent()?;
+        if worktrees_dir.file_name() != Some(OsStr::new("worktrees")) {
+            return None;
+        }
+        worktrees_dir.parent()?.parent().map(|p| p.to_path_buf())
     }
 
     pub fn create_worktree(&self, branch: &str, path: &Path, create_branch: bool) -> Result<()> {
@@ -515,6 +532,42 @@ mod tests {
         dir
     }
 
+    fn convert_worktree_gitfile_to_relative(worktree_path: &Path) {
+        let git_file = worktree_path.join(".git");
+        let content = std::fs::read_to_string(&git_file).unwrap();
+        let gitdir_line = content
+            .lines()
+            .find_map(|line| line.strip_prefix("gitdir:").map(str::trim))
+            .unwrap();
+        let gitdir_path = Path::new(gitdir_line);
+
+        if gitdir_path.is_relative() {
+            return;
+        }
+
+        let worktree_canonical = worktree_path.canonicalize().unwrap();
+        let gitdir_canonical = gitdir_path.canonicalize().unwrap();
+        let relative = GitWorktree::diff_paths(&gitdir_canonical, &worktree_canonical).unwrap();
+        std::fs::write(git_file, format!("gitdir: {}\n", relative.display())).unwrap();
+    }
+
+    fn setup_linked_worktree_with_worktrees_gitfile() -> Option<(TempDir, PathBuf)> {
+        let dir = setup_linked_worktree_bare_repo();
+        let worktree_path = dir.path().join("main");
+        if !worktree_path.exists() {
+            return None;
+        }
+
+        convert_worktree_gitfile_to_relative(&worktree_path);
+        let git_file_content = std::fs::read_to_string(worktree_path.join(".git")).unwrap();
+        assert!(
+            git_file_content.contains("worktrees"),
+            ".git file should point to worktrees/<name>, got: {git_file_content}"
+        );
+
+        Some((dir, worktree_path))
+    }
+
     #[test]
     fn test_is_git_repo_recognizes_linked_worktree_bare_repo() {
         let dir = setup_linked_worktree_bare_repo();
@@ -533,6 +586,25 @@ mod tests {
                 "Worktree should be recognized as git repo"
             );
         }
+    }
+
+    #[test]
+    fn test_is_git_repo_recognizes_worktree_gitfile_pointing_to_worktrees() {
+        let Some((_dir, worktree_path)) = setup_linked_worktree_with_worktrees_gitfile() else {
+            return;
+        };
+
+        assert!(
+            GitWorktree::is_git_repo(&worktree_path),
+            "Worktree path with .git -> <bare>/worktrees/<name> should be recognized"
+        );
+
+        let nested_path = worktree_path.join("nested");
+        std::fs::create_dir_all(&nested_path).unwrap();
+        assert!(
+            GitWorktree::is_git_repo(&nested_path),
+            "Nested paths under worktree should also be recognized"
+        );
     }
 
     #[test]
@@ -632,6 +704,28 @@ mod tests {
         assert_eq!(
             main_repo, expected,
             "find_main_repo from worktree should return the root directory, not the worktree directory"
+        );
+    }
+
+    #[test]
+    fn test_find_main_repo_from_worktree_gitfile_pointing_to_worktrees_returns_root() {
+        let Some((dir, worktree_path)) = setup_linked_worktree_with_worktrees_gitfile() else {
+            return;
+        };
+
+        let nested_path = worktree_path.join("nested");
+        std::fs::create_dir_all(&nested_path).unwrap();
+
+        let expected = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            GitWorktree::find_main_repo(&worktree_path).unwrap(),
+            expected,
+            "find_main_repo should resolve linked worktree path back to bare repo root"
+        );
+        assert_eq!(
+            GitWorktree::find_main_repo(&nested_path).unwrap(),
+            expected,
+            "find_main_repo should resolve nested linked worktree path back to bare repo root"
         );
     }
 
