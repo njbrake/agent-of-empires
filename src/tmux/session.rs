@@ -187,11 +187,28 @@ impl Session {
         process::get_foreground_pid(pane_pid).or(Some(pane_pid))
     }
 
+    fn get_pane_title(&self) -> Result<String> {
+        let output = Command::new("tmux")
+            .args(["display-message", "-t", &self.name, "-p", "#{pane_title}"])
+            .output()?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Ok(String::new())
+        }
+    }
+
     pub fn detect_status(&self, tool: &str) -> Result<Status> {
         let content = self.capture_pane(50)?;
         let fg_pid = self.get_foreground_pid();
+        let pane_title = self.get_pane_title()?;
+
         Ok(super::status_detection::detect_status_from_content(
-            &content, tool, fg_pid,
+            &content,
+            &pane_title,
+            tool,
+            fg_pid,
         ))
     }
 }
