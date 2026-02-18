@@ -246,16 +246,10 @@ jobs:
   update-homebrew-core:
     name: Update Homebrew Core Formula
     needs: release
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
-      - name: Update homebrew-core formula
-        env:
-          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.HOMEBREW_CORE_TOKEN }}
-          HOMEBREW_NO_INSTALL_FROM_API: 1
-          VERSION: ${{ needs.release.outputs.version }}
-        run: |
-          brew tap homebrew/core
-          brew bump-formula-pr aoe \
-            --url "https://github.com/njbrake/agent-of-empires/archive/refs/tags/${VERSION}.tar.gz" \
-            --no-browse \
-            --no-audit
+      - uses: dawidd6/action-homebrew-bump-formula@v4
+        with:
+          token: ${{ secrets.HOMEBREW_CORE_TOKEN }}
+          formula: aoe
+          tag: ${{ needs.release.outputs.version }}
