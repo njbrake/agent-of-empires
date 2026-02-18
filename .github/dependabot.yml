@@ -4,3 +4,31 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown: # applies only to version-updates (not security-updates)
+      default-days: 7
+      semver-minor-days: 14 # wait 14 days before applying minor updates
+      semver-major-days: 28
+  - package-ecosystem: "docker"
+    directory: "docker"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+  - package-ecosystem: "npm"
+    directory: "website"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
