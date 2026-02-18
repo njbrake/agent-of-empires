@@ -22,7 +22,7 @@ clap_complete = "4.5"
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"
 tui-textarea = "0.7"
-tui-input = "0.11"
+tui-input = "0.14"
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
