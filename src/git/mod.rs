@@ -53,14 +53,17 @@ impl GitWorktree {
             return Ok(workdir.to_path_buf());
         }
 
-        // For bare repos (including linked worktree setups where .git file points to a bare repo),
-        // return the parent of the git directory.
-        // Example: /repo/.git file -> /repo/.bare/, repo.path() returns /repo/.bare/,
-        // so we return /repo/ as the main repo path.
-        repo.path()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .ok_or(GitError::NotAGitRepo)
+        let bare_repo_path = repo.path().to_path_buf();
+        let parent_dir = bare_repo_path.parent().ok_or(GitError::NotAGitRepo)?;
+
+        // For linked setups where the parent has a `.git` entry pointing to the bare repo
+        // (e.g. `/repo/.git -> ./.bare`), use the parent as the main repo path.
+        if parent_dir.join(".git").exists() {
+            return Ok(parent_dir.to_path_buf());
+        }
+
+        // For direct bare repos (e.g. `/repo/foo.git`), use the bare repo itself.
+        Ok(bare_repo_path)
     }
 
     /// For linked worktrees, `.git` is a file containing `gitdir: <path>`.
@@ -852,6 +855,25 @@ mod tests {
         assert!(
             GitWorktree::new(expected).is_ok(),
             "resolved bare repo path should be accepted by GitWorktree::new"
+        );
+    }
+
+    #[test]
+    fn test_find_main_repo_from_direct_bare_repo_path_returns_bare_repo_path() {
+        let Some((_dir, bare_repo_path, _worktree_path)) = setup_sibling_bare_repo_worktree()
+        else {
+            return;
+        };
+
+        let expected = bare_repo_path.canonicalize().unwrap();
+        assert_eq!(
+            GitWorktree::find_main_repo(&bare_repo_path).unwrap(),
+            expected,
+            "find_main_repo should keep direct bare repo paths instead of returning their parent"
+        );
+        assert!(
+            GitWorktree::new(expected).is_ok(),
+            "direct bare repo path should be accepted by GitWorktree::new"
         );
     }
 
