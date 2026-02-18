@@ -101,7 +101,16 @@ impl GitWorktree {
         if worktrees_dir.file_name() != Some(OsStr::new("worktrees")) {
             return None;
         }
-        worktrees_dir.parent()?.parent().map(|p| p.to_path_buf())
+
+        let git_or_bare_dir = worktrees_dir.parent()?;
+        let parent_dir = git_or_bare_dir.parent()?;
+        if git_or_bare_dir.file_name() == Some(OsStr::new(".git"))
+            || parent_dir.join(".git").exists()
+        {
+            return Some(parent_dir.to_path_buf());
+        }
+
+        Some(git_or_bare_dir.to_path_buf())
     }
 
     pub fn create_worktree(&self, branch: &str, path: &Path, create_branch: bool) -> Result<()> {
@@ -568,6 +577,97 @@ mod tests {
         Some((dir, worktree_path))
     }
 
+    fn setup_sibling_bare_repo_worktree() -> Option<(TempDir, PathBuf, PathBuf)> {
+        let dir = TempDir::new().unwrap();
+        let repo_root = dir.path().join("fe");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        let bare_repo_path = repo_root.join("foo.git");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--bare", bare_repo_path.to_str().unwrap()])
+            .output()
+            .ok()?;
+        if !init.status.success() {
+            return None;
+        }
+
+        let seed_path = repo_root.join("seed");
+        let clone = std::process::Command::new("git")
+            .args([
+                "clone",
+                bare_repo_path.to_str().unwrap(),
+                seed_path.to_str().unwrap(),
+            ])
+            .output()
+            .ok()?;
+        if !clone.status.success() {
+            return None;
+        }
+
+        let config_name = std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&seed_path)
+            .output()
+            .ok()?;
+        if !config_name.status.success() {
+            return None;
+        }
+        let config_email = std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&seed_path)
+            .output()
+            .ok()?;
+        if !config_email.status.success() {
+            return None;
+        }
+
+        std::fs::write(seed_path.join("README.md"), "hello\n").ok()?;
+        let add = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&seed_path)
+            .output()
+            .ok()?;
+        if !add.status.success() {
+            return None;
+        }
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&seed_path)
+            .output()
+            .ok()?;
+        if !commit.status.success() {
+            return None;
+        }
+        let push = std::process::Command::new("git")
+            .args(["push", "origin", "HEAD:main"])
+            .current_dir(&seed_path)
+            .output()
+            .ok()?;
+        if !push.status.success() {
+            return None;
+        }
+
+        std::fs::remove_dir_all(&seed_path).ok()?;
+
+        let worktree_path = repo_root.join("master");
+        let add_worktree = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                bare_repo_path.to_str().unwrap(),
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "main",
+            ])
+            .output()
+            .ok()?;
+        if !add_worktree.status.success() || !worktree_path.exists() {
+            return None;
+        }
+
+        Some((dir, bare_repo_path, worktree_path))
+    }
+
     #[test]
     fn test_is_git_repo_recognizes_linked_worktree_bare_repo() {
         let dir = setup_linked_worktree_bare_repo();
@@ -726,6 +826,32 @@ mod tests {
             GitWorktree::find_main_repo(&nested_path).unwrap(),
             expected,
             "find_main_repo should resolve nested linked worktree path back to bare repo root"
+        );
+    }
+
+    #[test]
+    fn test_find_main_repo_from_sibling_bare_repo_worktree_returns_bare_repo_path() {
+        let Some((_dir, bare_repo_path, worktree_path)) = setup_sibling_bare_repo_worktree() else {
+            return;
+        };
+
+        let nested_path = worktree_path.join("nested");
+        std::fs::create_dir_all(&nested_path).unwrap();
+
+        let expected = bare_repo_path.canonicalize().unwrap();
+        assert_eq!(
+            GitWorktree::find_main_repo(&worktree_path).unwrap(),
+            expected,
+            "find_main_repo should resolve sibling bare-repo worktree to bare repo path"
+        );
+        assert_eq!(
+            GitWorktree::find_main_repo(&nested_path).unwrap(),
+            expected,
+            "find_main_repo should resolve nested sibling bare-repo worktree path to bare repo path"
+        );
+        assert!(
+            GitWorktree::new(expected).is_ok(),
+            "resolved bare repo path should be accepted by GitWorktree::new"
         );
     }
 
