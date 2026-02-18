@@ -70,6 +70,7 @@ pub async fn run(profile: &str) -> Result<()> {
         eprintln!("Agent of Empires requires at least one of:");
         eprintln!("  claude    - Anthropic's Claude CLI");
         eprintln!("  opencode  - OpenCode CLI");
+        eprintln!("  cursor    - Cursor's Agent CLI");
         eprintln!();
         eprintln!("Install one of these tools and ensure it's in your PATH.");
         std::process::exit(1);

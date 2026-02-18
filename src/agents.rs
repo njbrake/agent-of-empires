@@ -110,6 +110,18 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_gemini_status,
         container_env: &[],
     },
+    AgentDef {
+        name: "cursor",
+        binary: "agent",
+        aliases: &[],
+        detection: DetectionMethod::Which("agent"),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
+        instruction_flag: None,
+        set_default_command: false,
+        supports_host_launch: true,
+        detect_status: status_detection::detect_cursor_status,
+        container_env: &[],
+    },
 ];
 
 /// Look up an agent by canonical name.
@@ -174,6 +186,7 @@ mod tests {
         assert_eq!(get_agent("vibe").unwrap().binary, "vibe");
         assert_eq!(get_agent("codex").unwrap().binary, "codex");
         assert_eq!(get_agent("gemini").unwrap().binary, "gemini");
+        assert_eq!(get_agent("cursor").unwrap().binary, "agent");
     }
 
     #[test]
@@ -184,7 +197,10 @@ mod tests {
     #[test]
     fn test_agent_names() {
         let names = agent_names();
-        assert_eq!(names, vec!["claude", "opencode", "vibe", "codex", "gemini"]);
+        assert_eq!(
+            names,
+            vec!["claude", "opencode", "vibe", "codex", "gemini", "cursor"]
+        );
     }
 
     #[test]
@@ -194,8 +210,10 @@ mod tests {
         assert_eq!(resolve_tool_name("mistral-vibe"), Some("vibe"));
         assert_eq!(resolve_tool_name("codex"), Some("codex"));
         assert_eq!(resolve_tool_name("gemini"), Some("gemini"));
+        assert_eq!(resolve_tool_name("cursor"), Some("cursor"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
+        assert_eq!(resolve_tool_name("agent"), None);
     }
 
     #[test]
@@ -203,10 +221,12 @@ mod tests {
         assert_eq!(settings_index_from_name(None), 0);
         assert_eq!(settings_index_from_name(Some("claude")), 1);
         assert_eq!(settings_index_from_name(Some("gemini")), 5);
+        assert_eq!(settings_index_from_name(Some("cursor")), 6);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
         assert_eq!(name_from_settings_index(5), Some("gemini"));
+        assert_eq!(name_from_settings_index(6), Some("cursor"));
         assert_eq!(name_from_settings_index(99), None);
     }
 

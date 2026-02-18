@@ -40,7 +40,7 @@ For sandboxed sessions, hooks run inside the Docker container.
 default_tool = "opencode"   # Override the default agent for this repo
 ```
 
-Available tools: `claude`, `opencode`, `vibe`, `codex`, `gemini`.
+Available tools: `claude`, `opencode`, `vibe`, `codex`, `gemini`, `cursor`.
 
 ### Sandbox
 

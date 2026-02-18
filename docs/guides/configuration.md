@@ -41,7 +41,7 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 
 ```toml
 [session]
-default_tool = "claude"   # claude, opencode, vibe, codex, gemini
+default_tool = "claude"   # claude, opencode, vibe, codex, gemini, cursor
 yolo_mode_default = false
 ```
 

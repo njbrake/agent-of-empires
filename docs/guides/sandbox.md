@@ -2,7 +2,7 @@
 
 ## Overview
 
-Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI) inside isolated Docker containers while maintaining access to your project files and credentials.
+Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI) inside isolated Docker containers while maintaining access to your project files and credentials.
 
 **Key Features:**
 - One container per session
@@ -84,7 +84,7 @@ environment = ["ANTHROPIC_API_KEY"]
 
 ### Shared Agent Config Directories
 
-AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents: Claude Code, OpenCode, Codex, Gemini, and Vibe.
+AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents: Claude Code, OpenCode, Codex, Gemini, Vibe, and Cursor.
 
 Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates a **shared sandbox directory** per agent:
 
@@ -187,7 +187,7 @@ AOE provides two official sandbox images:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, ripgrep, fzf |
+| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, git, ripgrep, fzf |
 | `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
 
 ### Dev Sandbox Tools
@@ -212,7 +212,7 @@ default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
 
 ## Custom Docker Images
 
-The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
+The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
 
 ### Step 1: Create a Dockerfile
 
