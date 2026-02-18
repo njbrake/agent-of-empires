@@ -1,6 +1,6 @@
 //! Age of Empires 2 civilization names for random session titles
 
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 
 pub const CIVILIZATIONS: &[&str] = &[
     "Armenians",
@@ -86,7 +86,7 @@ fn to_roman(n: u32) -> String {
 }
 
 pub fn generate_random_title(existing_titles: &[&str]) -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     let available: Vec<&str> = CIVILIZATIONS
         .iter()

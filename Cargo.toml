@@ -30,13 +30,13 @@ tokio = { version = "1.42", features = ["full"] }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "0.9"
 
 # File watching
 notify = "8.2"
 
 # PTY handling
-portable-pty = "0.8"
+portable-pty = "0.9"
 
 # Fuzzy matching
 nucleo-matcher = "0.3"
@@ -52,7 +52,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.11", features = ["v4"] }
 
 # Random
-rand = "0.8"
+rand = "0.9"
 
 # Directory utilities
 dirs = "6.0"
@@ -62,7 +62,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # HTTP client (for updates)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
 
 # Unix sockets
 tokio-util = { version = "0.7", features = ["codec"] }

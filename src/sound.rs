@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 
 use crate::session::{get_app_dir, Status};
@@ -368,7 +368,7 @@ fn resolve_sound_name(override_name: Option<&str>, config: &SoundConfig) -> Opti
             if sounds.is_empty() {
                 return None;
             }
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             sounds.choose(&mut rng).cloned()
         }
     }
