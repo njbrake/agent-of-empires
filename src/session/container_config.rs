@@ -500,19 +500,18 @@ pub(crate) fn build_container_config(
         .filter_map(|key| std::env::var(key).ok().map(|val| (key.clone(), val)))
         .collect();
 
-    environment.push((
-        "CLAUDE_CONFIG_DIR".to_string(),
-        format!("{}/.claude", CONTAINER_HOME),
-    ));
+    if let Some(agent) = crate::agents::get_agent(tool) {
+        for &(key, value) in agent.container_env {
+            environment.push((key.to_string(), value.to_string()));
+        }
+        if is_yolo_mode {
+            if let Some(crate::agents::YoloMode::EnvVar(key, value)) = &agent.yolo {
+                environment.push((key.to_string(), value.to_string()));
+            }
+        }
+    }
 
     environment.extend(collect_env_values(&sandbox_config, sandbox_info));
-
-    if is_yolo_mode && tool == "opencode" {
-        environment.push((
-            "OPENCODE_PERMISSION".to_string(),
-            r#"{"*":"allow"}"#.to_string(),
-        ));
-    }
 
     // Add extra_volumes from config (host:container format)
     // Also collect container paths to filter conflicting volume_ignores later

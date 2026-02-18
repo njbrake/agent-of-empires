@@ -7,16 +7,9 @@ use super::utils::strip_ansi;
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
-    let content_lower = content.to_lowercase();
-
-    match tool {
-        "claude" => detect_claude_status(content),
-        "opencode" => detect_opencode_status(&content_lower),
-        "vibe" => detect_vibe_status(&content_lower),
-        "codex" => detect_codex_status(&content_lower),
-        "gemini" => detect_gemini_status(&content_lower),
-        _ => detect_claude_status(content),
-    }
+    crate::agents::get_agent(tool)
+        .map(|a| (a.detect_status)(content))
+        .unwrap_or_else(|| detect_claude_status(content))
 }
 
 pub fn detect_claude_status(content: &str) -> Status {
@@ -105,7 +98,8 @@ pub fn detect_claude_status(content: &str) -> Status {
     Status::Idle
 }
 
-pub fn detect_opencode_status(content: &str) -> Status {
+pub fn detect_opencode_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let non_empty_lines: Vec<&str> = lines
         .iter()
@@ -113,7 +107,6 @@ pub fn detect_opencode_status(content: &str) -> Status {
         .copied()
         .collect();
 
-    // Get last 30 lines for UI status checks (to avoid matching code/comments in terminal output)
     let last_lines: String = non_empty_lines
         .iter()
         .rev()
@@ -220,7 +213,8 @@ pub fn detect_opencode_status(content: &str) -> Status {
     Status::Idle
 }
 
-pub fn detect_vibe_status(content: &str) -> Status {
+pub fn detect_vibe_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let non_empty_lines: Vec<&str> = lines
         .iter()
@@ -320,7 +314,8 @@ pub fn detect_vibe_status(content: &str) -> Status {
     Status::Idle
 }
 
-pub fn detect_codex_status(content: &str) -> Status {
+pub fn detect_codex_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let non_empty_lines: Vec<&str> = lines
         .iter()
@@ -408,7 +403,8 @@ pub fn detect_codex_status(content: &str) -> Status {
     Status::Idle
 }
 
-pub fn detect_gemini_status(content: &str) -> Status {
+pub fn detect_gemini_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let non_empty_lines: Vec<&str> = lines
         .iter()

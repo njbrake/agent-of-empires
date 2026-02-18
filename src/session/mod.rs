@@ -18,10 +18,7 @@ pub use config::{
     TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
 pub use groups::{flatten_tree, Group, GroupTree, Item};
-pub use instance::{
-    Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo, INSTRUCTION_SUPPORTED_TOOLS,
-    SUPPORTED_TOOLS, YOLO_SUPPORTED_TOOLS,
-};
+pub use instance::{Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo};
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,
     validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
