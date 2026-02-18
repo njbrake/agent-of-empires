@@ -121,6 +121,17 @@
           "labeled_at": "2026-02-17T02:00:43.105Z"
         }
       ]
+    },
+    {
+      "username": "reneleonhardt",
+      "issues": [],
+      "pull_requests": [
+        {
+          "number": 281,
+          "title": "chore: Update dependencies",
+          "labeled_at": "2026-02-18T17:25:55.497Z"
+        }
+      ]
     }
   ]
 }
