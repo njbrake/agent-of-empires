@@ -10,13 +10,14 @@
 
 mod v001_xdg_linux;
 mod v002_seed_sandbox_from_volumes;
+mod v003_yolo_mode_config;
 
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 const VERSION_FILE: &str = ".schema_version";
 
 struct Migration {
@@ -35,6 +36,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "seed_sandbox_from_volumes",
         run: v002_seed_sandbox_from_volumes::run,
+    },
+    Migration {
+        version: 3,
+        name: "yolo_mode_config",
+        run: v003_yolo_mode_config::run,
     },
 ];
 

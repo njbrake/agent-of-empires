@@ -72,6 +72,10 @@ pub struct SessionConfig {
     /// If not set or tool is unavailable, falls back to first available tool
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_tool: Option<String>,
+
+    /// Enable YOLO mode by default for new sessions (skip permission prompts)
+    #[serde(default)]
+    pub yolo_mode_default: bool,
 }
 
 /// Diff view configuration
@@ -201,10 +205,6 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub enabled_by_default: bool,
 
-    /// When sandbox is enabled, default YOLO mode to true (skip permission prompts)
-    #[serde(default)]
-    pub yolo_mode_default: bool,
-
     #[serde(default = "default_sandbox_image")]
     pub default_image: String,
 
@@ -263,7 +263,6 @@ impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
             enabled_by_default: false,
-            yolo_mode_default: false,
             default_image: default_sandbox_image(),
             extra_volumes: Vec::new(),
             environment: default_sandbox_environment(),

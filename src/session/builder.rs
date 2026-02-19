@@ -162,6 +162,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         .map(|a| a.binary.to_string())
         .unwrap_or_default();
     instance.worktree_info = worktree_info;
+    instance.yolo_mode = params.yolo_mode;
 
     if params.sandbox {
         instance.sandbox_info = Some(SandboxInfo {
@@ -170,7 +171,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             image: params.sandbox_image.clone(),
             container_name: containers::DockerContainer::generate_name(&instance.id),
             created_at: None,
-            yolo_mode: if params.yolo_mode { Some(true) } else { None },
             extra_env_keys: if params.extra_env_keys.is_empty() {
                 None
             } else {

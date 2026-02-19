@@ -336,11 +336,6 @@ fn build_sandbox_fields(
         global.sandbox.enabled_by_default,
         sb.and_then(|s| s.enabled_by_default),
     );
-    let (yolo_mode_default, o2) = resolve_value(
-        scope,
-        global.sandbox.yolo_mode_default,
-        sb.and_then(|s| s.yolo_mode_default),
-    );
     let (default_image, o3) = resolve_value(
         scope,
         global.sandbox.default_image.clone(),
@@ -431,14 +426,6 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(enabled_by_default),
             category: SettingsCategory::Sandbox,
             has_override: o1,
-        },
-        SettingField {
-            key: FieldKey::YoloModeDefault,
-            label: "YOLO Mode Default",
-            description: "Enable YOLO mode by default when sandbox is enabled",
-            value: FieldValue::Bool(yolo_mode_default),
-            category: SettingsCategory::Sandbox,
-            has_override: o2,
         },
         SettingField {
             key: FieldKey::DefaultImage,
@@ -618,14 +605,30 @@ fn build_session_fields(
     let mut options = vec!["Auto (first available)".to_string()];
     options.extend(crate::agents::agent_names().iter().map(|n| n.to_string()));
 
-    vec![SettingField {
-        key: FieldKey::DefaultTool,
-        label: "Default Tool",
-        description: "Default coding tool for new sessions",
-        value: FieldValue::Select { selected, options },
-        category: SettingsCategory::Session,
-        has_override,
-    }]
+    let (yolo_mode_default, yolo_override) = resolve_value(
+        scope,
+        global.session.yolo_mode_default,
+        session.and_then(|s| s.yolo_mode_default),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::DefaultTool,
+            label: "Default Tool",
+            description: "Default coding tool for new sessions",
+            value: FieldValue::Select { selected, options },
+            category: SettingsCategory::Session,
+            has_override,
+        },
+        SettingField {
+            key: FieldKey::YoloModeDefault,
+            label: "YOLO Mode Default",
+            description: "Enable YOLO mode by default for new sessions",
+            value: FieldValue::Bool(yolo_mode_default),
+            category: SettingsCategory::Session,
+            has_override: yolo_override,
+        },
+    ]
 }
 
 fn build_sound_fields(
@@ -817,7 +820,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
             config.sandbox.enabled_by_default = *v
         }
-        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.sandbox.yolo_mode_default = *v,
+        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
         (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
@@ -967,14 +970,6 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.enabled_by_default,
                 &mut config.sandbox,
                 |s, val| s.enabled_by_default = val,
-            );
-        }
-        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.sandbox.yolo_mode_default,
-                &mut config.sandbox,
-                |s, val| s.yolo_mode_default = val,
             );
         }
         (FieldKey::DefaultImage, FieldValue::Text(v)) => {
@@ -1132,6 +1127,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                     .get_or_insert_with(SessionConfigOverride::default);
                 session.default_tool = tool;
             }
+        }
+        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.session.yolo_mode_default,
+                &mut config.session,
+                |s, val| s.yolo_mode_default = val,
+            );
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {

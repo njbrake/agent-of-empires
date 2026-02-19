@@ -42,11 +42,13 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 ```toml
 [session]
 default_tool = "claude"   # claude, opencode, vibe, codex, gemini
+yolo_mode_default = false
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `default_tool` | (auto-detect) | Default agent for new sessions. Falls back to the first available tool if unset or unavailable. |
+| `yolo_mode_default` | `false` | Enable YOLO mode by default for new sessions (skip permission prompts). Works with or without sandbox. |
 
 ## Worktree
 
@@ -82,7 +84,6 @@ delete_branch_on_cleanup = false
 ```toml
 [sandbox]
 enabled_by_default = false
-yolo_mode_default = false
 default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
 cpu_limit = "4"
 memory_limit = "8g"
@@ -97,7 +98,6 @@ default_terminal_mode = "host"
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled_by_default` | `false` | Auto-enable sandbox for new sessions |
-| `yolo_mode_default` | `false` | Skip agent permission prompts in sandbox |
 | `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image for containers |
 | `cpu_limit` | (none) | CPU limit (e.g., `"4"`) |
 | `memory_limit` | (none) | Memory limit (e.g., `"8g"`) |

@@ -56,8 +56,6 @@ pub struct SandboxInfo {
     pub container_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub yolo_mode: Option<bool>,
     /// Additional environment variable keys to pass from host (session-specific)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env_keys: Option<Vec<String>>,
@@ -82,6 +80,8 @@ pub struct Instance {
     pub command: String,
     #[serde(default)]
     pub tool: String,
+    #[serde(default)]
+    pub yolo_mode: bool,
     #[serde(default)]
     pub status: Status,
     pub created_at: DateTime<Utc>,
@@ -125,6 +125,7 @@ impl Instance {
             parent_session_id: None,
             command: String::new(),
             tool: "claude".to_string(),
+            yolo_mode: false,
             status: Status::Idle,
             created_at: Utc::now(),
             last_accessed_at: None,
@@ -155,9 +156,7 @@ impl Instance {
     }
 
     pub fn is_yolo_mode(&self) -> bool {
-        self.sandbox_info
-            .as_ref()
-            .is_some_and(|s| s.yolo_mode.unwrap_or(false))
+        self.yolo_mode
     }
 
     pub fn get_tool_command(&self) -> &str {
@@ -415,9 +414,38 @@ impl Instance {
             if self.command.is_empty() {
                 crate::agents::get_agent(&self.tool)
                     .filter(|a| a.supports_host_launch)
-                    .map(|a| wrap_command_ignore_suspend(a.binary))
+                    .map(|a| {
+                        let mut cmd = a.binary.to_string();
+                        if self.is_yolo_mode() {
+                            if let Some(ref yolo) = a.yolo {
+                                match yolo {
+                                    crate::agents::YoloMode::CliFlag(flag) => {
+                                        cmd = format!("{} {}", cmd, flag);
+                                    }
+                                    crate::agents::YoloMode::EnvVar(key, value) => {
+                                        cmd = format!("{}={} {}", key, value, cmd);
+                                    }
+                                }
+                            }
+                        }
+                        wrap_command_ignore_suspend(&cmd)
+                    })
             } else {
-                Some(wrap_command_ignore_suspend(&self.command))
+                let mut cmd = self.command.clone();
+                if self.is_yolo_mode() {
+                    let agent = crate::agents::get_agent(&self.tool);
+                    if let Some(ref yolo) = agent.and_then(|a| a.yolo.as_ref()) {
+                        match yolo {
+                            crate::agents::YoloMode::CliFlag(flag) => {
+                                cmd = format!("{} {}", cmd, flag);
+                            }
+                            crate::agents::YoloMode::EnvVar(key, value) => {
+                                cmd = format!("{}={} {}", key, value, cmd);
+                            }
+                        }
+                    }
+                }
+                Some(wrap_command_ignore_suspend(&cmd))
             }
         };
 
@@ -624,24 +652,21 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         assert!(!inst.is_yolo_mode());
 
-        inst.sandbox_info = Some(SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test-image".to_string(),
-            container_name: "test".to_string(),
-            created_at: None,
-            yolo_mode: Some(true),
-            extra_env_keys: None,
-            extra_env_values: None,
-            custom_instruction: None,
-        });
+        inst.yolo_mode = true;
         assert!(inst.is_yolo_mode());
 
-        inst.sandbox_info.as_mut().unwrap().yolo_mode = Some(false);
+        inst.yolo_mode = false;
         assert!(!inst.is_yolo_mode());
+    }
 
-        inst.sandbox_info.as_mut().unwrap().yolo_mode = None;
-        assert!(!inst.is_yolo_mode());
+    #[test]
+    fn test_yolo_mode_without_sandbox() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        assert!(!inst.is_sandboxed());
+
+        inst.yolo_mode = true;
+        assert!(inst.is_yolo_mode());
+        assert!(!inst.is_sandboxed());
     }
 
     // Additional tests for is_sandboxed
@@ -660,7 +685,6 @@ mod tests {
             image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
-            yolo_mode: None,
             extra_env_keys: None,
             extra_env_values: None,
             custom_instruction: None,
@@ -677,7 +701,6 @@ mod tests {
             image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
-            yolo_mode: None,
             extra_env_keys: None,
             extra_env_values: None,
             custom_instruction: None,
@@ -810,7 +833,6 @@ mod tests {
             image: "myimage:latest".to_string(),
             container_name: "test_container".to_string(),
             created_at: Some(Utc::now()),
-            yolo_mode: Some(true),
             extra_env_keys: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
             extra_env_values: None,
             custom_instruction: None,
@@ -823,7 +845,6 @@ mod tests {
         assert_eq!(info.container_id, deserialized.container_id);
         assert_eq!(info.image, deserialized.image);
         assert_eq!(info.container_name, deserialized.container_name);
-        assert_eq!(info.yolo_mode, deserialized.yolo_mode);
         assert_eq!(info.extra_env_keys, deserialized.extra_env_keys);
     }
 
@@ -838,7 +859,6 @@ mod tests {
         assert_eq!(info.container_name, "test");
         assert!(info.container_id.is_none());
         assert!(info.created_at.is_none());
-        assert!(info.yolo_mode.is_none());
     }
 
     // Tests for Instance serialization

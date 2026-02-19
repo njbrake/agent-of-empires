@@ -495,7 +495,7 @@ impl SettingsView {
                 }
             }
             FieldKey::YoloModeDefault => {
-                if let Some(ref mut s) = config.sandbox {
+                if let Some(ref mut s) = config.session {
                     s.yolo_mode_default = None;
                 }
             }

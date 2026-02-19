@@ -53,8 +53,8 @@ impl NewSessionDialog {
         let mut constraints = vec![
             Constraint::Length(2), // Title
             Constraint::Length(2), // Path
-            Constraint::Length(2), // Group
             Constraint::Length(2), // Tool (always shown, interactive or not)
+            Constraint::Length(2), // YOLO mode checkbox (always visible)
             Constraint::Length(2), // Worktree Branch
         ];
         if has_worktree {
@@ -65,11 +65,11 @@ impl NewSessionDialog {
         }
         if sandbox_options_visible {
             constraints.push(Constraint::Length(2)); // Image field
-            constraints.push(Constraint::Length(2)); // YOLO mode checkbox
             constraints.push(Constraint::Length(env_list_height)); // Env vars field
             constraints.push(Constraint::Length(env_values_list_height)); // Env values field
             constraints.push(Constraint::Length(inherited_height)); // Inherited settings
         }
+        constraints.push(Constraint::Length(2)); // Group (always, at the bottom)
         constraints.push(Constraint::Min(1)); // Hints/errors
 
         // Compute dialog height from actual constraints
@@ -106,23 +106,16 @@ impl NewSessionDialog {
         // Render fields sequentially, tracking chunk index to match dynamic constraints
         let mut ci = 0; // chunk index
 
-        // Title, Path, Group (always visible)
-        let group_placeholder = if !self.existing_groups.is_empty() && self.focused_field == 2 {
-            Some("(Ctrl+P to browse groups)")
-        } else {
-            None
-        };
-
+        // Title, Path (always visible)
         let path_placeholder = if self.focused_field == 1 {
             Some("(Ctrl+P to browse directories)")
         } else {
             None
         };
 
-        let text_fields: [(&str, &tui_input::Input, Option<&str>); 3] = [
+        let text_fields: [(&str, &tui_input::Input, Option<&str>); 2] = [
             ("Title:", &self.title, Some("(random civ)")),
             ("Path:", &self.path, path_placeholder),
-            ("Group:", &self.group, group_placeholder),
         ];
 
         for (idx, (label, input, placeholder)) in text_fields.iter().enumerate() {
@@ -139,8 +132,9 @@ impl NewSessionDialog {
         }
 
         // Tool (always shown, interactive or read-only)
-        let worktree_field = if has_tool_selection { 4 } else { 3 };
-        let is_tool_focused = self.focused_field == 3;
+        let yolo_mode_field = if has_tool_selection { 3 } else { 2 };
+        let worktree_field = yolo_mode_field + 1;
+        let is_tool_focused = self.focused_field == 2;
 
         if has_tool_selection {
             let label_style = if is_tool_focused {
@@ -177,6 +171,39 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(tool_line), chunks[ci]);
         }
         ci += 1;
+
+        // YOLO Mode checkbox (always visible, right after tool)
+        {
+            let is_yolo_focused = self.focused_field == yolo_mode_field;
+            let yolo_label_style = if is_yolo_focused {
+                Style::default().fg(theme.accent).underlined()
+            } else {
+                Style::default().fg(theme.text)
+            };
+
+            let yolo_checkbox = if self.yolo_mode { "[x]" } else { "[ ]" };
+            let yolo_checkbox_style = if self.yolo_mode {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+
+            let yolo_line = Line::from(vec![
+                Span::styled("YOLO Mode:", yolo_label_style),
+                Span::raw(" "),
+                Span::styled(yolo_checkbox, yolo_checkbox_style),
+                Span::styled(
+                    " Skip permission prompts",
+                    if self.yolo_mode {
+                        Style::default().fg(theme.accent)
+                    } else {
+                        Style::default().fg(theme.dimmed)
+                    },
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(yolo_line), chunks[ci]);
+            ci += 1;
+        }
 
         // Worktree Branch (always visible)
         let worktree_placeholder = if self.focused_field == worktree_field {
@@ -233,12 +260,14 @@ impl NewSessionDialog {
         }
 
         // Sandbox checkbox (only when Docker available)
+        let mut next_field_idx = if has_worktree {
+            new_branch_field + 1
+        } else {
+            worktree_field + 1
+        };
         if has_sandbox {
-            let sandbox_field = if has_worktree {
-                new_branch_field + 1
-            } else {
-                worktree_field + 1
-            };
+            let sandbox_field = next_field_idx;
+            next_field_idx += 1;
             let is_sandbox_focused = self.focused_field == sandbox_field;
             let sandbox_label_style = if is_sandbox_focused {
                 Style::default().fg(theme.accent).underlined()
@@ -268,69 +297,60 @@ impl NewSessionDialog {
             ]);
             frame.render_widget(Paragraph::new(sandbox_line), chunks[ci]);
             ci += 1;
-
-            if sandbox_options_visible {
-                // Image field
-                let sandbox_image_field = sandbox_field + 1;
-                render_text_field(
-                    frame,
-                    chunks[ci],
-                    "  Image:",
-                    &self.sandbox_image,
-                    self.focused_field == sandbox_image_field,
-                    None,
-                    theme,
-                );
-                ci += 1;
-
-                // YOLO Mode checkbox
-                let yolo_mode_field = sandbox_image_field + 1;
-                let is_yolo_focused = self.focused_field == yolo_mode_field;
-                let yolo_label_style = if is_yolo_focused {
-                    Style::default().fg(theme.accent).underlined()
-                } else {
-                    Style::default().fg(theme.text)
-                };
-
-                let yolo_checkbox = if self.yolo_mode { "[x]" } else { "[ ]" };
-                let yolo_checkbox_style = if self.yolo_mode {
-                    Style::default().fg(theme.accent).bold()
-                } else {
-                    Style::default().fg(theme.dimmed)
-                };
-
-                let yolo_line = Line::from(vec![
-                    Span::styled("  YOLO Mode:", yolo_label_style),
-                    Span::raw(" "),
-                    Span::styled(yolo_checkbox, yolo_checkbox_style),
-                    Span::styled(
-                        " Skip permission prompts",
-                        if self.yolo_mode {
-                            Style::default().fg(theme.accent)
-                        } else {
-                            Style::default().fg(theme.dimmed)
-                        },
-                    ),
-                ]);
-                frame.render_widget(Paragraph::new(yolo_line), chunks[ci]);
-                ci += 1;
-
-                // Environment variables field
-                let env_field = yolo_mode_field + 1;
-                self.render_env_field(frame, chunks[ci], env_field, theme);
-                ci += 1;
-
-                // Environment values field (KEY=VALUE)
-                let env_values_field = env_field + 1;
-                self.render_env_values_field(frame, chunks[ci], env_values_field, theme);
-                ci += 1;
-
-                // Inherited settings (read-only)
-                let inherited_field = env_values_field + 1;
-                self.render_inherited_field(frame, chunks[ci], inherited_field, theme);
-                ci += 1;
-            }
         }
+
+        if sandbox_options_visible {
+            // Image field
+            let sandbox_image_field = next_field_idx;
+            next_field_idx += 1;
+            render_text_field(
+                frame,
+                chunks[ci],
+                "  Image:",
+                &self.sandbox_image,
+                self.focused_field == sandbox_image_field,
+                None,
+                theme,
+            );
+            ci += 1;
+
+            // Environment variables field
+            let env_field = next_field_idx;
+            next_field_idx += 1;
+            self.render_env_field(frame, chunks[ci], env_field, theme);
+            ci += 1;
+
+            // Environment values field (KEY=VALUE)
+            let env_values_field = next_field_idx;
+            next_field_idx += 1;
+            self.render_env_values_field(frame, chunks[ci], env_values_field, theme);
+            ci += 1;
+
+            // Inherited settings (read-only)
+            let inherited_field = next_field_idx;
+            next_field_idx += 1;
+            self.render_inherited_field(frame, chunks[ci], inherited_field, theme);
+            ci += 1;
+        }
+
+        // Group (always visible, at the bottom before hints)
+        let group_field = next_field_idx;
+        let group_placeholder =
+            if !self.existing_groups.is_empty() && self.focused_field == group_field {
+                Some("(Ctrl+P to browse groups)")
+            } else {
+                None
+            };
+        render_text_field(
+            frame,
+            chunks[ci],
+            "Group:",
+            &self.group,
+            self.focused_field == group_field,
+            group_placeholder,
+            theme,
+        );
+        ci += 1;
 
         // Hints/errors (last chunk)
         let hint_chunk = ci;
@@ -353,7 +373,7 @@ impl NewSessionDialog {
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" browse  "));
             }
-            if self.focused_field == 2 && !self.existing_groups.is_empty() {
+            if self.focused_field == group_field && !self.existing_groups.is_empty() {
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" groups  "));
             }
@@ -686,11 +706,11 @@ impl NewSessionDialog {
         let show_sandbox_options_help = has_sandbox && self.sandbox_enabled;
 
         let dialog_width: u16 = HELP_DIALOG_WIDTH;
-        let base_height: u16 = 17;
+        let base_height: u16 = 20; // includes YOLO Mode and Group (always visible)
         let dialog_height: u16 = base_height
             + if has_tool_selection { 3 } else { 0 }
             + if has_sandbox { 3 } else { 0 }
-            + if show_sandbox_options_help { 15 } else { 0 }; // Image, YOLO, Env, Env Values, Inherited
+            + if show_sandbox_options_help { 12 } else { 0 }; // Image, Env, Env Values, Inherited
 
         let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
 
@@ -708,27 +728,17 @@ impl NewSessionDialog {
         let mut lines: Vec<Line> = Vec::new();
 
         for (idx, help) in FIELD_HELP.iter().enumerate() {
-            if idx == 3 && !has_tool_selection {
+            if idx == 2 && !has_tool_selection {
                 continue;
             }
+            // idx 3 (YOLO), 4 (Worktree), 5 (New Branch) are always shown
             if idx == 6 && !has_sandbox {
                 continue;
             }
-            if idx == 7 && !show_sandbox_options_help {
+            if (7..=10).contains(&idx) && !show_sandbox_options_help {
                 continue;
             }
-            if idx == 8 && !show_sandbox_options_help {
-                continue;
-            }
-            if idx == 9 && !show_sandbox_options_help {
-                continue;
-            }
-            if idx == 10 && !show_sandbox_options_help {
-                continue;
-            }
-            if idx == 11 && !show_sandbox_options_help {
-                continue;
-            }
+            // idx 11 (Group) is always shown
 
             lines.push(Line::from(Span::styled(
                 help.name,

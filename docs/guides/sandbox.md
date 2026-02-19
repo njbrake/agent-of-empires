@@ -46,7 +46,6 @@ aoe remove <session> --keep-container
 ```toml
 [sandbox]
 enabled_by_default = false
-yolo_mode_default = false
 default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
 auto_cleanup = true
 cpu_limit = "4"
@@ -54,12 +53,13 @@ memory_limit = "8g"
 environment = ["ANTHROPIC_API_KEY"]
 ```
 
+> **Note:** YOLO mode (skip permission prompts) is now configured under `[session]` instead of `[sandbox]`, since it works with or without Docker sandboxing. See `[session] yolo_mode_default` in the [configuration guide](configuration.md).
+
 ## Configuration Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled_by_default` | `false` | Auto-enable sandbox for new sessions |
-| `yolo_mode_default` | `false` | Skip agent permission prompts in sandboxed sessions |
 | `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image to use |
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `cpu_limit` | (none) | CPU limit (e.g., "4") |

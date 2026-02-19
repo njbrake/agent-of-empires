@@ -98,9 +98,6 @@ pub struct SandboxConfigOverride {
     pub enabled_by_default: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub yolo_mode_default: Option<bool>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_image: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,6 +147,9 @@ pub struct TmuxConfigOverride {
 pub struct SessionConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_tool: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yolo_mode_default: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -215,9 +215,6 @@ pub fn apply_sandbox_overrides(
 ) {
     if let Some(enabled_by_default) = source.enabled_by_default {
         target.enabled_by_default = enabled_by_default;
-    }
-    if let Some(yolo_mode_default) = source.yolo_mode_default {
-        target.yolo_mode_default = yolo_mode_default;
     }
     if let Some(ref default_image) = source.default_image {
         target.default_image = default_image.clone();
@@ -302,6 +299,9 @@ pub fn apply_session_overrides(
 ) {
     if source.default_tool.is_some() {
         target.default_tool = source.default_tool.clone();
+    }
+    if let Some(yolo_mode_default) = source.yolo_mode_default {
+        target.yolo_mode_default = yolo_mode_default;
     }
 }
 

@@ -50,6 +50,10 @@ pub struct AddArgs {
     #[arg(long = "sandbox-image")]
     sandbox_image: Option<String>,
 
+    /// Enable YOLO mode (skip permission prompts)
+    #[arg(short = 'y', long)]
+    yolo: bool,
+
     /// Automatically trust repository hooks without prompting
     #[arg(long = "trust-hooks")]
     trust_hooks: bool,
@@ -171,6 +175,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         instance.worktree_info = Some(worktree_info);
     }
 
+    instance.yolo_mode = args.yolo;
+
     // Handle sandbox setup
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
     let config = Config::load()?;
@@ -199,7 +205,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 image,
                 container_name,
                 created_at: None,
-                yolo_mode: None,
                 extra_env_keys: None,
                 extra_env_values: None,
                 custom_instruction: Config::load()
@@ -295,6 +300,9 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
     if instance.sandbox_info.is_some() {
         println!("  Sandbox: enabled");
+    }
+    if instance.yolo_mode {
+        println!("  YOLO:    enabled");
     }
 
     if args.launch {
