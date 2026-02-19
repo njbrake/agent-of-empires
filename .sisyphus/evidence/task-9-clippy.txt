@@ -1,2 +1,0 @@
-    Checking agent-of-empires v0.12.3 (/home/fraggle/src/agent-of-empires-git-worktrees/feat-themes)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.50s
