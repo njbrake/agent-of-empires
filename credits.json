@@ -132,6 +132,17 @@
           "labeled_at": "2026-02-18T17:25:55.497Z"
         }
       ]
+    },
+    {
+      "username": "sbillig",
+      "issues": [],
+      "pull_requests": [
+        {
+          "number": 296,
+          "title": "Fix worktree repo resolution",
+          "labeled_at": "2026-02-19T02:09:00.614Z"
+        }
+      ]
     }
   ]
 }
