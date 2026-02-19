@@ -23,8 +23,15 @@ updates:
   - package-ecosystem: "npm"
     directory: "website"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     cooldown:
       default-days: 7
       semver-minor-days: 14
       semver-major-days: 28
+    groups:
+      website-deps:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
