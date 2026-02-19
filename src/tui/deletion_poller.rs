@@ -14,6 +14,7 @@ pub struct DeletionRequest {
     pub delete_worktree: bool,
     pub delete_branch: bool,
     pub delete_sandbox: bool,
+    pub force_delete: bool,
 }
 
 #[derive(Debug)]
@@ -81,7 +82,8 @@ impl DeletionPoller {
                     let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
                     if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                        if let Err(e) = git_wt.remove_worktree(&worktree_path) {
+                        if let Err(e) = git_wt.remove_worktree(&worktree_path, request.force_delete)
+                        {
                             errors.push(format!("Worktree: {}", e));
                         }
                     }
@@ -167,6 +169,7 @@ mod tests {
             delete_worktree: false,
             delete_branch: false,
             delete_sandbox: false,
+            force_delete: false,
         };
 
         let result = DeletionPoller::perform_deletion(&request);
@@ -185,6 +188,7 @@ mod tests {
             delete_worktree: true,
             delete_branch: false,
             delete_sandbox: false,
+            force_delete: false,
         };
 
         let result = DeletionPoller::perform_deletion(&request);
@@ -205,6 +209,7 @@ mod tests {
             delete_worktree: false,
             delete_branch: false,
             delete_sandbox: false,
+            force_delete: false,
         });
 
         let mut result = None;
@@ -239,6 +244,7 @@ mod tests {
             delete_worktree: false,
             delete_branch: false,
             delete_sandbox: false,
+            force_delete: false,
         };
 
         let result = DeletionPoller::perform_deletion(&request);

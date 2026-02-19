@@ -15,6 +15,10 @@ pub struct RemoveArgs {
     #[arg(long = "delete-worktree")]
     delete_worktree: bool,
 
+    /// Force worktree removal even with untracked/modified files
+    #[arg(long)]
+    force: bool,
+
     /// Keep container instead of deleting it (default: delete per config)
     #[arg(long = "keep-container")]
     keep_container: bool,
@@ -78,7 +82,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
 
                     match GitWorktree::new(main_repo) {
                         Ok(git_wt) => {
-                            if let Err(e) = git_wt.remove_worktree(&worktree_path) {
+                            if let Err(e) = git_wt.remove_worktree(&worktree_path, args.force) {
                                 eprintln!("Warning: failed to remove worktree: {}", e);
                                 eprintln!(
                                     "You may need to remove it manually with: git worktree remove {}",
