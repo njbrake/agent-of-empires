@@ -574,16 +574,21 @@ fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
 }
 
-/// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
+/// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension and clear inherited env vars.
 ///
 /// When running agents directly as tmux session commands (without a parent shell),
 /// pressing Ctrl-Z suspends the process with no way to recover via job control.
 /// This wrapper disables the suspend character at the terminal level before exec'ing
 /// the actual command.
 ///
+/// Also unsets CLAUDECODE to prevent Claude Code from erroring when it detects this
+/// variable (which it uses to detect nested invocations). The tmux server's global
+/// environment may contain CLAUDECODE=1 if the server was started from within Claude
+/// Code, causing all subsequent sessions to inherit it.
+///
 /// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
 fn wrap_command_ignore_suspend(cmd: &str) -> String {
-    format!("bash -c 'stty susp undef; exec {}'", cmd)
+    format!("bash -c 'stty susp undef; unset CLAUDECODE; exec {}'", cmd)
 }
 
 #[cfg(test)]
