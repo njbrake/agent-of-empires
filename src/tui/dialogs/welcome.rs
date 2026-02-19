@@ -28,9 +28,9 @@ impl WelcomeDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(" Welcome to Agent of Empires ")
-            .title_style(Style::default().fg(*theme.accent).bold());
+            .title_style(Style::default().fg(theme.accent).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -49,32 +49,32 @@ impl WelcomeDialog {
             Line::from(vec![
                 Span::styled(
                     "  Ctrl+b then d   ",
-                    Style::default().fg(*theme.title).bold(),
+                    Style::default().fg(theme.title).bold(),
                 ),
                 Span::styled(
                     "Detach (exit without stopping)",
-                    Style::default().fg(*theme.text),
+                    Style::default().fg(theme.text),
                 ),
             ]),
             Line::from(vec![
                 Span::styled(
                     "  Ctrl+b then [   ",
-                    Style::default().fg(*theme.title).bold(),
+                    Style::default().fg(theme.title).bold(),
                 ),
                 Span::styled(
                     "Scroll mode (arrows to scroll, q to exit)",
-                    Style::default().fg(*theme.text),
+                    Style::default().fg(theme.text),
                 ),
             ]),
             Line::from(""),
             Line::from(Span::styled(
                 "Note: Press Ctrl+b, release, THEN press the next key.",
-                Style::default().fg(*theme.hint).italic(),
+                Style::default().fg(theme.hint).italic(),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 "Press ? anytime for full keyboard shortcuts.",
-                Style::default().fg(*theme.dimmed),
+                Style::default().fg(theme.dimmed),
             )),
         ];
 
@@ -84,11 +84,11 @@ impl WelcomeDialog {
         let button = vec![
             Line::from(vec![Span::styled(
                 "[Get Started]",
-                Style::default().fg(*theme.accent).bold(),
+                Style::default().fg(theme.accent).bold(),
             )]),
             Line::from(vec![Span::styled(
                 "(press Enter to continue)",
-                Style::default().fg(*theme.accent).bold(),
+                Style::default().fg(theme.accent).bold(),
             )]),
         ];
         frame.render_widget(

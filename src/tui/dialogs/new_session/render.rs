@@ -90,9 +90,9 @@ impl NewSessionDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(" New Session ")
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -138,9 +138,9 @@ impl NewSessionDialog {
 
         if has_tool_selection {
             let label_style = if is_tool_focused {
-                Style::default().fg(*theme.accent).underlined()
+                Style::default().fg(theme.accent).underlined()
             } else {
-                Style::default().fg(*theme.text)
+                Style::default().fg(theme.text)
             };
 
             let mut tool_spans = vec![Span::styled("Tool:", label_style), Span::raw(" ")];
@@ -148,9 +148,9 @@ impl NewSessionDialog {
             for (idx, tool_name) in self.available_tools.iter().enumerate() {
                 let is_selected = idx == self.tool_index;
                 let style = if is_selected {
-                    Style::default().fg(*theme.accent).bold()
+                    Style::default().fg(theme.accent).bold()
                 } else {
-                    Style::default().fg(*theme.dimmed)
+                    Style::default().fg(theme.dimmed)
                 };
 
                 if idx > 0 {
@@ -162,11 +162,11 @@ impl NewSessionDialog {
 
             frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
         } else {
-            let tool_style = Style::default().fg(*theme.text);
+            let tool_style = Style::default().fg(theme.text);
             let tool_line = Line::from(vec![
                 Span::styled("Tool:", tool_style),
                 Span::raw(" "),
-                Span::styled(self.available_tools[0], Style::default().fg(*theme.accent)),
+                Span::styled(self.available_tools[0], Style::default().fg(theme.accent)),
             ]);
             frame.render_widget(Paragraph::new(tool_line), chunks[ci]);
         }
@@ -176,16 +176,16 @@ impl NewSessionDialog {
         {
             let is_yolo_focused = self.focused_field == yolo_mode_field;
             let yolo_label_style = if is_yolo_focused {
-                Style::default().fg(*theme.accent).underlined()
+                Style::default().fg(theme.accent).underlined()
             } else {
-                Style::default().fg(*theme.text)
+                Style::default().fg(theme.text)
             };
 
             let yolo_checkbox = if self.yolo_mode { "[x]" } else { "[ ]" };
             let yolo_checkbox_style = if self.yolo_mode {
-                Style::default().fg(*theme.accent).bold()
+                Style::default().fg(theme.accent).bold()
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
 
             let yolo_line = Line::from(vec![
@@ -195,9 +195,9 @@ impl NewSessionDialog {
                 Span::styled(
                     " Skip permission prompts",
                     if self.yolo_mode {
-                        Style::default().fg(*theme.accent)
+                        Style::default().fg(theme.accent)
                     } else {
-                        Style::default().fg(*theme.dimmed)
+                        Style::default().fg(theme.dimmed)
                     },
                 ),
             ]);
@@ -227,15 +227,15 @@ impl NewSessionDialog {
         if has_worktree {
             let is_nb_focused = self.focused_field == new_branch_field;
             let nb_label_style = if is_nb_focused {
-                Style::default().fg(*theme.accent).underlined()
+                Style::default().fg(theme.accent).underlined()
             } else {
-                Style::default().fg(*theme.text)
+                Style::default().fg(theme.text)
             };
             let checkbox = if self.create_new_branch { "[x]" } else { "[ ]" };
             let checkbox_style = if self.create_new_branch {
-                Style::default().fg(*theme.accent).bold()
+                Style::default().fg(theme.accent).bold()
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
             let nb_text = if self.create_new_branch {
                 "Create new branch"
@@ -249,9 +249,9 @@ impl NewSessionDialog {
                 Span::styled(
                     format!(" {}", nb_text),
                     if self.create_new_branch {
-                        Style::default().fg(*theme.accent)
+                        Style::default().fg(theme.accent)
                     } else {
-                        Style::default().fg(*theme.dimmed)
+                        Style::default().fg(theme.dimmed)
                     },
                 ),
             ]);
@@ -270,16 +270,16 @@ impl NewSessionDialog {
             next_field_idx += 1;
             let is_sandbox_focused = self.focused_field == sandbox_field;
             let sandbox_label_style = if is_sandbox_focused {
-                Style::default().fg(*theme.accent).underlined()
+                Style::default().fg(theme.accent).underlined()
             } else {
-                Style::default().fg(*theme.text)
+                Style::default().fg(theme.text)
             };
 
             let checkbox = if self.sandbox_enabled { "[x]" } else { "[ ]" };
             let checkbox_style = if self.sandbox_enabled {
-                Style::default().fg(*theme.accent).bold()
+                Style::default().fg(theme.accent).bold()
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
 
             let sandbox_line = Line::from(vec![
@@ -289,9 +289,9 @@ impl NewSessionDialog {
                 Span::styled(
                     " Run in Docker container",
                     if self.sandbox_enabled {
-                        Style::default().fg(*theme.accent)
+                        Style::default().fg(theme.accent)
                     } else {
-                        Style::default().fg(*theme.dimmed)
+                        Style::default().fg(theme.dimmed)
                     },
                 ),
             ]);
@@ -357,35 +357,35 @@ impl NewSessionDialog {
         if let Some(error) = &self.error_message {
             let error_text = format!("✗ Error: {}", error);
             let error_paragraph = Paragraph::new(error_text)
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(theme.error))
                 .wrap(Wrap { trim: true });
             frame.render_widget(error_paragraph, chunks[hint_chunk]);
         } else {
             let mut hint_spans = vec![
-                Span::styled("Tab", Style::default().fg(*theme.hint)),
+                Span::styled("Tab", Style::default().fg(theme.hint)),
                 Span::raw(" next  "),
             ];
             if has_tool_selection {
-                hint_spans.push(Span::styled("←/→", Style::default().fg(*theme.hint)));
+                hint_spans.push(Span::styled("←/→", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" tool  "));
             }
             if self.focused_field == 1 {
-                hint_spans.push(Span::styled("C-p", Style::default().fg(*theme.hint)));
+                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" browse  "));
             }
             if self.focused_field == group_field && !self.existing_groups.is_empty() {
-                hint_spans.push(Span::styled("C-p", Style::default().fg(*theme.hint)));
+                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" groups  "));
             }
             if self.focused_field == worktree_field {
-                hint_spans.push(Span::styled("C-p", Style::default().fg(*theme.hint)));
+                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" branches  "));
             }
-            hint_spans.push(Span::styled("Enter", Style::default().fg(*theme.hint)));
+            hint_spans.push(Span::styled("Enter", Style::default().fg(theme.hint)));
             hint_spans.push(Span::raw(" create  "));
-            hint_spans.push(Span::styled("?", Style::default().fg(*theme.hint)));
+            hint_spans.push(Span::styled("?", Style::default().fg(theme.hint)));
             hint_spans.push(Span::raw(" help  "));
-            hint_spans.push(Span::styled("Esc", Style::default().fg(*theme.hint)));
+            hint_spans.push(Span::styled("Esc", Style::default().fg(theme.hint)));
             hint_spans.push(Span::raw(" cancel"));
             frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[hint_chunk]);
         }
@@ -410,9 +410,9 @@ impl NewSessionDialog {
     fn render_env_field(&self, frame: &mut Frame, area: Rect, env_field: usize, theme: &Theme) {
         let is_focused = self.focused_field == env_field;
         let label_style = if is_focused {
-            Style::default().fg(*theme.accent).underlined()
+            Style::default().fg(theme.accent).underlined()
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         if !self.env_list_expanded {
@@ -424,9 +424,9 @@ impl NewSessionDialog {
                 format!("[{} items]", count)
             };
             let summary_style = if count > 0 {
-                Style::default().fg(*theme.accent)
+                Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
 
             let line = Line::from(vec![
@@ -444,7 +444,7 @@ impl NewSessionDialog {
                 Span::styled("  Env Vars:", label_style),
                 Span::styled(
                     " (a)dd (d)el (Enter)edit (Esc)close",
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 ),
             ]);
             lines.push(header);
@@ -461,14 +461,14 @@ impl NewSessionDialog {
                         };
                         lines.push(Line::from(Span::styled(
                             format!("{}{}", prefix, key),
-                            Style::default().fg(*theme.text),
+                            Style::default().fg(theme.text),
                         )));
                     }
                     // Show input for new item
                     let input_line = Line::from(vec![
-                        Span::styled("  + ", Style::default().fg(*theme.accent)),
-                        Span::styled(input.value(), Style::default().fg(*theme.accent).bold()),
-                        Span::styled("_", Style::default().fg(*theme.accent)),
+                        Span::styled("  + ", Style::default().fg(theme.accent)),
+                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
+                        Span::styled("_", Style::default().fg(theme.accent)),
                     ]);
                     lines.push(input_line);
                 } else {
@@ -477,19 +477,19 @@ impl NewSessionDialog {
                         if i == self.env_selected_index {
                             // Show editable input
                             let input_line = Line::from(vec![
-                                Span::styled("  > ", Style::default().fg(*theme.accent)),
+                                Span::styled("  > ", Style::default().fg(theme.accent)),
                                 Span::styled(
                                     input.value(),
-                                    Style::default().fg(*theme.accent).bold(),
+                                    Style::default().fg(theme.accent).bold(),
                                 ),
-                                Span::styled("_", Style::default().fg(*theme.accent)),
+                                Span::styled("_", Style::default().fg(theme.accent)),
                             ]);
                             lines.push(input_line);
                         } else {
                             let prefix = "    ";
                             lines.push(Line::from(Span::styled(
                                 format!("{}{}", prefix, key),
-                                Style::default().fg(*theme.text),
+                                Style::default().fg(theme.text),
                             )));
                         }
                     }
@@ -499,16 +499,16 @@ impl NewSessionDialog {
                 if self.extra_env_keys.is_empty() {
                     lines.push(Line::from(Span::styled(
                         "    (press 'a' to add)",
-                        Style::default().fg(*theme.dimmed),
+                        Style::default().fg(theme.dimmed),
                     )));
                 } else {
                     for (i, key) in self.extra_env_keys.iter().enumerate() {
                         let is_selected = i == self.env_selected_index;
                         let prefix = if is_selected { "  > " } else { "    " };
                         let style = if is_selected {
-                            Style::default().fg(*theme.accent).bold()
+                            Style::default().fg(theme.accent).bold()
                         } else {
-                            Style::default().fg(*theme.text)
+                            Style::default().fg(theme.text)
                         };
                         lines.push(Line::from(Span::styled(
                             format!("{}{}", prefix, key),
@@ -531,9 +531,9 @@ impl NewSessionDialog {
     ) {
         let is_focused = self.focused_field == field_idx;
         let label_style = if is_focused {
-            Style::default().fg(*theme.accent).underlined()
+            Style::default().fg(theme.accent).underlined()
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         if !self.env_values_list_expanded {
@@ -544,9 +544,9 @@ impl NewSessionDialog {
                 format!("[{} items]", count)
             };
             let summary_style = if count > 0 {
-                Style::default().fg(*theme.accent)
+                Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
 
             let line = Line::from(vec![
@@ -562,7 +562,7 @@ impl NewSessionDialog {
                 Span::styled("  Env Values:", label_style),
                 Span::styled(
                     " (a)dd (d)el (Enter)edit (Esc)close",
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 ),
             ]);
             lines.push(header);
@@ -577,31 +577,31 @@ impl NewSessionDialog {
                         };
                         lines.push(Line::from(Span::styled(
                             format!("{}{}", prefix, entry),
-                            Style::default().fg(*theme.text),
+                            Style::default().fg(theme.text),
                         )));
                     }
                     let input_line = Line::from(vec![
-                        Span::styled("  + ", Style::default().fg(*theme.accent)),
-                        Span::styled(input.value(), Style::default().fg(*theme.accent).bold()),
-                        Span::styled("_", Style::default().fg(*theme.accent)),
+                        Span::styled("  + ", Style::default().fg(theme.accent)),
+                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
+                        Span::styled("_", Style::default().fg(theme.accent)),
                     ]);
                     lines.push(input_line);
                 } else {
                     for (i, entry) in self.extra_env_values.iter().enumerate() {
                         if i == self.env_values_selected_index {
                             let input_line = Line::from(vec![
-                                Span::styled("  > ", Style::default().fg(*theme.accent)),
+                                Span::styled("  > ", Style::default().fg(theme.accent)),
                                 Span::styled(
                                     input.value(),
-                                    Style::default().fg(*theme.accent).bold(),
+                                    Style::default().fg(theme.accent).bold(),
                                 ),
-                                Span::styled("_", Style::default().fg(*theme.accent)),
+                                Span::styled("_", Style::default().fg(theme.accent)),
                             ]);
                             lines.push(input_line);
                         } else {
                             lines.push(Line::from(Span::styled(
                                 format!("    {}", entry),
-                                Style::default().fg(*theme.text),
+                                Style::default().fg(theme.text),
                             )));
                         }
                     }
@@ -609,16 +609,16 @@ impl NewSessionDialog {
             } else if self.extra_env_values.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "    (press 'a' to add KEY=VALUE)",
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 )));
             } else {
                 for (i, entry) in self.extra_env_values.iter().enumerate() {
                     let is_selected = i == self.env_values_selected_index;
                     let prefix = if is_selected { "  > " } else { "    " };
                     let style = if is_selected {
-                        Style::default().fg(*theme.accent).bold()
+                        Style::default().fg(theme.accent).bold()
                     } else {
-                        Style::default().fg(*theme.text)
+                        Style::default().fg(theme.text)
                     };
                     lines.push(Line::from(Span::styled(
                         format!("{}{}", prefix, entry),
@@ -640,9 +640,9 @@ impl NewSessionDialog {
     ) {
         let is_focused = self.focused_field == field_idx;
         let label_style = if is_focused {
-            Style::default().fg(*theme.accent).underlined()
+            Style::default().fg(theme.accent).underlined()
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         let count = self.inherited_settings.len();
@@ -659,9 +659,9 @@ impl NewSessionDialog {
 
         if !self.inherited_expanded {
             let summary_style = if count > 0 {
-                Style::default().fg(*theme.accent)
+                Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
             let line = Line::from(vec![
                 Span::styled(format!("  {} ", arrow), label_style),
@@ -682,16 +682,16 @@ impl NewSessionDialog {
             if self.inherited_settings.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "    (all defaults)",
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 )));
             } else {
                 for (label, value) in &self.inherited_settings {
                     lines.push(Line::from(vec![
                         Span::styled(
                             format!("    {}: ", label),
-                            Style::default().fg(*theme.dimmed),
+                            Style::default().fg(theme.dimmed),
                         ),
-                        Span::styled(value.as_str(), Style::default().fg(*theme.accent)),
+                        Span::styled(value.as_str(), Style::default().fg(theme.accent)),
                     ]));
                 }
             }
@@ -718,9 +718,9 @@ impl NewSessionDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.border))
+            .border_style(Style::default().fg(theme.border))
             .title(" New Session Help ")
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -742,21 +742,21 @@ impl NewSessionDialog {
 
             lines.push(Line::from(Span::styled(
                 help.name,
-                Style::default().fg(*theme.accent).bold(),
+                Style::default().fg(theme.accent).bold(),
             )));
             lines.push(Line::from(Span::styled(
                 format!("  {}", help.description),
-                Style::default().fg(*theme.text),
+                Style::default().fg(theme.text),
             )));
             lines.push(Line::from(""));
         }
 
         lines.push(Line::from(vec![
-            Span::styled("Press ", Style::default().fg(*theme.dimmed)),
-            Span::styled("?", Style::default().fg(*theme.hint)),
-            Span::styled(" or ", Style::default().fg(*theme.dimmed)),
-            Span::styled("Esc", Style::default().fg(*theme.hint)),
-            Span::styled(" to close", Style::default().fg(*theme.dimmed)),
+            Span::styled("Press ", Style::default().fg(theme.dimmed)),
+            Span::styled("?", Style::default().fg(theme.hint)),
+            Span::styled(" or ", Style::default().fg(theme.dimmed)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::styled(" to close", Style::default().fg(theme.dimmed)),
         ]));
 
         frame.render_widget(Paragraph::new(lines), inner);
@@ -795,9 +795,9 @@ impl NewSessionDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(title)
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -825,9 +825,9 @@ impl NewSessionDialog {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(" {} ", spinner),
-                    Style::default().fg(*theme.accent).bold(),
+                    Style::default().fg(theme.accent).bold(),
                 ),
-                Span::styled(status_text, Style::default().fg(*theme.text)),
+                Span::styled(status_text, Style::default().fg(theme.text)),
             ]));
 
             // Show last N output lines
@@ -844,7 +844,7 @@ impl NewSessionDialog {
                 };
                 lines.push(Line::from(Span::styled(
                     format!("  {}", truncated),
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 )));
             }
 
@@ -856,9 +856,9 @@ impl NewSessionDialog {
             }
 
             lines.push(Line::from(vec![
-                Span::styled(" Press ", Style::default().fg(*theme.dimmed)),
-                Span::styled("Esc", Style::default().fg(*theme.hint)),
-                Span::styled(" to cancel", Style::default().fg(*theme.dimmed)),
+                Span::styled(" Press ", Style::default().fg(theme.dimmed)),
+                Span::styled("Esc", Style::default().fg(theme.hint)),
+                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
             ]));
 
             frame.render_widget(Paragraph::new(lines), inner);
@@ -878,24 +878,24 @@ impl NewSessionDialog {
                 Line::from(vec![
                     Span::styled(
                         format!("  {} ", spinner),
-                        Style::default().fg(*theme.accent).bold(),
+                        Style::default().fg(theme.accent).bold(),
                     ),
-                    Span::styled(loading_text, Style::default().fg(*theme.text)),
+                    Span::styled(loading_text, Style::default().fg(theme.text)),
                 ]),
             ];
 
             if needs_extra_line {
                 lines.push(Line::from(Span::styled(
                     "    (first time may take a few minutes)",
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 )));
             }
 
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("  Press ", Style::default().fg(*theme.dimmed)),
-                Span::styled("Esc", Style::default().fg(*theme.hint)),
-                Span::styled(" to cancel", Style::default().fg(*theme.dimmed)),
+                Span::styled("  Press ", Style::default().fg(theme.dimmed)),
+                Span::styled("Esc", Style::default().fg(theme.hint)),
+                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
             ]));
 
             frame.render_widget(Paragraph::new(lines), inner);

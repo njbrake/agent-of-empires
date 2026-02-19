@@ -111,9 +111,9 @@ impl ListPicker {
         let title = format!(" {} ", self.title);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(title)
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -132,9 +132,9 @@ impl ListPicker {
         // Filter input
         let filter_value = self.filter.value();
         let filter_line = Line::from(vec![
-            Span::styled("Filter: ", Style::default().fg(*theme.text)),
-            Span::styled(filter_value, Style::default().fg(*theme.accent).bold()),
-            Span::styled("_", Style::default().fg(*theme.accent)),
+            Span::styled("Filter: ", Style::default().fg(theme.text)),
+            Span::styled(filter_value, Style::default().fg(theme.accent).bold()),
+            Span::styled("_", Style::default().fg(theme.accent)),
         ]);
         frame.render_widget(Paragraph::new(filter_line), chunks[0]);
 
@@ -150,7 +150,7 @@ impl ListPicker {
         if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (no matches)",
-                Style::default().fg(*theme.dimmed),
+                Style::default().fg(theme.dimmed),
             )));
         } else {
             for (i, item) in filtered
@@ -163,9 +163,9 @@ impl ListPicker {
                 let is_selected = abs_idx == self.selected;
                 let prefix = if is_selected { "> " } else { "  " };
                 let style = if is_selected {
-                    Style::default().fg(*theme.accent).bold()
+                    Style::default().fg(theme.accent).bold()
                 } else {
-                    Style::default().fg(*theme.text)
+                    Style::default().fg(theme.text)
                 };
                 lines.push(Line::from(Span::styled(
                     format!("{}{}", prefix, item),
@@ -177,11 +177,11 @@ impl ListPicker {
 
         // Hint line
         let hint_line = Line::from(vec![
-            Span::styled("Type", Style::default().fg(*theme.hint)),
+            Span::styled("Type", Style::default().fg(theme.hint)),
             Span::raw(" filter  "),
-            Span::styled("Enter", Style::default().fg(*theme.hint)),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" select  "),
-            Span::styled("Esc", Style::default().fg(*theme.hint)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
         frame.render_widget(Paragraph::new(hint_line), chunks[3]);

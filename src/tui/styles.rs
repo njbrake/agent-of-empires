@@ -1,86 +1,46 @@
 //! TUI theme and styling
 
-use super::themes::color::parse_hex_color;
 use ratatui::style::Color;
-use serde::{Deserialize, Deserializer, Serialize};
-use std::ops::Deref;
+use serde::{Deserialize, Serialize};
 
-/// Newtype wrapper for Color that supports hex string serialization
-#[derive(Debug, Clone, Copy)]
-pub struct ThemeColor(pub(crate) Color);
-
-impl<'de> Deserialize<'de> for ThemeColor {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let hex_str = String::deserialize(deserializer)?;
-        parse_hex_color(&hex_str)
-            .map(ThemeColor)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-impl Deref for ThemeColor {
-    type Target = Color;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<Color> for ThemeColor {
-    fn as_ref(&self) -> &Color {
-        &self.0
-    }
-}
-
-impl From<ThemeColor> for Color {
-    fn from(tc: ThemeColor) -> Self {
-        tc.0
-    }
-}
-
-impl Serialize for ThemeColor {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // ThemeColor is only constructed from hex parsing, which always produces RGB
-        let Color::Rgb(r, g, b) = self.0 else {
-            return Err(serde::ser::Error::custom(
-                "ThemeColor invariant violated: expected RGB color",
-            ));
-        };
-        serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", r, g, b))
-    }
-}
+use crate::session::Status;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Theme {
     // Background and borders
-    pub background: ThemeColor,
-    pub border: ThemeColor,
-    pub terminal_border: ThemeColor,
-    pub selection: ThemeColor,
-    pub session_selection: ThemeColor,
+    pub background: Color,
+    pub border: Color,
+    pub terminal_border: Color,
+    pub selection: Color,
+    pub session_selection: Color,
 
     // Text colors
-    pub title: ThemeColor,
-    pub text: ThemeColor,
-    pub dimmed: ThemeColor,
-    pub hint: ThemeColor,
+    pub title: Color,
+    pub text: Color,
+    pub dimmed: Color,
+    pub hint: Color,
 
     // Status colors
-    pub running: ThemeColor,
-    pub waiting: ThemeColor,
-    pub idle: ThemeColor,
-    pub error: ThemeColor,
-    pub terminal_active: ThemeColor,
+    pub running: Color,
+    pub waiting: Color,
+    pub idle: Color,
+    pub error: Color,
+    pub terminal_active: Color,
 
     // UI elements
-    pub group: ThemeColor,
-    pub search: ThemeColor,
-    pub accent: ThemeColor,
+    pub group: Color,
+    pub search: Color,
+    pub accent: Color,
+
+    pub diff_add: Color,
+    pub diff_delete: Color,
+    pub diff_context: Color,
+    pub diff_header: Color,
+
+    pub branch: Color,
+    pub sandbox: Color,
+    pub worktree_managed: Color,
+    pub worktree_manual: Color,
 }
 
 impl Default for Theme {
@@ -92,26 +52,47 @@ impl Default for Theme {
 impl Theme {
     pub fn phosphor() -> Self {
         Self {
-            background: ThemeColor(Color::Rgb(16, 20, 18)),
-            border: ThemeColor(Color::Rgb(45, 70, 55)),
-            terminal_border: ThemeColor(Color::Rgb(70, 130, 180)),
-            selection: ThemeColor(Color::Rgb(30, 50, 40)),
-            session_selection: ThemeColor(Color::Rgb(60, 60, 60)),
+            background: Color::Rgb(16, 20, 18),
+            border: Color::Rgb(45, 70, 55),
+            terminal_border: Color::Rgb(70, 130, 180),
+            selection: Color::Rgb(30, 50, 40),
+            session_selection: Color::Rgb(60, 60, 60),
 
-            title: ThemeColor(Color::Rgb(57, 255, 20)),
-            text: ThemeColor(Color::Rgb(180, 255, 180)),
-            dimmed: ThemeColor(Color::Rgb(80, 120, 90)),
-            hint: ThemeColor(Color::Rgb(100, 160, 120)),
+            title: Color::Rgb(57, 255, 20),
+            text: Color::Rgb(180, 255, 180),
+            dimmed: Color::Rgb(80, 120, 90),
+            hint: Color::Rgb(100, 160, 120),
 
-            running: ThemeColor(Color::Rgb(0, 255, 180)),
-            waiting: ThemeColor(Color::Rgb(255, 180, 60)),
-            idle: ThemeColor(Color::Rgb(60, 100, 70)),
-            error: ThemeColor(Color::Rgb(255, 100, 80)),
-            terminal_active: ThemeColor(Color::Rgb(130, 170, 255)),
+            running: Color::Rgb(0, 255, 180),
+            waiting: Color::Rgb(255, 180, 60),
+            idle: Color::Rgb(60, 100, 70),
+            error: Color::Rgb(255, 100, 80),
+            terminal_active: Color::Rgb(130, 170, 255),
 
-            group: ThemeColor(Color::Rgb(100, 220, 160)),
-            search: ThemeColor(Color::Rgb(180, 255, 200)),
-            accent: ThemeColor(Color::Rgb(57, 255, 20)),
+            group: Color::Rgb(100, 220, 160),
+            search: Color::Rgb(180, 255, 200),
+            accent: Color::Rgb(57, 255, 20),
+
+            diff_add: Color::Rgb(0, 255, 0),
+            diff_delete: Color::Rgb(255, 0, 0),
+            diff_context: Color::Rgb(128, 128, 128),
+            diff_header: Color::Rgb(0, 255, 255),
+
+            branch: Color::Rgb(0, 255, 255),
+            sandbox: Color::Rgb(255, 0, 255),
+            worktree_managed: Color::Rgb(0, 255, 0),
+            worktree_manual: Color::Rgb(255, 255, 0),
+        }
+    }
+
+    pub fn status_color(&self, status: &Status) -> Color {
+        match status {
+            Status::Running => self.running,
+            Status::Waiting => self.waiting,
+            Status::Idle => self.idle,
+            Status::Error => self.error,
+            Status::Starting => self.waiting,
+            Status::Deleting => self.error,
         }
     }
 }

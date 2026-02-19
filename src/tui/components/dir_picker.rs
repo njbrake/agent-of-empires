@@ -241,9 +241,9 @@ impl DirPicker {
         let title = format!(" Browse: {} ", path_display);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(title)
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -262,9 +262,9 @@ impl DirPicker {
         // Filter input
         let filter_value = self.filter.value();
         let filter_line = Line::from(vec![
-            Span::styled("Filter: ", Style::default().fg(*theme.text)),
-            Span::styled(filter_value, Style::default().fg(*theme.accent).bold()),
-            Span::styled("_", Style::default().fg(*theme.accent)),
+            Span::styled("Filter: ", Style::default().fg(theme.text)),
+            Span::styled(filter_value, Style::default().fg(theme.accent).bold()),
+            Span::styled("_", Style::default().fg(theme.accent)),
         ]);
         frame.render_widget(Paragraph::new(filter_line), chunks[0]);
 
@@ -280,12 +280,12 @@ impl DirPicker {
         if self.read_error {
             lines.push(Line::from(Span::styled(
                 "  (permission denied)",
-                Style::default().fg(*theme.dimmed),
+                Style::default().fg(theme.dimmed),
             )));
         } else if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (empty directory)",
-                Style::default().fg(*theme.dimmed),
+                Style::default().fg(theme.dimmed),
             )));
         } else {
             let has_more_above = scroll_offset > 0;
@@ -294,7 +294,7 @@ impl DirPicker {
             if has_more_above {
                 lines.push(Line::from(Span::styled(
                     format!("  [{} more above]", scroll_offset),
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 )));
             }
 
@@ -316,9 +316,9 @@ impl DirPicker {
                 let is_selected = abs_idx == self.selected;
                 let prefix = if is_selected { "> " } else { "  " };
                 let style = if is_selected {
-                    Style::default().fg(*theme.accent).bold()
+                    Style::default().fg(theme.accent).bold()
                 } else {
-                    Style::default().fg(*theme.text)
+                    Style::default().fg(theme.text)
                 };
                 let display = if item == "../" {
                     item.clone()
@@ -335,7 +335,7 @@ impl DirPicker {
                 let remaining = filtered.len() - scroll_offset - list_visible;
                 lines.push(Line::from(Span::styled(
                     format!("  [{} more below]", remaining),
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 )));
             }
         }
@@ -343,20 +343,20 @@ impl DirPicker {
 
         // Hint line
         let hint_line = Line::from(vec![
-            Span::styled("Type", Style::default().fg(*theme.hint)),
+            Span::styled("Type", Style::default().fg(theme.hint)),
             Span::raw(" filter  "),
-            Span::styled("Tab", Style::default().fg(*theme.hint)),
+            Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" enter dir  "),
-            Span::styled("C-h", Style::default().fg(*theme.hint)),
+            Span::styled("C-h", Style::default().fg(theme.hint)),
             Span::raw(if self.show_hidden {
                 " hide ."
             } else {
                 " show ."
             }),
             Span::raw("  "),
-            Span::styled("Enter", Style::default().fg(*theme.hint)),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" select  "),
-            Span::styled("Esc", Style::default().fg(*theme.hint)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
         frame.render_widget(Paragraph::new(hint_line), chunks[3]);

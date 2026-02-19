@@ -193,9 +193,9 @@ impl GroupDeleteOptionsDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.error))
+            .border_style(Style::default().fg(theme.error))
             .title(" Delete Group ")
-            .title_style(Style::default().fg(*theme.error).bold());
+            .title_style(Style::default().fg(theme.error).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -231,14 +231,14 @@ impl GroupDeleteOptionsDialog {
             "sessions"
         };
         let info_line = Line::from(vec![
-            Span::styled("Group: ", Style::default().fg(*theme.text)),
+            Span::styled("Group: ", Style::default().fg(theme.text)),
             Span::styled(
                 format!("\"{}\"", self.group_path),
-                Style::default().fg(*theme.accent).bold(),
+                Style::default().fg(theme.accent).bold(),
             ),
             Span::styled(
                 format!(" ({} {})", self.session_count, session_word),
-                Style::default().fg(*theme.dimmed),
+                Style::default().fg(theme.dimmed),
             ),
         ]);
         frame.render_widget(Paragraph::new(info_line), chunks[0]);
@@ -248,11 +248,11 @@ impl GroupDeleteOptionsDialog {
         let move_selected = !self.options.delete_sessions;
         let move_radio = if move_selected { "(•)" } else { "( )" };
         let move_style = if move_focused {
-            Style::default().fg(*theme.accent).underlined()
+            Style::default().fg(theme.accent).underlined()
         } else if move_selected {
-            Style::default().fg(*theme.accent)
+            Style::default().fg(theme.accent)
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
         let move_line = Line::from(vec![
             Span::styled(move_radio, move_style),
@@ -265,11 +265,11 @@ impl GroupDeleteOptionsDialog {
         let delete_selected = self.options.delete_sessions;
         let delete_radio = if delete_selected { "(•)" } else { "( )" };
         let delete_style = if delete_focused {
-            Style::default().fg(*theme.error).underlined()
+            Style::default().fg(theme.error).underlined()
         } else if delete_selected {
-            Style::default().fg(*theme.error)
+            Style::default().fg(theme.error)
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
         let delete_line = Line::from(vec![
             Span::styled(delete_radio, delete_style),
@@ -289,11 +289,11 @@ impl GroupDeleteOptionsDialog {
                 "[ ]"
             };
             let wt_style = if wt_focused {
-                Style::default().fg(*theme.error).underlined()
+                Style::default().fg(theme.error).underlined()
             } else if self.options.delete_worktrees {
-                Style::default().fg(*theme.error)
+                Style::default().fg(theme.error)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
             let wt_line = Line::from(vec![
                 Span::raw("    "),
@@ -311,11 +311,11 @@ impl GroupDeleteOptionsDialog {
                     "[ ]"
                 };
                 let fc_style = if fc_focused {
-                    Style::default().fg(*theme.error).underlined()
+                    Style::default().fg(theme.error).underlined()
                 } else if self.options.force_delete_worktrees {
-                    Style::default().fg(*theme.error)
+                    Style::default().fg(theme.error)
                 } else {
-                    Style::default().fg(*theme.dimmed)
+                    Style::default().fg(theme.dimmed)
                 };
                 let fc_line = Line::from(vec![
                     Span::raw("        "),
@@ -334,11 +334,11 @@ impl GroupDeleteOptionsDialog {
                 "[ ]"
             };
             let br_style = if br_focused {
-                Style::default().fg(*theme.error).underlined()
+                Style::default().fg(theme.error).underlined()
             } else if self.options.delete_branches {
-                Style::default().fg(*theme.error)
+                Style::default().fg(theme.error)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
             let br_line = Line::from(vec![
                 Span::raw("    "),
@@ -358,11 +358,11 @@ impl GroupDeleteOptionsDialog {
                 "[ ]"
             };
             let ct_style = if ct_focused {
-                Style::default().fg(*theme.error).underlined()
+                Style::default().fg(theme.error).underlined()
             } else if self.options.delete_containers {
-                Style::default().fg(*theme.error)
+                Style::default().fg(theme.error)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
             let ct_line = Line::from(vec![
                 Span::raw("    "),
@@ -375,13 +375,13 @@ impl GroupDeleteOptionsDialog {
 
         // Hints
         let hints = Line::from(vec![
-            Span::styled("Tab", Style::default().fg(*theme.hint)),
+            Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" next  "),
-            Span::styled("Space", Style::default().fg(*theme.hint)),
+            Span::styled("Space", Style::default().fg(theme.hint)),
             Span::raw(" select  "),
-            Span::styled("Enter", Style::default().fg(*theme.hint)),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(*theme.hint)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
         frame.render_widget(Paragraph::new(hints), chunks[next_chunk]);

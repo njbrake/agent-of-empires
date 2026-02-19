@@ -89,9 +89,9 @@ impl CustomInstructionDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(" Edit Custom Instruction ")
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -107,9 +107,9 @@ impl CustomInstructionDialog {
 
         // Text area
         let textarea_border_color = if self.focused_zone == 0 {
-            *theme.accent
+            theme.accent
         } else {
-            *theme.border
+            theme.border
         };
         let textarea_block = Block::default()
             .borders(Borders::ALL)
@@ -117,10 +117,10 @@ impl CustomInstructionDialog {
 
         let mut text_area_clone = self.text_area.clone();
         text_area_clone.set_block(textarea_block);
-        text_area_clone.set_style(Style::default().fg(*theme.text));
+        text_area_clone.set_style(Style::default().fg(theme.text));
         if self.focused_zone == 0 {
             text_area_clone
-                .set_cursor_style(Style::default().fg(*theme.background).bg(*theme.accent));
+                .set_cursor_style(Style::default().fg(theme.background).bg(theme.accent));
         } else {
             text_area_clone.set_cursor_style(Style::default());
         }
@@ -147,20 +147,17 @@ impl CustomInstructionDialog {
 
         let save_style = if self.focused_zone == 1 && self.focused_button == 0 {
             Style::default()
-                .fg(*theme.background)
-                .bg(*theme.accent)
+                .fg(theme.background)
+                .bg(theme.accent)
                 .bold()
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         let cancel_style = if self.focused_zone == 1 && self.focused_button == 1 {
-            Style::default()
-                .fg(*theme.background)
-                .bg(*theme.error)
-                .bold()
+            Style::default().fg(theme.background).bg(theme.error).bold()
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         frame.render_widget(
@@ -178,11 +175,11 @@ impl CustomInstructionDialog {
 
         // Hint bar
         let hint = Line::from(vec![
-            Span::styled("Tab", Style::default().fg(*theme.hint)),
+            Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" switch focus  "),
-            Span::styled("Enter", Style::default().fg(*theme.hint)),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" edit/confirm  "),
-            Span::styled("Esc", Style::default().fg(*theme.hint)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
         frame.render_widget(Paragraph::new(hint), chunks[2]);

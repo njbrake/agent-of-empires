@@ -166,9 +166,9 @@ impl RenameDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(" Edit Session ")
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -191,8 +191,8 @@ impl RenameDialog {
 
         // Current title
         let current_title_line = Line::from(vec![
-            Span::styled("Current title: ", Style::default().fg(*theme.dimmed)),
-            Span::styled(&self.current_title, Style::default().fg(*theme.text)),
+            Span::styled("Current title: ", Style::default().fg(theme.dimmed)),
+            Span::styled(&self.current_title, Style::default().fg(theme.text)),
         ]);
         frame.render_widget(Paragraph::new(current_title_line), chunks[0]);
 
@@ -203,15 +203,15 @@ impl RenameDialog {
             self.current_group.clone()
         };
         let current_group_line = Line::from(vec![
-            Span::styled("Current group: ", Style::default().fg(*theme.dimmed)),
-            Span::styled(group_display, Style::default().fg(*theme.text)),
+            Span::styled("Current group: ", Style::default().fg(theme.dimmed)),
+            Span::styled(group_display, Style::default().fg(theme.text)),
         ]);
         frame.render_widget(Paragraph::new(current_group_line), chunks[1]);
 
         // Current profile
         let current_profile_line = Line::from(vec![
-            Span::styled("Current profile: ", Style::default().fg(*theme.dimmed)),
-            Span::styled(&self.current_profile, Style::default().fg(*theme.text)),
+            Span::styled("Current profile: ", Style::default().fg(theme.dimmed)),
+            Span::styled(&self.current_profile, Style::default().fg(theme.text)),
         ]);
         frame.render_widget(Paragraph::new(current_profile_line), chunks[2]);
 
@@ -241,33 +241,33 @@ impl RenameDialog {
         let profile_focused = self.focused_field == 2;
         let selected_profile = self.selected_profile();
         let profile_style = if profile_focused {
-            Style::default().fg(*theme.accent)
+            Style::default().fg(theme.accent)
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         let profile_line = Line::from(vec![
             Span::styled(
                 "Profile:    ",
                 if profile_focused {
-                    Style::default().fg(*theme.accent)
+                    Style::default().fg(theme.accent)
                 } else {
-                    Style::default().fg(*theme.dimmed)
+                    Style::default().fg(theme.dimmed)
                 },
             ),
-            Span::styled("< ", Style::default().fg(*theme.dimmed)),
+            Span::styled("< ", Style::default().fg(theme.dimmed)),
             Span::styled(selected_profile, profile_style),
-            Span::styled(" >", Style::default().fg(*theme.dimmed)),
+            Span::styled(" >", Style::default().fg(theme.dimmed)),
         ]);
         frame.render_widget(Paragraph::new(profile_line), chunks[6]);
 
         // Hint
         let hint = Line::from(vec![
-            Span::styled("Tab", Style::default().fg(*theme.hint)),
+            Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" switch  "),
-            Span::styled("Enter", Style::default().fg(*theme.hint)),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" save  "),
-            Span::styled("Esc", Style::default().fg(*theme.hint)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
         frame.render_widget(Paragraph::new(hint), chunks[8]);

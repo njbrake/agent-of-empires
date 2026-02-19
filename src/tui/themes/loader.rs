@@ -45,36 +45,36 @@ mod tests {
     #[test]
     fn test_load_phosphor() {
         let theme = load_theme("phosphor");
-        assert_eq!(*theme.title, Color::Rgb(57, 255, 20));
-        assert_eq!(*theme.background, Color::Rgb(16, 20, 18));
+        assert_eq!(theme.title, Color::Rgb(57, 255, 20));
+        assert_eq!(theme.background, Color::Rgb(16, 20, 18));
     }
 
     #[test]
     fn test_load_tokyo_night() {
         let theme = load_theme("tokyo-night");
-        assert_eq!(*theme.title, Color::Rgb(122, 162, 247));
-        assert_eq!(*theme.background, Color::Rgb(26, 27, 38));
+        assert_eq!(theme.title, Color::Rgb(122, 162, 247));
+        assert_eq!(theme.background, Color::Rgb(26, 27, 38));
     }
 
     #[test]
     fn test_load_catppuccin_latte() {
         let theme = load_theme("catppuccin-latte");
-        assert_eq!(*theme.title, Color::Rgb(30, 102, 245));
-        assert_eq!(*theme.background, Color::Rgb(239, 241, 245));
+        assert_eq!(theme.title, Color::Rgb(30, 102, 245));
+        assert_eq!(theme.background, Color::Rgb(239, 241, 245));
     }
 
     #[test]
     fn test_load_invalid_fallback() {
         let theme = load_theme("nonexistent-theme");
-        assert_eq!(*theme.title, Color::Rgb(57, 255, 20));
-        assert_eq!(*theme.background, Color::Rgb(16, 20, 18));
+        assert_eq!(theme.title, Color::Rgb(57, 255, 20));
+        assert_eq!(theme.background, Color::Rgb(16, 20, 18));
     }
 
     #[test]
     fn test_load_tokyo_night_storm() {
         let theme = load_theme("tokyo-night-storm");
-        assert_eq!(*theme.title, Color::Rgb(122, 162, 247));
-        assert_eq!(*theme.background, Color::Rgb(36, 40, 59));
+        assert_eq!(theme.title, Color::Rgb(122, 162, 247));
+        assert_eq!(theme.background, Color::Rgb(36, 40, 59));
     }
 
     #[test]

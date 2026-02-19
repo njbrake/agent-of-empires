@@ -127,9 +127,9 @@ impl HookTrustDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(" Repository Hooks ")
-            .title_style(Style::default().fg(*theme.accent).bold());
+            .title_style(Style::default().fg(theme.accent).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -147,7 +147,7 @@ impl HookTrustDialog {
         let header = Paragraph::new(
             "This repo has hooks defined in .aoe/config.toml.\nAllow these commands to run?",
         )
-        .style(Style::default().fg(*theme.text))
+        .style(Style::default().fg(theme.text))
         .wrap(Wrap { trim: true });
         frame.render_widget(header, chunks[0]);
 
@@ -157,24 +157,24 @@ impl HookTrustDialog {
             .skip(self.scroll_offset as usize)
             .collect();
         let hooks_paragraph = Paragraph::new(visible_lines)
-            .style(Style::default().fg(*theme.dimmed))
+            .style(Style::default().fg(theme.dimmed))
             .block(
                 Block::default()
                     .borders(Borders::TOP)
-                    .border_style(Style::default().fg(*theme.border)),
+                    .border_style(Style::default().fg(theme.border)),
             );
         frame.render_widget(hooks_paragraph, chunks[1]);
 
         // Buttons
         let trust_style = if self.selected {
-            Style::default().fg(*theme.running).bold()
+            Style::default().fg(theme.running).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
         let skip_style = if !self.selected {
-            Style::default().fg(*theme.accent).bold()
+            Style::default().fg(theme.accent).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let buttons = Line::from(vec![
@@ -183,7 +183,7 @@ impl HookTrustDialog {
             Span::raw("    "),
             Span::styled("[Skip (n)]", skip_style),
             Span::raw("    "),
-            Span::styled("[Cancel (Esc)]", Style::default().fg(*theme.dimmed)),
+            Span::styled("[Cancel (Esc)]", Style::default().fg(theme.dimmed)),
         ]);
 
         frame.render_widget(

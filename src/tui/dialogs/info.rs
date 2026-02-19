@@ -34,9 +34,9 @@ impl InfoDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.border))
+            .border_style(Style::default().fg(theme.border))
             .title(format!(" {} ", self.title))
-            .title_style(Style::default().fg(*theme.title).bold());
+            .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -49,14 +49,14 @@ impl InfoDialog {
 
         // Message
         let message = Paragraph::new(&*self.message)
-            .style(Style::default().fg(*theme.text))
+            .style(Style::default().fg(theme.text))
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
         // OK button
         let button = Line::from(vec![Span::styled(
             "[OK]",
-            Style::default().fg(*theme.accent).bold(),
+            Style::default().fg(theme.accent).bold(),
         )]);
 
         frame.render_widget(

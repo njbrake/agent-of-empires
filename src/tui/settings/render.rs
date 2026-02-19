@@ -50,7 +50,7 @@ impl SettingsView {
     fn render_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(*theme.border));
+            .border_style(Style::default().fg(theme.border));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -60,10 +60,10 @@ impl SettingsView {
         let scope_style = |scope: SettingsScope| -> Style {
             if self.scope == scope {
                 Style::default()
-                    .fg(*theme.accent)
+                    .fg(theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             }
         };
 
@@ -71,25 +71,25 @@ impl SettingsView {
         let profile_style = scope_style(SettingsScope::Profile);
 
         let mut spans = vec![
-            Span::styled("  Settings", Style::default().fg(*theme.text)),
-            Span::styled(modified, Style::default().fg(*theme.error)),
+            Span::styled("  Settings", Style::default().fg(theme.text)),
+            Span::styled(modified, Style::default().fg(theme.error)),
             Span::raw("    "),
-            Span::styled("[ ", Style::default().fg(*theme.border)),
+            Span::styled("[ ", Style::default().fg(theme.border)),
             Span::styled("Global", global_style),
-            Span::styled(" ]", Style::default().fg(*theme.border)),
+            Span::styled(" ]", Style::default().fg(theme.border)),
             Span::raw("  "),
-            Span::styled("[ ", Style::default().fg(*theme.border)),
+            Span::styled("[ ", Style::default().fg(theme.border)),
             Span::styled(format!("Profile: {}", self.profile), profile_style),
-            Span::styled(" ]", Style::default().fg(*theme.border)),
+            Span::styled(" ]", Style::default().fg(theme.border)),
         ];
 
         // Show Repo tab when a project path is available
         if self.project_path.is_some() {
             let repo_style = scope_style(SettingsScope::Repo);
             spans.push(Span::raw("  "));
-            spans.push(Span::styled("[ ", Style::default().fg(*theme.border)));
+            spans.push(Span::styled("[ ", Style::default().fg(theme.border)));
             spans.push(Span::styled("Repo", repo_style));
-            spans.push(Span::styled(" ]", Style::default().fg(*theme.border)));
+            spans.push(Span::styled(" ]", Style::default().fg(theme.border)));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), inner);
@@ -113,9 +113,9 @@ impl SettingsView {
         let is_focused = self.focus == SettingsFocus::Categories;
 
         let border_style = if is_focused {
-            Style::default().fg(*theme.accent)
+            Style::default().fg(theme.accent)
         } else {
-            Style::default().fg(*theme.border)
+            Style::default().fg(theme.border)
         };
 
         let block = Block::default()
@@ -134,13 +134,13 @@ impl SettingsView {
                 let style = if i == self.selected_category {
                     if is_focused {
                         Style::default()
-                            .fg(*theme.accent)
+                            .fg(theme.accent)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(*theme.text)
+                        Style::default().fg(theme.text)
                     }
                 } else {
-                    Style::default().fg(*theme.dimmed)
+                    Style::default().fg(theme.dimmed)
                 };
 
                 let prefix = if i == self.selected_category {
@@ -161,9 +161,9 @@ impl SettingsView {
         let is_focused = self.focus == SettingsFocus::Fields;
 
         let border_style = if is_focused {
-            Style::default().fg(*theme.accent)
+            Style::default().fg(theme.accent)
         } else {
-            Style::default().fg(*theme.border)
+            Style::default().fg(theme.border)
         };
 
         let block = Block::default()
@@ -180,7 +180,7 @@ impl SettingsView {
             } else {
                 "No settings in this category"
             };
-            let msg = Paragraph::new(msg).style(Style::default().fg(*theme.dimmed));
+            let msg = Paragraph::new(msg).style(Style::default().fg(theme.dimmed));
             frame.render_widget(msg, inner);
             return;
         }
@@ -190,15 +190,15 @@ impl SettingsView {
         let warning_offset = if current_category == SettingsCategory::Sound && is_ssh_session() {
             let warning = vec![
                 Line::from(vec![
-                    Span::styled("⚠ ", Style::default().fg(*theme.waiting)),
+                    Span::styled("⚠ ", Style::default().fg(theme.waiting)),
                     Span::styled(
                         "Warning: Audio playback doesn't work over SSH",
-                        Style::default().fg(*theme.waiting),
+                        Style::default().fg(theme.waiting),
                     ),
                 ]),
                 Line::from(vec![Span::styled(
                     "  Sounds require local terminal with audio output.",
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 )]),
                 Line::from(""),
             ];
@@ -282,8 +282,8 @@ impl SettingsView {
 
             frame.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .track_style(Style::default().fg(*theme.border))
-                    .thumb_style(Style::default().fg(*theme.dimmed)),
+                    .track_style(Style::default().fg(theme.border))
+                    .thumb_style(Style::default().fg(theme.dimmed)),
                 scrollbar_area,
                 &mut scrollbar_state,
             );
@@ -297,7 +297,7 @@ impl SettingsView {
                 width: inner.width,
                 height: 1,
             };
-            let msg = Paragraph::new(error.as_str()).style(Style::default().fg(*theme.error));
+            let msg = Paragraph::new(error.as_str()).style(Style::default().fg(theme.error));
             frame.render_widget(msg, msg_area);
         } else if let Some(ref success) = self.success_message {
             let msg_area = Rect {
@@ -306,7 +306,7 @@ impl SettingsView {
                 width: inner.width,
                 height: 1,
             };
-            let msg = Paragraph::new(success.as_str()).style(Style::default().fg(*theme.running));
+            let msg = Paragraph::new(success.as_str()).style(Style::default().fg(theme.running));
             frame.render_widget(msg, msg_area);
         }
     }
@@ -336,15 +336,15 @@ impl SettingsView {
     ) {
         let label_style = if is_selected {
             Style::default()
-                .fg(*theme.accent)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         // Show override indicator for profile scope
         let override_indicator = if field.has_override && self.scope == SettingsScope::Profile {
-            Span::styled(" (override)", Style::default().fg(*theme.accent))
+            Span::styled(" (override)", Style::default().fg(theme.accent))
         } else {
             Span::raw("")
         };
@@ -363,7 +363,7 @@ impl SettingsView {
             height: 1,
         };
         frame.render_widget(
-            Paragraph::new(field.description).style(Style::default().fg(*theme.dimmed)),
+            Paragraph::new(field.description).style(Style::default().fg(theme.dimmed)),
             description_area,
         );
 
@@ -426,9 +426,9 @@ impl SettingsView {
 
         let checkbox = if value { "[x]" } else { "[ ]" };
         let style = if is_selected {
-            Style::default().fg(*theme.accent)
+            Style::default().fg(theme.accent)
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let text = format!(
@@ -463,9 +463,9 @@ impl SettingsView {
             self.render_input_with_cursor(frame, value_area, input, theme);
         } else {
             let style = if is_selected {
-                Style::default().fg(*theme.accent)
+                Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
 
             let display = if value.is_empty() {
@@ -480,8 +480,8 @@ impl SettingsView {
 
     /// Build spans for text with an inverse-video cursor at the given position
     fn build_cursor_spans(value: &str, cursor_pos: usize, theme: &Theme) -> Vec<Span<'static>> {
-        let value_style = Style::default().fg(*theme.accent);
-        let cursor_style = Style::default().fg(*theme.background).bg(*theme.accent);
+        let value_style = Style::default().fg(theme.accent);
+        let cursor_style = Style::default().fg(theme.background).bg(theme.accent);
 
         let before: String = value.chars().take(cursor_pos).collect();
         let cursor_char: String = value
@@ -523,7 +523,7 @@ impl SettingsView {
         input: &Input,
         theme: &Theme,
     ) {
-        let value_style = Style::default().fg(*theme.accent);
+        let value_style = Style::default().fg(theme.accent);
         let mut spans = vec![Span::styled(prefix.to_string(), value_style)];
         spans.extend(Self::build_cursor_spans(
             input.value(),
@@ -557,9 +557,9 @@ impl SettingsView {
             self.render_input_with_cursor(frame, value_area, input, theme);
         } else {
             let style = if is_selected {
-                Style::default().fg(*theme.accent)
+                Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
 
             frame.render_widget(Paragraph::new(value.to_string()).style(style), value_area);
@@ -583,9 +583,9 @@ impl SettingsView {
         };
 
         let style = if is_selected {
-            Style::default().fg(*theme.accent)
+            Style::default().fg(theme.accent)
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let display = options.get(selected).map(|s| s.as_str()).unwrap_or("?");
@@ -617,9 +617,9 @@ impl SettingsView {
             };
 
             let style = if is_selected {
-                Style::default().fg(*theme.accent)
+                Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(*theme.dimmed)
+                Style::default().fg(theme.dimmed)
             };
 
             let text = if items.is_empty() {
@@ -641,10 +641,10 @@ impl SettingsView {
             };
 
             let header = Line::from(vec![
-                Span::styled("Items: ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Items: ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     "(a)dd (d)elete (Enter)edit (Esc)close",
-                    Style::default().fg(*theme.dimmed),
+                    Style::default().fg(theme.dimmed),
                 ),
             ]);
             frame.render_widget(Paragraph::new(header), header_area);
@@ -665,10 +665,10 @@ impl SettingsView {
 
                 let style = if i == list_state.selected_index {
                     Style::default()
-                        .fg(*theme.accent)
+                        .fg(theme.accent)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(*theme.dimmed)
+                    Style::default().fg(theme.dimmed)
                 };
 
                 let prefix = if i == list_state.selected_index {
@@ -712,7 +712,7 @@ impl SettingsView {
     fn render_footer(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(*theme.border));
+            .border_style(Style::default().fg(theme.border));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -728,7 +728,7 @@ impl SettingsView {
         };
 
         let help = Paragraph::new(help_text)
-            .style(Style::default().fg(*theme.dimmed))
+            .style(Style::default().fg(theme.dimmed))
             .alignment(ratatui::layout::Alignment::Center);
 
         frame.render_widget(help, inner);

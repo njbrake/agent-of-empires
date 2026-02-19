@@ -96,9 +96,9 @@ impl ChangelogDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.accent))
+            .border_style(Style::default().fg(theme.accent))
             .title(" What's New ")
-            .title_style(Style::default().fg(*theme.accent).bold());
+            .title_style(Style::default().fg(theme.accent).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -119,9 +119,9 @@ impl ChangelogDialog {
             .take(visible_height)
             .map(|text| {
                 if text.starts_with('v') {
-                    Line::from(Span::styled(text, Style::default().fg(*theme.title).bold()))
+                    Line::from(Span::styled(text, Style::default().fg(theme.title).bold()))
                 } else if text.starts_with("  ") {
-                    Line::from(Span::styled(text, Style::default().fg(*theme.text)))
+                    Line::from(Span::styled(text, Style::default().fg(theme.text)))
                 } else {
                     Line::from(text)
                 }
@@ -132,8 +132,8 @@ impl ChangelogDialog {
         frame.render_widget(paragraph, content_area);
 
         let button = Line::from(vec![
-            Span::styled("[Got it]", Style::default().fg(*theme.accent).bold()),
-            Span::styled("  j/k to scroll", Style::default().fg(*theme.dimmed)),
+            Span::styled("[Got it]", Style::default().fg(theme.accent).bold()),
+            Span::styled("  j/k to scroll", Style::default().fg(theme.dimmed)),
         ]);
         frame.render_widget(
             Paragraph::new(button).alignment(Alignment::Center),

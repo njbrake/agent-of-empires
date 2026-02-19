@@ -119,8 +119,8 @@ impl HomeView {
             ViewMode::Terminal => format!(" Terminals [{}] ", self.storage.profile()),
         };
         let (border_color, title_color) = match self.view_mode {
-            ViewMode::Agent => (*theme.border, *theme.title),
-            ViewMode::Terminal => (*theme.terminal_border, *theme.terminal_border),
+            ViewMode::Agent => (theme.border, theme.title),
+            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -134,10 +134,10 @@ impl HomeView {
         if self.instances.is_empty() && self.groups.is_empty() {
             let empty_text = vec![
                 Line::from(""),
-                Line::from("No sessions yet").style(Style::default().fg(*theme.dimmed)),
+                Line::from("No sessions yet").style(Style::default().fg(theme.dimmed)),
                 Line::from(""),
-                Line::from("Press 'n' to create one").style(Style::default().fg(*theme.hint)),
-                Line::from("or 'agent-of-empires add .'").style(Style::default().fg(*theme.hint)),
+                Line::from("Press 'n' to create one").style(Style::default().fg(theme.hint)),
+                Line::from("or 'agent-of-empires add .'").style(Style::default().fg(theme.hint)),
             ];
             let para = Paragraph::new(empty_text).alignment(Alignment::Center);
             frame.render_widget(para, inner);
@@ -162,7 +162,7 @@ impl HomeView {
             .collect();
 
         let list =
-            List::new(list_items).highlight_style(Style::default().bg(*theme.session_selection));
+            List::new(list_items).highlight_style(Style::default().bg(theme.session_selection));
 
         frame.render_widget(list, inner);
 
@@ -177,8 +177,8 @@ impl HomeView {
 
             let value = self.search_query.value();
             let cursor_pos = self.search_query.visual_cursor();
-            let cursor_style = Style::default().fg(*theme.background).bg(*theme.search);
-            let text_style = Style::default().fg(*theme.search);
+            let cursor_style = Style::default().fg(theme.background).bg(theme.search);
+            let text_style = Style::default().fg(theme.search);
 
             // Split value into: before cursor, char at cursor, after cursor
             let before: String = value.chars().take(cursor_pos).collect();
@@ -220,7 +220,7 @@ impl HomeView {
                     ICON_EXPANDED
                 };
                 let text = Cow::Owned(format!("{} ({})", name, session_count));
-                let style = Style::default().fg(*theme.group).bold();
+                let style = Style::default().fg(theme.group).bold();
                 (icon, text, style)
             }
             Item::Session { id, .. } => {
@@ -236,12 +236,12 @@ impl HomeView {
                                 Status::Deleting => ICON_DELETING,
                             };
                             let color = match inst.status {
-                                Status::Running => *theme.running,
-                                Status::Waiting => *theme.waiting,
-                                Status::Idle => *theme.idle,
-                                Status::Error => *theme.error,
-                                Status::Starting => *theme.dimmed,
-                                Status::Deleting => *theme.waiting,
+                                Status::Running => theme.running,
+                                Status::Waiting => theme.waiting,
+                                Status::Idle => theme.idle,
+                                Status::Error => theme.error,
+                                Status::Starting => theme.dimmed,
+                                Status::Deleting => theme.waiting,
                             };
                             let style = Style::default().fg(color);
                             (icon, Cow::Borrowed(&inst.title), style)
@@ -264,9 +264,9 @@ impl HomeView {
                                     .unwrap_or(false),
                             };
                             let (icon, color) = if terminal_running {
-                                (ICON_RUNNING, *theme.terminal_active)
+                                (ICON_RUNNING, theme.terminal_active)
                             } else {
-                                (ICON_IDLE, *theme.dimmed)
+                                (ICON_IDLE, theme.dimmed)
                             };
                             let style = Style::default().fg(color);
                             (icon, Cow::Borrowed(&inst.title), style)
@@ -276,7 +276,7 @@ impl HomeView {
                     (
                         "?",
                         Cow::Borrowed(id.as_str()),
-                        Style::default().fg(*theme.dimmed),
+                        Style::default().fg(theme.dimmed),
                     )
                 }
             }
@@ -295,7 +295,7 @@ impl HomeView {
                 if let Some(wt_info) = &inst.worktree_info {
                     line_spans.push(Span::styled(
                         format!("  {}", wt_info.branch),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme.branch),
                     ));
                 }
                 if inst.is_sandboxed() {
@@ -303,7 +303,7 @@ impl HomeView {
                         ViewMode::Agent => {
                             line_spans.push(Span::styled(
                                 " [sandbox]",
-                                Style::default().fg(Color::Magenta),
+                                Style::default().fg(theme.sandbox),
                             ));
                         }
                         ViewMode::Terminal => {
@@ -313,7 +313,7 @@ impl HomeView {
                                 TerminalMode::Host => " [host]",
                             };
                             line_spans
-                                .push(Span::styled(mode_text, Style::default().fg(Color::Magenta)));
+                                .push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
                         }
                     }
                 }
@@ -323,7 +323,7 @@ impl HomeView {
         let line = Line::from(line_spans);
 
         if is_selected {
-            ListItem::new(line).style(Style::default().bg(*theme.session_selection))
+            ListItem::new(line).style(Style::default().bg(theme.session_selection))
         } else {
             ListItem::new(line)
         }
@@ -428,8 +428,8 @@ impl HomeView {
             ViewMode::Terminal => " Terminal Preview ",
         };
         let (border_color, title_color) = match self.view_mode {
-            ViewMode::Agent => (*theme.border, *theme.title),
-            ViewMode::Terminal => (*theme.terminal_border, *theme.terminal_border),
+            ViewMode::Agent => (theme.border, theme.title),
+            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -457,7 +457,7 @@ impl HomeView {
                     }
                 } else {
                     let hint = Paragraph::new("Select a session to preview")
-                        .style(Style::default().fg(*theme.dimmed))
+                        .style(Style::default().fg(theme.dimmed))
                         .alignment(Alignment::Center);
                     frame.render_widget(hint, inner);
                 }
@@ -524,7 +524,7 @@ impl HomeView {
                     }
                 } else {
                     let hint = Paragraph::new("Select a session to preview terminal")
-                        .style(Style::default().fg(*theme.dimmed))
+                        .style(Style::default().fg(theme.dimmed))
                         .alignment(Alignment::Center);
                     frame.render_widget(hint, inner);
                 }
@@ -533,13 +533,13 @@ impl HomeView {
     }
 
     fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let key_style = Style::default().fg(*theme.accent).bold();
-        let desc_style = Style::default().fg(*theme.dimmed);
-        let sep_style = Style::default().fg(*theme.border);
+        let key_style = Style::default().fg(theme.accent).bold();
+        let desc_style = Style::default().fg(theme.dimmed);
+        let sep_style = Style::default().fg(theme.border);
 
         let (mode_indicator, mode_color) = match self.view_mode {
-            ViewMode::Agent => ("[Agent]", *theme.waiting),
-            ViewMode::Terminal => ("[Term]", *theme.terminal_border),
+            ViewMode::Agent => ("[Agent]", theme.waiting),
+            ViewMode::Terminal => ("[Term]", theme.terminal_border),
         };
         let mode_style = Style::default().fg(mode_color).bold();
 
@@ -615,18 +615,18 @@ impl HomeView {
             Span::styled(" Quit", desc_style),
         ]);
 
-        let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(*theme.selection));
+        let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
         frame.render_widget(status, area);
     }
 
     fn render_update_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme, info: &UpdateInfo) {
-        let update_style = Style::default().fg(*theme.waiting).bold();
+        let update_style = Style::default().fg(theme.waiting).bold();
         let text = format!(
             " update available {} -> {}",
             info.current_version, info.latest_version
         );
         let bar = Paragraph::new(Line::from(Span::styled(text, update_style)))
-            .style(Style::default().bg(*theme.selection));
+            .style(Style::default().bg(theme.selection));
         frame.render_widget(bar, area);
     }
 }

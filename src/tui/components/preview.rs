@@ -33,18 +33,18 @@ impl Preview {
         // Minimal info for terminal view
         let mut info_lines = vec![
             Line::from(vec![
-                Span::styled("Title:   ", Style::default().fg(*theme.dimmed)),
-                Span::styled(&instance.title, Style::default().fg(*theme.text).bold()),
+                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
+                Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
             ]),
             Line::from(vec![
-                Span::styled("Path:    ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     shorten_path(&instance.project_path),
-                    Style::default().fg(*theme.text),
+                    Style::default().fg(theme.text),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Status:  ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     if terminal_running {
                         "Running"
@@ -52,9 +52,9 @@ impl Preview {
                         "Not started"
                     },
                     Style::default().fg(if terminal_running {
-                        *theme.terminal_active
+                        theme.terminal_active
                     } else {
-                        *theme.dimmed
+                        theme.dimmed
                     }),
                 ),
             ]),
@@ -62,8 +62,8 @@ impl Preview {
         if let Some(sandbox) = &instance.sandbox_info {
             if sandbox.enabled {
                 info_lines.push(Line::from(vec![
-                    Span::styled("Sandbox: ", Style::default().fg(*theme.dimmed)),
-                    Span::styled(&sandbox.container_name, Style::default().fg(Color::Magenta)),
+                    Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
+                    Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
                 ]));
             }
         }
@@ -73,21 +73,21 @@ impl Preview {
         // Output section
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(*theme.border))
+            .border_style(Style::default().fg(theme.border))
             .title(" Terminal Output ")
-            .title_style(Style::default().fg(*theme.dimmed));
+            .title_style(Style::default().fg(theme.dimmed));
 
         let inner = block.inner(chunks[1]);
         frame.render_widget(block, chunks[1]);
 
         if !terminal_running {
             let hint = Paragraph::new("Press Enter to start terminal")
-                .style(Style::default().fg(*theme.dimmed))
+                .style(Style::default().fg(theme.dimmed))
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else if cached_output.is_empty() {
             let hint = Paragraph::new("No output available")
-                .style(Style::default().fg(*theme.dimmed))
+                .style(Style::default().fg(theme.dimmed))
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else {
@@ -106,7 +106,7 @@ impl Preview {
             };
 
             let paragraph = Paragraph::new(output_lines)
-                .style(Style::default().fg(*theme.text))
+                .style(Style::default().fg(theme.text))
                 .scroll((scroll_offset, 0));
 
             frame.render_widget(paragraph, inner);
@@ -142,43 +142,43 @@ impl Preview {
     fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
         let mut info_lines = vec![
             Line::from(vec![
-                Span::styled("Title:   ", Style::default().fg(*theme.dimmed)),
-                Span::styled(&instance.title, Style::default().fg(*theme.text).bold()),
+                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
+                Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
             ]),
             Line::from(vec![
-                Span::styled("Path:    ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     shorten_path(&instance.project_path),
-                    Style::default().fg(*theme.text),
+                    Style::default().fg(theme.text),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Tool:    ", Style::default().fg(*theme.dimmed)),
-                Span::styled(&instance.tool, Style::default().fg(*theme.accent)),
+                Span::styled("Tool:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(&instance.tool, Style::default().fg(theme.accent)),
             ]),
             Line::from(vec![
-                Span::styled("Status:  ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     format!("{:?}", instance.status),
                     Style::default().fg(match instance.status {
-                        crate::session::Status::Running => *theme.running,
-                        crate::session::Status::Waiting => *theme.waiting,
-                        crate::session::Status::Idle => *theme.idle,
-                        crate::session::Status::Error => *theme.error,
-                        crate::session::Status::Starting => *theme.dimmed,
-                        crate::session::Status::Deleting => *theme.waiting,
+                        crate::session::Status::Running => theme.running,
+                        crate::session::Status::Waiting => theme.waiting,
+                        crate::session::Status::Idle => theme.idle,
+                        crate::session::Status::Error => theme.error,
+                        crate::session::Status::Starting => theme.dimmed,
+                        crate::session::Status::Deleting => theme.waiting,
                     }),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Group:   ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Group:   ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     if instance.group_path.is_empty() {
                         "(none)"
                     } else {
                         &instance.group_path
                     },
-                    Style::default().fg(*theme.group),
+                    Style::default().fg(theme.group),
                 ),
             ]),
         ];
@@ -187,19 +187,19 @@ impl Preview {
         if let Some(wt_info) = &instance.worktree_info {
             info_lines.push(Line::from(""));
             info_lines.push(Line::from(vec![
-                Span::styled("─", Style::default().fg(*theme.border)),
-                Span::styled(" Worktree ", Style::default().fg(*theme.dimmed)),
-                Span::styled("─", Style::default().fg(*theme.border)),
+                Span::styled("─", Style::default().fg(theme.border)),
+                Span::styled(" Worktree ", Style::default().fg(theme.dimmed)),
+                Span::styled("─", Style::default().fg(theme.border)),
             ]));
             info_lines.push(Line::from(vec![
-                Span::styled("Branch:  ", Style::default().fg(*theme.dimmed)),
-                Span::styled(&wt_info.branch, Style::default().fg(Color::Cyan)),
+                Span::styled("Branch:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(&wt_info.branch, Style::default().fg(theme.branch)),
             ]));
             info_lines.push(Line::from(vec![
-                Span::styled("Main:    ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Main:    ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     shorten_path(&wt_info.main_repo_path),
-                    Style::default().fg(*theme.text),
+                    Style::default().fg(theme.text),
                 ),
             ]));
 
@@ -209,13 +209,13 @@ impl Preview {
                 "No (manual worktree)"
             };
             info_lines.push(Line::from(vec![
-                Span::styled("Managed: ", Style::default().fg(*theme.dimmed)),
+                Span::styled("Managed: ", Style::default().fg(theme.dimmed)),
                 Span::styled(
                     managed_text,
                     Style::default().fg(if wt_info.managed_by_aoe {
-                        Color::Green
+                        theme.worktree_managed
                     } else {
-                        Color::Yellow
+                        theme.worktree_manual
                     }),
                 ),
             ]));
@@ -234,9 +234,9 @@ impl Preview {
     ) {
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(*theme.border))
+            .border_style(Style::default().fg(theme.border))
             .title(" Output ")
-            .title_style(Style::default().fg(*theme.dimmed));
+            .title_style(Style::default().fg(theme.dimmed));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -245,12 +245,12 @@ impl Preview {
             let error_lines: Vec<Line> = vec![
                 Line::from(Span::styled(
                     "Error:",
-                    Style::default().fg(*theme.error).bold(),
+                    Style::default().fg(theme.error).bold(),
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
                     error.as_str(),
-                    Style::default().fg(*theme.error),
+                    Style::default().fg(theme.error),
                 )),
             ];
             let paragraph = Paragraph::new(error_lines).wrap(Wrap { trim: false });
@@ -260,7 +260,7 @@ impl Preview {
 
         if cached_output.is_empty() {
             let hint = Paragraph::new("No output available")
-                .style(Style::default().fg(*theme.dimmed))
+                .style(Style::default().fg(theme.dimmed))
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else {
@@ -280,7 +280,7 @@ impl Preview {
             };
 
             let paragraph = Paragraph::new(output_lines)
-                .style(Style::default().fg(*theme.text))
+                .style(Style::default().fg(theme.text))
                 .scroll((scroll_offset, 0));
 
             frame.render_widget(paragraph, inner);

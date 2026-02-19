@@ -239,9 +239,9 @@ impl UnifiedDeleteDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.error))
+            .border_style(Style::default().fg(theme.error))
             .title(" Delete Session ")
-            .title_style(Style::default().fg(*theme.error).bold());
+            .title_style(Style::default().fg(theme.error).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -272,7 +272,7 @@ impl UnifiedDeleteDialog {
         let message = format!("Delete \"{}\"?", self.session_title);
         frame.render_widget(
             Paragraph::new(message)
-                .style(Style::default().fg(*theme.text))
+                .style(Style::default().fg(theme.text))
                 .alignment(Alignment::Center),
             chunks[chunk_idx],
         );
@@ -357,17 +357,17 @@ impl UnifiedDeleteDialog {
         let checkbox = if checked { "[x]" } else { "[ ]" };
 
         let checkbox_style = if focused {
-            Style::default().fg(*theme.accent).bold()
+            Style::default().fg(theme.accent).bold()
         } else if checked {
-            Style::default().fg(*theme.error).bold()
+            Style::default().fg(theme.error).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let label_style = if focused {
-            Style::default().fg(*theme.accent).underlined()
+            Style::default().fg(theme.accent).underlined()
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         let mut spans = vec![
@@ -380,7 +380,7 @@ impl UnifiedDeleteDialog {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 format!("({})", detail_text),
-                Style::default().fg(*theme.dimmed),
+                Style::default().fg(theme.dimmed),
             ));
         }
 
@@ -399,17 +399,17 @@ impl UnifiedDeleteDialog {
         let checkbox = if checked { "[x]" } else { "[ ]" };
 
         let checkbox_style = if focused {
-            Style::default().fg(*theme.accent).bold()
+            Style::default().fg(theme.accent).bold()
         } else if checked {
-            Style::default().fg(*theme.error).bold()
+            Style::default().fg(theme.error).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let label_style = if focused {
-            Style::default().fg(*theme.accent).underlined()
+            Style::default().fg(theme.accent).underlined()
         } else {
-            Style::default().fg(*theme.text)
+            Style::default().fg(theme.text)
         };
 
         let spans = vec![
@@ -427,15 +427,15 @@ impl UnifiedDeleteDialog {
         let no_focused = self.focus == FocusElement::NoButton;
 
         let yes_style = if yes_focused {
-            Style::default().fg(*theme.error).bold()
+            Style::default().fg(theme.error).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let no_style = if no_focused {
-            Style::default().fg(*theme.running).bold()
+            Style::default().fg(theme.running).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let buttons = Line::from(vec![
@@ -450,21 +450,21 @@ impl UnifiedDeleteDialog {
 
     fn render_hints(&self, frame: &mut Frame, area: Rect, theme: &Theme, has_checkboxes: bool) {
         let mut hints = vec![
-            Span::styled("Tab", Style::default().fg(*theme.hint)),
+            Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" navigate  "),
         ];
 
         if has_checkboxes {
             hints.extend([
-                Span::styled("Space", Style::default().fg(*theme.hint)),
+                Span::styled("Space", Style::default().fg(theme.hint)),
                 Span::raw(" toggle  "),
             ]);
         }
 
         hints.extend([
-            Span::styled("Enter", Style::default().fg(*theme.hint)),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(*theme.hint)),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" cancel"),
         ]);
 

@@ -87,16 +87,14 @@ impl HelpOverlay {
 
         let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
         let block = Block::default()
-            .style(Style::default().bg(*theme.background))
+            .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.border))
+            .border_style(Style::default().fg(theme.border))
             .title(Line::styled(
                 " Keyboard Shortcuts ",
-                Style::default().fg(*theme.title).bold(),
+                Style::default().fg(theme.title).bold(),
             ))
-            .title_bottom(
-                Line::styled(version, Style::default().fg(*theme.dimmed)).right_aligned(),
-            );
+            .title_bottom(Line::styled(version, Style::default().fg(theme.dimmed)).right_aligned());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -106,12 +104,12 @@ impl HelpOverlay {
         for (section, keys) in shortcuts() {
             lines.push(Line::from(Span::styled(
                 section,
-                Style::default().fg(*theme.accent).bold(),
+                Style::default().fg(theme.accent).bold(),
             )));
             for (key, desc) in keys {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:10}", key), Style::default().fg(*theme.waiting)),
-                    Span::styled(desc, Style::default().fg(*theme.text)),
+                    Span::styled(format!("  {:10}", key), Style::default().fg(theme.waiting)),
+                    Span::styled(desc, Style::default().fg(theme.text)),
                 ]));
             }
             lines.push(Line::from(""));

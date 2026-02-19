@@ -20,14 +20,14 @@ pub fn render_text_field(
     theme: &Theme,
 ) {
     let label_style = if is_focused {
-        Style::default().fg(*theme.accent).underlined()
+        Style::default().fg(theme.accent).underlined()
     } else {
-        Style::default().fg(*theme.text)
+        Style::default().fg(theme.text)
     };
     let value_style = if is_focused {
-        Style::default().fg(*theme.accent)
+        Style::default().fg(theme.accent)
     } else {
-        Style::default().fg(*theme.text)
+        Style::default().fg(theme.text)
     };
 
     let value = input.value();
@@ -40,7 +40,7 @@ pub fn render_text_field(
         }
     } else if is_focused {
         let cursor_pos = input.visual_cursor();
-        let cursor_style = Style::default().fg(*theme.background).bg(*theme.accent);
+        let cursor_style = Style::default().fg(theme.background).bg(theme.accent);
 
         // Split value into: before cursor, char at cursor, after cursor
         let before: String = value.chars().take(cursor_pos).collect();

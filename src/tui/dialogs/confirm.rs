@@ -62,9 +62,9 @@ impl ConfirmDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(*theme.error))
+            .border_style(Style::default().fg(theme.error))
             .title(format!(" {} ", self.title))
-            .title_style(Style::default().fg(*theme.error).bold());
+            .title_style(Style::default().fg(theme.error).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -77,20 +77,20 @@ impl ConfirmDialog {
 
         // Message
         let message = Paragraph::new(&*self.message)
-            .style(Style::default().fg(*theme.text))
+            .style(Style::default().fg(theme.text))
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
         // Buttons
         let yes_style = if self.selected {
-            Style::default().fg(*theme.error).bold()
+            Style::default().fg(theme.error).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
         let no_style = if !self.selected {
-            Style::default().fg(*theme.running).bold()
+            Style::default().fg(theme.running).bold()
         } else {
-            Style::default().fg(*theme.dimmed)
+            Style::default().fg(theme.dimmed)
         };
 
         let buttons = Line::from(vec![
