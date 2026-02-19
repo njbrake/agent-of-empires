@@ -564,6 +564,14 @@ mod tests {
             .unwrap();
     }
 
+    /// Ensure a local branch exists at the given commit.
+    /// This keeps tests stable when git init defaults to `main` vs `master`.
+    fn ensure_local_branch(repo: &git2::Repository, name: &str, commit: &git2::Commit<'_>) {
+        if repo.find_branch(name, git2::BranchType::Local).is_err() {
+            repo.branch(name, commit, false).unwrap();
+        }
+    }
+
     /// Set up a repo with a main branch and a feature branch that diverged.
     /// main has extra commits that the feature branch doesn't have.
     fn setup_branching_repo() -> (TempDir, git2::Repository) {
@@ -576,8 +584,8 @@ mod tests {
         // Create "main" and "feature" branches at this point
         {
             let head = repo.head().unwrap().peel_to_commit().unwrap();
-            repo.branch("main", &head, false).unwrap();
-            repo.branch("feature", &head, false).unwrap();
+            ensure_local_branch(&repo, "main", &head);
+            ensure_local_branch(&repo, "feature", &head);
         }
 
         // Add a commit on main that the feature branch won't have
@@ -662,7 +670,7 @@ mod tests {
         // Create main branch and feature branch
         {
             let head = repo.head().unwrap().peel_to_commit().unwrap();
-            repo.branch("main", &head, false).unwrap();
+            ensure_local_branch(&repo, "main", &head);
         }
 
         // Add a commit to main
@@ -679,7 +687,7 @@ mod tests {
                 .unwrap()
                 .peel_to_commit()
                 .unwrap();
-            repo.branch("feature", &first_commit, false).unwrap();
+            ensure_local_branch(&repo, "feature", &first_commit);
         }
 
         // Add worktree
