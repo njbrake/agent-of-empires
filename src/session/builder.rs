@@ -213,7 +213,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
 pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWorktree>) {
     if let Some(wt) = created_worktree {
         if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
-            if let Err(e) = git_wt.remove_worktree(&wt.path) {
+            if let Err(e) = git_wt.remove_worktree(&wt.path, false) {
                 tracing::warn!("Failed to clean up worktree: {}", e);
             }
         }

@@ -887,6 +887,7 @@ fn test_delete_group_with_sessions_updates_groups_field() {
         delete_worktrees: false,
         delete_branches: false,
         delete_containers: false,
+        force_delete_worktrees: false,
     };
     env.view.delete_group_with_sessions(&options).unwrap();
 
@@ -950,6 +951,7 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
         delete_worktrees: true,
         delete_branches: false,
         delete_containers: false,
+        force_delete_worktrees: false,
     };
     view.delete_group_with_sessions(&options).unwrap();
 
@@ -998,6 +1000,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
         delete_worktrees: false,
         delete_branches: false,
         delete_containers: true,
+        force_delete_worktrees: false,
     };
     view.delete_group_with_sessions(&options).unwrap();
 
@@ -1032,6 +1035,7 @@ fn test_delete_group_includes_nested_groups() {
         delete_worktrees: false,
         delete_branches: false,
         delete_containers: false,
+        force_delete_worktrees: false,
     };
     env.view.delete_group_with_sessions(&options).unwrap();
 

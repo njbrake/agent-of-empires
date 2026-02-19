@@ -168,7 +168,7 @@ fn test_worktree_cleanup_on_session_removal() {
         cleanup_on_delete: true,
     });
 
-    git_wt.remove_worktree(&wt_path).unwrap();
+    git_wt.remove_worktree(&wt_path, false).unwrap();
 
     assert!(!wt_path.exists());
 }

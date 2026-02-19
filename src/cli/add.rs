@@ -265,7 +265,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 if let Ok(git_wt) =
                     crate::git::GitWorktree::new(std::path::PathBuf::from(&wt_info.main_repo_path))
                 {
-                    let _ = git_wt.remove_worktree(&path);
+                    let _ = git_wt.remove_worktree(&path, false);
                 }
             }
         }

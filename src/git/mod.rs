@@ -295,7 +295,7 @@ impl GitWorktree {
         Ok(entries)
     }
 
-    pub fn remove_worktree(&self, path: &Path) -> Result<()> {
+    pub fn remove_worktree(&self, path: &Path, force: bool) -> Result<()> {
         if !path.exists() {
             return Err(GitError::WorktreeNotFound(path.to_path_buf()));
         }
@@ -304,8 +304,14 @@ impl GitWorktree {
             .to_str()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"))?;
 
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(path_str);
+
         let output = std::process::Command::new("git")
-            .args(["worktree", "remove", path_str])
+            .args(&args)
             .current_dir(&self.repo_path)
             .output()?;
 
@@ -494,7 +500,7 @@ mod tests {
 
         assert!(wt_path.exists());
 
-        git_wt.remove_worktree(&wt_path).unwrap();
+        git_wt.remove_worktree(&wt_path, false).unwrap();
         assert!(!wt_path.exists());
     }
 
