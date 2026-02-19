@@ -45,13 +45,13 @@ impl Serialize for ThemeColor {
     where
         S: serde::Serializer,
     {
-        match self.0 {
-            Color::Rgb(r, g, b) => {
-                let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
-                serializer.serialize_str(&hex)
-            }
-            _ => Err(serde::ser::Error::custom("Only RGB colors supported")),
-        }
+        // ThemeColor is only constructed from hex parsing, which always produces RGB
+        let Color::Rgb(r, g, b) = self.0 else {
+            return Err(serde::ser::Error::custom(
+                "ThemeColor invariant violated: expected RGB color",
+            ));
+        };
+        serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", r, g, b))
     }
 }
 

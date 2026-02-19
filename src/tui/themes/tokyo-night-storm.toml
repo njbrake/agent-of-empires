@@ -1,6 +1,3 @@
-# Tokyo Night Storm - darker variant with #24283b background
-# Official palette: https://github.com/tokyo-night/tokyo-night-vscode-theme
-
 background = "#24283b"
 border = "#414868"
 terminal_border = "#3d59a1"

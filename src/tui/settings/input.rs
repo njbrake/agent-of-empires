@@ -19,15 +19,6 @@ pub enum SettingsAction {
 }
 
 impl SettingsView {
-    fn get_current_theme(&self) -> String {
-        let config = match self.scope {
-            SettingsScope::Global => &self.global_config,
-            SettingsScope::Profile => &self.resolved_base,
-            SettingsScope::Repo => &self.resolved_base,
-        };
-        config.theme.name.clone()
-    }
-
     /// Handle field changes that require immediate application (beyond config persistence)
     pub fn handle_field_change(&mut self, field_index: usize) {
         if field_index >= self.fields.len() {
@@ -36,7 +27,11 @@ impl SettingsView {
 
         let field = &self.fields[field_index];
         if field.key == FieldKey::ThemeName {
-            self.pending_theme_change = Some(self.get_current_theme());
+            if let FieldValue::Select { selected, options } = &field.value {
+                if let Some(theme_name) = options.get(*selected) {
+                    self.pending_theme_change = Some(theme_name.clone());
+                }
+            }
         }
     }
 
