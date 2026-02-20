@@ -19,6 +19,27 @@ pub enum SettingsAction {
 }
 
 impl SettingsView {
+    /// Handle field changes that require immediate application (beyond config persistence)
+    pub fn handle_field_change(&mut self, field_index: usize) {
+        if field_index >= self.fields.len() {
+            return;
+        }
+
+        let field = &self.fields[field_index];
+        if field.key == FieldKey::ThemeName {
+            if let FieldValue::Select { selected, options } = &field.value {
+                if let Some(theme_name) = options.get(*selected) {
+                    self.pending_theme_change = Some(theme_name.clone());
+                }
+            }
+        }
+    }
+
+    /// Take and return any pending theme change for immediate application
+    pub fn take_pending_theme_change(&mut self) -> Option<String> {
+        self.pending_theme_change.take()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> SettingsAction {
         // Clear transient messages on any key
         self.success_message = None;
@@ -32,6 +53,7 @@ impl SettingsView {
                         *v = value;
                     }
                     self.apply_field_to_config(self.selected_field);
+                    self.handle_field_change(self.selected_field);
                     self.custom_instruction_dialog = None;
                     return SettingsAction::Continue;
                 }
@@ -159,6 +181,7 @@ impl SettingsView {
                     if let FieldValue::Bool(ref mut value) = field.value {
                         *value = !*value;
                         self.apply_field_to_config(self.selected_field);
+                        self.handle_field_change(self.selected_field);
                     }
                 }
                 SettingsAction::Continue
@@ -170,10 +193,10 @@ impl SettingsView {
                     let field = &self.fields[self.selected_field];
                     match &field.value {
                         FieldValue::Bool(value) => {
-                            // Toggle boolean on Enter too
                             let new_value = !value;
                             self.fields[self.selected_field].value = FieldValue::Bool(new_value);
                             self.apply_field_to_config(self.selected_field);
+                            self.handle_field_change(self.selected_field);
                         }
                         FieldValue::Text(value) => {
                             self.editing_input = Some(Input::new(value.clone()));
@@ -191,13 +214,13 @@ impl SettingsView {
                             self.editing_input = Some(Input::new(value.to_string()));
                         }
                         FieldValue::Select { selected, options } => {
-                            // Cycle through options
                             let new_selected = (*selected + 1) % options.len();
                             self.fields[self.selected_field].value = FieldValue::Select {
                                 selected: new_selected,
                                 options: options.clone(),
                             };
                             self.apply_field_to_config(self.selected_field);
+                            self.handle_field_change(self.selected_field);
                         }
                         FieldValue::List(_) => {
                             // Expand list for editing
@@ -274,6 +297,7 @@ impl SettingsView {
                     }
 
                     self.apply_field_to_config(self.selected_field);
+                    self.handle_field_change(self.selected_field);
                     self.error_message = None;
                 }
             }
@@ -333,11 +357,11 @@ impl SettingsView {
                     }
                 }
 
-                // Update state and apply config after releasing borrows
                 if let Some(ref mut s) = self.list_edit_state {
                     s.selected_index = new_selected_idx;
                 }
                 self.apply_field_to_config(self.selected_field);
+                self.handle_field_change(self.selected_field);
             }
             KeyCode::Enter => {
                 // Edit selected item
@@ -386,6 +410,7 @@ impl SettingsView {
                             }
                         }
                         self.apply_field_to_config(self.selected_field);
+                        self.handle_field_change(self.selected_field);
                     }
                 }
             }
@@ -414,6 +439,12 @@ impl SettingsView {
         };
 
         match key {
+            // Theme
+            FieldKey::ThemeName => {
+                if let Some(ref mut t) = config.theme {
+                    t.name = None;
+                }
+            }
             // Updates
             FieldKey::CheckEnabled => {
                 if let Some(ref mut u) = config.updates {

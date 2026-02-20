@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -98,9 +98,15 @@ impl DiffView {
                 Style::default().fg(theme.dimmed),
             ),
             Span::styled("  ", Style::default()),
-            Span::styled(format!("+{}", additions), Style::default().fg(Color::Green)),
+            Span::styled(
+                format!("+{}", additions),
+                Style::default().fg(theme.diff_add),
+            ),
             Span::styled(" ", Style::default()),
-            Span::styled(format!("-{}", deletions), Style::default().fg(Color::Red)),
+            Span::styled(
+                format!("-{}", deletions),
+                Style::default().fg(theme.diff_delete),
+            ),
         ]);
 
         frame.render_widget(Paragraph::new(header), inner);
@@ -147,12 +153,12 @@ impl DiffView {
                 let is_selected = i == self.selected_file;
 
                 let status_color = match file.status {
-                    FileStatus::Added => Color::Green,
-                    FileStatus::Modified => Color::Yellow,
-                    FileStatus::Deleted => Color::Red,
-                    FileStatus::Renamed => Color::Cyan,
-                    FileStatus::Copied => Color::Cyan,
-                    FileStatus::Untracked => Color::Gray,
+                    FileStatus::Added => theme.diff_add,
+                    FileStatus::Modified => theme.diff_modified,
+                    FileStatus::Deleted => theme.diff_delete,
+                    FileStatus::Renamed => theme.diff_header,
+                    FileStatus::Copied => theme.diff_header,
+                    FileStatus::Untracked => theme.dimmed,
                 };
 
                 let style = if is_selected {
@@ -239,13 +245,13 @@ impl DiffView {
                     );
                     lines.push(Line::from(Span::styled(
                         header,
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme.diff_header),
                     )));
 
                     for line in &hunk.lines {
                         let (prefix, style) = match line.tag {
-                            ChangeTag::Delete => ("-", Style::default().fg(Color::Red)),
-                            ChangeTag::Insert => ("+", Style::default().fg(Color::Green)),
+                            ChangeTag::Delete => ("-", Style::default().fg(theme.diff_delete)),
+                            ChangeTag::Insert => ("+", Style::default().fg(theme.diff_add)),
                             ChangeTag::Equal => (" ", Style::default().fg(theme.dimmed)),
                         };
 
@@ -330,7 +336,7 @@ impl DiffView {
         let content = if let Some(ref error) = self.error_message {
             Line::from(Span::styled(error, Style::default().fg(theme.error)))
         } else if let Some(ref success) = self.success_message {
-            Line::from(Span::styled(success, Style::default().fg(Color::Green)))
+            Line::from(Span::styled(success, Style::default().fg(theme.diff_add)))
         } else {
             Line::from(vec![
                 Span::styled("j/k", Style::default().fg(theme.accent)),
@@ -495,7 +501,7 @@ impl DiffView {
             )));
             for (key, desc) in keys {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:14}", key), Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("  {:14}", key), Style::default().fg(theme.help_key)),
                     Span::styled(desc, Style::default().fg(theme.text)),
                 ]));
             }

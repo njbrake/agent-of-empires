@@ -105,6 +105,9 @@ pub struct SettingsView {
 
     /// Success message to display
     pub(super) success_message: Option<String>,
+
+    /// Pending theme change to apply immediately (theme name if changed)
+    pub(super) pending_theme_change: Option<String>,
 }
 
 impl SettingsView {
@@ -123,6 +126,7 @@ impl SettingsView {
             .unwrap_or_default();
 
         let categories = vec![
+            SettingsCategory::Theme,
             SettingsCategory::Session,
             SettingsCategory::Hooks,
             SettingsCategory::Sandbox,
@@ -154,6 +158,7 @@ impl SettingsView {
             has_changes: false,
             error_message: None,
             success_message: None,
+            pending_theme_change: None,
         };
 
         view.rebuild_fields();

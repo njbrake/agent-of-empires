@@ -7,12 +7,14 @@ use crate::session::{
     TmuxMouseMode, TmuxStatusBarMode,
 };
 use crate::sound::{validate_sound_exists, SoundMode};
+use crate::tui::themes::loader::AVAILABLE_THEMES;
 
 use super::SettingsScope;
 
 /// Categories of settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsCategory {
+    Theme,
     Updates,
     Worktree,
     Sandbox,
@@ -25,6 +27,7 @@ pub enum SettingsCategory {
 impl SettingsCategory {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Theme => "Theme",
             Self::Updates => "Updates",
             Self::Worktree => "Worktree",
             Self::Sandbox => "Sandbox",
@@ -39,6 +42,8 @@ impl SettingsCategory {
 /// Type-safe field identifiers (prevents typos in string matching)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKey {
+    // Theme
+    ThemeName,
     // Updates
     CheckEnabled,
     CheckIntervalHours,
@@ -199,6 +204,7 @@ pub fn build_fields_for_category(
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
     match category {
+        SettingsCategory::Theme => build_theme_fields(scope, global, profile),
         SettingsCategory::Updates => build_updates_fields(scope, global, profile),
         SettingsCategory::Worktree => build_worktree_fields(scope, global, profile),
         SettingsCategory::Sandbox => build_sandbox_fields(scope, global, profile),
@@ -207,6 +213,32 @@ pub fn build_fields_for_category(
         SettingsCategory::Sound => build_sound_fields(scope, global, profile),
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
     }
+}
+
+fn build_theme_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let theme = profile.theme.as_ref();
+
+    let (name, has_override) = resolve_value(
+        scope,
+        global.theme.name.clone(),
+        theme.and_then(|t| t.name.clone()),
+    );
+
+    let options: Vec<String> = AVAILABLE_THEMES.iter().map(|s| s.to_string()).collect();
+    let selected = options.iter().position(|s| s == &name).unwrap_or(0);
+
+    vec![SettingField {
+        key: FieldKey::ThemeName,
+        label: "Theme",
+        description: "Color theme for the TUI",
+        value: FieldValue::Select { selected, options },
+        category: SettingsCategory::Theme,
+        has_override,
+    }]
 }
 
 fn build_updates_fields(
@@ -801,6 +833,10 @@ pub fn apply_field_to_config(
 
 fn apply_field_to_global(field: &SettingField, config: &mut Config) {
     match (&field.key, &field.value) {
+        // Theme
+        (FieldKey::ThemeName, FieldValue::Select { selected, options }) => {
+            config.theme.name = options.get(*selected).cloned().unwrap_or_default();
+        }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
@@ -905,6 +941,21 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
 /// If the value matches the global config, the override is cleared instead of set.
 fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut ProfileConfig) {
     match (&field.key, &field.value) {
+        // Theme
+        (FieldKey::ThemeName, FieldValue::Select { selected, options }) => {
+            let name = options.get(*selected).cloned().unwrap_or_default();
+            if name == global.theme.name {
+                if let Some(ref mut t) = config.theme {
+                    t.name = None;
+                }
+            } else {
+                use crate::session::ThemeConfigOverride;
+                let t = config
+                    .theme
+                    .get_or_insert_with(ThemeConfigOverride::default);
+                t.name = Some(name);
+            }
+        }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
             set_or_clear_override(

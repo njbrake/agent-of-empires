@@ -1,8 +1,11 @@
 //! TUI theme and styling
 
 use ratatui::style::Color;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+use crate::session::Status;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Theme {
     // Background and borders
     pub background: Color,
@@ -28,6 +31,19 @@ pub struct Theme {
     pub group: Color,
     pub search: Color,
     pub accent: Color,
+
+    pub diff_add: Color,
+    pub diff_delete: Color,
+    pub diff_modified: Color,
+    pub diff_context: Color,
+    pub diff_header: Color,
+
+    pub help_key: Color,
+
+    pub branch: Color,
+    pub sandbox: Color,
+    pub worktree_managed: Color,
+    pub worktree_manual: Color,
 }
 
 impl Default for Theme {
@@ -59,6 +75,30 @@ impl Theme {
             group: Color::Rgb(100, 220, 160),
             search: Color::Rgb(180, 255, 200),
             accent: Color::Rgb(57, 255, 20),
+
+            diff_add: Color::Rgb(0, 255, 0),
+            diff_delete: Color::Rgb(255, 0, 0),
+            diff_modified: Color::Rgb(255, 255, 0),
+            diff_context: Color::Rgb(128, 128, 128),
+            diff_header: Color::Rgb(0, 255, 255),
+
+            help_key: Color::Rgb(255, 255, 0),
+
+            branch: Color::Rgb(0, 255, 255),
+            sandbox: Color::Rgb(255, 0, 255),
+            worktree_managed: Color::Rgb(0, 255, 0),
+            worktree_manual: Color::Rgb(255, 255, 0),
+        }
+    }
+
+    pub fn status_color(&self, status: &Status) -> Color {
+        match status {
+            Status::Running => self.running,
+            Status::Waiting => self.waiting,
+            Status::Idle => self.idle,
+            Status::Error => self.error,
+            Status::Starting => self.waiting,
+            Status::Deleting => self.error,
         }
     }
 }

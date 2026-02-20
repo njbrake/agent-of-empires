@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
 use super::styles::Theme;
+use super::themes::loader::load_theme;
 use crate::session::{get_update_settings, load_config, save_config, Storage};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
@@ -78,10 +79,17 @@ impl App {
     pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
         let storage = Storage::new(profile)?;
         let mut home = HomeView::new(storage, available_tools)?;
-        let theme = Theme::default();
 
         // Check if we need to show welcome or changelog dialogs
         let mut config = load_config()?.unwrap_or_default();
+
+        // Load theme from config, defaulting to phosphor if empty
+        let theme_name = if config.theme.name.is_empty() {
+            "phosphor"
+        } else {
+            &config.theme.name
+        };
+        let theme = load_theme(theme_name);
         let current_version = env!("CARGO_PKG_VERSION").to_string();
 
         if !config.app_state.has_seen_welcome {
@@ -104,6 +112,11 @@ impl App {
             update_info: None,
             update_rx: None,
         })
+    }
+
+    pub fn set_theme(&mut self, name: &str) {
+        self.theme = load_theme(name);
+        self.needs_redraw = true;
     }
 
     pub async fn run(
@@ -304,6 +317,9 @@ impl App {
                 Action::EditFile(path) => {
                     self.edit_file(&path, terminal)?;
                 }
+                Action::SetTheme(name) => {
+                    self.set_theme(&name);
+                }
             }
         }
 
@@ -332,6 +348,9 @@ impl App {
                 }
                 Action::EditFile(path) => {
                     self.edit_file(&path, terminal)?;
+                }
+                Action::SetTheme(name) => {
+                    self.set_theme(&name);
                 }
             }
         }
@@ -542,6 +561,7 @@ pub enum Action {
     AttachTerminal(String, TerminalMode),
     SwitchProfile(String),
     EditFile(PathBuf),
+    SetTheme(String),
 }
 
 #[cfg(test)]

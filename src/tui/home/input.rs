@@ -44,7 +44,13 @@ impl HomeView {
         // Handle settings view (full-screen takeover)
         if let Some(ref mut settings) = self.settings_view {
             match settings.handle_key(key) {
-                SettingsAction::Continue => return None,
+                SettingsAction::Continue => {
+                    // Check if theme was changed and needs immediate application
+                    if let Some(theme) = settings.take_pending_theme_change() {
+                        return Some(Action::SetTheme(theme));
+                    }
+                    return None;
+                }
                 SettingsAction::Close => {
                     self.settings_view = None;
                     // Refresh config-dependent state in case settings changed

@@ -357,7 +357,7 @@ impl NewSessionDialog {
         if let Some(error) = &self.error_message {
             let error_text = format!("✗ Error: {}", error);
             let error_paragraph = Paragraph::new(error_text)
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(theme.error))
                 .wrap(Wrap { trim: true });
             frame.render_widget(error_paragraph, chunks[hint_chunk]);
         } else {
