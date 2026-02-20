@@ -1,12 +1,48 @@
-function copyInstall() {
-  const cmd = 'curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash';
-  navigator.clipboard.writeText(cmd).then(() => {
-    const btn = document.getElementById('copy-btn');
+function switchInstallTab(tab) {
+  var curlBlock = document.getElementById('install-curl');
+  var brewBlock = document.getElementById('install-brew');
+  if (!curlBlock || !brewBlock) return;
+
+  var tabs = document.querySelectorAll('.install-tab');
+  tabs.forEach(function(t) {
+    if (t.dataset.tab === tab) {
+      t.classList.add('install-tab-active');
+    } else {
+      t.classList.remove('install-tab-active');
+    }
+  });
+
+  if (tab === 'curl') {
+    curlBlock.classList.remove('hidden');
+    brewBlock.classList.add('hidden');
+  } else {
+    curlBlock.classList.add('hidden');
+    brewBlock.classList.remove('hidden');
+  }
+}
+
+function copyCommand(cmd) {
+  navigator.clipboard.writeText(cmd).then(function() {
+    var activeBlock = document.querySelector('.code-block:not(.hidden)');
+    if (!activeBlock) return;
+    var btn = activeBlock.querySelector('.install-copy-btn');
+    if (!btn) return;
     btn.innerHTML = '<svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
-    setTimeout(() => {
+    setTimeout(function() {
       btn.innerHTML = '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>';
     }, 2000);
   });
+}
+
+// Mobile sidebar toggle
+function toggleMobileSidebar(btn) {
+  var expanded = btn.getAttribute('aria-expanded') === 'true';
+  var menuId = btn.getAttribute('aria-controls');
+  var menu = document.getElementById(menuId);
+  if (!menu) return;
+
+  btn.setAttribute('aria-expanded', String(!expanded));
+  menu.classList.toggle('hidden');
 }
 
 // Fetch GitHub star count

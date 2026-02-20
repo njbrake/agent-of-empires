@@ -95,6 +95,25 @@ kbd {
   box-shadow: 0 2px 0 #1e293b;
 }
 
+/* Install tabs */
+.install-tab {
+  color: #64748b;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  cursor: pointer;
+}
+
+.install-tab:hover {
+  color: #94a3b8;
+}
+
+.install-tab-active {
+  color: #fbbf24;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  border-color: #334155;
+}
+
 /* Buttons */
 .btn-primary {
   background: linear-gradient(135deg, #b45309 0%, #d97706 50%, #b45309 100%);
@@ -514,14 +533,109 @@ kbd {
   padding: 2rem 3rem 4rem;
 }
 
+/* Mobile sidebar nav */
+.mobile-sidebar-nav {
+  display: none;
+}
+
 @media (max-width: 768px) {
+  .docs-layout {
+    flex-direction: column;
+  }
+
   .docs-sidebar {
     display: none;
   }
 
-  .docs-content {
-    padding: 1.5rem 1.25rem 3rem;
+  .mobile-sidebar-nav {
+    display: block;
+    padding: 1rem 1.25rem 0;
   }
+
+  .docs-content {
+    padding: 1rem 1.25rem 3rem;
+  }
+}
+
+.mobile-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  border-radius: 0.5rem;
+  color: #e2e8f0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.mobile-sidebar-toggle:hover {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(30, 41, 59, 0.7);
+}
+
+.mobile-sidebar-toggle[aria-expanded="true"] {
+  border-color: rgba(251, 191, 36, 0.3);
+  border-radius: 0.5rem 0.5rem 0 0;
+  border-bottom-color: transparent;
+}
+
+.mobile-sidebar-chevron {
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.mobile-sidebar-toggle[aria-expanded="true"] .mobile-sidebar-chevron {
+  transform: rotate(180deg);
+}
+
+.mobile-sidebar-menu {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  border-top: none;
+  border-radius: 0 0 0.5rem 0.5rem;
+  padding: 0.375rem 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.mobile-sidebar-section-title {
+  color: #475569;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.75rem 0.875rem 0.25rem;
+}
+
+.mobile-sidebar-link {
+  display: block;
+  color: #94a3b8;
+  padding: 0.5rem 0.875rem;
+  font-size: 0.875rem;
+  text-decoration: none;
+  transition: color 0.2s, background 0.2s;
+}
+
+.mobile-sidebar-link:hover {
+  color: #e2e8f0;
+  background: rgba(251, 191, 36, 0.06);
+}
+
+.mobile-sidebar-link-active {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  font-weight: 600;
+}
+
+.mobile-sidebar-divider {
+  height: 1px;
+  background: rgba(51, 65, 85, 0.5);
+  margin: 0.375rem 0.875rem;
 }
 
 /* Contributor list (credits page) */
@@ -740,6 +854,21 @@ kbd {
   background: linear-gradient(180deg, rgba(52, 211, 153, 0.06) 0%, rgba(255, 255, 255, 0.9) 30%, rgba(248, 250, 252, 0.7) 100%);
 }
 
+/* Install tabs */
+[data-theme="light"] .install-tab {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .install-tab:hover {
+  color: #475569;
+}
+
+[data-theme="light"] .install-tab-active {
+  color: #b45309;
+  background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%);
+  border-color: #cbd5e1;
+}
+
 /* Buttons */
 [data-theme="light"] .btn-secondary {
   background: rgba(255, 255, 255, 0.9);
@@ -892,6 +1021,50 @@ kbd {
 [data-theme="light"] .prose-content img {
   border-color: rgba(203, 213, 225, 0.6);
   box-shadow: 0 8px 30px -8px rgba(0, 0, 0, 0.1);
+}
+
+/* Mobile sidebar nav */
+[data-theme="light"] .mobile-sidebar-toggle {
+  background: rgba(241, 245, 249, 0.8);
+  border-color: rgba(203, 213, 225, 0.6);
+  color: #1e293b;
+}
+
+[data-theme="light"] .mobile-sidebar-toggle:hover {
+  border-color: rgba(217, 119, 6, 0.4);
+  background: rgba(241, 245, 249, 1);
+}
+
+[data-theme="light"] .mobile-sidebar-toggle[aria-expanded="true"] {
+  border-color: rgba(217, 119, 6, 0.4);
+  border-bottom-color: transparent;
+}
+
+[data-theme="light"] .mobile-sidebar-menu {
+  background: rgba(255, 255, 255, 0.97);
+  border-color: rgba(203, 213, 225, 0.6);
+}
+
+[data-theme="light"] .mobile-sidebar-section-title {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .mobile-sidebar-link {
+  color: #475569;
+}
+
+[data-theme="light"] .mobile-sidebar-link:hover {
+  color: #1e293b;
+  background: rgba(217, 119, 6, 0.06);
+}
+
+[data-theme="light"] .mobile-sidebar-link-active {
+  color: #b45309;
+  background: rgba(217, 119, 6, 0.08);
+}
+
+[data-theme="light"] .mobile-sidebar-divider {
+  background: rgba(203, 213, 225, 0.6);
 }
 
 /* Docs sidebar */

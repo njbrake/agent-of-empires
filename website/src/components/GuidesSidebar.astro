@@ -10,8 +10,11 @@ function normalize(path: string): string {
 function isActive(href: string): boolean {
   return normalize(currentPath) === normalize(href);
 }
+
+const currentGuide = guidesNav.find((item) => isActive(item.href));
 ---
 
+<!-- Desktop sidebar -->
 <aside class="docs-sidebar">
   <div class="sidebar-header">
     <a href="/guides/manage-ai-coding-agents/" class="sidebar-logo">Guides</a>
@@ -33,3 +36,25 @@ function isActive(href: string): boolean {
     </div>
   </nav>
 </aside>
+
+<!-- Mobile navigation -->
+<div class="mobile-sidebar-nav">
+  <button class="mobile-sidebar-toggle" onclick="toggleMobileSidebar(this)" aria-expanded="false" aria-controls="guides-mobile-menu">
+    <span class="mobile-sidebar-label">{currentGuide ? currentGuide.title : 'Guides'}</span>
+    <svg class="mobile-sidebar-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="6 9 12 15 18 9"></polyline>
+    </svg>
+  </button>
+  <nav class="mobile-sidebar-menu hidden" id="guides-mobile-menu">
+    {guidesNav.map((item) => (
+      <a
+        href={item.href}
+        class:list={['mobile-sidebar-link', { 'mobile-sidebar-link-active': isActive(item.href) }]}
+      >
+        {item.title}
+      </a>
+    ))}
+    <div class="mobile-sidebar-divider"></div>
+    <a href="/docs/" class="mobile-sidebar-link">Documentation</a>
+  </nav>
+</div>
