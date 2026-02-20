@@ -4,10 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'docs/**'
       - 'website/**'
       - 'assets/**'
-      - 'book.toml'
       - 'scripts/build-site.sh'
       - 'scripts/install.sh'
       - 'src/**'
@@ -46,17 +44,12 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install mdbook
-        run: |
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-          sudo mv mdbook /usr/local/bin/
-
       - name: Generate credits page from credit branch
         run: |
           if git fetch origin credit && git show origin/credit:credits.json > /tmp/credits.json 2>/dev/null; then
             node scripts/generate-credits.js /tmp/credits.json "https://github.com/${{ github.repository }}"
           else
-            echo "No credit branch or credits.json found, using existing docs/credits.md"
+            echo "No credit branch or credits.json found, using existing website/src/pages/docs/credits.md"
           fi
 
       - name: Generate CLI documentation

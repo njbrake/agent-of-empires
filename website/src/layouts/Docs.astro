@@ -1,0 +1,53 @@
+---
+import Base from './Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import DocsSidebar from '../components/DocsSidebar.astro';
+import GuideNav from '../components/GuideNav.astro';
+import { docsNav, getFlatNavItems } from '../data/docsNav';
+import type { NavItem } from '../data/docsNav';
+
+interface Props {
+  frontmatter: {
+    title: string;
+    description?: string;
+  };
+}
+
+const { frontmatter } = Astro.props;
+const currentPath = Astro.url.pathname;
+
+function normalize(path: string): string {
+  return path.replace(/\/index\.html$/, '/').replace(/\.html$/, '/').replace(/\/$/, '') || '/';
+}
+
+// Compute prev/next
+const flatItems = getFlatNavItems();
+const currentIndex = flatItems.findIndex((item) => normalize(currentPath) === normalize(item.href));
+
+const prev = currentIndex > 0 ? flatItems[currentIndex - 1] : undefined;
+const next = currentIndex < flatItems.length - 1 ? flatItems[currentIndex + 1] : undefined;
+---
+
+<Base
+  title={`${frontmatter.title} - Agent of Empires`}
+  description={frontmatter.description || `${frontmatter.title} - Agent of Empires documentation`}
+>
+  <Nav />
+  <div class="docs-layout">
+    <DocsSidebar />
+    <main class="docs-content">
+      <h1 class="text-3xl font-bold text-white mb-8" style="background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 50%, #d97706 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
+        {frontmatter.title}
+      </h1>
+      <div class="prose-content">
+        <slot />
+      </div>
+      <GuideNav
+        prev={prev ? { label: prev.title, href: prev.href } : undefined}
+        next={next ? { label: next.title, href: next.href } : undefined}
+      />
+    </main>
+  </div>
+  <Footer />
+</Base>

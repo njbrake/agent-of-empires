@@ -53,3 +53,4 @@ sdd-*/
 *.screenstudio/
 
 debug.log
+website/.next/
