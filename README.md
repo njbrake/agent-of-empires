@@ -23,7 +23,7 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 
 ## Features
 
-- **Multi-agent support** -- Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI
+- **Multi-agent support** -- Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, and Cursor CLI
 - **TUI dashboard** -- visual interface to create, monitor, and manage sessions
 - **Agent + terminal views** -- toggle between your AI agents and paired shell terminals with `t`
 - **Status detection** -- see which agents are running, waiting for input, or idle
@@ -94,7 +94,7 @@ Nothing. Sessions are tmux sessions running in the background. Open and close `a
 
 ### Which AI tools are supported?
 
-Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI. AoE auto-detects which are installed on your system.
+Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, and Cursor CLI. AoE auto-detects which are installed on your system.
 
 ## Troubleshooting
 

@@ -68,6 +68,7 @@ aoe add -c opencode .
 aoe add -c vibe .
 aoe add -c codex .
 aoe add -c gemini .
+aoe add -c cursor .
 ```
 
 In the TUI, select the tool from the dropdown in the new session dialog.

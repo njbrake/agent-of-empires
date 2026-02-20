@@ -403,6 +403,10 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+pub fn detect_cursor_status(content: &str) -> Status {
+    detect_claude_status(content)
+}
+
 pub fn detect_gemini_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -702,6 +706,44 @@ mod tests {
     fn test_detect_codex_status_idle() {
         assert_eq!(detect_codex_status("file saved"), Status::Idle);
         assert_eq!(detect_codex_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_running() {
+        assert_eq!(
+            detect_cursor_status("Working on your request (esc to interrupt)"),
+            Status::Running
+        );
+        assert_eq!(detect_cursor_status("Processing ⠋"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_waiting() {
+        assert_eq!(detect_cursor_status("Yes, allow once"), Status::Waiting);
+        assert_eq!(detect_cursor_status("Task complete.\n>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_idle() {
+        assert_eq!(detect_cursor_status("some random output"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_delegates_to_claude() {
+        // Cursor CLI is built on Claude Code, so all Claude patterns should work
+        let test_cases = vec![
+            ("Thinking... · esc to interrupt", Status::Running),
+            ("Do you trust the files in this folder?", Status::Waiting),
+            ("completed the task", Status::Idle),
+        ];
+        for (content, expected) in test_cases {
+            assert_eq!(
+                detect_cursor_status(content),
+                expected,
+                "Failed for: {}",
+                content
+            );
+        }
     }
 
     #[test]
