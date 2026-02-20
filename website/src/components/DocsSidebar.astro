@@ -1,5 +1,5 @@
 ---
-import { docsNav } from '../data/docsNav';
+import { docsNav, getFlatNavItems } from '../data/docsNav';
 
 const currentPath = Astro.url.pathname;
 
@@ -10,8 +10,12 @@ function normalize(path: string): string {
 function isActive(href: string): boolean {
   return normalize(currentPath) === normalize(href);
 }
+
+const flatItems = getFlatNavItems();
+const currentItem = flatItems.find((item) => isActive(item.href));
 ---
 
+<!-- Desktop sidebar -->
 <aside class="docs-sidebar">
   <div class="sidebar-header">
     <a href="/docs/" class="sidebar-logo">Documentation</a>
@@ -32,3 +36,28 @@ function isActive(href: string): boolean {
     ))}
   </nav>
 </aside>
+
+<!-- Mobile navigation -->
+<div class="mobile-sidebar-nav">
+  <button class="mobile-sidebar-toggle" onclick="toggleMobileSidebar(this)" aria-expanded="false" aria-controls="docs-mobile-menu">
+    <span class="mobile-sidebar-label">{currentItem ? currentItem.title : 'Documentation'}</span>
+    <svg class="mobile-sidebar-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="6 9 12 15 18 9"></polyline>
+    </svg>
+  </button>
+  <nav class="mobile-sidebar-menu hidden" id="docs-mobile-menu">
+    {docsNav.map((section) => (
+      <Fragment>
+        <div class="mobile-sidebar-section-title">{section.title}</div>
+        {section.items.map((item) => (
+          <a
+            href={item.href}
+            class:list={['mobile-sidebar-link', { 'mobile-sidebar-link-active': isActive(item.href) }]}
+          >
+            {item.title}
+          </a>
+        ))}
+      </Fragment>
+    ))}
+  </nav>
+</div>
