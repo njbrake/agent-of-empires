@@ -11,6 +11,7 @@
     <a href="https://github.com/njbrake/agent-of-empires/stargazers"><img src="https://img.shields.io/github/stars/njbrake/agent-of-empires?style=social" alt="GitHub stars"></a>
     <a href="https://agent-of-empires.com/docs/credits.html"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnjbrake%2Fagent-of-empires%2Fcredit%2Fcredits.json&query=%24.contributors.length&label=contributors&color=blue&logo=github" alt="Contributors"></a>
     <a href="https://www.youtube.com/@agent-of-empires"><img src="https://img.shields.io/badge/YouTube-channel-red?logo=youtube" alt="YouTube"></a>
+    <a href="https://x.com/natebrake"><img src="https://img.shields.io/badge/follow-%40natebrake-black?logo=x&logoColor=white" alt="Follow @natebrake"></a>
   </p>
 </p>
 
@@ -134,6 +135,10 @@ AGENT_OF_EMPIRES_DEBUG=1 cargo run
 ## Acknowledgments
 
 Inspired by [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go + Bubble Tea).
+
+## Author
+
+Created by [Nate Brake](https://x.com/natebrake) ([@natebrake](https://x.com/natebrake))
 
 ## License
 
