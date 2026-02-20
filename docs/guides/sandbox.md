@@ -88,7 +88,7 @@ AOE shares your host agent credentials with sandboxed containers so agents can a
 
 Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates a **shared sandbox directory** per agent:
 
-1. For each agent whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`, `~/.vibe/`), AOE syncs credential files into a shared sandbox directory.
+1. For each agent whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`, `~/.vibe/`, `~/.cursor/`), AOE syncs credential files into a shared sandbox directory.
 2. The sandbox directory is mounted read-write into **all** containers that use that agent.
 3. Containers can read credentials and write runtime state freely without affecting your host config.
 4. In-container changes (e.g. permission approvals, settings tweaks) persist across sessions since all containers share the same directory.
@@ -117,6 +117,7 @@ If an agent's config directory doesn't exist on the host (e.g. you haven't insta
 ~/.gemini/sandbox/                    # Gemini (shared by all containers)
 ~/.local/share/opencode/sandbox/      # OpenCode (shared by all containers)
 ~/.vibe/sandbox/                      # Vibe (shared by all containers)
+~/.cursor/sandbox/                    # Cursor (shared by all containers)
 ```
 
 Deleting an agent's config directory (e.g. `rm -rf ~/.codex/`) removes everything related to that agent, including the sandbox directory. To reset just the sandbox state for an agent, delete its `sandbox/` subdirectory (e.g. `rm -rf ~/.claude/sandbox/`) -- it will be re-created on the next session start.
@@ -137,7 +138,7 @@ Example: `aoe-sandbox-a1b2c3d4`
 
 1. **Session Creation:** When you add a sandboxed session, aoe records the sandbox configuration
 2. **Container Start:** When you start the session, aoe creates/starts the Docker container with appropriate volume mounts
-3. **tmux + docker exec:** Host tmux runs `docker exec -it <container> <tool>` (claude, opencode, vibe, codex, or gemini)
+3. **tmux + docker exec:** Host tmux runs `docker exec -it <container> <tool>` (claude, opencode, vibe, codex, gemini, or cursor)
 4. **Cleanup:** When you remove the session, the container is automatically deleted
 
 
@@ -187,7 +188,7 @@ AOE provides two official sandbox images:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, git, ripgrep, fzf |
+| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, ripgrep, fzf |
 | `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
 
 ### Dev Sandbox Tools
@@ -212,7 +213,7 @@ default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
 
 ## Custom Docker Images
 
-The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
+The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
 
 ### Step 1: Create a Dockerfile
 

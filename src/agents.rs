@@ -114,13 +114,13 @@ pub const AGENTS: &[AgentDef] = &[
         name: "cursor",
         binary: "agent",
         aliases: &[],
-        detection: DetectionMethod::Which("agent"),
-        yolo: Some(YoloMode::CliFlag("--yolo")),
-        instruction_flag: None,
+        detection: DetectionMethod::RunWithArg("agent", "--version"),
+        yolo: Some(YoloMode::CliFlag("--force")),
+        instruction_flag: Some("--append-system-prompt {}"),
         set_default_command: false,
         supports_host_launch: true,
         detect_status: status_detection::detect_cursor_status,
-        container_env: &[],
+        container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
     },
 ];
 
