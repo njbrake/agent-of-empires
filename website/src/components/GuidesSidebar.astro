@@ -1,0 +1,35 @@
+---
+import { guidesNav } from '../data/guidesNav';
+
+const currentPath = Astro.url.pathname;
+
+function normalize(path: string): string {
+  return path.replace(/\/index\.html$/, '/').replace(/\.html$/, '/').replace(/\/$/, '') || '/';
+}
+
+function isActive(href: string): boolean {
+  return normalize(currentPath) === normalize(href);
+}
+---
+
+<aside class="docs-sidebar">
+  <div class="sidebar-header">
+    <a href="/guides/manage-ai-coding-agents/" class="sidebar-logo">Guides</a>
+  </div>
+  <nav>
+    <div class="sidebar-section">
+      {guidesNav.map((item) => (
+        <a
+          href={item.href}
+          class:list={['sidebar-link', { 'sidebar-link-active': isActive(item.href) }]}
+        >
+          {item.title}
+        </a>
+      ))}
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Resources</div>
+      <a href="/docs/" class="sidebar-link">Documentation</a>
+    </div>
+  </nav>
+</aside>

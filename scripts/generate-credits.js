@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Generates docs/credits.md from credits.json (fetched from the credit branch).
+// Generates website/src/pages/docs/credits.md from credits.json (fetched from the credit branch).
 // Usage: node scripts/generate-credits.js <credits.json> <repo-url>
 
 const fs = require("fs");
@@ -16,7 +16,13 @@ if (!creditsPath || !repoUrl) {
 
 const data = JSON.parse(fs.readFileSync(creditsPath, "utf8"));
 
-let md = "# Contributors\n\n";
+let md = `---
+layout: ../../layouts/Docs.astro
+title: Credits
+description: Contributors to Agent of Empires.
+---
+
+`;
 md +=
   'Thank you to everyone who has helped improve Agent of Empires! Contributors earn a spot on this page by opening issues that receive the **"helpful contribution"** label -- bug reports, feature ideas, and documentation improvements all count.\n\n';
 
@@ -62,7 +68,7 @@ ${allLinks}
 }
 
 md += `\n*Want to contribute? Open an issue on [GitHub](${repoUrl}/issues) -- bug reports, feature requests, and docs improvements are all welcome.*\n`;
-fs.writeFileSync("docs/credits.md", md);
+fs.writeFileSync("website/src/pages/docs/credits.md", md);
 console.log(
-  `Generated docs/credits.md with ${data.contributors.length} contributors`
+  `Generated website/src/pages/docs/credits.md with ${data.contributors.length} contributors`
 );

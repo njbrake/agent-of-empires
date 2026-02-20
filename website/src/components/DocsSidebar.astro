@@ -1,0 +1,34 @@
+---
+import { docsNav } from '../data/docsNav';
+
+const currentPath = Astro.url.pathname;
+
+function normalize(path: string): string {
+  return path.replace(/\/index\.html$/, '/').replace(/\.html$/, '/').replace(/\/$/, '') || '/';
+}
+
+function isActive(href: string): boolean {
+  return normalize(currentPath) === normalize(href);
+}
+---
+
+<aside class="docs-sidebar">
+  <div class="sidebar-header">
+    <a href="/docs/" class="sidebar-logo">Documentation</a>
+  </div>
+  <nav>
+    {docsNav.map((section) => (
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">{section.title}</div>
+        {section.items.map((item) => (
+          <a
+            href={item.href}
+            class:list={['sidebar-link', { 'sidebar-link-active': isActive(item.href) }]}
+          >
+            {item.title}
+          </a>
+        ))}
+      </div>
+    ))}
+  </nav>
+</aside>
