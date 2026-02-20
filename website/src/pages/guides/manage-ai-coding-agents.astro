@@ -25,7 +25,7 @@ import Callout from '../../components/Callout.astro';
       <a href="/">Agent of Empires</a> (aoe) is a terminal session manager designed specifically for this workflow. It gives you a TUI dashboard where every agent session is visible at a glance with real-time status detection. You can see which agents are actively generating code, which are waiting for your input, and which have finished.
     </p>
     <p>
-      Sessions are organized into groups, so you can keep your work project agents separate from your side project experiments. Everything runs in tmux underneath, which means sessions persist even if you close the TUI. Your agents keep running.
+      Sessions are organized into groups, so you can keep your work project agents separate from your side project experiments. Everything runs in tmux underneath, which means sessions persist even if you close the TUI or disconnect SSH. Your agents keep running.
     </p>
   </section>
 
@@ -38,8 +38,13 @@ import Callout from '../../components/Callout.astro';
 
     <h3>Status Detection</h3>
     <p>
-      aoe automatically detects the status of Claude Code, Gemini CLI, OpenCode, Mistral Vibe, and Codex sessions. The dashboard shows whether each agent is actively working, waiting for input, or idle. No more switching through tabs to check progress.
+      aoe automatically detects the state of your coding agent sessions by inspecting running processes in each tmux session. No agent-specific plugins or configuration needed. The dashboard shows whether each instance is:
     </p>
+    <ul>
+      <li><strong>Active</strong>: The agent is generating code or running commands</li>
+      <li><strong>Waiting</strong>: The agent needs your input or approval</li>
+      <li><strong>Idle</strong>: The session is open but no agent is running</li>
+    </ul>
 
     <h3>Git Worktrees for Parallel Work</h3>
     <p>
@@ -69,22 +74,5 @@ import Callout from '../../components/Callout.astro';
     <p>
       The difference is most noticeable when you are running 3+ agents. At that point, the overhead of manual management starts eating into the productivity gains from using AI in the first place.
     </p>
-  </section>
-
-  <section class="animate-on-scroll">
-    <h2>Getting Started</h2>
-    <p>
-      Install aoe with a single command:
-    </p>
-    <pre><code>curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash</code></pre>
-    <p>
-      Then start the TUI with <code>aoe</code> and add your first session. See the <a href="/docs/">documentation</a> for the full setup guide, or read about specific features:
-    </p>
-    <ul>
-      <li><a href="/guides/docker-sandbox-ai-agents/">Docker sandboxing for AI agents</a></li>
-      <li><a href="/guides/git-worktrees-ai-development/">Git worktrees for parallel development</a></li>
-      <li><a href="/guides/claude-code-session-manager/">AI coding agent session manager</a></li>
-      <li><a href="/guides/tmux-ai-coding-workflow/">tmux workflow for AI coding</a></li>
-    </ul>
   </section>
 </Guide>

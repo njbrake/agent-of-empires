@@ -3,7 +3,6 @@ import Base from './Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import DocsSidebar from '../components/DocsSidebar.astro';
-import Breadcrumbs from '../components/Breadcrumbs.astro';
 import GuideNav from '../components/GuideNav.astro';
 import { docsNav, getFlatNavItems } from '../data/docsNav';
 import type { NavItem } from '../data/docsNav';
@@ -28,23 +27,6 @@ const currentIndex = flatItems.findIndex((item) => normalize(currentPath) === no
 
 const prev = currentIndex > 0 ? flatItems[currentIndex - 1] : undefined;
 const next = currentIndex < flatItems.length - 1 ? flatItems[currentIndex + 1] : undefined;
-
-// Build breadcrumbs
-const breadcrumbs: { label: string; href?: string }[] = [
-  { label: 'Home', href: '/' },
-  { label: 'Docs', href: '/docs/' },
-];
-
-// Find current section
-for (const section of docsNav) {
-  const match = section.items.find((item) => normalize(currentPath) === normalize(item.href));
-  if (match) {
-    if (section.title !== 'Getting Started' || match.href !== '/docs/') {
-      breadcrumbs.push({ label: section.title });
-    }
-    break;
-  }
-}
 ---
 
 <Base
@@ -55,7 +37,6 @@ for (const section of docsNav) {
   <div class="docs-layout">
     <DocsSidebar />
     <main class="docs-content">
-      <Breadcrumbs items={breadcrumbs} />
       <h1 class="text-3xl font-bold text-white mb-8" style="background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 50%, #d97706 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
         {frontmatter.title}
       </h1>
