@@ -5,37 +5,27 @@ import Footer from '../components/Footer.astro';
 import FeatureCard from '../components/FeatureCard.astro';
 import InstallBlock from '../components/InstallBlock.astro';
 import Step from '../components/Step.astro';
+import SpotlightFeature from '../components/SpotlightFeature.astro';
+import TrustBar from '../components/TrustBar.astro';
 
-const features = [
+const compactFeatures = [
   {
     icon: 'dashboard',
     title: 'TUI Dashboard',
     description: 'Visual interface to manage all your AI coding sessions. See status at a glance, navigate with keyboard shortcuts.',
-  },
-  {
-    icon: 'worktrees',
-    title: 'Git Worktrees',
-    description: 'Run parallel agents on different branches of the same repo. Automatic worktree creation and cleanup.',
-  },
-  {
-    icon: 'docker',
-    title: 'Docker Sandbox',
-    description: 'Run agents in isolated containers for safety. Automatic container lifecycle management.',
-  },
-  {
-    icon: 'status',
-    title: 'Status Detection',
-    description: 'Automatic status detection for Claude Code, Gemini CLI, OpenCode, Mistral Vibe, and Codex. Know when agents are working, waiting, or idle.',
+    tint: 'brand' as const,
   },
   {
     icon: 'groups',
     title: 'Session Groups',
     description: 'Organize sessions into hierarchical folders. Keep work projects separate from personal experiments.',
+    tint: 'accent' as const,
   },
   {
     icon: 'tmux',
     title: 'tmux Integration',
     description: 'Sessions persist in tmux for reliability. Close aoe anytime and your agents keep running.',
+    tint: 'green' as const,
   },
 ];
 ---
@@ -48,34 +38,30 @@ const features = [
 
   <main>
   <!-- Hero Section -->
-  <section class="relative pt-32 pb-8 px-6 hero-glow">
+  <section class="relative pt-32 pb-8 px-6 hero-glow hero-gradient-animated">
     <div class="max-w-6xl mx-auto text-center">
-      <!-- Logo -->
       <div class="mb-8">
         <img src="/assets/logo.svg" alt="Agent of Empires" class="w-20 h-20 mx-auto mb-8 drop-shadow-2xl" width="80" height="80" fetchpriority="high">
-        <h1 class="text-5xl md:text-6xl lg:text-7xl font-bold mb-6 tracking-tight">
+        <h1 class="text-5xl md:text-6xl lg:text-7xl font-semibold mb-6 tracking-hero">
           <span class="text-gradient">Agent of Empires</span>
         </h1>
-        <p class="text-xl md:text-2xl text-gray-400 max-w-2xl mx-auto leading-relaxed">
+        <p class="text-xl md:text-2xl text-gray-300 max-w-2xl mx-auto leading-relaxed">
           Terminal session manager for AI coding agents
         </p>
       </div>
 
-      <!-- Subtitle -->
       <p class="text-lg text-gray-300 max-w-3xl mx-auto mb-12 leading-relaxed">
         Manage multiple <span class="text-white font-medium">Claude Code</span>, <span class="text-white font-medium">Gemini CLI</span>, <span class="text-white font-medium">OpenCode</span>, <span class="text-white font-medium">Mistral Vibe</span>, and <span class="text-white font-medium">Codex</span> sessions with a beautiful TUI.
         <span class="text-gray-400">Git worktrees for parallel development. Docker sandboxing for safety. Built on tmux.</span>
       </p>
 
-      <!-- Install Command -->
       <InstallBlock />
 
-      <!-- CTA Buttons -->
       <div class="flex flex-col sm:flex-row gap-4 justify-center mb-16">
-        <a href="/docs/quick-start.html" class="bg-brand-700 hover:bg-brand-600 text-white font-semibold px-8 py-3.5 rounded-xl transition-all hover:shadow-lg hover:shadow-brand-600/25 text-base">
+        <a href="/docs/quick-start.html" class="btn-primary text-base px-8 py-3.5 inline-flex items-center justify-center">
           Get Started
         </a>
-        <a href="https://github.com/njbrake/agent-of-empires" target="_blank" rel="noopener" class="group bg-surface-800 hover:bg-surface-700 text-white font-semibold px-8 py-3.5 rounded-xl transition-colors flex items-center justify-center gap-2 border border-surface-700 hover:border-brand-500/50 text-base" title="Star on GitHub">
+        <a href="https://github.com/njbrake/agent-of-empires" target="_blank" rel="noopener" class="btn-secondary text-base px-8 py-3.5 group inline-flex items-center justify-center gap-2" title="Star on GitHub">
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
           <svg class="w-4 h-4 text-brand-400 group-hover:scale-110 transition-transform" fill="currentColor" viewBox="0 0 24 24"><path d="M12 .587l3.668 7.568 8.332 1.151-6.064 5.828 1.48 8.279-7.416-3.967-7.417 3.967 1.481-8.279-6.064-5.828 8.332-1.151z"/></svg>
           <span id="star-count">...</span> Stars
@@ -85,7 +71,7 @@ const features = [
   </section>
 
   <!-- Demo Section -->
-  <section class="py-8 px-6">
+  <section class="py-8 px-6 animate-on-scroll">
     <div class="max-w-5xl mx-auto">
       <div class="terminal-window rounded-2xl overflow-hidden">
         <div class="flex items-center gap-2 px-5 py-4 bg-surface-850 border-b border-surface-700/50">
@@ -99,32 +85,72 @@ const features = [
     </div>
   </section>
 
-  <!-- Features Section -->
+  <!-- Spotlight Features -->
   <section class="py-24 px-6">
     <div class="max-w-6xl mx-auto">
-      <div class="text-center mb-16">
-        <h2 class="text-3xl md:text-4xl font-bold mb-4">Everything you need to manage AI agents</h2>
-        <p class="text-gray-400 text-lg max-w-2xl mx-auto">Built for developers who run multiple coding agents across different projects and branches.</p>
+      <div class="text-center mb-20 animate-on-scroll">
+        <h2 class="text-3xl md:text-4xl font-semibold mb-4">Everything you need to manage AI agents</h2>
+        <p class="text-gray-300 text-lg max-w-2xl mx-auto">Built for developers who run multiple coding agents across different projects and branches.</p>
+      </div>
+
+      <div class="space-y-24">
+        <SpotlightFeature
+          icon="worktrees"
+          title="Git Worktrees"
+          description="Run parallel agents on different branches of the same repo. Each agent gets its own working directory while sharing git history. Automatic worktree creation and cleanup."
+          color="brand"
+        />
+
+        <SpotlightFeature
+          icon="docker"
+          title="Docker Sandbox"
+          description="Run agents in isolated containers for safety. Each session gets its own environment with configurable volume mounts, persistent auth, and automatic lifecycle management."
+          color="accent"
+          reversed
+        />
+
+        <SpotlightFeature
+          icon="status"
+          title="Status Detection"
+          description="Automatic status detection for Claude Code, Gemini CLI, OpenCode, Mistral Vibe, and Codex. Know when agents are working, waiting for input, or idle without switching sessions."
+          color="green"
+        />
+      </div>
+    </div>
+  </section>
+
+  <!-- Compact Feature Grid -->
+  <section class="py-24 px-6 bg-surface-900/50">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16 animate-on-scroll">
+        <h2 class="text-3xl md:text-4xl font-semibold mb-4">And more</h2>
+        <p class="text-gray-300 text-lg">The tools you need for a productive multi-agent workflow.</p>
       </div>
 
       <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {features.map((feature) => (
-          <FeatureCard
-            icon={feature.icon}
-            title={feature.title}
-            description={feature.description}
-          />
+        {compactFeatures.map((feature, i) => (
+          <div class={`delay-${(i + 1) * 100}`}>
+            <FeatureCard
+              icon={feature.icon}
+              title={feature.title}
+              description={feature.description}
+              tint={feature.tint}
+            />
+          </div>
         ))}
       </div>
     </div>
   </section>
 
+  <!-- Trust Bar -->
+  <TrustBar />
+
   <!-- How it Works Section -->
   <section class="py-24 px-6 bg-surface-900/50">
     <div class="max-w-4xl mx-auto">
-      <div class="text-center mb-16">
-        <h2 class="text-3xl md:text-4xl font-bold mb-4">Simple workflow</h2>
-        <p class="text-gray-400 text-lg">Get up and running in seconds</p>
+      <div class="text-center mb-16 animate-on-scroll">
+        <h2 class="text-3xl md:text-4xl font-semibold mb-4">Simple workflow</h2>
+        <p class="text-gray-300 text-lg">Get up and running in seconds</p>
       </div>
 
       <div class="space-y-12">
@@ -146,15 +172,15 @@ const features = [
   </section>
 
   <!-- CTA Section -->
-  <section class="py-24 px-6">
+  <section class="py-24 px-6 animate-on-scroll">
     <div class="max-w-4xl mx-auto text-center">
-      <h2 class="text-3xl md:text-4xl font-bold mb-4">Ready to manage your AI agents?</h2>
-      <p class="text-gray-400 text-lg mb-10">Get started in under a minute. Free and open source.</p>
+      <h2 class="text-3xl md:text-4xl font-semibold mb-4">Ready to manage your AI agents?</h2>
+      <p class="text-gray-300 text-lg mb-10">Get started in under a minute. Free and open source.</p>
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
-        <a href="/docs/installation.html" class="bg-brand-700 hover:bg-brand-600 text-white font-semibold px-10 py-4 rounded-xl transition-all hover:shadow-lg hover:shadow-brand-600/25 text-lg">
+        <a href="/docs/installation.html" class="btn-primary text-lg px-10 py-4 inline-flex items-center justify-center">
           Install Now
         </a>
-        <a href="/docs/" class="bg-surface-800 hover:bg-surface-700 text-white font-semibold px-10 py-4 rounded-xl transition-colors border border-surface-700 text-lg">
+        <a href="/docs/" class="btn-secondary text-lg px-10 py-4 inline-flex items-center justify-center">
           Read the Docs
         </a>
       </div>

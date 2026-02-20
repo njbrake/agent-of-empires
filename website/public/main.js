@@ -22,3 +22,48 @@ fetch('https://api.github.com/repos/njbrake/agent-of-empires')
   .catch(() => {
     document.getElementById('star-count').textContent = '';
   });
+
+// Theme toggle
+function initThemeToggle() {
+  function updateIcons(theme) {
+    document.querySelectorAll('.theme-icon-sun').forEach(function(el) {
+      el.classList.toggle('hidden', theme === 'light');
+    });
+    document.querySelectorAll('.theme-icon-moon').forEach(function(el) {
+      el.classList.toggle('hidden', theme === 'dark');
+    });
+    document.querySelectorAll('.theme-label').forEach(function(el) {
+      el.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
+    });
+  }
+
+  var currentTheme = document.documentElement.dataset.theme || 'dark';
+  updateIcons(currentTheme);
+
+  document.querySelectorAll('#theme-toggle, #theme-toggle-mobile').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem('theme', next);
+      updateIcons(next);
+    });
+  });
+}
+
+initThemeToggle();
+
+// Scroll-triggered animations
+document.addEventListener('DOMContentLoaded', () => {
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('is-visible');
+        observer.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.animate-on-scroll').forEach((el) => {
+    observer.observe(el);
+  });
+});

@@ -14,16 +14,7 @@ echo "Building Agent of Empires website..."
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
-# 1. Build mdbook documentation
-echo "Building documentation with mdbook..."
-if command -v mdbook &> /dev/null; then
-    (cd "$ROOT_DIR" && mdbook build)
-else
-    echo "Error: mdbook not found. Install with: cargo install mdbook"
-    exit 1
-fi
-
-# 2. Copy shared assets to website/public before Astro build
+# 1. Copy shared assets to website/public before Astro build
 echo "Copying assets to website..."
 mkdir -p "$ROOT_DIR/website/public/assets"
 cp "$ROOT_DIR/assets/logo.svg" "$ROOT_DIR/website/public/assets/"
@@ -41,23 +32,19 @@ if [ -f "$ROOT_DIR/docs/assets/demo.gif" ]; then
   fi
 fi
 
-# 3. Build Astro website
+# 2. Build Astro website
 echo "Building Astro website..."
 (cd "$ROOT_DIR/website" && npm install && npm run build)
 
-# 4. Copy Astro output to dist/
+# 3. Copy Astro output to dist/
 echo "Copying website..."
 cp -r "$ROOT_DIR/website/dist/"* "$DIST_DIR/"
 
-# 5. Copy mdbook output to dist/docs/
-echo "Copying documentation..."
-cp -r "$ROOT_DIR/book" "$DIST_DIR/docs"
-
-# 6. Copy install script
+# 4. Copy install script
 echo "Copying install script..."
 cp "$ROOT_DIR/scripts/install.sh" "$DIST_DIR/"
 
-# 7. Create a simple 404 page that redirects to home
+# 5. Create a simple 404 page that redirects to home
 cat > "$DIST_DIR/404.html" << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
@@ -81,7 +68,7 @@ cat > "$DIST_DIR/404.html" << 'EOF'
 </html>
 EOF
 
-# 8. Create CNAME file for GitHub Pages (if using custom domain)
+# 6. Create CNAME file for GitHub Pages (if using custom domain)
 echo "agent-of-empires.com" > "$DIST_DIR/CNAME"
 
 echo ""
