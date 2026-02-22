@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::error::Result;
 use enum_dispatch::enum_dispatch;
 
@@ -61,5 +63,5 @@ pub trait ContainerRuntimeInterface {
 
     /// Check running state of all containers matching a name prefix in a single call.
     /// Returns a map of container name -> is_running.
-    fn batch_running_states(&self, prefix: &str) -> std::collections::HashMap<String, bool>;
+    fn batch_running_states(&self, prefix: &str) -> HashMap<String, bool>;
 }

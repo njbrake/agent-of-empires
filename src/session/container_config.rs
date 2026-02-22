@@ -128,6 +128,12 @@ fn sync_agent_config(
     // session ran and created state we must not overwrite (e.g. settings.json,
     // statsig/, session metadata). Only seed files, copy_dirs, and keychain
     // credentials are still synced; the general top-level file copy is skipped.
+    //
+    // Why "projects/"? Claude Code creates this directory on first run to store
+    // per-project session data. Its presence reliably indicates the container
+    // has been used before. If this sentinel changes upstream, container restarts
+    // would fall back to the old behavior of re-copying all host files (safe,
+    // just potentially overwriting container-side customizations).
     let has_prior_data = sandbox_dir.join("projects").exists();
     if has_prior_data {
         tracing::info!(

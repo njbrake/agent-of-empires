@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::container_interface::{ContainerConfig, ContainerRuntimeInterface};
 use super::error::{DockerError, Result};
 use super::runtime_base::RuntimeBase;
@@ -107,7 +109,7 @@ impl ContainerRuntimeInterface for Docker {
         self.base.exec(name, cmd)
     }
 
-    fn batch_running_states(&self, prefix: &str) -> std::collections::HashMap<String, bool> {
+    fn batch_running_states(&self, prefix: &str) -> HashMap<String, bool> {
         let output = self
             .base
             .command()
@@ -123,7 +125,7 @@ impl ContainerRuntimeInterface for Docker {
 
         let output = match output {
             Ok(o) if o.status.success() => o,
-            _ => return std::collections::HashMap::new(),
+            _ => return HashMap::new(),
         };
 
         let stdout = String::from_utf8_lossy(&output.stdout);

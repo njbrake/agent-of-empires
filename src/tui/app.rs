@@ -130,8 +130,7 @@ impl App {
 
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
-        // 250ms keeps the UI responsive after stop/start actions on containers
-        const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+        const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
         loop {
@@ -330,13 +329,19 @@ impl App {
             Action::StopSession(id) => {
                 if let Some(inst) = self.home.get_instance(&id) {
                     let inst_clone = inst.clone();
-                    if let Err(e) = inst_clone.stop() {
-                        tracing::error!("Failed to stop session: {}", e);
+                    match inst_clone.stop() {
+                        Ok(()) => {
+                            crate::tmux::refresh_session_cache();
+                            self.home.reload()?;
+                            self.home
+                                .set_instance_status(&id, crate::session::Status::Stopped);
+                            self.home.save()?;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to stop session: {}", e);
+                            self.home.set_instance_error(&id, Some(e.to_string()));
+                        }
                     }
-                    crate::tmux::refresh_session_cache();
-                    self.home.reload()?;
-                    self.home
-                        .set_instance_status(&id, crate::session::Status::Stopped);
                 }
             }
         }

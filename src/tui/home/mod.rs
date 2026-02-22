@@ -553,6 +553,12 @@ impl HomeView {
         }
     }
 
+    pub fn save(&self) -> anyhow::Result<()> {
+        self.storage
+            .save_with_groups(&self.instances, &self.group_tree)?;
+        Ok(())
+    }
+
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
         if let Some(inst) = self.instance_map.get_mut(id) {
             inst.last_error = error.clone();

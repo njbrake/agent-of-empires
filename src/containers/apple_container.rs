@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::container_interface::{ContainerConfig, ContainerRuntimeInterface};
 use super::error::{DockerError, Result};
 use super::runtime_base::RuntimeBase;
@@ -108,8 +110,8 @@ impl ContainerRuntimeInterface for AppleContainer {
         self.base.exec(name, cmd)
     }
 
-    fn batch_running_states(&self, _prefix: &str) -> std::collections::HashMap<String, bool> {
-        std::collections::HashMap::new()
+    fn batch_running_states(&self, _prefix: &str) -> HashMap<String, bool> {
+        HashMap::new()
     }
 }
 
