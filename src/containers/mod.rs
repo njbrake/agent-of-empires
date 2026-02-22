@@ -4,6 +4,8 @@ mod docker;
 pub mod error;
 pub(crate) mod runtime_base;
 
+use std::collections::HashMap;
+
 use crate::cli::truncate_id;
 use crate::session::{Config, ContainerRuntimeName};
 use apple_container::AppleContainer;
@@ -45,6 +47,12 @@ pub fn get_container_runtime() -> ContainerRuntime {
     } else {
         ContainerRuntime::default()
     }
+}
+
+/// Check running state of all aoe sandbox containers in a single subprocess call.
+/// Returns a map of container name -> is_running.
+pub fn batch_container_health() -> HashMap<String, bool> {
+    get_container_runtime().batch_running_states("aoe-sandbox-")
 }
 
 pub struct DockerContainer {

@@ -26,6 +26,7 @@ struct StatusCounts {
     running: usize,
     waiting: usize,
     idle: usize,
+    stopped: usize,
     error: usize,
     total: usize,
 }
@@ -35,6 +36,7 @@ struct StatusJson {
     waiting: usize,
     running: usize,
     idle: usize,
+    stopped: usize,
     error: usize,
     total: usize,
 }
@@ -45,7 +47,9 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
 
     if instances.is_empty() {
         if args.json {
-            println!(r#"{{"waiting": 0, "running": 0, "idle": 0, "error": 0, "total": 0}}"#);
+            println!(
+                r#"{{"waiting": 0, "running": 0, "idle": 0, "stopped": 0, "error": 0, "total": 0}}"#
+            );
         } else if args.quiet {
             println!("0");
         } else {
@@ -69,6 +73,7 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
             waiting: counts.waiting,
             running: counts.running,
             idle: counts.idle,
+            stopped: counts.stopped,
             error: counts.error,
             total: counts.total,
         };
@@ -79,11 +84,17 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
         print_status_group("WAITING", "◐", Status::Waiting, &instances);
         print_status_group("RUNNING", "●", Status::Running, &instances);
         print_status_group("IDLE", "○", Status::Idle, &instances);
+        print_status_group("STOPPED", "■", Status::Stopped, &instances);
         print_status_group("ERROR", "✕", Status::Error, &instances);
         println!(
             "Total: {} sessions in profile '{}'",
             counts.total,
             storage.profile()
+        );
+    } else if counts.stopped > 0 {
+        println!(
+            "{} waiting • {} running • {} idle • {} stopped",
+            counts.waiting, counts.running, counts.idle, counts.stopped
         );
     } else {
         println!(
@@ -107,6 +118,7 @@ fn count_by_status(instances: &[crate::session::Instance]) -> StatusCounts {
             Status::Running => counts.running += 1,
             Status::Waiting => counts.waiting += 1,
             Status::Idle => counts.idle += 1,
+            Status::Stopped => counts.stopped += 1,
             Status::Error => counts.error += 1,
             Status::Starting => counts.idle += 1,
             Status::Deleting => {}

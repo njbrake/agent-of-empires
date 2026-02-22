@@ -164,6 +164,7 @@ impl Preview {
                         crate::session::Status::Running => theme.running,
                         crate::session::Status::Waiting => theme.waiting,
                         crate::session::Status::Idle => theme.idle,
+                        crate::session::Status::Stopped => theme.dimmed,
                         crate::session::Status::Error => theme.error,
                         crate::session::Status::Starting => theme.dimmed,
                         crate::session::Status::Deleting => theme.waiting,

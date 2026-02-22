@@ -58,7 +58,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
         home_seed_files: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
-        preserve_files: &[".credentials.json"],
+        preserve_files: &[".credentials.json", "history.jsonl"],
     },
     AgentConfigMount {
         host_rel: ".local/share/opencode",
@@ -124,6 +124,24 @@ fn sync_agent_config(
         }
     }
 
+    // If the sandbox already has a "projects/" subdirectory, a prior container
+    // session ran and created state we must not overwrite (e.g. settings.json,
+    // statsig/, session metadata). Only seed files, copy_dirs, and keychain
+    // credentials are still synced; the general top-level file copy is skipped.
+    //
+    // Why "projects/"? Claude Code creates this directory on first run to store
+    // per-project session data. Its presence reliably indicates the container
+    // has been used before. If this sentinel changes upstream, container restarts
+    // would fall back to the old behavior of re-copying all host files (safe,
+    // just potentially overwriting container-side customizations).
+    let has_prior_data = sandbox_dir.join("projects").exists();
+    if has_prior_data {
+        tracing::info!(
+            "sync_agent_config: sandbox={} has prior session data, skipping general file copy",
+            sandbox_dir.display()
+        );
+    }
+
     for entry in std::fs::read_dir(host_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -149,6 +167,12 @@ fn sync_agent_config(
                     tracing::warn!("Failed to copy dir {}: {}", name_str, e);
                 }
             }
+            continue;
+        }
+
+        // Skip general top-level file copies on restart to preserve
+        // container-created files (settings.json, statsig/, etc.).
+        if has_prior_data {
             continue;
         }
 
@@ -1083,6 +1107,38 @@ mod tests {
         assert_eq!(
             fs::read_to_string(sandbox.join("settings.json")).unwrap(),
             "updated"
+        );
+    }
+
+    #[test]
+    fn test_history_preserved_across_resync() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        let sandbox = dir.path().join("sandbox");
+
+        // Host has a history file with host-only entries.
+        fs::write(host.join("history.jsonl"), "host-entry\n").unwrap();
+
+        // First sync copies it in.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &["history.jsonl"]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("history.jsonl")).unwrap(),
+            "host-entry\n"
+        );
+
+        // Container session appends entries.
+        fs::write(
+            sandbox.join("history.jsonl"),
+            "host-entry\ncontainer-session-1\ncontainer-session-2\n",
+        )
+        .unwrap();
+
+        // Re-sync (container restart) should NOT clobber the container's history.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &["history.jsonl"]).unwrap();
+        let content = fs::read_to_string(sandbox.join("history.jsonl")).unwrap();
+        assert!(
+            content.contains("container-session-1"),
+            "container history entries must survive re-sync"
         );
     }
 
