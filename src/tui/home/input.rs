@@ -210,6 +210,7 @@ impl HomeView {
                 DialogResult::Continue => {}
                 DialogResult::Cancel => {
                     self.confirm_dialog = None;
+                    self.pending_stop_session = None;
                 }
                 DialogResult::Submit(_) => {
                     let action = dialog.action().to_string();
@@ -217,6 +218,10 @@ impl HomeView {
                     if action == "delete_group" {
                         if let Err(e) = self.delete_selected_group() {
                             tracing::error!("Failed to delete group: {}", e);
+                        }
+                    } else if action == "stop_session" {
+                        if let Some(session_id) = self.pending_stop_session.take() {
+                            return Some(Action::StopSession(session_id));
                         }
                     }
                 }
@@ -403,8 +408,15 @@ impl HomeView {
             }
             KeyCode::Char('x') => {
                 if let Some(session_id) = &self.selected_session {
-                    let session_id = session_id.clone();
-                    return Some(Action::StopSession(session_id));
+                    if let Some(inst) = self.instance_map.get(session_id) {
+                        if inst.status == Status::Stopped || inst.status == Status::Deleting {
+                            return None;
+                        }
+                        let message = format!("Are you sure you want to stop '{}'?", inst.title);
+                        self.pending_stop_session = Some(session_id.clone());
+                        self.confirm_dialog =
+                            Some(ConfirmDialog::new("Stop Session", &message, "stop_session"));
+                    }
                 }
             }
             KeyCode::Char('d') => {

@@ -79,6 +79,7 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
         print_status_group("WAITING", "◐", Status::Waiting, &instances);
         print_status_group("RUNNING", "●", Status::Running, &instances);
         print_status_group("IDLE", "○", Status::Idle, &instances);
+        print_status_group("STOPPED", "■", Status::Stopped, &instances);
         print_status_group("ERROR", "✕", Status::Error, &instances);
         println!(
             "Total: {} sessions in profile '{}'",

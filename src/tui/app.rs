@@ -130,6 +130,7 @@ impl App {
 
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
+        // 250ms keeps the UI responsive after stop/start actions on containers
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -286,37 +287,8 @@ impl App {
             _ => {}
         }
 
-        // Delegate to home view
         if let Some(action) = self.home.handle_key(key) {
-            match action {
-                Action::Quit => self.should_quit = true,
-                Action::AttachSession(id) => {
-                    self.attach_session(&id, terminal)?;
-                }
-                Action::AttachTerminal(id, mode) => {
-                    self.attach_terminal(&id, mode, terminal)?;
-                }
-                Action::SwitchProfile(profile) => {
-                    let storage = Storage::new(&profile)?;
-                    let tools = self.home.available_tools();
-                    self.home = HomeView::new(storage, tools)?;
-                }
-                Action::EditFile(path) => {
-                    self.edit_file(&path, terminal)?;
-                }
-                Action::StopSession(id) => {
-                    if let Some(inst) = self.home.get_instance(&id) {
-                        let inst_clone = inst.clone();
-                        if let Err(e) = inst_clone.stop() {
-                            tracing::error!("Failed to stop session: {}", e);
-                        }
-                        crate::tmux::refresh_session_cache();
-                        self.home.reload()?;
-                        self.home
-                            .set_instance_status(&id, crate::session::Status::Stopped);
-                    }
-                }
-            }
+            self.execute_action(action, terminal)?;
         }
 
         Ok(())
@@ -327,39 +299,47 @@ impl App {
         mouse: MouseEvent,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
-        // Delegate to home view
         if let Some(action) = self.home.handle_mouse(mouse) {
-            match action {
-                Action::Quit => self.should_quit = true,
-                Action::AttachSession(id) => {
-                    self.attach_session(&id, terminal)?;
-                }
-                Action::AttachTerminal(id, mode) => {
-                    self.attach_terminal(&id, mode, terminal)?;
-                }
-                Action::SwitchProfile(profile) => {
-                    let storage = Storage::new(&profile)?;
-                    let tools = self.home.available_tools();
-                    self.home = HomeView::new(storage, tools)?;
-                }
-                Action::EditFile(path) => {
-                    self.edit_file(&path, terminal)?;
-                }
-                Action::StopSession(id) => {
-                    if let Some(inst) = self.home.get_instance(&id) {
-                        let inst_clone = inst.clone();
-                        if let Err(e) = inst_clone.stop() {
-                            tracing::error!("Failed to stop session: {}", e);
-                        }
-                        crate::tmux::refresh_session_cache();
-                        self.home.reload()?;
-                        self.home
-                            .set_instance_status(&id, crate::session::Status::Stopped);
+            self.execute_action(action, terminal)?;
+        }
+
+        Ok(())
+    }
+
+    fn execute_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        match action {
+            Action::Quit => self.should_quit = true,
+            Action::AttachSession(id) => {
+                self.attach_session(&id, terminal)?;
+            }
+            Action::AttachTerminal(id, mode) => {
+                self.attach_terminal(&id, mode, terminal)?;
+            }
+            Action::SwitchProfile(profile) => {
+                let storage = Storage::new(&profile)?;
+                let tools = self.home.available_tools();
+                self.home = HomeView::new(storage, tools)?;
+            }
+            Action::EditFile(path) => {
+                self.edit_file(&path, terminal)?;
+            }
+            Action::StopSession(id) => {
+                if let Some(inst) = self.home.get_instance(&id) {
+                    let inst_clone = inst.clone();
+                    if let Err(e) = inst_clone.stop() {
+                        tracing::error!("Failed to stop session: {}", e);
                     }
+                    crate::tmux::refresh_session_cache();
+                    self.home.reload()?;
+                    self.home
+                        .set_instance_status(&id, crate::session::Status::Stopped);
                 }
             }
         }
-
         Ok(())
     }
 
