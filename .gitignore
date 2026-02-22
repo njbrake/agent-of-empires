@@ -35,7 +35,8 @@ Thumbs.db
 .agent-of-empires/
 
 # VS Code extensions data
-.serena/
+# --- Serena (LSP code navigation) ---
+.serena/memories/
 
 # AI coding tools
 .opencode/
