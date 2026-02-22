@@ -185,6 +185,6 @@ Profile overrides go in `~/.agent-of-empires/profiles/<name>/config.toml` and us
 
 Per-repo settings go in `.aoe/config.toml` at your project root. Run `aoe init` to generate a template.
 
-Repo config supports: `[hooks]`, `[session]`, `[sandbox]`, and `[worktree]` sections. It does not support `[tmux]`, `[updates]`, `[claude]`, or `[diff]` -- those are personal settings.
+Repo config supports all the same sections as global and profile config. Only explicitly set fields override; unset fields inherit from the resolved global+profile config.
 
 See [Repo Config & Hooks](repo-config.md) for details.

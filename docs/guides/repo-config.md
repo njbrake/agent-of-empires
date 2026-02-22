@@ -74,6 +74,10 @@ show_branch_in_tui = true
 delete_branch_on_cleanup = false
 ```
 
+### Other Sections
+
+Repo config supports all the same sections as global/profile config. You can also override `[diff]`, `[updates]`, `[tmux]`, `[sound]`, `[theme]`, and `[claude]` at the repo level. See the [Configuration Reference](configuration.md) for all available options.
+
 ## Hook Trust System
 
 When AoE encounters hooks in a repo for the first time, it prompts you to review and approve them before execution. This prevents untrusted repos from running arbitrary commands.

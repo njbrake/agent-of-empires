@@ -420,6 +420,11 @@ impl SettingsView {
                     u.check_enabled = None;
                 }
             }
+            FieldKey::AutoUpdate => {
+                if let Some(ref mut u) = config.updates {
+                    u.auto_update = None;
+                }
+            }
             FieldKey::CheckIntervalHours => {
                 if let Some(ref mut u) = config.updates {
                     u.check_interval_hours = None;
@@ -431,6 +436,11 @@ impl SettingsView {
                 }
             }
             // Worktree
+            FieldKey::WorktreeEnabled => {
+                if let Some(ref mut w) = config.worktree {
+                    w.enabled = None;
+                }
+            }
             FieldKey::PathTemplate => {
                 if let Some(ref mut w) = config.worktree {
                     w.path_template = None;
@@ -444,6 +454,11 @@ impl SettingsView {
             FieldKey::WorktreeAutoCleanup => {
                 if let Some(ref mut w) = config.worktree {
                     w.auto_cleanup = None;
+                }
+            }
+            FieldKey::ShowBranchInTui => {
+                if let Some(ref mut w) = config.worktree {
+                    w.show_branch_in_tui = None;
                 }
             }
             FieldKey::DeleteBranchOnCleanup => {
@@ -578,6 +593,29 @@ impl SettingsView {
             FieldKey::SoundOnError => {
                 if let Some(ref mut s) = config.sound {
                     s.on_error = None;
+                }
+            }
+            // Diff
+            FieldKey::DefaultBranch => {
+                if let Some(ref mut d) = config.diff {
+                    d.default_branch = None;
+                }
+            }
+            FieldKey::ContextLines => {
+                if let Some(ref mut d) = config.diff {
+                    d.context_lines = None;
+                }
+            }
+            // Theme
+            FieldKey::ThemeName => {
+                if let Some(ref mut t) = config.theme {
+                    t.name = None;
+                }
+            }
+            // Claude
+            FieldKey::ClaudeConfigDir => {
+                if let Some(ref mut c) = config.claude {
+                    c.config_dir = None;
                 }
             }
             // Hooks
