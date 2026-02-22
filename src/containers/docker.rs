@@ -135,7 +135,9 @@ impl ContainerRuntimeInterface for Docker {
                 let mut parts = line.splitn(2, '\t');
                 let name = parts.next()?.trim();
                 let state = parts.next()?.trim();
-                if name.is_empty() {
+                // Docker's --filter name= does substring matching, so
+                // post-filter to ensure we only include exact prefix matches.
+                if name.is_empty() || !name.starts_with(prefix) {
                     return None;
                 }
                 Some((name.to_string(), state == "running"))
