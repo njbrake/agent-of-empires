@@ -54,7 +54,7 @@ curl -fsSL \
 brew install aoe
 
 # Nix
-nix run github:njbrake/master#default
+nix run github:njbrake/main#default
 
 # Build from source
 git clone https://github.com/njbrake/agent-of-empires
