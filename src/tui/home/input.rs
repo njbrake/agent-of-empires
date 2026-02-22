@@ -541,26 +541,54 @@ impl HomeView {
             KeyCode::Char('L') => {
                 self.grow_list();
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if let Some(Item::Group {
+            KeyCode::Left | KeyCode::Char('h') => match self.flat_items.get(self.cursor) {
+                Some(Item::Group {
                     path, collapsed, ..
-                }) = self.flat_items.get(self.cursor)
-                {
+                }) => {
                     if !collapsed {
                         let path = path.clone();
                         self.toggle_group_collapsed(&path);
                     }
                 }
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(Item::Group {
+                Some(Item::Session { id, .. }) => {
+                    self.collapsed_sessions.insert(id.clone());
+                }
+                _ => {}
+            },
+            KeyCode::Right | KeyCode::Char('l') => match self.flat_items.get(self.cursor) {
+                Some(Item::Group {
                     path, collapsed, ..
-                }) = self.flat_items.get(self.cursor)
-                {
+                }) => {
                     if *collapsed {
                         let path = path.clone();
                         self.toggle_group_collapsed(&path);
                     }
+                }
+                Some(Item::Session { id, .. }) => {
+                    self.collapsed_sessions.remove(id);
+                }
+                _ => {}
+            },
+            KeyCode::Char('z') => {
+                // Toggle all: if any expanded, collapse all; if all collapsed, expand all
+                let all_session_ids: Vec<String> = self
+                    .flat_items
+                    .iter()
+                    .filter_map(|item| {
+                        if let Item::Session { id, .. } = item {
+                            Some(id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let all_collapsed = all_session_ids
+                    .iter()
+                    .all(|id| self.collapsed_sessions.contains(id));
+                if all_collapsed {
+                    self.collapsed_sessions.clear();
+                } else {
+                    self.collapsed_sessions.extend(all_session_ids);
                 }
             }
             _ => {}

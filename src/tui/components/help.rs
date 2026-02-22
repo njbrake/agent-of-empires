@@ -6,7 +6,7 @@ use ratatui::widgets::*;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 30;
+const DIALOG_HEIGHT: u16 = 31;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -21,8 +21,9 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 ("j/↓", "Move down"),
                 ("k/↑", "Move up"),
-                ("h/←", "Collapse group"),
-                ("l/→", "Expand group"),
+                ("h/←", "Collapse group/session"),
+                ("l/→", "Expand group/session"),
+                ("z", "Toggle all details"),
                 ("g/G", "Go to top / bottom"),
                 ("PgUp/Dn", "Move 10 items up / down"),
             ],

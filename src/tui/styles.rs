@@ -28,6 +28,10 @@ pub struct Theme {
     pub group: Color,
     pub search: Color,
     pub accent: Color,
+
+    // Multiline session indicators (collapsed mode dots)
+    pub worktree_indicator: Color,
+    pub sandbox_indicator: Color,
 }
 
 impl Default for Theme {
@@ -59,6 +63,23 @@ impl Theme {
             group: Color::Rgb(100, 220, 160),
             search: Color::Rgb(180, 255, 200),
             accent: Color::Rgb(57, 255, 20),
+
+            worktree_indicator: Color::Rgb(255, 200, 60),
+            sandbox_indicator: Color::Magenta,
         }
+    }
+}
+
+/// Mix a status color into a base background at 1/10th intensity.
+/// Produces the "vertical tab glow" for selected session items.
+pub fn tint_background(status_color: Color, base_bg: Color) -> Color {
+    if let (Color::Rgb(sr, sg, sb), Color::Rgb(br, bg, bb)) = (status_color, base_bg) {
+        Color::Rgb(
+            br.saturating_add(sr / 10),
+            bg.saturating_add(sg / 10),
+            bb.saturating_add(sb / 10),
+        )
+    } else {
+        base_bg
     }
 }

@@ -10,6 +10,7 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use ratatui::widgets::ListState;
 use tui_input::Input;
 
 use crate::session::{
@@ -89,6 +90,13 @@ pub(super) const ICON_DELETING: &str = "✗";
 pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
 
+// Tree connectors for multiline session details
+pub(super) const TREE_BRANCH: &str = "├── ";
+pub(super) const TREE_LAST: &str = "└── ";
+
+// Compact indicator dot for collapsed sessions
+pub(super) const ICON_INDICATOR: &str = "●";
+
 pub struct HomeView {
     pub(super) storage: Storage,
     pub(super) instances: Vec<Instance>,
@@ -167,6 +175,10 @@ pub struct HomeView {
 
     // Sidebar mode: hides the preview panel, showing only the session list
     pub(super) sidebar_mode: bool,
+
+    // Multi-line session fold state (runtime-only)
+    pub(super) collapsed_sessions: HashSet<String>,
+    pub(super) list_state: ListState,
 }
 
 impl HomeView {
@@ -250,6 +262,8 @@ impl HomeView {
                 .flatten()
                 .and_then(|c| c.app_state.sidebar_mode)
                 .unwrap_or(false),
+            collapsed_sessions: HashSet::new(),
+            list_state: ListState::default(),
         };
 
         view.update_selected();
@@ -278,6 +292,10 @@ impl HomeView {
         self.groups = groups;
         self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
         self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+
+        // Prune stale collapsed session IDs
+        self.collapsed_sessions
+            .retain(|id| self.instance_map.contains_key(id));
 
         if self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
             self.cursor = self.flat_items.len() - 1;
