@@ -40,6 +40,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             "Views",
             vec![
                 ("t", "Toggle Agent/Terminal view"),
+                ("Tab", "Toggle sidebar mode"),
                 ("c", "Toggle container/host (sandbox)"),
                 ("D", "Diff view (git changes)"),
                 ("H/L", "Resize list panel"),
@@ -133,6 +134,18 @@ mod tests {
         assert!(
             keys.iter().any(|(k, _)| *k == "H/L"),
             "Views section should contain H/L resize shortcut"
+        );
+    }
+
+    #[test]
+    fn help_contains_sidebar_toggle() {
+        let all = shortcuts();
+        let views_section = all.iter().find(|(name, _)| *name == "Views");
+        assert!(views_section.is_some(), "Views section should exist");
+        let (_, keys) = views_section.unwrap();
+        assert!(
+            keys.iter().any(|(k, _)| *k == "Tab"),
+            "Views section should contain Tab sidebar toggle shortcut"
         );
     }
 

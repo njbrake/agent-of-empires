@@ -75,9 +75,13 @@ pub fn check_version_change() -> Result<Option<String>> {
 }
 
 impl App {
-    pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
+    pub fn new(profile: &str, available_tools: AvailableTools, sidebar_mode: bool) -> Result<Self> {
         let storage = Storage::new(profile)?;
         let mut home = HomeView::new(storage, available_tools)?;
+
+        if sidebar_mode {
+            home.set_sidebar_mode(true);
+        }
         let theme = Theme::default();
 
         // Check if we need to show welcome or changelog dialogs

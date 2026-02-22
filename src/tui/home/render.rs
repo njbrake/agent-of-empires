@@ -57,14 +57,19 @@ impl HomeView {
             .constraints(constraints)
             .split(area);
 
-        // Layout: left panel (list) and right panel (preview)
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(self.list_width), Constraint::Min(40)])
-            .split(main_chunks[0]);
+        if self.sidebar_mode {
+            // Sidebar mode: session list fills entire width, no preview
+            self.render_list(frame, main_chunks[0], theme);
+        } else {
+            // Layout: left panel (list) and right panel (preview)
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(self.list_width), Constraint::Min(40)])
+                .split(main_chunks[0]);
 
-        self.render_list(frame, chunks[0], theme);
-        self.render_preview(frame, chunks[1], theme);
+            self.render_list(frame, chunks[0], theme);
+            self.render_preview(frame, chunks[1], theme);
+        }
         self.render_status_bar(frame, main_chunks[1], theme);
 
         if let Some(info) = update_info {
@@ -569,6 +574,18 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" t", key_style),
             Span::styled(" View ", desc_style),
+        ]);
+        spans.extend([
+            Span::styled("│", sep_style),
+            Span::styled(" Tab", key_style),
+            Span::styled(
+                if self.sidebar_mode {
+                    " Preview "
+                } else {
+                    " Sidebar "
+                },
+                desc_style,
+            ),
         ]);
 
         // Show c: container/host hint for sandboxed sessions in Terminal view
