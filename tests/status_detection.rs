@@ -87,46 +87,8 @@ fn identity(s: String) -> String {
     s
 }
 
-mod claude_code {
-    use super::*;
-
-    fn detect(content: &str) -> Status {
-        let agent = agents::get_agent("claude").unwrap();
-        (agent.detect_status)(content)
-    }
-
-    #[test]
-    fn test_running_state() {
-        test_all_fixtures_in_dir("claude_code", "running", Status::Running, identity, detect);
-    }
-
-    #[test]
-    fn test_waiting_question_state() {
-        test_all_fixtures_in_dir(
-            "claude_code",
-            "waiting_question",
-            Status::Waiting,
-            identity,
-            detect,
-        );
-    }
-
-    #[test]
-    fn test_waiting_permission_state() {
-        test_all_fixtures_in_dir(
-            "claude_code",
-            "waiting_permission",
-            Status::Waiting,
-            identity,
-            detect,
-        );
-    }
-
-    #[test]
-    fn test_idle_state() {
-        test_all_fixtures_in_dir("claude_code", "idle", Status::Idle, identity, detect);
-    }
-}
+// Claude Code status is managed entirely by hooks (not pane scraping),
+// so there are no fixture-based detection tests for it.
 
 mod opencode {
     use super::*;

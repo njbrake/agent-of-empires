@@ -83,13 +83,10 @@ fn extract_id_from_session_name(name: &str) -> Option<String> {
 /// Detect the instance ID by querying the current tmux session name.
 ///
 /// Uses `TMUX_PANE` with `-t` targeting to resolve the correct session even
-/// when multiple aoe sessions are running. Falls back to untargeted
-/// `display-message` if `TMUX_PANE` is unavailable.
+/// when multiple aoe sessions are running. Returns `None` if `TMUX_PANE` is
+/// unavailable (e.g. Claude Code running outside tmux).
 fn detect_instance_id_from_tmux() -> Option<String> {
-    let name = get_pane_session_name().or_else(|| {
-        debug_log("TMUX_PANE unavailable, falling back to untargeted display-message");
-        crate::tmux::get_current_session_name()
-    })?;
+    let name = get_pane_session_name()?;
     extract_id_from_session_name(&name)
 }
 

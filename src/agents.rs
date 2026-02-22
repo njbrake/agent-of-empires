@@ -57,7 +57,7 @@ pub const AGENTS: &[AgentDef] = &[
         instruction_flag: Some("--append-system-prompt {}"),
         set_default_command: false,
         supports_host_launch: true,
-        detect_status: status_detection::detect_claude_status,
+        detect_status: status_detection::hook_managed_status,
         container_env: &[("CLAUDE_CONFIG_DIR", "/root/.claude")],
     },
     AgentDef {

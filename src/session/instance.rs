@@ -621,13 +621,22 @@ impl Instance {
             }
         }
 
-        // Hook-based status: if a fresh hook file exists, use it directly.
-        // Skips tmux capture-pane entirely for hook-enabled Claude sessions.
+        // Claude sessions: hooks are the sole source of truth.
+        // No pane-scraping fallback -- stale/missing hook status defaults to Idle.
         if self.tool == "claude" {
             if let Some(status) = crate::tmux::hook_status::read_hook_status(&self.id) {
                 self.status = status;
                 return;
             }
+            // No fresh hook status -- check if tmux session still exists
+            match self.tmux_session() {
+                Ok(s) if s.exists() => self.status = Status::Idle,
+                _ => {
+                    self.status = Status::Error;
+                    self.last_error_check = Some(std::time::Instant::now());
+                }
+            }
+            return;
         }
 
         let session = match self.tmux_session() {
@@ -645,7 +654,7 @@ impl Instance {
             return;
         }
 
-        // Detect status from pane content
+        // Detect status from pane content (non-Claude agents only)
         self.status = match session.detect_status(&self.tool) {
             Ok(status) => status,
             Err(_) => Status::Idle,
