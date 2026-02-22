@@ -130,7 +130,7 @@ impl App {
 
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
-        const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+        const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
         loop {
@@ -304,6 +304,18 @@ impl App {
                 Action::EditFile(path) => {
                     self.edit_file(&path, terminal)?;
                 }
+                Action::StopSession(id) => {
+                    if let Some(inst) = self.home.get_instance(&id) {
+                        let inst_clone = inst.clone();
+                        if let Err(e) = inst_clone.stop() {
+                            tracing::error!("Failed to stop session: {}", e);
+                        }
+                        crate::tmux::refresh_session_cache();
+                        self.home.reload()?;
+                        self.home
+                            .set_instance_status(&id, crate::session::Status::Stopped);
+                    }
+                }
             }
         }
 
@@ -332,6 +344,18 @@ impl App {
                 }
                 Action::EditFile(path) => {
                     self.edit_file(&path, terminal)?;
+                }
+                Action::StopSession(id) => {
+                    if let Some(inst) = self.home.get_instance(&id) {
+                        let inst_clone = inst.clone();
+                        if let Err(e) = inst_clone.stop() {
+                            tracing::error!("Failed to stop session: {}", e);
+                        }
+                        crate::tmux::refresh_session_cache();
+                        self.home.reload()?;
+                        self.home
+                            .set_instance_status(&id, crate::session::Status::Stopped);
+                    }
                 }
             }
         }
@@ -394,10 +418,14 @@ impl App {
             // Skip on_launch hooks if they already ran in the background creation poller
             let skip_on_launch = self.home.take_on_launch_hooks_ran(session_id);
 
+            self.home
+                .set_instance_status(session_id, crate::session::Status::Starting);
             let mut inst = instance.clone();
             if let Err(e) = inst.start_with_size_opts(size, skip_on_launch) {
                 self.home
                     .set_instance_error(session_id, Some(e.to_string()));
+                self.home
+                    .set_instance_status(session_id, crate::session::Status::Error);
                 return Ok(());
             }
             self.home.set_instance_error(session_id, None);
@@ -542,6 +570,7 @@ pub enum Action {
     AttachTerminal(String, TerminalMode),
     SwitchProfile(String),
     EditFile(PathBuf),
+    StopSession(String),
 }
 
 #[cfg(test)]

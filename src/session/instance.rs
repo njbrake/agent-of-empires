@@ -32,6 +32,7 @@ pub enum Status {
     Waiting,
     #[default]
     Idle,
+    Stopped,
     Error,
     Starting,
     Deleting,
@@ -547,7 +548,26 @@ impl Instance {
         Ok(())
     }
 
+    /// Stop the session: kill the tmux session and stop the Docker container
+    /// (if sandboxed). The container is stopped but not removed, so it can be
+    /// restarted on re-attach.
+    pub fn stop(&self) -> Result<()> {
+        self.kill()?;
+
+        if self.is_sandboxed() {
+            let container = containers::DockerContainer::from_session_id(&self.id);
+            if container.is_running().unwrap_or(false) {
+                container.stop()?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn update_status(&mut self) {
+        if self.status == Status::Stopped {
+            return;
+        }
+
         // Skip expensive checks for recently errored sessions
         if self.status == Status::Error {
             if let Some(last_check) = self.last_error_check {
@@ -784,6 +804,7 @@ mod tests {
             Status::Running,
             Status::Waiting,
             Status::Idle,
+            Status::Stopped,
             Status::Error,
             Status::Starting,
             Status::Deleting,

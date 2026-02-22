@@ -58,4 +58,8 @@ pub trait ContainerRuntimeInterface {
     fn exec_command(&self, name: &str, options: Option<&str>) -> String;
 
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output>;
+
+    /// Check running state of all containers matching a name prefix in a single call.
+    /// Returns a map of container name -> is_running.
+    fn batch_running_states(&self, prefix: &str) -> std::collections::HashMap<String, bool>;
 }

@@ -401,6 +401,12 @@ impl HomeView {
                     }
                 }
             }
+            KeyCode::Char('x') => {
+                if let Some(session_id) = &self.selected_session {
+                    let session_id = session_id.clone();
+                    return Some(Action::StopSession(session_id));
+                }
+            }
             KeyCode::Char('d') => {
                 // Deletion only allowed in Agent View
                 if self.view_mode == ViewMode::Terminal {

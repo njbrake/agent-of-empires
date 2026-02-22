@@ -106,6 +106,40 @@ impl ContainerRuntimeInterface for Docker {
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output> {
         self.base.exec(name, cmd)
     }
+
+    fn batch_running_states(&self, prefix: &str) -> std::collections::HashMap<String, bool> {
+        let output = self
+            .base
+            .command()
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name={}", prefix),
+                "--format",
+                "{{.Names}}\t{{.State}}",
+            ])
+            .output();
+
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return std::collections::HashMap::new(),
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.splitn(2, '\t');
+                let name = parts.next()?.trim();
+                let state = parts.next()?.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                Some((name.to_string(), state == "running"))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

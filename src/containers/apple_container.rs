@@ -107,6 +107,10 @@ impl ContainerRuntimeInterface for AppleContainer {
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output> {
         self.base.exec(name, cmd)
     }
+
+    fn batch_running_states(&self, _prefix: &str) -> std::collections::HashMap<String, bool> {
+        std::collections::HashMap::new()
+    }
 }
 
 #[cfg(test)]

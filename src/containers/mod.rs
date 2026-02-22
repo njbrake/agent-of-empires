@@ -47,6 +47,12 @@ pub fn get_container_runtime() -> ContainerRuntime {
     }
 }
 
+/// Check running state of all aoe sandbox containers in a single subprocess call.
+/// Returns a map of container name -> is_running.
+pub fn batch_container_health() -> std::collections::HashMap<String, bool> {
+    get_container_runtime().batch_running_states("aoe-sandbox-")
+}
+
 pub struct DockerContainer {
     pub name: String,
     pub image: String,
