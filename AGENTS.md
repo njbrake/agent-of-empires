@@ -2,6 +2,11 @@
 
 > `CLAUDE.md` is a symlink to this file. Do not edit `CLAUDE.md` directly -- edit `AGENTS.md` instead.
 
+## MCP Tool Priority
+
+- Always prefer Serena MCP tools (`find_symbol`, `replace_symbol_body`, `get_symbols_overview`, `insert_after_symbol`, etc.) over built-in Edit/Read/Write tools for code exploration and editing.
+- Call `check_onboarding_performed` at the start of each conversation before doing any work.
+
 ## Project Structure & Module Organization
 
 - `src/main.rs`: binary entrypoint (`aoe`).
