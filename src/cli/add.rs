@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::repo_config;
-use crate::session::{civilizations, Config, GroupTree, Instance, SandboxInfo, Storage};
+use crate::session::{civilizations, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -83,7 +83,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
         }
 
-        let config = Config::load()?;
+        let config = crate::session::resolve_config(profile)?;
 
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
@@ -175,11 +175,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         instance.worktree_info = Some(worktree_info);
     }
 
+    instance.profile = profile.to_string();
     instance.yolo_mode = args.yolo;
 
     // Handle sandbox setup
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
-    let config = Config::load()?;
+    let config = crate::session::resolve_config(profile)?;
 
     let runtime = containers::get_container_runtime();
     if use_sandbox || config.sandbox.enabled_by_default {
@@ -198,7 +199,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 .sandbox_image
                 .as_ref()
                 .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| runtime.effective_default_image());
+                .unwrap_or_else(|| config.sandbox.default_image.clone());
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,
@@ -207,9 +208,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 created_at: None,
                 extra_env_keys: None,
                 extra_env_values: None,
-                custom_instruction: Config::load()
-                    .ok()
-                    .and_then(|c| c.sandbox.custom_instruction),
+                custom_instruction: config.sandbox.custom_instruction.clone(),
             });
         }
     }

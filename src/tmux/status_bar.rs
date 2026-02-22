@@ -91,16 +91,17 @@ pub fn apply_all_tmux_options(
     title: &str,
     branch: Option<&str>,
     sandbox: Option<&SandboxDisplay>,
+    tmux_config: &crate::session::config::TmuxConfig,
 ) {
     use crate::session::config::{should_apply_tmux_mouse, should_apply_tmux_status_bar};
 
-    if should_apply_tmux_status_bar() {
+    if should_apply_tmux_status_bar(tmux_config) {
         if let Err(e) = apply_status_bar(session_name, title, branch, sandbox) {
             tracing::debug!("Failed to apply tmux status bar: {}", e);
         }
     }
 
-    if let Some(mouse_enabled) = should_apply_tmux_mouse() {
+    if let Some(mouse_enabled) = should_apply_tmux_mouse(tmux_config) {
         if let Err(e) = apply_mouse_option(session_name, mouse_enabled) {
             tracing::debug!("Failed to apply tmux mouse option: {}", e);
         }

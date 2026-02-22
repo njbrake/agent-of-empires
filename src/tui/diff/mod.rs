@@ -11,7 +11,6 @@ use crate::git::diff::{
     list_branches, DiffFile, FileDiff,
 };
 use crate::session::config::{load_config, save_config};
-use crate::session::Config;
 use crate::tui::dialogs::InfoDialog;
 
 pub use input::DiffAction;
@@ -73,8 +72,8 @@ pub struct DiffView {
 
 impl DiffView {
     /// Create a new diff view for a repository
-    pub fn new(repo_path: PathBuf) -> anyhow::Result<Self> {
-        let config = Config::load().unwrap_or_default();
+    pub fn new(repo_path: PathBuf, profile: &str) -> anyhow::Result<Self> {
+        let config = crate::session::resolve_config(profile).unwrap_or_default();
 
         // Determine base branch
         let base_branch = config

@@ -101,6 +101,7 @@ impl CreationPoller {
             path: data.path.clone(),
             group: data.group,
             tool: data.tool,
+            profile: data.profile,
             worktree_branch: data.worktree_branch,
             create_new_branch: data.create_new_branch,
             sandbox: data.sandbox,

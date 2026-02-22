@@ -91,10 +91,11 @@ pub(crate) fn collect_env_values(
 /// Build docker exec environment flags from config and optional per-session extra keys.
 /// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
 /// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
-pub(crate) fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
-    let config = super::config::Config::load().unwrap_or_default();
-
-    let env_keys = collect_env_keys(&config.sandbox, sandbox);
+pub(crate) fn build_docker_env_args(
+    sandbox: &SandboxInfo,
+    sandbox_config: &SandboxConfig,
+) -> String {
+    let env_keys = collect_env_keys(sandbox_config, sandbox);
 
     let mut args: Vec<String> = env_keys
         .iter()
@@ -105,7 +106,7 @@ pub(crate) fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
         })
         .collect();
 
-    for (key, resolved) in collect_env_values(&config.sandbox, sandbox) {
+    for (key, resolved) in collect_env_values(sandbox_config, sandbox) {
         args.push(format!("-e {}={}", key, shell_escape(&resolved)));
     }
 

@@ -17,6 +17,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_profile() -> String {
+    "default".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalInfo {
     #[serde(default)]
@@ -74,6 +78,8 @@ pub struct Instance {
     pub project_path: String,
     #[serde(default)]
     pub group_path: String,
+    #[serde(default = "default_profile")]
+    pub profile: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default)]
@@ -122,6 +128,7 @@ impl Instance {
             title: title.to_string(),
             project_path: project_path.to_string(),
             group_path: String::new(),
+            profile: default_profile(),
             parent_session_id: None,
             command: String::new(),
             tool: "claude".to_string(),
@@ -145,6 +152,11 @@ impl Instance {
     pub fn update_search_cache(&mut self) {
         self.title_lower = self.title.to_lowercase();
         self.project_path_lower = self.project_path.to_lowercase();
+    }
+
+    /// Load the effective config for this instance's profile (global + profile overrides merged).
+    pub fn resolved_config(&self) -> super::config::Config {
+        super::profile_config::resolve_config(&self.profile).unwrap_or_default()
     }
 
     pub fn is_sub_session(&self) -> bool {
@@ -232,10 +244,11 @@ impl Instance {
             anyhow::bail!("Cannot create container terminal for non-sandboxed session");
         }
 
+        let config = self.resolved_config();
         let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox);
+        let env_args = build_docker_env_args(sandbox, &config.sandbox);
         let env_part = if env_args.is_empty() {
             String::new()
         } else {
@@ -282,6 +295,7 @@ impl Instance {
 
     /// Apply all configured tmux options to a session with the given name and title.
     fn apply_session_tmux_options(&self, session_name: &str, display_title: &str) {
+        let config = self.resolved_config();
         let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
         let sandbox = self.sandbox_display();
         crate::tmux::status_bar::apply_all_tmux_options(
@@ -289,6 +303,7 @@ impl Instance {
             display_title,
             branch,
             sandbox.as_ref(),
+            &config.tmux,
         );
     }
 
@@ -323,11 +338,7 @@ impl Instance {
         let on_launch_hooks = if skip_on_launch {
             None
         } else {
-            // Start with global+profile hooks as the base
-            let profile = super::config::Config::load()
-                .map(|c| c.default_profile)
-                .unwrap_or_else(|_| "default".to_string());
-            let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
+            let mut resolved_on_launch = super::profile_config::resolve_config(&self.profile)
                 .map(|c| c.hooks.on_launch)
                 .unwrap_or_default();
 
@@ -347,6 +358,8 @@ impl Instance {
                 Some(resolved_on_launch)
             }
         };
+
+        let resolved_config = self.resolved_config();
 
         let cmd = if self.is_sandboxed() {
             let container = self.get_container_for_instance()?;
@@ -390,7 +403,7 @@ impl Instance {
                 }
             }
 
-            let env_args = build_docker_env_args(sandbox);
+            let env_args = build_docker_env_args(sandbox, &resolved_config.sandbox);
             let env_part = if env_args.is_empty() {
                 String::new()
             } else {
@@ -514,11 +527,13 @@ impl Instance {
     }
 
     fn build_container_config(&self) -> Result<crate::containers::ContainerConfig> {
+        let config = self.resolved_config();
         container_config::build_container_config(
             &self.project_path,
             self.sandbox_info.as_ref().unwrap(),
             &self.tool,
             self.is_yolo_mode(),
+            &config,
         )
     }
 

@@ -12,7 +12,7 @@ use chrono::Utc;
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::git::GitWorktree;
 
-use super::{civilizations, Config, Instance, SandboxInfo, WorktreeInfo};
+use super::{civilizations, Instance, SandboxInfo, WorktreeInfo};
 
 /// Parameters for creating a new session instance.
 #[derive(Debug, Clone)]
@@ -21,6 +21,7 @@ pub struct InstanceParams {
     pub path: String,
     pub group: String,
     pub tool: String,
+    pub profile: String,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
@@ -77,7 +78,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             bail!("Path is not in a git repository");
         }
 
-        let config = Config::load()?;
+        let config = super::profile_config::resolve_config(&params.profile)?;
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
@@ -155,6 +156,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
     };
 
     let mut instance = Instance::new(&final_title, &final_path);
+    instance.profile = params.profile.clone();
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
     instance.command = crate::agents::get_agent(&params.tool)
@@ -192,7 +194,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
                     Some(map)
                 }
             },
-            custom_instruction: Config::load()
+            custom_instruction: super::profile_config::resolve_config(&params.profile)
                 .ok()
                 .and_then(|c| c.sandbox.custom_instruction),
         });
