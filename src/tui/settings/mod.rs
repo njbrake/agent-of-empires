@@ -127,9 +127,12 @@ impl SettingsView {
             SettingsCategory::Hooks,
             SettingsCategory::Sandbox,
             SettingsCategory::Worktree,
+            SettingsCategory::Diff,
             SettingsCategory::Updates,
             SettingsCategory::Tmux,
             SettingsCategory::Sound,
+            SettingsCategory::Theme,
+            SettingsCategory::Claude,
         ];
 
         let mut view = Self {

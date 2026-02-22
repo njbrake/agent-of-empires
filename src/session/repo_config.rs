@@ -1,8 +1,7 @@
 //! Repository-level configuration (`.aoe/config.toml`)
 //!
-//! Allows repos to define hooks and override session/sandbox/worktree settings.
-//! Settings that are personal/global (theme, updates, tmux, claude config_dir) are
-//! intentionally not overridable at the repo level.
+//! Allows repos to define hooks and override any settings from global/profile config.
+//! All config sections are supported at the repo level.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,13 +21,20 @@ pub enum HookProgress {
 
 use super::config::Config;
 use super::profile_config::{
-    HooksConfigOverride, ProfileConfig, SandboxConfigOverride, SessionConfigOverride,
-    TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
+    ClaudeConfigOverride, DiffConfigOverride, HooksConfigOverride, ProfileConfig,
+    SandboxConfigOverride, SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride,
+    UpdatesConfigOverride, WorktreeConfigOverride,
 };
 
 /// Repository-level configuration loaded from `.aoe/config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<ClaudeConfigOverride>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
 
@@ -40,6 +46,9 @@ pub struct RepoConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updates: Option<UpdatesConfigOverride>,
@@ -121,9 +130,21 @@ pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> 
 /// Merge repo config overrides into an already-resolved config (global + profile).
 pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
     use super::profile_config::{
-        apply_sandbox_overrides, apply_session_overrides, apply_tmux_overrides,
-        apply_worktree_overrides,
+        apply_diff_overrides, apply_sandbox_overrides, apply_session_overrides,
+        apply_tmux_overrides, apply_worktree_overrides,
     };
+
+    if let Some(ref theme_override) = repo.theme {
+        if let Some(ref name) = theme_override.name {
+            config.theme.name = name.clone();
+        }
+    }
+
+    if let Some(ref claude_override) = repo.claude {
+        if claude_override.config_dir.is_some() {
+            config.claude.config_dir = claude_override.config_dir.clone();
+        }
+    }
 
     if let Some(ref session_override) = repo.session {
         apply_session_overrides(&mut config.session, session_override);
@@ -135,6 +156,10 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
 
     if let Some(ref worktree_override) = repo.worktree {
         apply_worktree_overrides(&mut config.worktree, worktree_override);
+    }
+
+    if let Some(ref diff_override) = repo.diff {
+        apply_diff_overrides(&mut config.diff, diff_override);
     }
 
     if let Some(ref hooks) = repo.hooks {
@@ -177,11 +202,14 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
 /// for all three scopes (Global, Profile, Repo).
 pub fn repo_config_to_profile(repo: &RepoConfig) -> ProfileConfig {
     ProfileConfig {
+        theme: repo.theme.clone(),
+        claude: repo.claude.clone(),
         updates: repo.updates.clone(),
         worktree: repo.worktree.clone(),
         sandbox: repo.sandbox.clone(),
         tmux: repo.tmux.clone(),
         session: repo.session.clone(),
+        diff: repo.diff.clone(),
         sound: repo.sound.clone(),
         hooks: repo.hooks.as_ref().map(|h| HooksConfigOverride {
             on_create: if h.on_create.is_empty() {
@@ -195,13 +223,14 @@ pub fn repo_config_to_profile(repo: &RepoConfig) -> ProfileConfig {
                 Some(h.on_launch.clone())
             },
         }),
-        ..Default::default()
     }
 }
 
 /// Convert a ProfileConfig back into a RepoConfig after TUI editing.
 pub fn profile_to_repo_config(profile: &ProfileConfig) -> RepoConfig {
     RepoConfig {
+        theme: profile.theme.clone(),
+        claude: profile.claude.clone(),
         hooks: profile.hooks.as_ref().map(|h| HooksConfig {
             on_create: h.on_create.clone().unwrap_or_default(),
             on_launch: h.on_launch.clone().unwrap_or_default(),
@@ -209,6 +238,7 @@ pub fn profile_to_repo_config(profile: &ProfileConfig) -> RepoConfig {
         session: profile.session.clone(),
         sandbox: profile.sandbox.clone(),
         worktree: profile.worktree.clone(),
+        diff: profile.diff.clone(),
         updates: profile.updates.clone(),
         tmux: profile.tmux.clone(),
         sound: profile.sound.clone(),
@@ -588,6 +618,8 @@ pub fn execute_hooks_in_container_streamed(
 /// Template content for `aoe init`.
 pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 # This file configures aoe behavior for this repository.
+# All sections override global and profile settings. Only set fields override;
+# unset fields inherit from the previous layer.
 # See: https://github.com/njbrake/agent-of-empires
 
 # [hooks]
@@ -609,6 +641,10 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 # [worktree]
 # enabled = true
 
+# [diff]
+# default_branch = "main"
+# context_lines = 3
+
 # [updates]
 # check_enabled = false
 
@@ -618,6 +654,12 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 
 # [sound]
 # enabled = false
+
+# [theme]
+# name = ""
+
+# [claude]
+# config_dir = "~/.claude"
 "#;
 
 #[cfg(test)]

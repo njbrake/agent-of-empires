@@ -38,6 +38,9 @@ pub struct ProfileConfig {
     pub session: Option<SessionConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,6 +156,15 @@ pub struct SessionConfigOverride {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiffConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_lines: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_create: Option<Vec<String>>,
@@ -197,6 +209,7 @@ pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
         || config.sandbox.is_some()
         || config.tmux.is_some()
         || config.session.is_some()
+        || config.diff.is_some()
         || config.hooks.is_some()
         || config.sound.is_some()
 }
@@ -305,6 +318,16 @@ pub fn apply_session_overrides(
     }
 }
 
+/// Apply diff config overrides to a target config.
+pub fn apply_diff_overrides(target: &mut super::config::DiffConfig, source: &DiffConfigOverride) {
+    if source.default_branch.is_some() {
+        target.default_branch = source.default_branch.clone();
+    }
+    if let Some(context_lines) = source.context_lines {
+        target.context_lines = context_lines;
+    }
+}
+
 /// Apply tmux config overrides to a target config.
 pub fn apply_tmux_overrides(target: &mut super::config::TmuxConfig, source: &TmuxConfigOverride) {
     if let Some(status_bar) = source.status_bar {
@@ -358,6 +381,10 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
 
     if let Some(ref session_override) = profile.session {
         apply_session_overrides(&mut global.session, session_override);
+    }
+
+    if let Some(ref diff_override) = profile.diff {
+        apply_diff_overrides(&mut global.diff, diff_override);
     }
 
     if let Some(ref hooks_override) = profile.hooks {

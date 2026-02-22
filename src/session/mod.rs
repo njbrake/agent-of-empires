@@ -22,9 +22,9 @@ pub use instance::{Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo};
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,
     validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
-    ClaudeConfigOverride, HooksConfigOverride, ProfileConfig, SandboxConfigOverride,
-    SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride,
-    WorktreeConfigOverride,
+    ClaudeConfigOverride, DiffConfigOverride, HooksConfigOverride, ProfileConfig,
+    SandboxConfigOverride, SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride,
+    UpdatesConfigOverride, WorktreeConfigOverride,
 };
 pub use repo_config::{
     check_hook_trust, execute_hooks, execute_hooks_in_container, load_repo_config,
