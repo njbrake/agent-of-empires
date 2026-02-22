@@ -8,6 +8,7 @@ use clap_complete::Shell;
 
 use super::add::AddArgs;
 use super::group::GroupCommands;
+use super::hooks_manage::HooksCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
@@ -96,6 +97,16 @@ pub enum Commands {
 
     /// Uninstall Agent of Empires
     Uninstall(UninstallArgs),
+
+    /// Manage Claude Code hooks for status detection
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommands,
+    },
+
+    /// Internal hook handler invoked by Claude Code lifecycle events
+    #[command(name = "_hook", hide = true)]
+    Hook,
 
     /// Generate shell completions
     Completion {

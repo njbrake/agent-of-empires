@@ -396,11 +396,10 @@ impl Instance {
             } else {
                 format!("{} ", env_args)
             };
-            Some(wrap_command_ignore_suspend(&format!(
-                "{} {}",
-                container.exec_command(Some(&env_part)),
-                tool_cmd
-            )))
+            Some(wrap_command_ignore_suspend(
+                &format!("{} {}", container.exec_command(Some(&env_part)), tool_cmd),
+                None, // aoe binary isn't available inside containers
+            ))
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
             if let Some(ref hook_cmds) = on_launch_hooks {
@@ -428,7 +427,7 @@ impl Instance {
                                 }
                             }
                         }
-                        wrap_command_ignore_suspend(&cmd)
+                        wrap_command_ignore_suspend(&cmd, Some(&self.id))
                     })
             } else {
                 let mut cmd = self.command.clone();
@@ -445,7 +444,7 @@ impl Instance {
                         }
                     }
                 }
-                Some(wrap_command_ignore_suspend(&cmd))
+                Some(wrap_command_ignore_suspend(&cmd, Some(&self.id)))
             }
         };
 
@@ -544,6 +543,14 @@ impl Instance {
         if session.exists() {
             session.kill()?;
         }
+        // Clean up hook status files (full ID + 8-char prefix from legacy sessions)
+        if let Ok(app_dir) = crate::session::get_app_dir() {
+            let hook_dir = app_dir.join("hook_status");
+            let _ = std::fs::remove_file(hook_dir.join(&self.id));
+            if self.id.len() > 8 {
+                let _ = std::fs::remove_file(hook_dir.join(&self.id[..8]));
+            }
+        }
         Ok(())
     }
 
@@ -561,6 +568,15 @@ impl Instance {
         if let Some(start_time) = self.last_start_time {
             if start_time.elapsed().as_secs() < 3 {
                 self.status = Status::Starting;
+                return;
+            }
+        }
+
+        // Hook-based status: if a fresh hook file exists, use it directly.
+        // Skips tmux capture-pane entirely for hook-enabled Claude sessions.
+        if self.tool == "claude" {
+            if let Some(status) = crate::tmux::hook_status::read_hook_status(&self.id) {
+                self.status = status;
                 return;
             }
         }
@@ -609,9 +625,18 @@ fn generate_id() -> String {
 /// This wrapper disables the suspend character at the terminal level before exec'ing
 /// the actual command.
 ///
+/// If `instance_id` is provided, exports `AOE_INSTANCE_ID` so that Claude Code hooks
+/// can write status files keyed to this session.
+///
 /// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
-fn wrap_command_ignore_suspend(cmd: &str) -> String {
-    format!("bash -c 'stty susp undef; exec {}'", cmd)
+fn wrap_command_ignore_suspend(cmd: &str, instance_id: Option<&str>) -> String {
+    match instance_id {
+        Some(id) => format!(
+            "bash -c 'export AOE_INSTANCE_ID={}; stty susp undef; exec {}'",
+            id, cmd
+        ),
+        None => format!("bash -c 'stty susp undef; exec {}'", cmd),
+    }
 }
 
 #[cfg(test)]

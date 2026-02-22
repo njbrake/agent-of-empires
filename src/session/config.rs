@@ -118,6 +118,10 @@ pub struct ThemeConfig {
 pub struct ClaudeConfig {
     #[serde(default)]
     pub config_dir: Option<String>,
+
+    /// Use Claude Code hooks for status detection instead of pane capture
+    #[serde(default)]
+    pub status_hooks: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

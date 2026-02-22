@@ -31,6 +31,7 @@ async fn main() -> Result<()> {
                 TmuxCommands::Status(args) => cli::tmux::run_status(args),
             };
         }
+        Some(Commands::Hook) => return cli::hook::run(),
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Uninstall(args)) => return cli::uninstall::run(args).await,
         _ => {}
@@ -52,6 +53,7 @@ async fn main() -> Result<()> {
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
+        Some(Commands::Hooks { command }) => cli::hooks_manage::run(command).await,
         None => tui::run(&profile).await,
         _ => unreachable!(),
     }

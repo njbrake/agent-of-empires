@@ -484,6 +484,11 @@ impl SettingsView {
                 }
             }
             // Session
+            FieldKey::ClaudeStatusHooks => {
+                if let Some(ref mut c) = config.claude {
+                    c.status_hooks = None;
+                }
+            }
             FieldKey::DefaultTool => {
                 if let Some(ref mut s) = config.session {
                     s.default_tool = None;

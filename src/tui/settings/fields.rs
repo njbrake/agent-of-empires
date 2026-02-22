@@ -67,6 +67,7 @@ pub enum FieldKey {
     StatusBar,
     Mouse,
     // Session
+    ClaudeStatusHooks,
     DefaultTool,
     // Sound
     SoundEnabled,
@@ -592,6 +593,7 @@ fn build_session_fields(
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
     let session = profile.session.as_ref();
+    let claude = profile.claude.as_ref();
 
     let (default_tool, has_override) = resolve_optional(
         scope,
@@ -611,6 +613,12 @@ fn build_session_fields(
         session.and_then(|s| s.yolo_mode_default),
     );
 
+    let (status_hooks, status_hooks_override) = resolve_value(
+        scope,
+        global.claude.status_hooks,
+        claude.and_then(|c| c.status_hooks),
+    );
+
     vec![
         SettingField {
             key: FieldKey::DefaultTool,
@@ -627,6 +635,14 @@ fn build_session_fields(
             value: FieldValue::Bool(yolo_mode_default),
             category: SettingsCategory::Session,
             has_override: yolo_override,
+        },
+        SettingField {
+            key: FieldKey::ClaudeStatusHooks,
+            label: "Status Hooks",
+            description: "Use Claude Code hooks for status detection instead of pane capture",
+            value: FieldValue::Bool(status_hooks),
+            category: SettingsCategory::Session,
+            has_override: status_hooks_override,
         },
     ]
 }
@@ -867,6 +883,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             };
         }
         // Session
+        (FieldKey::ClaudeStatusHooks, FieldValue::Bool(v)) => {
+            config.claude.status_hooks = *v;
+        }
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool =
                 crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
@@ -1114,6 +1133,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             });
         }
         // Session
+        (FieldKey::ClaudeStatusHooks, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.claude.status_hooks,
+                &mut config.claude,
+                |s, val| s.status_hooks = val,
+            );
+        }
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             let tool = crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
             if tool == global.session.default_tool {
