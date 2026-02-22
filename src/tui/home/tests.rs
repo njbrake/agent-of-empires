@@ -1233,3 +1233,23 @@ fn test_uppercase_l_grows_list() {
     env.view.handle_key(key(KeyCode::Char('L')));
     assert_eq!(env.view.list_width, 40);
 }
+
+#[test]
+#[serial]
+fn test_sidebar_mode_default_false() {
+    let env = create_test_env_empty();
+    assert!(!env.view.sidebar_mode);
+}
+
+#[test]
+#[serial]
+fn test_tab_toggles_sidebar_mode() {
+    let mut env = create_test_env_empty();
+    assert!(!env.view.sidebar_mode);
+
+    env.view.handle_key(key(KeyCode::Tab));
+    assert!(env.view.sidebar_mode);
+
+    env.view.handle_key(key(KeyCode::Tab));
+    assert!(!env.view.sidebar_mode);
+}

@@ -528,6 +528,9 @@ impl HomeView {
                     self.toggle_group_collapsed(&path);
                 }
             }
+            KeyCode::Tab => {
+                self.toggle_sidebar_mode();
+            }
             KeyCode::Char('H') => {
                 self.shrink_list();
             }

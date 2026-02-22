@@ -36,6 +36,10 @@ pub struct Cli {
     #[arg(short = 'p', long, global = true, env = "AGENT_OF_EMPIRES_PROFILE")]
     pub profile: Option<String>,
 
+    /// Launch in sidebar mode (shows only the session list, no preview)
+    #[arg(long)]
+    pub sidebar_mode: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

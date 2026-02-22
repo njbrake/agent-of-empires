@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
         Some(Commands::Hooks { command }) => cli::hooks_manage::run(command).await,
-        None => tui::run(&profile).await,
+        None => tui::run(&profile, cli.sidebar_mode).await,
         _ => unreachable!(),
     }
 }

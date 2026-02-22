@@ -61,6 +61,9 @@ pub struct AppStateConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_file_list_width: Option<u16>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_mode: Option<bool>,
+
     #[serde(default)]
     pub has_seen_custom_instruction_warning: bool,
 }
