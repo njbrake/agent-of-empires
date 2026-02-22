@@ -29,6 +29,33 @@ fn map_event_to_status(input: &HookInput) -> Option<&'static str> {
     }
 }
 
+/// Write a debug log line when `AOE_HOOK_DEBUG=1`.
+///
+/// Appends to `{app_dir}/hook_debug.log`. Best-effort: silently ignores
+/// any I/O errors since this runs in a hook subprocess where tracing
+/// isn't initialized.
+fn debug_log(msg: &str) {
+    if std::env::var("AOE_HOOK_DEBUG").as_deref() != Ok("1") {
+        return;
+    }
+    let Ok(app_dir) = crate::session::get_app_dir() else {
+        return;
+    };
+    let path = app_dir.join("hook_debug.log");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(f, "[{}] {}", timestamp, msg);
+    }
+}
+
 /// Extract the 8-char instance ID prefix from a tmux session name.
 ///
 /// Session names follow the format `aoe_{title}_{id_prefix}` where id_prefix
@@ -54,18 +81,67 @@ fn extract_id_from_session_name(name: &str) -> Option<String> {
 }
 
 /// Detect the instance ID by querying the current tmux session name.
+///
+/// Uses `TMUX_PANE` with `-t` targeting to resolve the correct session even
+/// when multiple aoe sessions are running. Falls back to untargeted
+/// `display-message` if `TMUX_PANE` is unavailable.
 fn detect_instance_id_from_tmux() -> Option<String> {
-    let name = crate::tmux::get_current_session_name()?;
+    let name = get_pane_session_name().or_else(|| {
+        debug_log("TMUX_PANE unavailable, falling back to untargeted display-message");
+        crate::tmux::get_current_session_name()
+    })?;
     extract_id_from_session_name(&name)
 }
 
+/// Get the session name for the pane this process is running in.
+///
+/// `TMUX_PANE` (e.g. `%36`) is set by tmux for every pane process and
+/// inherited by all children. Using it with `-t` avoids the ambiguity
+/// of untargeted `display-message`, which resolves to the most recently
+/// active client rather than the calling process's pane.
+fn get_pane_session_name() -> Option<String> {
+    let pane_id = std::env::var("TMUX_PANE").ok()?;
+    debug_log(&format!("TMUX_PANE={}", pane_id));
+    let output = std::process::Command::new("tmux")
+        .args(["display-message", "-t", &pane_id, "-p", "#{session_name}"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !name.is_empty() {
+            debug_log(&format!("pane session resolved: {}", name));
+            return Some(name);
+        }
+    }
+    debug_log("pane session resolution failed");
+    None
+}
+
 pub fn run() -> Result<()> {
+    debug_log(&format!(
+        "hook invoked | TMUX_PANE={:?} | AOE_INSTANCE_ID={:?} | TMUX={:?}",
+        std::env::var("TMUX_PANE").ok(),
+        std::env::var("AOE_INSTANCE_ID").ok(),
+        std::env::var("TMUX").ok(),
+    ));
     let instance_id = match std::env::var("AOE_INSTANCE_ID") {
-        Ok(id) if !id.is_empty() => id,
-        _ => match detect_instance_id_from_tmux() {
-            Some(id) => id,
-            None => return Ok(()),
-        },
+        Ok(id) if !id.is_empty() => {
+            debug_log(&format!("AOE_INSTANCE_ID={}", id));
+            id
+        }
+        _ => {
+            debug_log("AOE_INSTANCE_ID not set, detecting from tmux");
+            match detect_instance_id_from_tmux() {
+                Some(id) => {
+                    debug_log(&format!("detected instance_id={}", id));
+                    id
+                }
+                None => {
+                    debug_log("no instance_id found, exiting");
+                    return Ok(());
+                }
+            }
+        }
     };
 
     let mut input = String::new();
@@ -77,13 +153,19 @@ pub fn run() -> Result<()> {
     let hook_dir = app_dir.join("hook_status");
     let status_path = hook_dir.join(&instance_id);
 
-    // SessionEnd: delete the file and exit
     if hook_input.hook_event_name == "SessionEnd" {
+        debug_log(&format!("SessionEnd: removing {}", status_path.display()));
         let _ = std::fs::remove_file(&status_path);
         return Ok(());
     }
 
-    if let Some(status) = map_event_to_status(&hook_input) {
+    let status = map_event_to_status(&hook_input);
+    debug_log(&format!(
+        "event={} -> status={:?}",
+        hook_input.hook_event_name, status
+    ));
+
+    if let Some(status) = status {
         std::fs::create_dir_all(&hook_dir)?;
 
         let timestamp = SystemTime::now()
@@ -91,10 +173,10 @@ pub fn run() -> Result<()> {
             .unwrap_or_default()
             .as_secs();
 
-        // Atomic write: temp file + rename in the same directory
         let tmp_path = hook_dir.join(format!(".{}.tmp", instance_id));
         std::fs::write(&tmp_path, format!("{} {}", status, timestamp))?;
         std::fs::rename(&tmp_path, &status_path)?;
+        debug_log(&format!("wrote {} to {}", status, status_path.display()));
     }
 
     Ok(())
