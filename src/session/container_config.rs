@@ -384,6 +384,7 @@ pub(crate) fn build_container_config(
     sandbox_info: &SandboxInfo,
     tool: &str,
     is_yolo_mode: bool,
+    config: &super::config::Config,
 ) -> Result<ContainerConfig> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
 
@@ -401,21 +402,13 @@ pub(crate) fn build_container_config(
         read_only: false,
     }];
 
-    let sandbox_config = match super::config::Config::load() {
-        Ok(c) => {
-            tracing::debug!(
-                "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
-                c.sandbox.extra_volumes,
-                c.sandbox.mount_ssh,
-                c.sandbox.volume_ignores
-            );
-            c.sandbox
-        }
-        Err(e) => {
-            tracing::warn!("Failed to load config, using defaults: {}", e);
-            Default::default()
-        }
-    };
+    let sandbox_config = &config.sandbox;
+    tracing::debug!(
+        "Sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
+        sandbox_config.extra_volumes,
+        sandbox_config.mount_ssh,
+        sandbox_config.volume_ignores
+    );
 
     const CONTAINER_HOME: &str = "/root";
 
@@ -493,7 +486,7 @@ pub(crate) fn build_container_config(
         }
     }
 
-    let env_keys = collect_env_keys(&sandbox_config, sandbox_info);
+    let env_keys = collect_env_keys(sandbox_config, sandbox_info);
 
     let mut environment: Vec<(String, String)> = env_keys
         .iter()
@@ -511,7 +504,7 @@ pub(crate) fn build_container_config(
         }
     }
 
-    environment.extend(collect_env_values(&sandbox_config, sandbox_info));
+    environment.extend(collect_env_values(sandbox_config, sandbox_info));
 
     // Add extra_volumes from config (host:container format)
     // Also collect container paths to filter conflicting volume_ignores later
@@ -565,8 +558,8 @@ pub(crate) fn build_container_config(
         volumes,
         anonymous_volumes,
         environment,
-        cpu_limit: sandbox_config.cpu_limit,
-        memory_limit: sandbox_config.memory_limit,
+        cpu_limit: sandbox_config.cpu_limit.clone(),
+        memory_limit: sandbox_config.memory_limit.clone(),
     })
 }
 

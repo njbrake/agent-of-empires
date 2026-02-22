@@ -390,7 +390,7 @@ impl HomeView {
                 };
 
                 let repo_path = std::path::PathBuf::from(&inst.project_path);
-                match DiffView::new(repo_path) {
+                match DiffView::new(repo_path, self.storage.profile()) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open diff view: {}", e);
@@ -425,12 +425,16 @@ impl HomeView {
                             has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
                         };
 
-                        self.unified_delete_dialog =
-                            Some(UnifiedDeleteDialog::new(inst.title.clone(), config));
+                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
+                            inst.title.clone(),
+                            config,
+                            self.storage.profile(),
+                        ));
                     } else {
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
+                            self.storage.profile(),
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {

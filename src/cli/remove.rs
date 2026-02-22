@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 
 use crate::containers;
-use crate::session::{Config, GroupTree, Instance, Storage};
+use crate::session::{GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -124,7 +124,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
             // Container cleanup (if config allows and user didn't request --keep-container)
             if let Some(sandbox) = &inst.sandbox_info {
                 if sandbox.enabled && !args.keep_container {
-                    let config = Config::load().ok().unwrap_or_default();
+                    let config = crate::session::resolve_config(profile).unwrap_or_default();
                     if config.sandbox.auto_cleanup {
                         let container = containers::DockerContainer::from_session_id(&inst.id);
                         if container.exists().unwrap_or(false) {
