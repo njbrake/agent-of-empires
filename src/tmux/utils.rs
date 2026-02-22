@@ -1,5 +1,6 @@
 //! tmux utility functions
 
+#[allow(dead_code)]
 pub fn strip_ansi(content: &str) -> String {
     let mut result = content.to_string();
 

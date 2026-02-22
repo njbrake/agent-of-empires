@@ -2,8 +2,6 @@
 
 use crate::session::Status;
 
-use super::utils::strip_ansi;
-
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
@@ -30,13 +28,47 @@ pub fn detect_claude_status(content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
+    // === RUNNING (highest priority) ===
+
+    // 1. "esc to interrupt" / "ctrl+c to interrupt" — primary running signal
     if last_lines_lower.contains("esc to interrupt")
         || last_lines_lower.contains("ctrl+c to interrupt")
     {
         return Status::Running;
     }
 
-    for line in &lines {
+    // 2. Activity indicator: [glyph] [Verb]… — Claude's status line (spinner or static)
+    //    Examples: ✽ Boogieing…, ✶ Recombobulating…, · Thinking…, ✳ Pollinating…
+    //    The … (U+2026 horizontal ellipsis) distinguishes active from completion (✻ Worked for 4m)
+    //    Pattern: single non-alnum glyph + space + text with … — future-proof for new glyphs
+    //    Excludes: ⎿ (tool output), ⏺ (tool marker), ● (output bullet), ❯ (prompt)
+    for line in non_empty_lines.iter().rev().take(10) {
+        let trimmed = line.trim();
+        if trimmed.len() < 80 && trimmed.contains('\u{2026}') {
+            let mut chars = trimmed.chars();
+            if let Some(first) = chars.next() {
+                if !first.is_alphanumeric()
+                    && !first.is_whitespace()
+                    && !matches!(first, '⎿' | '⏺' | '●' | '❯')
+                    && chars.next() == Some(' ')
+                {
+                    return Status::Running;
+                }
+            }
+        }
+    }
+
+    // 3. "⎿  Running…" — tool execution in progress
+    //    Only last 5 lines: permission prompts add ~9 lines of UI after this line
+    for line in non_empty_lines.iter().rev().take(5) {
+        let trimmed = line.trim();
+        if trimmed.starts_with('⎿') && trimmed.contains("Running") {
+            return Status::Running;
+        }
+    }
+
+    // 4. Braille spinners — ONLY last 5 lines (was: all lines → false positives)
+    for line in non_empty_lines.iter().rev().take(5) {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -44,7 +76,13 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+    // === WAITING (medium priority) ===
+
+    // Permission prompts
+    if last_lines.contains("Do you want to proceed?")
+        || last_lines_lower.contains("enter to select")
+        || last_lines_lower.contains("esc to cancel")
+    {
         return Status::Waiting;
     }
 
@@ -53,6 +91,7 @@ pub fn detect_claude_status(content: &str) -> Status {
         "Yes, allow always",
         "Allow once",
         "Allow always",
+        "Yes, and don't ask again",
         "❯ Yes",
         "❯ No",
         "Do you trust the files in this folder?",
@@ -63,31 +102,32 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
-    for line in &lines {
+    // Numbered selections with ❯ cursor — only in last 30 lines
+    for line in non_empty_lines.iter().rev().take(30) {
         let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
-            let rest = &trimmed[3..].trim_start();
+        if trimmed.starts_with('❯') && trimmed.len() > 2 {
+            let rest = trimmed.get(3..).unwrap_or("").trim_start();
             if rest.starts_with("1.") || rest.starts_with("2.") || rest.starts_with("3.") {
                 return Status::Waiting;
             }
         }
     }
 
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
+    // Checkbox UI: [ ] or [x] with ❯ cursor
+    if last_lines.contains("[ ]") || last_lines.contains("[x]") {
+        for line in non_empty_lines.iter().rev().take(30) {
+            if line.trim().starts_with('❯') {
+                return Status::Waiting;
+            }
         }
     }
 
-    // WAITING: Y/N confirmation prompts
-    // Only check in last lines
+    // Plan mode waiting — status bar indicator
+    if last_lines_lower.contains("plan mode on") {
+        return Status::Waiting;
+    }
+
+    // Y/N confirmation prompts
     let question_prompts = ["(Y/n)", "(y/N)", "[Y/n]", "[y/N]"];
     for prompt in &question_prompts {
         if last_lines.contains(prompt) {
@@ -95,6 +135,7 @@ pub fn detect_claude_status(content: &str) -> Status {
         }
     }
 
+    // === IDLE (fallback) ===
     Status::Idle
 }
 
@@ -123,7 +164,8 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    for line in &lines {
+    // Braille spinners — ONLY last 5 non-empty lines to avoid stale false positives
+    for line in non_empty_lines.iter().rev().take(5) {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -153,7 +195,8 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         }
     }
 
-    for line in &lines {
+    // Numbered selections — scoped to last 30 non-empty lines
+    for line in non_empty_lines.iter().rev().take(30) {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
             let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
@@ -169,45 +212,6 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         line.contains("❯") && (line.contains(" 1.") || line.contains(" 2.") || line.contains(" 3."))
     }) {
         return Status::Waiting;
-    }
-
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-
-        if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING - Completion indicators + input prompt nearby
-    // Only check in last lines
-    let completion_indicators = [
-        "complete",
-        "done",
-        "finished",
-        "ready",
-        "what would you like",
-        "what else",
-        "anything else",
-        "how can i help",
-        "let me know",
-    ];
-    let has_completion = completion_indicators
-        .iter()
-        .any(|ind| last_lines_lower.contains(ind));
-    if has_completion {
-        for line in non_empty_lines.iter().rev().take(10) {
-            let clean = strip_ansi(line).trim().to_string();
-            if clean == ">" || clean == "> " || clean == ">>" {
-                return Status::Waiting;
-            }
-        }
     }
 
     Status::Idle
@@ -342,7 +346,8 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    for line in &lines {
+    // Braille spinners — ONLY last 5 non-empty lines to avoid stale false positives
+    for line in non_empty_lines.iter().rev().take(5) {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -372,8 +377,8 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    // WAITING: Numbered selection
-    for line in &lines {
+    // WAITING: Numbered selection — scoped to last 30 non-empty lines
+    for line in non_empty_lines.iter().rev().take(30) {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
             let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
@@ -383,20 +388,6 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
             {
                 return Status::Waiting;
             }
-        }
-    }
-
-    // WAITING: Input prompt ready
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "codex>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
         }
     }
 
@@ -429,7 +420,8 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    for line in &lines {
+    // Braille spinners — ONLY last 5 non-empty lines to avoid stale false positives
+    for line in non_empty_lines.iter().rev().take(5) {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -449,14 +441,6 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
     ];
     for prompt in &approval_prompts {
         if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Input prompt
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
             return Status::Waiting;
         }
     }
@@ -493,8 +477,6 @@ mod tests {
             detect_claude_status("Do you trust the files in this folder?"),
             Status::Waiting
         );
-        assert_eq!(detect_claude_status("Task complete.\n>"), Status::Waiting);
-        assert_eq!(detect_claude_status("Done!\n> "), Status::Waiting);
         assert_eq!(detect_claude_status("Continue? (Y/n)"), Status::Waiting);
         assert_eq!(
             detect_claude_status("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"),
@@ -504,6 +486,56 @@ mod tests {
             detect_claude_status("❯ 1. Planned activities\n  2. Spontaneous"),
             Status::Waiting
         );
+    }
+
+    #[test]
+    fn test_detect_claude_activity_indicator_all_glyphs() {
+        // Claude spinner glyphs — detected via [glyph] [Verb]… pattern
+        // Excludes ● (output bullet with reduce motion off — dual meaning)
+        let glyphs = ["·", "✻", "✽", "✶", "✳", "✢"];
+        for glyph in &glyphs {
+            let content = format!("{} Razzle-dazzling…", glyph);
+            assert_eq!(
+                detect_claude_status(&content),
+                Status::Running,
+                "Failed for glyph: {}",
+                glyph
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_claude_output_bullet_not_running() {
+        // ● (output bullet with reduce motion off) must NOT trigger Running
+        assert_eq!(
+            detect_claude_status("● Done. The 3 worktrees remain."),
+            Status::Idle
+        );
+        // Even with … it's excluded since ● has dual meaning
+        assert_eq!(detect_claude_status("● Grooving…"), Status::Idle);
+        // ⏺ (tool output marker) also excluded
+        assert_eq!(detect_claude_status("⏺ Working…"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_claude_activity_indicator_with_context() {
+        // Activity line with extra info (timing, thinking mode)
+        assert_eq!(
+            detect_claude_status("✶ Recombobulating… (thought for 2s)"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_claude_status("✽ Grooving… (32s · ↓ 328 tokens)"),
+            Status::Running
+        );
+        assert_eq!(detect_claude_status("· Recombobulating…"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_claude_completion_marker_not_running() {
+        // ✻ (U+273B) with completion text (no …) → NOT running
+        assert_eq!(detect_claude_status("✻ Churned for 52s"), Status::Idle);
+        assert_eq!(detect_claude_status("✻ Worked for 4m 22s"), Status::Idle);
     }
 
     #[test]
@@ -534,15 +566,6 @@ mod tests {
         );
         assert_eq!(detect_opencode_status("continue? (y/n)"), Status::Waiting);
         assert_eq!(detect_opencode_status("approve changes"), Status::Waiting);
-        assert_eq!(detect_opencode_status("task complete.\n>"), Status::Waiting);
-        assert_eq!(
-            detect_opencode_status("ready for input\n> "),
-            Status::Waiting
-        );
-        assert_eq!(
-            detect_opencode_status("done! what else can i help with?\n>"),
-            Status::Waiting
-        );
     }
 
     #[test]
@@ -582,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_detect_claude_status_prompt_with_text() {
-        assert_eq!(detect_claude_status("> hello"), Status::Waiting);
+        assert_eq!(detect_claude_status("> hello"), Status::Idle);
     }
 
     #[test]
@@ -610,12 +633,12 @@ mod tests {
     #[test]
     fn test_detect_opencode_status_completion_with_prompt() {
         let content = "Task complete! What else can I help with?\n>";
-        assert_eq!(detect_opencode_status(content), Status::Waiting);
+        assert_eq!(detect_opencode_status(content), Status::Idle);
     }
 
     #[test]
     fn test_detect_opencode_status_double_prompt() {
-        assert_eq!(detect_opencode_status("Ready\n>>"), Status::Waiting);
+        assert_eq!(detect_opencode_status("Ready\n>>"), Status::Idle);
     }
 
     #[test]
@@ -694,8 +717,6 @@ mod tests {
             detect_codex_status("execute this action? [y/n]"),
             Status::Waiting
         );
-        assert_eq!(detect_codex_status("ready\ncodex>"), Status::Waiting);
-        assert_eq!(detect_codex_status("done\n>"), Status::Waiting);
     }
 
     #[test]
@@ -725,12 +746,127 @@ mod tests {
             detect_gemini_status("execute this action? [y/n]"),
             Status::Waiting
         );
-        assert_eq!(detect_gemini_status("ready\n>"), Status::Waiting);
     }
 
     #[test]
     fn test_detect_gemini_status_idle() {
         assert_eq!(detect_gemini_status("file saved"), Status::Idle);
         assert_eq!(detect_gemini_status("random output text"), Status::Idle);
+    }
+
+    // === Claude Code v2.1.49 regression tests ===
+
+    #[test]
+    fn test_claude_v2_idle_with_completion_marker() {
+        // ✻ (U+273B) = completed work, NOT active thinking
+        // The ❯ prompt is visible — this is Idle (no action needed from user)
+        let content = "⏺ All changes match the plan exactly.\n\n\
+            ✻ Churned for 52s\n\n\
+            ──────────────────────────────────────────────────\n\
+            ❯\n\
+            ──────────────────────────────────────────────────\n\
+            25% ▰▰▱▱▱▱▱▱▱▱ :3000 :8082\n\
+            ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        assert_eq!(detect_claude_status(content), Status::Idle);
+    }
+
+    #[test]
+    fn test_claude_v2_running_with_esc_to_interrupt() {
+        let content = "❯ please write me a story\n\n\
+            ✳ Pollinating… (esc to interrupt · thinking)\n\n\
+            ──────────────────────────────────────────────────\n\
+            ❯\n\
+            ──────────────────────────────────────────────────\n\
+            ? for shortcuts";
+        assert_eq!(detect_claude_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_claude_v2_running_with_active_asterisk() {
+        // ✳ (U+2733) = active thinking → Running
+        let content = "⏺ Some output\n\n\
+            ✳ Thinking…\n\
+            some streamed text";
+        assert_eq!(detect_claude_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_claude_v2_running_with_tool_execution() {
+        let content = "⏺ I'll remove the worktrees...\n\n\
+            ⏺ Bash(git worktree remove /path)\n\
+            ⎿  Running…";
+        assert_eq!(detect_claude_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_claude_v2_waiting_permission_prompt() {
+        let content = "───────────────────────────────────\n\
+            Bash command\n\n\
+            echo 'hi' > ~/test.txt\n\n\
+            Do you want to proceed?\n\
+            1. Yes\n\
+            2. Yes, and don't ask again for ~/test.txt commands\n\
+            ❯ 3. Type here to tell Claude what to do differently\n\n\
+            Esc to cancel";
+        assert_eq!(detect_claude_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_claude_v2_waiting_plan_mode() {
+        let content = "✻ Worked for 6m 20s\n\n\
+            ──────────────────────────────────────────────────\n\
+            ❯\n\
+            ──────────────────────────────────────────────────\n\
+            57% ▰▰▰▰▰▱▱▱▱▱ agent-of-empires\n\
+            ⏸ plan mode on (shift+tab to cycle)";
+        assert_eq!(detect_claude_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_stale_spinner_does_not_cause_false_running() {
+        // Spinner on line 5 of 41 lines — well outside last 5
+        let mut lines: Vec<String> = (0..40).map(|i| format!("Old output line {}", i)).collect();
+        lines[5] = "Processing ⠋ some old tool call".to_string();
+        lines.push("❯".to_string());
+        let content = lines.join("\n");
+        assert_eq!(detect_claude_status(&content), Status::Idle);
+    }
+
+    #[test]
+    fn test_stale_completion_not_confused_with_active() {
+        // ✻ (U+273B) = completed, NOT ✳ (U+2733) = active
+        // Bare ❯ with completed marker = Idle
+        let content = "✻ Worked for 4m 22s\n\n\
+            ──────────────────────────────────────────────────\n\
+            ❯\n\
+            ──────────────────────────────────────────────────";
+        assert_eq!(detect_claude_status(content), Status::Idle);
+    }
+
+    #[test]
+    fn test_claude_v2_idle_with_chevron_prompt() {
+        // ❯ (U+276F) is the actual Claude Code v2 prompt character — Idle, not Waiting
+        assert_eq!(detect_claude_status("Task complete.\n❯"), Status::Idle);
+        assert_eq!(detect_claude_status("Done!\n❯ "), Status::Idle);
+    }
+
+    #[test]
+    fn test_claude_v2_idle_chevron_prompt_with_text() {
+        // User typing at the ❯ prompt — Idle, not Waiting
+        assert_eq!(detect_claude_status("❯ hello"), Status::Idle);
+    }
+
+    #[test]
+    fn test_claude_v2_yes_and_dont_ask_again() {
+        let content = "Allow this?\n\
+            Yes, and don't ask again for this command";
+        assert_eq!(detect_claude_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_claude_v2_do_you_want_to_proceed() {
+        let content = "⏺ Bash(rm -rf /tmp/test)\n\
+            Do you want to proceed?";
+        assert_eq!(detect_claude_status(content), Status::Waiting);
     }
 }
