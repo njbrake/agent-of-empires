@@ -126,7 +126,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                 if sandbox.enabled && !args.keep_container {
                     let config = crate::session::resolve_config(profile).unwrap_or_default();
                     if config.sandbox.auto_cleanup {
-                        let container = containers::DockerContainer::from_session_id(&inst.id);
+                        let container = containers::DockerContainer::for_instance(&inst);
                         if container.exists().unwrap_or(false) {
                             if let Err(e) = container.remove(true) {
                                 eprintln!("Warning: failed to remove container: {}", e);

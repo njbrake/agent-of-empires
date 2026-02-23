@@ -14,6 +14,8 @@ pub struct StatusUpdate {
     pub id: String,
     pub status: Status,
     pub last_error: Option<String>,
+    /// Updated container name if it changed (e.g. after external `docker rename`)
+    pub container_name: Option<String>,
 }
 
 /// Background thread that polls session status without blocking the UI
@@ -50,11 +52,19 @@ impl StatusPoller {
                 .into_iter()
                 .map(|mut inst| {
                     inst.update_status();
+                    let name_changed = inst.refresh_container_name();
+
+                    let container_name = if name_changed {
+                        inst.sandbox_info.as_ref().map(|s| s.container_name.clone())
+                    } else {
+                        None
+                    };
 
                     StatusUpdate {
                         id: inst.id,
                         status: inst.status,
                         last_error: inst.last_error,
+                        container_name,
                     }
                 })
                 .collect();

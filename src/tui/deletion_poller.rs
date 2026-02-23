@@ -109,7 +109,7 @@ impl DeletionPoller {
         if request.delete_sandbox {
             if let Some(sandbox) = &request.instance.sandbox_info {
                 if sandbox.enabled {
-                    let container = DockerContainer::from_session_id(&request.instance.id);
+                    let container = DockerContainer::for_instance(&request.instance);
                     if container.exists().unwrap_or(false) {
                         if let Err(e) = container.remove(true) {
                             errors.push(format!("Container: {}", e));

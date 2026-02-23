@@ -365,15 +365,13 @@ impl Instance {
             let container = self.get_container_for_instance()?;
             // Run on_launch hooks inside the container
             if let Some(ref hook_cmds) = on_launch_hooks {
-                if let Some(ref sandbox) = self.sandbox_info {
-                    let workdir = self.container_workdir();
-                    if let Err(e) = super::repo_config::execute_hooks_in_container(
-                        hook_cmds,
-                        &sandbox.container_name,
-                        &workdir,
-                    ) {
-                        tracing::warn!("on_launch hook failed in container: {}", e);
-                    }
+                let workdir = self.container_workdir();
+                if let Err(e) = super::repo_config::execute_hooks_in_container(
+                    hook_cmds,
+                    &container.name,
+                    &workdir,
+                ) {
+                    tracing::warn!("on_launch hook failed in container: {}", e);
                 }
             }
 
@@ -490,7 +488,9 @@ impl Instance {
             .ok_or_else(|| anyhow::anyhow!("Cannot ensure container for non-sandboxed session"))?;
 
         let image = &sandbox.image;
-        let container = DockerContainer::new(&self.id, image);
+
+        // Use for_instance to handle renamed containers
+        let container = DockerContainer::for_instance(self);
 
         if container.is_running()? {
             container_config::refresh_agent_configs();
@@ -503,19 +503,52 @@ impl Instance {
             return Ok(container);
         }
 
-        // Ensure image is available (always pulls to get latest)
+        // Container doesn't exist yet -- create with the canonical generated name
+        let new_container = DockerContainer::new(&self.id, image);
+
         let runtime = containers::get_container_runtime();
         runtime.ensure_image(image)?;
 
         let config = self.build_container_config()?;
-        let container_id = container.create(&config)?;
+        let container_id = new_container.create(&config)?;
 
         if let Some(ref mut sandbox) = self.sandbox_info {
             sandbox.container_id = Some(container_id);
+            sandbox.container_name = new_container.name.clone();
             sandbox.created_at = Some(Utc::now());
         }
 
-        Ok(container)
+        Ok(new_container)
+    }
+
+    /// Query Docker for the actual container name and update SandboxInfo if it changed.
+    /// Returns true if the name was updated.
+    pub fn refresh_container_name(&mut self) -> bool {
+        let sandbox = match self.sandbox_info.as_ref() {
+            Some(s) if s.enabled => s,
+            _ => return false,
+        };
+
+        // Need a container_id to look up the actual name
+        let container_id = match sandbox.container_id.as_deref() {
+            Some(id) if !id.is_empty() => id,
+            _ => return false,
+        };
+
+        let runtime = containers::get_container_runtime();
+        let actual_name = match runtime.get_container_name(container_id) {
+            Ok(Some(name)) => name,
+            _ => return false,
+        };
+
+        if actual_name != sandbox.container_name {
+            if let Some(ref mut sandbox) = self.sandbox_info {
+                sandbox.container_name = actual_name;
+            }
+            return true;
+        }
+
+        false
     }
 
     /// Get the container working directory for this instance.

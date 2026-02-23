@@ -321,7 +321,24 @@ impl HomeView {
         use crate::session::Status;
 
         if let Some(updates) = self.status_poller.try_recv_updates() {
+            let mut needs_persist = false;
+
             for update in updates {
+                // Apply container name changes to both collections
+                if let Some(ref new_name) = update.container_name {
+                    if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
+                        if let Some(ref mut sandbox) = inst.sandbox_info {
+                            sandbox.container_name = new_name.clone();
+                            needs_persist = true;
+                        }
+                    }
+                    if let Some(inst) = self.instance_map.get_mut(&update.id) {
+                        if let Some(ref mut sandbox) = inst.sandbox_info {
+                            sandbox.container_name = new_name.clone();
+                        }
+                    }
+                }
+
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
                     if inst.status != Status::Deleting {
                         let old_status = inst.status;
@@ -343,6 +360,13 @@ impl HomeView {
                     }
                 }
             }
+
+            if needs_persist {
+                let _ = self
+                    .storage
+                    .save_with_groups(&self.instances, &self.group_tree);
+            }
+
             self.pending_status_refresh = false;
             return true;
         }

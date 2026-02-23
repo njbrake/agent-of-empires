@@ -47,6 +47,29 @@ impl ContainerRuntimeInterface for Docker {
         self.base.effective_default_image()
     }
 
+    fn get_container_name(&self, id_or_name: &str) -> Result<Option<String>> {
+        let output = self
+            .base
+            .command()
+            .args(["container", "inspect", "-f", "{{.Name}}", id_or_name])
+            .output()?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let name = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .trim_start_matches('/')
+            .to_string();
+
+        if name.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(name))
+        }
+    }
+
     fn does_container_exist(&self, name: &str) -> Result<bool> {
         let output = self
             .base
