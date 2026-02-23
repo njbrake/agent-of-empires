@@ -1,21 +1,13 @@
 # Status Detection Fixtures
 
-This directory contains terminal screen captures used for golden testing of status detection. Each state (idle, running, waiting_permission, waiting_question) is a directory containing one or more fixture files.
+This directory contains terminal screen captures used for golden testing of pane-based status detection. Each state (idle, running, waiting_permission, waiting_question) is a directory containing one or more fixture files.
+
+Note: Claude Code status is managed entirely by hooks, so no fixtures are needed for it. Only tools that rely on pane-content scraping have fixtures here.
 
 ## Directory Structure
 
 ```
 fixtures/
-  claude_code/
-    idle/
-      001_welcome_screen.txt
-      002_after_command.txt
-    running/
-      001_thinking.txt
-    waiting_permission/
-      001_bash_command.txt
-    waiting_question/
-      001_checkbox.txt
   opencode/
     idle/
       001_startup.txt
@@ -29,7 +21,7 @@ fixtures/
 
 ### Step 1: Get the tool into the desired state
 
-Start the tool (Claude Code or OpenCode) in a tmux session managed by `aoe`, and get it into the state you want to capture:
+Start the tool (e.g., OpenCode) in a tmux session managed by `aoe`, and get it into the state you want to capture:
 - `idle`: Tool is waiting for user input
 - `running`: Tool is actively processing (thinking, generating, etc.)
 - `waiting_permission`: Tool is waiting for user approval
@@ -44,7 +36,7 @@ Run the capture script:
 ```
 
 **Arguments:**
-- `tool`: `claude` or `opencode`
+- `tool`: `opencode` (or other pane-scraped tools)
 - `state`: `idle`, `running`, `waiting_permission`, or `waiting_question`
 - `tmux_session`: Name of the tmux session (e.g., `aoe_myproject_abc12345`)
 - `description`: Optional description for the filename (e.g., `bug_report_123`)
@@ -52,10 +44,9 @@ Run the capture script:
 **Examples:**
 ```bash
 # Basic capture
-./scripts/capture-fixtures.sh claude running aoe_myproject_abc12345
+./scripts/capture-fixtures.sh opencode running aoe_myproject_abc12345
 
 # With description
-./scripts/capture-fixtures.sh claude running aoe_myproject_abc12345 "tool_call"
 ./scripts/capture-fixtures.sh opencode waiting_permission aoe_task_def67890 "file_edit"
 ```
 
@@ -69,7 +60,7 @@ The script will:
 
 1. Review the captured content:
    ```bash
-   cat tests/fixtures/claude_code/running/002_tool_call.txt
+   cat tests/fixtures/opencode/running/002_tool_call.txt
    ```
 
 2. Update the "Key indicators" comment in the fixture file if needed
@@ -81,9 +72,7 @@ The script will:
 
 ### Step 4: Update detection logic (if needed)
 
-If the test fails, you may need to update the detection logic in `src/tmux/session.rs`:
-- `detect_claude_status()` for Claude Code
-- `detect_opencode_status()` for OpenCode
+If the test fails, you may need to update the detection logic in `src/tmux/status_detection.rs` (e.g., `detect_opencode_status()`).
 
 ## Naming Convention
 
