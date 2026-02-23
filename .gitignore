@@ -31,7 +31,7 @@ Thumbs.db
 .env
 .env.local
 
-# Agent of Empires data (for development)
+# kokorro data (for development)
 .agent-of-empires/
 
 # VS Code extensions data

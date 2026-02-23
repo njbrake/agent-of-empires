@@ -132,7 +132,7 @@ jobs:
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          name: Agent of Empires ${{ steps.version.outputs.version }}
+          name: kokorro ${{ steps.version.outputs.version }}
           draft: false
           prerelease: false
           files: |

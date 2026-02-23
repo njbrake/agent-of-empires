@@ -1,10 +1,10 @@
 ---
 layout: ../../../layouts/Docs.astro
 title: tmux Status Bar
-description: Configure the tmux status bar to display Agent of Empires session information.
+description: Configure the tmux status bar to display kokorro session information.
 ---
 
-Agent of Empires can display session information in your tmux status bar, showing:
+kokorro can display session information in your tmux status bar, showing:
 - **Session title**: The name of your aoe session
 - **Git branch**: For worktree sessions
 - **Container name**: For sandboxed (Docker) sessions

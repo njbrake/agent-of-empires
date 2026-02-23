@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Development
-description: Build, run, and test Agent of Empires from source.
+description: Build, run, and test kokorro from source.
 ---
 
 ## Building

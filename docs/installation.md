@@ -5,7 +5,7 @@
 - [tmux](https://github.com/tmux/tmux/wiki) (required)
 - [Docker](https://www.docker.com/) (optional, for sandboxing agents in containers)
 
-## Install Agent of Empires
+## Install kokorro
 
 ### Quick Install (Recommended)
 
@@ -41,7 +41,7 @@ aoe --version
 
 ## Uninstall
 
-To remove Agent of Empires:
+To remove kokorro:
 
 ```bash
 aoe uninstall

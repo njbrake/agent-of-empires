@@ -121,7 +121,7 @@ impl HomeView {
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let title = match self.view_mode {
-            ViewMode::Agent => format!(" Agent of Empires [{}] ", self.storage.profile()),
+            ViewMode::Agent => format!(" ▨ kokorro [{}] ", self.storage.profile()),
             ViewMode::Terminal => format!(" Terminals [{}] ", self.storage.profile()),
         };
         let (border_color, title_color) = match self.view_mode {

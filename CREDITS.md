@@ -1,6 +1,6 @@
 # Contributors
 
-Thank you to everyone who has helped improve Agent of Empires!
+Thank you to everyone who has helped improve kokorro!
 
 | Rank | Contributor | Contributions | Issues |
 |------|-------------|:-------------:|--------|

@@ -19,12 +19,12 @@ const data = JSON.parse(fs.readFileSync(creditsPath, "utf8"));
 let md = `---
 layout: ../../layouts/Docs.astro
 title: Credits
-description: Contributors to Agent of Empires.
+description: Contributors to kokorro.
 ---
 
 `;
 md +=
-  'Thank you to everyone who has helped improve Agent of Empires! Contributors earn a spot on this page by opening issues that receive the **"helpful contribution"** label -- bug reports, feature ideas, and documentation improvements all count.\n\n';
+  'Thank you to everyone who has helped improve kokorro! Contributors earn a spot on this page by opening issues that receive the **"helpful contribution"** label -- bug reports, feature ideas, and documentation improvements all count.\n\n';
 
 if (data.contributors.length === 0) {
   md += "No contributions credited yet. Be the first!\n";

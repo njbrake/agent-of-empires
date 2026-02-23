@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Agent of Empires" width="128">
-  <h1 align="center">Agent of Empires (AoE)</h1>
+  <img src="assets/logo.png" alt="kokorro" width="128">
+  <h1 align="center">kokorro (AoE)</h1>
   <p align="center">
     <a href="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml"><img src="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://github.com/njbrake/agent-of-empires/releases"><img src="https://img.shields.io/github/v/release/njbrake/agent-of-empires" alt="GitHub release"></a>
@@ -19,7 +19,7 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 
 > If you find this project useful, please consider giving it a star on GitHub: it helps others discover the project!
 
-![Agent of Empires Demo](docs/assets/demo.gif)
+![kokorro Demo](docs/assets/demo.gif)
 
 ## Features
 

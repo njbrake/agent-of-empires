@@ -1,6 +1,6 @@
 ---
 layout: ../../layouts/Docs.astro
-title: Agent of Empires
+title: kokorro
 description: Terminal session manager for AI coding agents on Linux and macOS, built on tmux and written in Rust.
 ---
 
@@ -10,7 +10,7 @@ A terminal session manager for AI coding agents on Linux and macOS, built on tmu
 
 AoE lets you run multiple AI agents in parallel -- each in its own tmux session, optionally on its own git branch, optionally inside a Docker container. A TUI dashboard shows you what every agent is doing at a glance.
 
-![Agent of Empires Demo](/assets/demo.gif)
+![kokorro Demo](/assets/demo.gif)
 
 ## Why AoE?
 

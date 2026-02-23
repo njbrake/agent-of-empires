@@ -82,7 +82,7 @@
   </g>
 
   <!-- Title text -->
-  <text x="640" y="500" text-anchor="middle" fill="#f8fafc" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="bold">Agent of Empires</text>
+  <text x="640" y="500" text-anchor="middle" fill="#f8fafc" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="bold">kokorro</text>
 
   <!-- Subtitle -->
   <text x="640" y="560" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="28">AI Coding Agent Session Manager</text>
