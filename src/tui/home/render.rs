@@ -297,7 +297,7 @@ impl HomeView {
                 if let Some(wt_info) = &inst.worktree_info {
                     line_spans.push(Span::styled(
                         format!("  {}", wt_info.branch),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme.branch),
                     ));
                 }
                 if inst.is_sandboxed() {
@@ -305,7 +305,7 @@ impl HomeView {
                         ViewMode::Agent => {
                             line_spans.push(Span::styled(
                                 " [sandbox]",
-                                Style::default().fg(Color::Magenta),
+                                Style::default().fg(theme.sandbox),
                             ));
                         }
                         ViewMode::Terminal => {
@@ -315,7 +315,7 @@ impl HomeView {
                                 TerminalMode::Host => " [host]",
                             };
                             line_spans
-                                .push(Span::styled(mode_text, Style::default().fg(Color::Magenta)));
+                                .push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
                         }
                     }
                 }
