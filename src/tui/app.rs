@@ -329,6 +329,11 @@ impl App {
             Action::StopSession(id) => {
                 if let Some(inst) = self.home.get_instance(&id) {
                     let inst_clone = inst.clone();
+                    // Set Stopped immediately so the status poller won't
+                    // override to Error while stop() blocks (docker stop
+                    // can take up to 10s).
+                    self.home
+                        .set_instance_status(&id, crate::session::Status::Stopped);
                     match inst_clone.stop() {
                         Ok(()) => {
                             crate::tmux::refresh_session_cache();
@@ -340,6 +345,9 @@ impl App {
                         Err(e) => {
                             tracing::error!("Failed to stop session: {}", e);
                             self.home.set_instance_error(&id, Some(e.to_string()));
+                            self.home
+                                .set_instance_status(&id, crate::session::Status::Error);
+                            self.home.save()?;
                         }
                     }
                 }

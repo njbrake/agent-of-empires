@@ -1143,6 +1143,38 @@ mod tests {
     }
 
     #[test]
+    fn test_has_prior_data_skips_general_file_copy() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        let sandbox = dir.path().join("sandbox");
+
+        // First sync copies everything in.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            "{}"
+        );
+
+        // Simulate a prior container session by creating the "projects/" sentinel.
+        fs::create_dir_all(sandbox.join("projects")).unwrap();
+
+        // Container modifies settings.json during its session.
+        fs::write(sandbox.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
+
+        // Host updates settings.json independently.
+        fs::write(host.join("settings.json"), r#"{"theme":"light"}"#).unwrap();
+
+        // Re-sync should skip general file copies because projects/ exists,
+        // preserving the container's settings.json.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            r#"{"theme":"dark"}"#,
+            "container-side settings must not be overwritten when projects/ sentinel exists"
+        );
+    }
+
+    #[test]
     fn test_preserve_files_seeded_when_missing() {
         let dir = TempDir::new().unwrap();
         let host = setup_host_dir(&dir);
