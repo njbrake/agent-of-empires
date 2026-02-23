@@ -385,7 +385,7 @@ fn rewrite_plugins_for_container(
 
     let host_claude_prefix = home.join(".claude");
     let host_claude_str = format!("{}/", host_claude_prefix.display());
-    let container_claude_prefix = "/root/.claude/";
+    let container_claude_prefix = format!("{CONTAINER_HOME}/.claude/");
 
     // Build a set of host paths that should match for projectPath rewriting.
     // This includes the literal project path, plus the main repo path if the
@@ -410,7 +410,7 @@ fn rewrite_plugins_for_container(
             if let Some(entries_arr) = entries.as_array_mut() {
                 for entry in entries_arr.iter_mut() {
                     if let Some(obj) = entry.as_object_mut() {
-                        // Rewrite installPath: ~/.claude/... -> /root/.claude/...
+                        // Rewrite installPath: ~/.claude/... -> CONTAINER_HOME/.claude/...
                         if let Some(relative) = obj
                             .get("installPath")
                             .and_then(|v| v.as_str())
@@ -1939,6 +1939,48 @@ mod tests {
         rewrite_marketplaces_for_container(dir.path()).unwrap();
         let content2 = fs::read_to_string(plugins_dir.join("known_marketplaces.json")).unwrap();
         assert_eq!(content, content2);
+    }
+
+    #[test]
+    fn test_rewrite_marketplaces_preserves_non_install_fields() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let home = dirs::home_dir().unwrap();
+        let host_prefix = format!("{}/.claude/", home.display());
+
+        let marketplaces = serde_json::json!({
+            "@anthropic/claude-code-base-tools": {
+                "name": "Base Tools",
+                "installLocation": format!("{}plugins/marketplaces/@anthropic/claude-code-base-tools/v1", host_prefix),
+                "lastUpdated": "2025-06-15T10:30:00Z",
+                "source": "marketplace",
+                "version": "1.2.3"
+            }
+        });
+        fs::write(
+            plugins_dir.join("known_marketplaces.json"),
+            serde_json::to_string_pretty(&marketplaces).unwrap(),
+        )
+        .unwrap();
+
+        rewrite_marketplaces_for_container(dir.path()).unwrap();
+
+        let content = fs::read_to_string(plugins_dir.join("known_marketplaces.json")).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let entry = &result["@anthropic/claude-code-base-tools"];
+        // installLocation should be rewritten
+        assert_eq!(
+            entry["installLocation"],
+            "/root/.claude/plugins/marketplaces/@anthropic/claude-code-base-tools/v1"
+        );
+        // All other fields must survive unchanged
+        assert_eq!(entry["name"], "Base Tools");
+        assert_eq!(entry["lastUpdated"], "2025-06-15T10:30:00Z");
+        assert_eq!(entry["source"], "marketplace");
+        assert_eq!(entry["version"], "1.2.3");
     }
 
     #[test]
