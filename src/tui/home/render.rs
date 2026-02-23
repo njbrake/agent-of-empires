@@ -356,7 +356,7 @@ impl HomeView {
                 .file_name()
                 .and_then(|n| n.to_str())
             {
-                if dir_name != wt_info.branch {
+                if dir_name != crate::git::template::sanitize_branch_name(&wt_info.branch) {
                     details.push((dir_name.to_string(), Style::default().fg(theme.dimmed)));
                 }
             }
