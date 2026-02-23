@@ -2,17 +2,33 @@
 import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import FeatureCard from '../components/FeatureCard.astro';
 import InstallBlock from '../components/InstallBlock.astro';
 import Step from '../components/Step.astro';
-import SpotlightFeature from '../components/SpotlightFeature.astro';
-import TrustBar from '../components/TrustBar.astro';
+import FeatureCard from '../components/FeatureCard.astro';
 
 const compactFeatures = [
   {
     icon: 'dashboard',
     title: 'TUI Dashboard',
     description: 'Visual interface to manage all your AI coding sessions. See status at a glance, navigate with keyboard shortcuts.',
+    tint: 'brand' as const,
+  },
+  {
+    icon: 'worktrees',
+    title: 'Git Worktrees',
+    description: 'Run parallel agents on different branches of the same repo. Automatic worktree creation and cleanup.',
+    tint: 'accent' as const,
+  },
+  {
+    icon: 'docker',
+    title: 'Docker Sandbox',
+    description: 'Run agents in isolated containers for safety. Configurable volume mounts, persistent auth, and automatic lifecycle management.',
+    tint: 'green' as const,
+  },
+  {
+    icon: 'status',
+    title: 'Status Detection',
+    description: 'Know when agents are working, waiting for input, or idle without switching sessions.',
     tint: 'brand' as const,
   },
   {
@@ -23,8 +39,8 @@ const compactFeatures = [
   },
   {
     icon: 'tmux',
-    title: 'tmux Integration',
-    description: 'Sessions persist in tmux for reliability. Close aoe anytime and your agents keep running.',
+    title: 'tmux Persistence',
+    description: 'Sessions persist in tmux. Close aoe anytime and your agents keep running.',
     tint: 'green' as const,
   },
 ];
@@ -85,48 +101,9 @@ const compactFeatures = [
     </div>
   </section>
 
-  <!-- Spotlight Features -->
+  <!-- Feature Grid -->
   <section class="py-24 px-6">
     <div class="max-w-6xl mx-auto">
-      <div class="text-center mb-20 animate-on-scroll">
-        <h2 class="text-3xl md:text-4xl font-semibold mb-4">Everything you need to manage AI agents</h2>
-        <p class="text-gray-300 text-lg max-w-2xl mx-auto">Built for developers who run multiple coding agents across different projects and branches.</p>
-      </div>
-
-      <div class="space-y-24">
-        <SpotlightFeature
-          icon="worktrees"
-          title="Git Worktrees"
-          description="Run parallel agents on different branches of the same repo. Each agent gets its own working directory while sharing git history. Automatic worktree creation and cleanup."
-          color="brand"
-        />
-
-        <SpotlightFeature
-          icon="docker"
-          title="Docker Sandbox"
-          description="Run agents in isolated containers for safety. Each session gets its own environment with configurable volume mounts, persistent auth, and automatic lifecycle management."
-          color="accent"
-          reversed
-        />
-
-        <SpotlightFeature
-          icon="status"
-          title="Status Detection"
-          description="Automatic status detection for Claude Code, Gemini CLI, OpenCode, Mistral Vibe, and Codex. Know when agents are working, waiting for input, or idle without switching sessions."
-          color="green"
-        />
-      </div>
-    </div>
-  </section>
-
-  <!-- Compact Feature Grid -->
-  <section class="py-24 px-6 bg-surface-900/50">
-    <div class="max-w-6xl mx-auto">
-      <div class="text-center mb-16 animate-on-scroll">
-        <h2 class="text-3xl md:text-4xl font-semibold mb-4">And more</h2>
-        <p class="text-gray-300 text-lg">The tools you need for a productive multi-agent workflow.</p>
-      </div>
-
       <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
         {compactFeatures.map((feature, i) => (
           <div class={`delay-${(i + 1) * 100}`}>
@@ -141,9 +118,6 @@ const compactFeatures = [
       </div>
     </div>
   </section>
-
-  <!-- Trust Bar -->
-  <TrustBar />
 
   <!-- How it Works Section -->
   <section class="py-24 px-6 bg-surface-900/50">
@@ -167,22 +141,6 @@ const compactFeatures = [
         <Step number={3} title="Attach and work" showLine={false}>
           <p class="text-gray-400 leading-relaxed">Press <kbd class="px-2.5 py-1 rounded text-sm font-mono mx-1">Enter</kbd> to attach. You're now in tmux with your AI agent. Press <kbd class="px-2.5 py-1 rounded text-sm font-mono mx-1">Ctrl+b d</kbd> to detach back to aoe.</p>
         </Step>
-      </div>
-    </div>
-  </section>
-
-  <!-- CTA Section -->
-  <section class="py-24 px-6 animate-on-scroll">
-    <div class="max-w-4xl mx-auto text-center">
-      <h2 class="text-3xl md:text-4xl font-semibold mb-4">Ready to manage your AI agents?</h2>
-      <p class="text-gray-300 text-lg mb-10">Get started in under a minute. Free and open source.</p>
-      <div class="flex flex-col sm:flex-row gap-4 justify-center">
-        <a href="/docs/installation/" class="btn-primary text-lg px-10 py-4 inline-flex items-center justify-center">
-          Install Now
-        </a>
-        <a href="/docs/" class="btn-secondary text-lg px-10 py-4 inline-flex items-center justify-center">
-          Read the Docs
-        </a>
       </div>
     </div>
   </section>

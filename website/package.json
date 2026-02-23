@@ -2,8 +2,9 @@
   "name": "agent-of-empires-website",
   "type": "module",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
+    "copy-assets": "cp ../assets/logo.svg ../assets/logo.png ../assets/social-preview.png public/assets/ && cp ../docs/assets/demo.gif public/assets/",
+    "dev": "npm run copy-assets && astro dev",
+    "build": "npm run copy-assets && astro build",
     "preview": "astro preview"
   },
   "dependencies": {

@@ -3,7 +3,6 @@ import Base from './Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import GuidesSidebar from '../components/GuidesSidebar.astro';
-import Breadcrumbs from '../components/Breadcrumbs.astro';
 import GuideNav from '../components/GuideNav.astro';
 import { guidesNav } from '../data/guidesNav';
 
@@ -22,21 +21,9 @@ function normalize(path: string): string {
 }
 
 const currentIndex = guidesNav.findIndex((item) => normalize(currentPath) === normalize(item.href));
-const currentItem = currentIndex >= 0 ? guidesNav[currentIndex] : undefined;
 
 const prev = currentIndex > 0 ? guidesNav[currentIndex - 1] : undefined;
 const next = currentIndex < guidesNav.length - 1 ? guidesNav[currentIndex + 1] : undefined;
-
-const breadcrumbs: { label: string; href?: string }[] = [
-  { label: 'Home', href: '/' },
-];
-
-if (currentIndex === 0) {
-  breadcrumbs.push({ label: 'Guides' });
-} else if (currentItem) {
-  breadcrumbs.push({ label: 'Guides', href: '/guides/manage-ai-coding-agents/' });
-  breadcrumbs.push({ label: currentItem.title });
-}
 ---
 
 <Base
@@ -48,7 +35,6 @@ if (currentIndex === 0) {
     <GuidesSidebar />
     <main class="docs-content">
       <header class="mb-12 guide-header-banner pb-8">
-        <Breadcrumbs items={breadcrumbs} />
         <div class="flex items-center gap-3 mb-4">
           <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-accent-500/10 text-accent-400 border border-accent-500/20">Guide</span>
           <span class="text-gray-500 text-sm">{readTime}</span>

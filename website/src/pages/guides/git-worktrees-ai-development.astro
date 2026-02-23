@@ -42,14 +42,26 @@ import Callout from '../../components/Callout.astro';
   <section class="animate-on-scroll">
     <h2>The Bare Repo Pattern</h2>
     <p>
-      For the best experience with multiple worktrees, aoe supports the bare repo pattern. Instead of having a "main" clone with worktrees branching off it, you start with a bare repository (no working directory) and create all checkouts as worktrees:
+      For the best experience with multiple worktrees, aoe supports the bare repo pattern. Instead of having a "main" clone with worktrees branching off it, you start with a bare repository (no working directory) and create all checkouts as worktrees.
     </p>
-    <pre><code>git clone --bare git@github.com:user/repo.git repo.git
-cd repo.git
-git worktree add ../repo-main main
-git worktree add ../repo-feature feature</code></pre>
     <p>
-      This avoids the confusion of having a "special" main directory. All worktrees are equal peers, and the bare repo is just the shared object store. aoe automates this setup for you.
+      The recommended layout nests the bare object store and all worktrees under a single parent directory:
+    </p>
+    <pre><code>mkdir repo && cd repo
+git clone --bare git@github.com:user/repo.git .bare
+echo "gitdir: ./.bare" > .git
+git worktree add main main
+git worktree add feature feature</code></pre>
+    <p>
+      This produces a clean structure where everything lives under one directory:
+    </p>
+    <pre><code>repo/
+  .bare/        # shared git object store
+  .git          # file pointing to .bare
+  main/         # worktree on main branch
+  feature/      # worktree on feature branch</code></pre>
+    <p>
+      All worktrees are equal peers, and the bare repo is just the shared object store. There is no "special" main directory. aoe automates this setup for you.
     </p>
   </section>
 
@@ -87,13 +99,7 @@ git worktree add ../repo-feature feature</code></pre>
   <section class="animate-on-scroll">
     <h2>Getting Started</h2>
     <p>
-      Enable worktree mode in the aoe settings and configure your base repository. See the <a href="/docs/">documentation</a> for detailed setup instructions. Related guides:
+      Enable worktree mode in the aoe settings and configure your base repository. See the <a href="/docs/guides/worktrees/">worktrees reference</a> for detailed setup instructions.
     </p>
-    <ul>
-      <li><a href="/guides/manage-ai-coding-agents/">Managing multiple AI coding agents</a></li>
-      <li><a href="/guides/docker-sandbox-ai-agents/">Docker sandboxing for AI agents</a></li>
-      <li><a href="/guides/claude-code-session-manager/">AI coding agent session manager</a></li>
-      <li><a href="/guides/tmux-ai-coding-workflow/">tmux workflow for AI coding</a></li>
-    </ul>
   </section>
 </Guide>

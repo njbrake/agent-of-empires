@@ -63,6 +63,11 @@
 - Commit messages: use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `refactor:`).
 - PRs: include a clear “what/why”, how you tested (`cargo test`, plus any manual tmux/TUI checks), and screenshots/recordings for UI changes.
 
+## Git Configuration
+
+- Do not modify git configuration (e.g., `.gitconfig`, `.git/config`, `git config` commands) without explicit user approval.
+- The one exception: adding a new remote to fetch a contributor's fork during PR code review is allowed without asking.
+
 ## Local Data & Configuration Tips
 
 - Runtime config/data location:

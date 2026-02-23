@@ -63,7 +63,7 @@ impl Preview {
             if sandbox.enabled {
                 info_lines.push(Line::from(vec![
                     Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
-                    Span::styled(&sandbox.container_name, Style::default().fg(Color::Magenta)),
+                    Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
                 ]));
             }
         }
@@ -193,7 +193,7 @@ impl Preview {
             ]));
             info_lines.push(Line::from(vec![
                 Span::styled("Branch:  ", Style::default().fg(theme.dimmed)),
-                Span::styled(&wt_info.branch, Style::default().fg(Color::Cyan)),
+                Span::styled(&wt_info.branch, Style::default().fg(theme.branch)),
             ]));
             info_lines.push(Line::from(vec![
                 Span::styled("Main:    ", Style::default().fg(theme.dimmed)),
@@ -213,9 +213,9 @@ impl Preview {
                 Span::styled(
                     managed_text,
                     Style::default().fg(if wt_info.managed_by_aoe {
-                        Color::Green
+                        theme.worktree_managed
                     } else {
-                        Color::Yellow
+                        theme.worktree_manual
                     }),
                 ),
             ]));
