@@ -91,8 +91,8 @@ pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
 
 // Tree connectors for multiline session details
-pub(super) const TREE_BRANCH: &str = "├── ";
-pub(super) const TREE_LAST: &str = "└── ";
+pub(super) const TREE_BRANCH: &str = "├─ ";
+pub(super) const TREE_LAST: &str = "└─ ";
 
 // Compact indicator dot for collapsed sessions
 pub(super) const ICON_INDICATOR: &str = "●";
