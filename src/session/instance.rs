@@ -402,10 +402,11 @@ impl Instance {
             }
 
             let env_args = build_docker_env_args(sandbox, &resolved_config.sandbox);
+            let instance_env = format!("-e AOE_INSTANCE_ID={}", self.id);
             let env_part = if env_args.is_empty() {
-                String::new()
+                format!("{} ", instance_env)
             } else {
-                format!("{} ", env_args)
+                format!("{} {} ", env_args, instance_env)
             };
             Some(wrap_command_ignore_suspend(
                 &format!("{} {}", container.exec_command(Some(&env_part)), tool_cmd),
