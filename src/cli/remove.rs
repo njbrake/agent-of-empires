@@ -114,7 +114,9 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                 if tmux_session.exists() {
                     if let Err(e) = tmux_session.kill() {
                         eprintln!("Warning: failed to kill tmux session: {}", e);
-                        eprintln!("Session removed from kokorro but may still be running in tmux");
+                        eprintln!(
+                            "Session removed from ▨ kokorro but may still be running in tmux"
+                        );
                     }
                 }
             }

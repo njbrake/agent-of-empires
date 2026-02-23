@@ -1,6 +1,6 @@
 # Contributors
 
-Thank you to everyone who has helped improve kokorro!
+Thank you to everyone who has helped improve ▨ kokorro!
 
 | Rank | Contributor | Contributions | Issues |
 |------|-------------|:-------------:|--------|

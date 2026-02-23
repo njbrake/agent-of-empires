@@ -12,7 +12,7 @@ const siteUrl = Astro.site?.toString().replace(/\/$/, '') ?? '';
 const {
   title,
   description,
-  ogTitle = 'kokorro',
+  ogTitle = '▨ kokorro',
   ogDescription = 'Terminal session manager for AI coding agents. Git worktrees, Docker sandboxing, beautiful TUI.',
   ogImage = `${siteUrl}/assets/social-preview.png`
 } = Astro.props;
@@ -22,7 +22,7 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 const structuredData = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "kokorro",
+  "name": "▨ kokorro",
   "description": "A terminal session manager for Linux and macOS using tmux to manage and monitor AI coding agents. Features git worktrees, Docker sandboxing, and a beautiful TUI.",
   "url": siteUrl,
   "applicationCategory": "DeveloperApplication",
@@ -68,7 +68,7 @@ const structuredData = {
   <meta property="og:image" content={ogImage}>
   <meta property="og:url" content={canonicalURL}>
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="kokorro">
+  <meta property="og:site_name" content="▨ kokorro">
   <meta property="og:locale" content="en_US">
 
   <!-- Twitter Card -->

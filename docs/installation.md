@@ -5,7 +5,7 @@
 - [tmux](https://github.com/tmux/tmux/wiki) (required)
 - [Docker](https://www.docker.com/) (optional, for sandboxing agents in containers)
 
-## Install kokorro
+## Install ▨ kokorro
 
 ### Quick Install (Recommended)
 
@@ -41,7 +41,7 @@ aoe --version
 
 ## Uninstall
 
-To remove kokorro:
+To remove ▨ kokorro:
 
 ```bash
 aoe uninstall

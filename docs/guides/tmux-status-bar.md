@@ -1,6 +1,6 @@
 # tmux Status Bar
 
-kokorro can display session information in your tmux status bar, showing:
+▨ kokorro can display session information in your tmux status bar, showing:
 - **Session title**: The name of your aoe session
 - **Git branch**: For worktree sessions
 - **Container name**: For sandboxed (Docker) sessions

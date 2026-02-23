@@ -616,7 +616,7 @@ pub fn execute_hooks_in_container_streamed(
 }
 
 /// Template content for `aoe init`.
-pub const INIT_TEMPLATE: &str = r#"# kokorro - Repository Configuration
+pub const INIT_TEMPLATE: &str = r#"# ▨ kokorro - Repository Configuration
 # This file configures aoe behavior for this repository.
 # All sections override global and profile settings. Only set fields override;
 # unset fields inherit from the previous layer.

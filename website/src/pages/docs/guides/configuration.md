@@ -1,7 +1,7 @@
 ---
 layout: ../../../layouts/Docs.astro
 title: Configuration Reference
-description: Complete configuration reference for kokorro settings, profiles, and repo config.
+description: Complete configuration reference for ▨ kokorro settings, profiles, and repo config.
 ---
 
 AoE uses a layered configuration system. Settings are resolved in this order:

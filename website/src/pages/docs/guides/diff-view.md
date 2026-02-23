@@ -1,7 +1,7 @@
 ---
 layout: ../../../layouts/Docs.astro
 title: Diff View
-description: Review git changes and edit files directly from the kokorro TUI.
+description: Review git changes and edit files directly from the ▨ kokorro TUI.
 ---
 
 The diff view lets you review changes between your working directory and a base branch (like `main`), then edit files directly.

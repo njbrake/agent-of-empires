@@ -1,4 +1,4 @@
-//! kokorro - Terminal session manager for AI coding agents
+//! ▨ kokorro - Terminal session manager for AI coding agents
 
 use agent_of_empires::cli::{self, Cli, Commands};
 use agent_of_empires::migrations;

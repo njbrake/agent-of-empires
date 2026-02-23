@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Installation
-description: Install kokorro on Linux or macOS via the install script, Homebrew, or from source.
+description: Install ▨ kokorro on Linux or macOS via the install script, Homebrew, or from source.
 ---
 
 ## Prerequisites
@@ -9,7 +9,7 @@ description: Install kokorro on Linux or macOS via the install script, Homebrew,
 - [tmux](https://github.com/tmux/tmux/wiki) (required)
 - [Docker](https://www.docker.com/) (optional, for sandboxing agents in containers)
 
-## Install kokorro
+## Install ▨ kokorro
 
 ### Quick Install (Recommended)
 
@@ -45,7 +45,7 @@ aoe --version
 
 ## Uninstall
 
-To remove kokorro:
+To remove ▨ kokorro:
 
 ```bash
 aoe uninstall

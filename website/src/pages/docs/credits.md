@@ -1,10 +1,10 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Credits
-description: Contributors to kokorro.
+description: Contributors to ▨ kokorro.
 ---
 
-Thank you to everyone who has helped improve kokorro! Contributors earn a spot on this page by opening issues that receive the **"helpful contribution"** label -- bug reports, feature ideas, and documentation improvements all count.
+Thank you to everyone who has helped improve ▨ kokorro! Contributors earn a spot on this page by opening issues that receive the **"helpful contribution"** label -- bug reports, feature ideas, and documentation improvements all count.
 
 <!-- This page is auto-generated at build time from credits.json on the credit branch. -->
 <!-- The content below is a placeholder for local development. -->

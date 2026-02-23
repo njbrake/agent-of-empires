@@ -197,7 +197,7 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
                     let tmux_name = crate::tmux::Session::generate_name(&i.id, &i.title);
                     tmux_name == session_name
                 })
-                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not an kokorro session"))?
+                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not a ▨ kokorro session"))?
         } else {
             bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
         }
@@ -256,7 +256,7 @@ async fn rename_session(profile: &str, args: RenameArgs) -> Result<()> {
                     let tmux_name = crate::tmux::Session::generate_name(&i.id, &i.title);
                     tmux_name == session_name
                 })
-                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not an kokorro session"))?
+                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not a ▨ kokorro session"))?
         } else {
             bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
         }
@@ -351,5 +351,5 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
         }
     }
 
-    bail!("Current tmux session is not an kokorro session")
+    bail!("Current tmux session is not a ▨ kokorro session")
 }

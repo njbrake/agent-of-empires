@@ -1,4 +1,4 @@
-//! kokorro library - Core functionality for the terminal session manager
+//! ▨ kokorro library - Core functionality for the terminal session manager
 
 pub mod agents;
 pub mod cli;

@@ -1,7 +1,7 @@
 ---
 layout: ../../../layouts/Docs.astro
 title: "Docker Sandbox: Quick Reference"
-description: Run AI coding agents in isolated Docker containers with kokorro.
+description: Run AI coding agents in isolated Docker containers with ▨ kokorro.
 ---
 
 ## Overview

@@ -24,7 +24,7 @@
     - RATIFICATION_DATE set to today (2026-02-03) as initial adoption
 -->
 
-# kokorro Constitution
+# ▨ kokorro Constitution
 
 ## Core Principles
 

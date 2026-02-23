@@ -33,7 +33,7 @@ struct FoundItem {
 
 pub async fn run(args: UninstallArgs) -> Result<()> {
     println!("╔════════════════════════════════════════╗");
-    println!("║     kokorro Uninstaller       ║");
+    println!("║         ▨ kokorro Uninstaller          ║");
     println!("╚════════════════════════════════════════╝");
     println!();
 
@@ -149,7 +149,7 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
     println!();
 
     if found_items.is_empty() {
-        println!("kokorro does not appear to be installed.");
+        println!("▨ kokorro does not appear to be installed.");
         return Ok(());
     }
 
@@ -281,7 +281,7 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
     }
 
     println!();
-    println!("Thank you for using kokorro!");
+    println!("Thank you for using ▨ kokorro!");
     println!("Feedback: https://github.com/njbrake/agent-of-empires/issues");
 
     Ok(())

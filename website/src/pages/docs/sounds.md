@@ -1,10 +1,10 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Sound Effects
-description: Configure audio feedback for agent state transitions in kokorro.
+description: Configure audio feedback for agent state transitions in ▨ kokorro.
 ---
 
-kokorro can play sound effects when agent sessions change state, providing audio feedback for transitions like starting, running, waiting, idle, and error states.
+▨ kokorro can play sound effects when agent sessions change state, providing audio feedback for transitions like starting, running, waiting, idle, and error states.
 
 ## Features
 
@@ -33,7 +33,7 @@ kokorro can play sound effects when agent sessions change state, providing audio
 
 ## Available Sounds
 
-kokorro can download 10 CC0 (public domain) fantasy/RPG sound effects from GitHub:
+▨ kokorro can download 10 CC0 (public domain) fantasy/RPG sound effects from GitHub:
 
 ### Default State Transition Sounds
 - `start.wav` - Spell fire sound (session starting)

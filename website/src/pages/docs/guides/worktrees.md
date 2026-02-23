@@ -1,7 +1,7 @@
 ---
 layout: ../../../layouts/Docs.astro
 title: Worktrees Reference
-description: Git worktree commands and configuration reference for kokorro.
+description: Git worktree commands and configuration reference for ▨ kokorro.
 ---
 
 Reference documentation for git worktree commands and configuration in `aoe`.

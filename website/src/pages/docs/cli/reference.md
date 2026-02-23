@@ -47,7 +47,7 @@ This document contains the help content for the `aoe` command-line program.
 
 ## `aoe`
 
-kokorro (aoe) is a terminal session manager that uses tmux to help you manage and monitor AI coding agents like Claude Code and OpenCode.
+▨ kokorro (aoe) is a terminal session manager that uses tmux to help you manage and monitor AI coding agents like Claude Code and OpenCode.
 
 Run without arguments to launch the TUI dashboard.
 
@@ -66,7 +66,7 @@ Run without arguments to launch the TUI dashboard.
 * `worktree` -- Manage git worktrees for parallel development
 * `tmux` -- tmux integration utilities
 * `sounds` -- Manage sound effects for agent state transitions
-* `uninstall` -- Uninstall kokorro
+* `uninstall` -- Uninstall ▨ kokorro
 * `completion` -- Generate shell completions
 
 ###### **Options:**
@@ -521,7 +521,7 @@ Test a sound by playing it
 
 ## `aoe uninstall`
 
-Uninstall kokorro
+Uninstall ▨ kokorro
 
 **Usage:** `aoe uninstall [OPTIONS]`
 

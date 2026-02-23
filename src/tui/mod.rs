@@ -55,7 +55,7 @@ pub async fn run(profile: &str, sidebar_mode: bool) -> Result<()> {
     if !crate::tmux::is_tmux_available() {
         eprintln!("Error: tmux not found in PATH");
         eprintln!();
-        eprintln!("kokorro requires tmux. Install with:");
+        eprintln!("▨ kokorro requires tmux. Install with:");
         eprintln!("  brew install tmux     # macOS");
         eprintln!("  apt install tmux      # Debian/Ubuntu");
         eprintln!("  pacman -S tmux        # Arch");
@@ -67,7 +67,7 @@ pub async fn run(profile: &str, sidebar_mode: bool) -> Result<()> {
     if !available_tools.any_available() {
         eprintln!("Error: No coding tools found in PATH");
         eprintln!();
-        eprintln!("kokorro requires at least one of:");
+        eprintln!("▨ kokorro requires at least one of:");
         eprintln!("  claude    - Anthropic's Claude CLI");
         eprintln!("  opencode  - OpenCode CLI");
         eprintln!();

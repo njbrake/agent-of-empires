@@ -1,4 +1,4 @@
-# kokorro Demo
+# ▨ kokorro Demo
 Output docs/assets/demo.gif
 
 Set FontSize 16
