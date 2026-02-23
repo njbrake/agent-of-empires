@@ -40,7 +40,6 @@ export const docsNav: NavSection[] = [
     title: "Contributing",
     items: [
       { title: "Development", href: "/docs/development/" },
-      { title: "Credits", href: "/docs/credits/" },
     ],
   },
 ];
