@@ -20,6 +20,9 @@ const HOOK_RELAY_PATH: &str = "/root/.claude/aoe_hook_relay.sh";
 /// Container path where hook_status directory is mounted from the host.
 const CONTAINER_HOOK_STATUS_DIR: &str = "/tmp/aoe_hook_status";
 
+/// Home directory inside the container (root user).
+const CONTAINER_HOME: &str = "/root";
+
 /// POSIX shell script that replicates the event-to-status mapping from
 /// `src/cli/hook.rs`. Runs inside the container as a Claude Code hook command,
 /// writing status files to a host-mounted directory so the TUI can read them.
@@ -312,6 +315,172 @@ fn rewrite_hooks_for_container(sandbox_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Rewrite host-absolute `installLocation` paths in the sandbox's
+/// `plugins/known_marketplaces.json` to use the container home directory.
+/// Without this, marketplace plugins fail to load because the container
+/// filesystem doesn't have the host user's home path.
+fn rewrite_marketplaces_for_container(sandbox_dir: &Path) -> Result<()> {
+    let mp_path = sandbox_dir.join("plugins/known_marketplaces.json");
+    if !mp_path.exists() {
+        return Ok(());
+    }
+
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let host_prefix = format!("{}/.claude/", home.to_string_lossy());
+    let container_prefix = format!("{CONTAINER_HOME}/.claude/");
+
+    let content = std::fs::read_to_string(&mp_path)?;
+    let mut root: serde_json::Value = serde_json::from_str(&content)?;
+
+    let mut changed = false;
+
+    if let Some(obj) = root.as_object_mut() {
+        for entry in obj.values_mut() {
+            if let Some(loc) = entry.get("installLocation").and_then(|v| v.as_str()) {
+                if loc.starts_with(&host_prefix) {
+                    let rewritten = format!("{}{}", container_prefix, &loc[host_prefix.len()..]);
+                    entry.as_object_mut().unwrap().insert(
+                        "installLocation".to_string(),
+                        serde_json::Value::String(rewritten),
+                    );
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if changed {
+        let new_content = serde_json::to_string_pretty(&root)?;
+        std::fs::write(&mp_path, new_content)?;
+    }
+
+    Ok(())
+}
+
+/// Rewrite `installed_plugins.json` from the sandbox with container-local paths.
+///
+/// Each container needs its own manifest because the sandbox is shared 1:N and
+/// different projects have different plugins. The rewritten manifest is stored at
+/// `~/.agent-of-empires/plugin_manifests/<container_name>.json` and should be
+/// file-mounted over `/root/.claude/plugins/installed_plugins.json` so Docker
+/// shadows the shared copy.
+///
+/// Path transformations:
+/// - `installPath`: host `~/.claude/` prefix -> `/root/.claude/`
+/// - `projectPath`: host project path -> container workspace path
+fn rewrite_plugins_for_container(
+    sandbox_dir: &Path,
+    container_name: &str,
+    host_project_path: &str,
+    workspace_path: &str,
+    home: &Path,
+) -> Result<Option<std::path::PathBuf>> {
+    let plugins_json = sandbox_dir.join("plugins").join("installed_plugins.json");
+    if !plugins_json.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&plugins_json)?;
+    let mut manifest: serde_json::Value = serde_json::from_str(&content)?;
+
+    let host_claude_prefix = home.join(".claude");
+    let host_claude_str = format!("{}/", host_claude_prefix.display());
+    let container_claude_prefix = "/root/.claude/";
+
+    // Build a set of host paths that should match for projectPath rewriting.
+    // This includes the literal project path, plus the main repo path if the
+    // project is a worktree (plugins are often registered against the main repo).
+    let mut matching_project_paths: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    matching_project_paths.insert(host_project_path.to_string());
+
+    let project_path = std::path::Path::new(host_project_path);
+    if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
+        let main_canonical = main_repo.canonicalize().unwrap_or(main_repo.clone());
+        let project_canonical = project_path
+            .canonicalize()
+            .unwrap_or_else(|_| project_path.to_path_buf());
+        if main_canonical != project_canonical {
+            matching_project_paths.insert(main_canonical.to_string_lossy().to_string());
+        }
+    }
+
+    if let Some(plugins) = manifest.get_mut("plugins").and_then(|p| p.as_object_mut()) {
+        for entries in plugins.values_mut() {
+            if let Some(entries_arr) = entries.as_array_mut() {
+                for entry in entries_arr.iter_mut() {
+                    if let Some(obj) = entry.as_object_mut() {
+                        // Rewrite installPath: ~/.claude/... -> /root/.claude/...
+                        if let Some(relative) = obj
+                            .get("installPath")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.strip_prefix(&host_claude_str))
+                        {
+                            obj.insert(
+                                "installPath".to_string(),
+                                serde_json::Value::String(format!(
+                                    "{}{}",
+                                    container_claude_prefix, relative
+                                )),
+                            );
+                        }
+
+                        // Rewrite projectPath if it matches the host project
+                        if let Some(project_path_val) = obj
+                            .get("projectPath")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                        {
+                            if matching_project_paths.contains(&project_path_val) {
+                                obj.insert(
+                                    "projectPath".to_string(),
+                                    serde_json::Value::String(workspace_path.to_string()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let app_dir = crate::session::get_app_dir()?;
+    let manifests_dir = app_dir.join("plugin_manifests");
+    std::fs::create_dir_all(&manifests_dir)?;
+
+    let safe_name = container_name.replace('/', "_");
+    let manifest_path = manifests_dir.join(format!("{}.json", safe_name));
+    let new_content = serde_json::to_string_pretty(&manifest)?;
+    std::fs::write(&manifest_path, new_content)?;
+
+    tracing::info!(
+        "Wrote per-instance plugin manifest for {} -> {}",
+        container_name,
+        manifest_path.display()
+    );
+
+    Ok(Some(manifest_path))
+}
+
+/// Remove the per-instance plugin manifest file created for a container.
+pub(crate) fn cleanup_plugin_manifest(container_name: &str) {
+    if let Ok(app_dir) = crate::session::get_app_dir() {
+        let safe_name = container_name.replace('/', "_");
+        let manifest_path = app_dir
+            .join("plugin_manifests")
+            .join(format!("{}.json", safe_name));
+        if manifest_path.exists() {
+            if let Err(e) = std::fs::remove_file(&manifest_path) {
+                tracing::warn!(
+                    "Failed to remove plugin manifest for {}: {}",
+                    container_name,
+                    e
+                );
+            }
+        }
+    }
+}
+
 /// Extract credentials from the macOS Keychain and write to a file.
 /// Returns Ok(true) if credentials were written, Ok(false) if not available.
 #[cfg(target_os = "macos")]
@@ -513,6 +682,9 @@ pub(crate) fn refresh_agent_configs() {
             if let Err(e) = rewrite_hooks_for_container(&sandbox_dir) {
                 tracing::warn!("Failed to rewrite hooks for container: {}", e);
             }
+            if let Err(e) = rewrite_marketplaces_for_container(&sandbox_dir) {
+                tracing::warn!("Failed to rewrite marketplaces for container: {}", e);
+            }
         }
     }
 }
@@ -548,8 +720,6 @@ pub(crate) fn build_container_config(
         sandbox_config.mount_ssh,
         sandbox_config.volume_ignores
     );
-
-    const CONTAINER_HOME: &str = "/root";
 
     let gitconfig = home.join(".gitconfig");
     if gitconfig.exists() {
@@ -599,14 +769,31 @@ pub(crate) fn build_container_config(
             }
         };
 
-        // For .claude config: seed the hook relay script and rewrite hook commands
-        // so that Claude Code hooks work inside the container.
+        // For .claude config: seed the hook relay script, rewrite hook commands,
+        // and generate a per-instance plugin manifest so that Claude Code hooks
+        // and plugins work inside the container.
+        let mut plugin_manifest_path = None;
         if mount.host_rel == ".claude" {
             if let Err(e) = seed_hook_relay_script(&sandbox_dir) {
                 tracing::warn!("Failed to seed hook relay script: {}", e);
             }
             if let Err(e) = rewrite_hooks_for_container(&sandbox_dir) {
                 tracing::warn!("Failed to rewrite hooks for container: {}", e);
+            }
+            if let Err(e) = rewrite_marketplaces_for_container(&sandbox_dir) {
+                tracing::warn!("Failed to rewrite marketplaces for container: {}", e);
+            }
+            match rewrite_plugins_for_container(
+                &sandbox_dir,
+                &sandbox_info.container_name,
+                project_path_str,
+                &workspace_path,
+                &home,
+            ) {
+                Ok(path) => plugin_manifest_path = path,
+                Err(e) => {
+                    tracing::warn!("Failed to rewrite plugins for container: {}", e);
+                }
             }
         }
 
@@ -618,7 +805,7 @@ pub(crate) fn build_container_config(
         );
         volumes.push(VolumeMount {
             host_path: sandbox_dir.to_string_lossy().to_string(),
-            container_path,
+            container_path: container_path.clone(),
             read_only: false,
         });
 
@@ -633,6 +820,17 @@ pub(crate) fn build_container_config(
                     read_only: false,
                 });
             }
+        }
+
+        // Per-instance plugin manifest: file-mounted AFTER the directory mount
+        // so Docker shadows the shared installed_plugins.json with the
+        // container-specific version.
+        if let Some(manifest_path) = plugin_manifest_path {
+            volumes.push(VolumeMount {
+                host_path: manifest_path.to_string_lossy().to_string(),
+                container_path: format!("{}/plugins/installed_plugins.json", container_path),
+                read_only: false,
+            });
         }
     }
 
@@ -1394,5 +1592,385 @@ mod tests {
             result["hooks"]["SessionStart"][0]["hooks"][0]["command"],
             HOOK_RELAY_PATH
         );
+    }
+
+    // --- rewrite_plugins_for_container tests ---
+
+    fn make_plugins_json(plugins: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "version": 2,
+            "plugins": plugins
+        })
+    }
+
+    #[test]
+    fn test_rewrite_plugins_for_container_basic() {
+        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let manifest = make_plugins_json(serde_json::json!({
+            "linear@official": [{
+                "scope": "project",
+                "projectPath": "/Users/testuser/dev/myproject",
+                "installPath": format!("{}/.claude/plugins/cache/official/linear/v1", home.path().display()),
+                "version": "v1"
+            }]
+        }));
+        fs::write(
+            plugins_dir.join("installed_plugins.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let result = rewrite_plugins_for_container(
+            dir.path(),
+            "test-container",
+            "/Users/testuser/dev/myproject",
+            "/workspace/myproject",
+            home.path(),
+        )
+        .unwrap();
+
+        assert!(result.is_some());
+        let manifest_path = result.unwrap();
+        let content = fs::read_to_string(&manifest_path).unwrap();
+        let rewritten: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let entry = &rewritten["plugins"]["linear@official"][0];
+        assert_eq!(entry["projectPath"], "/workspace/myproject");
+        assert_eq!(
+            entry["installPath"],
+            "/root/.claude/plugins/cache/official/linear/v1"
+        );
+
+        // Clean up
+        fs::remove_file(&manifest_path).unwrap();
+    }
+
+    #[test]
+    fn test_rewrite_plugins_for_container_user_scope() {
+        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let manifest = make_plugins_json(serde_json::json!({
+            "rust-analyzer@official": [{
+                "scope": "user",
+                "installPath": format!("{}/.claude/plugins/cache/official/rust-analyzer/1.0.0", home.path().display()),
+                "version": "1.0.0"
+            }]
+        }));
+        fs::write(
+            plugins_dir.join("installed_plugins.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let result = rewrite_plugins_for_container(
+            dir.path(),
+            "test-container-user",
+            "/Users/testuser/dev/someproject",
+            "/workspace/someproject",
+            home.path(),
+        )
+        .unwrap();
+
+        assert!(result.is_some());
+        let manifest_path = result.unwrap();
+        let content = fs::read_to_string(&manifest_path).unwrap();
+        let rewritten: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let entry = &rewritten["plugins"]["rust-analyzer@official"][0];
+        // User-scoped: no projectPath to rewrite, only installPath
+        assert!(entry.get("projectPath").is_none());
+        assert_eq!(
+            entry["installPath"],
+            "/root/.claude/plugins/cache/official/rust-analyzer/1.0.0"
+        );
+
+        fs::remove_file(&manifest_path).unwrap();
+    }
+
+    #[test]
+    fn test_rewrite_plugins_for_container_mixed_projects() {
+        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let manifest = make_plugins_json(serde_json::json!({
+            "plugin-a@repo": [{
+                "scope": "project",
+                "projectPath": "/Users/testuser/dev/myproject",
+                "installPath": format!("{}/.claude/plugins/cache/repo/plugin-a/v1", home.path().display()),
+                "version": "v1"
+            }],
+            "plugin-b@repo": [{
+                "scope": "project",
+                "projectPath": "/Users/testuser/dev/other-project",
+                "installPath": format!("{}/.claude/plugins/cache/repo/plugin-b/v1", home.path().display()),
+                "version": "v1"
+            }]
+        }));
+        fs::write(
+            plugins_dir.join("installed_plugins.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let result = rewrite_plugins_for_container(
+            dir.path(),
+            "test-container-mixed",
+            "/Users/testuser/dev/myproject",
+            "/workspace/myproject",
+            home.path(),
+        )
+        .unwrap();
+
+        assert!(result.is_some());
+        let manifest_path = result.unwrap();
+        let content = fs::read_to_string(&manifest_path).unwrap();
+        let rewritten: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // plugin-a: matches host project, should be rewritten
+        assert_eq!(
+            rewritten["plugins"]["plugin-a@repo"][0]["projectPath"],
+            "/workspace/myproject"
+        );
+
+        // plugin-b: different project, projectPath should be unchanged
+        assert_eq!(
+            rewritten["plugins"]["plugin-b@repo"][0]["projectPath"],
+            "/Users/testuser/dev/other-project"
+        );
+
+        // Both should have installPath rewritten (install paths are independent of project)
+        assert!(rewritten["plugins"]["plugin-a@repo"][0]["installPath"]
+            .as_str()
+            .unwrap()
+            .starts_with("/root/.claude/"));
+        assert!(rewritten["plugins"]["plugin-b@repo"][0]["installPath"]
+            .as_str()
+            .unwrap()
+            .starts_with("/root/.claude/"));
+
+        fs::remove_file(&manifest_path).unwrap();
+    }
+
+    #[test]
+    fn test_rewrite_plugins_for_container_no_file() {
+        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+
+        let result = rewrite_plugins_for_container(
+            dir.path(),
+            "test-container-nofile",
+            "/Users/testuser/dev/myproject",
+            "/workspace/myproject",
+            home.path(),
+        )
+        .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_rewrite_plugins_for_container_worktree() {
+        // Set up a git repo with a worktree so find_main_repo works
+        let (repo_dir, repo_path) = setup_regular_repo();
+        let git_wt = crate::git::GitWorktree::new(repo_path.clone()).unwrap();
+        let wt_path = repo_dir.path().join("feature-worktree");
+        git_wt
+            .create_worktree("feature-branch", &wt_path, true)
+            .unwrap();
+
+        let home = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        // Plugin registered against the main repo path (not the worktree)
+        let main_repo_canonical = repo_path.canonicalize().unwrap();
+        let manifest = make_plugins_json(serde_json::json!({
+            "plugin-a@repo": [{
+                "scope": "project",
+                "projectPath": main_repo_canonical.to_string_lossy().to_string(),
+                "installPath": format!("{}/.claude/plugins/cache/repo/plugin-a/v1", home.path().display()),
+                "version": "v1"
+            }]
+        }));
+        fs::write(
+            plugins_dir.join("installed_plugins.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        // We're creating a container for the worktree, but plugins are registered to main repo
+        let wt_path_str = wt_path.to_string_lossy().to_string();
+        let result = rewrite_plugins_for_container(
+            dir.path(),
+            "test-container-wt",
+            &wt_path_str,
+            "/workspace/feature-branch",
+            home.path(),
+        )
+        .unwrap();
+
+        assert!(result.is_some());
+        let manifest_path = result.unwrap();
+        let content = fs::read_to_string(&manifest_path).unwrap();
+        let rewritten: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // Plugin's projectPath (main repo) should be rewritten to the workspace path
+        assert_eq!(
+            rewritten["plugins"]["plugin-a@repo"][0]["projectPath"],
+            "/workspace/feature-branch"
+        );
+
+        fs::remove_file(&manifest_path).unwrap();
+        drop(repo_dir);
+    }
+
+    #[test]
+    fn test_rewrite_plugins_for_container_local_scope() {
+        let dir = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let manifest = make_plugins_json(serde_json::json!({
+            "custom-tool@local": [{
+                "scope": "local",
+                "projectPath": "/Users/testuser/dev/myproject",
+                "installPath": format!("{}/.claude/plugins/cache/local/custom-tool/v1", home.path().display()),
+                "version": "v1"
+            }]
+        }));
+        fs::write(
+            plugins_dir.join("installed_plugins.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let result = rewrite_plugins_for_container(
+            dir.path(),
+            "test-container-local",
+            "/Users/testuser/dev/myproject",
+            "/workspace/myproject",
+            home.path(),
+        )
+        .unwrap();
+
+        assert!(result.is_some());
+        let manifest_path = result.unwrap();
+        let content = fs::read_to_string(&manifest_path).unwrap();
+        let rewritten: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let entry = &rewritten["plugins"]["custom-tool@local"][0];
+        // Local-scoped: both paths should be rewritten (same as project scope)
+        assert_eq!(entry["projectPath"], "/workspace/myproject");
+        assert_eq!(
+            entry["installPath"],
+            "/root/.claude/plugins/cache/local/custom-tool/v1"
+        );
+
+        fs::remove_file(&manifest_path).unwrap();
+    }
+
+    #[test]
+    fn test_cleanup_plugin_manifest() {
+        let app_dir = crate::session::get_app_dir().unwrap();
+        let manifests_dir = app_dir.join("plugin_manifests");
+        fs::create_dir_all(&manifests_dir).unwrap();
+
+        let manifest_path = manifests_dir.join("test-cleanup-container.json");
+        fs::write(&manifest_path, "{}").unwrap();
+        assert!(manifest_path.exists());
+
+        cleanup_plugin_manifest("test-cleanup-container");
+        assert!(!manifest_path.exists());
+    }
+
+    // --- rewrite_marketplaces_for_container tests ---
+
+    #[test]
+    fn test_rewrite_marketplaces_for_container() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let home = dirs::home_dir().unwrap();
+        let host_prefix = format!("{}/.claude/", home.display());
+
+        let marketplaces = serde_json::json!({
+            "@anthropic/claude-code-base-tools": {
+                "name": "Base Tools",
+                "installLocation": format!("{}plugins/marketplaces/@anthropic/claude-code-base-tools/v1", host_prefix)
+            },
+            "@acme/custom-tool": {
+                "name": "Custom Tool",
+                "installLocation": format!("{}plugins/marketplaces/@acme/custom-tool/v2", host_prefix)
+            }
+        });
+        fs::write(
+            plugins_dir.join("known_marketplaces.json"),
+            serde_json::to_string_pretty(&marketplaces).unwrap(),
+        )
+        .unwrap();
+
+        rewrite_marketplaces_for_container(dir.path()).unwrap();
+
+        let content = fs::read_to_string(plugins_dir.join("known_marketplaces.json")).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(
+            result["@anthropic/claude-code-base-tools"]["installLocation"],
+            "/root/.claude/plugins/marketplaces/@anthropic/claude-code-base-tools/v1"
+        );
+        assert_eq!(
+            result["@acme/custom-tool"]["installLocation"],
+            "/root/.claude/plugins/marketplaces/@acme/custom-tool/v2"
+        );
+
+        // Idempotency: calling again should produce the same result
+        rewrite_marketplaces_for_container(dir.path()).unwrap();
+        let content2 = fs::read_to_string(plugins_dir.join("known_marketplaces.json")).unwrap();
+        assert_eq!(content, content2);
+    }
+
+    #[test]
+    fn test_rewrite_marketplaces_for_container_no_file() {
+        let dir = TempDir::new().unwrap();
+        // No plugins directory at all -- should succeed silently
+        rewrite_marketplaces_for_container(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn test_rewrite_marketplaces_for_container_foreign_paths_untouched() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let marketplaces = serde_json::json!({
+            "@other/tool": {
+                "name": "Other Tool",
+                "installLocation": "/some/other/path/tool"
+            }
+        });
+        fs::write(
+            plugins_dir.join("known_marketplaces.json"),
+            serde_json::to_string_pretty(&marketplaces).unwrap(),
+        )
+        .unwrap();
+
+        let before = fs::read_to_string(plugins_dir.join("known_marketplaces.json")).unwrap();
+        rewrite_marketplaces_for_container(dir.path()).unwrap();
+        let after = fs::read_to_string(plugins_dir.join("known_marketplaces.json")).unwrap();
+
+        // File should not have been rewritten (no changes = no write)
+        assert_eq!(before, after);
     }
 }

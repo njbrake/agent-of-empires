@@ -131,6 +131,9 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                             if let Err(e) = container.remove(true) {
                                 eprintln!("Warning: failed to remove container: {}", e);
                             } else {
+                                crate::session::container_config::cleanup_plugin_manifest(
+                                    &sandbox.container_name,
+                                );
                                 println!("✓ Container removed");
                             }
                         }

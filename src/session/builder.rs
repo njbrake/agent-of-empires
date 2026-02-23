@@ -229,6 +229,7 @@ pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWo
                     tracing::warn!("Failed to clean up container: {}", e);
                 }
             }
+            super::container_config::cleanup_plugin_manifest(&sandbox.container_name);
         }
     }
 
