@@ -5,12 +5,23 @@ use std::collections::HashMap;
 
 use super::Instance;
 
+/// Returns the parent of a group path (everything before the last `/`),
+/// or an empty string for root-level paths.
+pub fn parent_path(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((parent, _)) => parent.to_string(),
+        None => String::new(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Group {
     pub name: String,
     pub path: String,
     #[serde(default)]
     pub collapsed: bool,
+    #[serde(default)]
+    pub sort_order: u32,
     #[serde(skip)]
     pub children: Vec<Group>,
 }
@@ -21,6 +32,7 @@ impl Group {
             name: name.to_string(),
             path: path.to_string(),
             collapsed: false,
+            sort_order: 0,
             children: Vec::new(),
         }
     }
@@ -52,15 +64,20 @@ impl GroupTree {
             }
         }
 
+        // Normalize sort_orders (handles upgrade from all-zero/alphabetical)
+        tree.initialize_sort_orders();
+
         // Build tree structure
         tree.rebuild_tree();
 
         tree
     }
 
-    fn ensure_group_exists(&mut self, path: &str) {
+    /// Returns the paths that were newly created (did not previously exist).
+    fn ensure_group_exists(&mut self, path: &str) -> Vec<String> {
+        let mut created = Vec::new();
         if self.groups_by_path.contains_key(path) {
-            return;
+            return created;
         }
 
         // Create all parent groups
@@ -76,6 +93,38 @@ impl GroupTree {
             if !self.groups_by_path.contains_key(&current_path) {
                 let group = Group::new(part, &current_path);
                 self.groups_by_path.insert(current_path.clone(), group);
+                created.push(current_path.clone());
+            }
+        }
+        created
+    }
+
+    /// Normalize sort_orders so siblings have contiguous values.
+    /// Uses (sort_order, name) as tiebreaker so the first load after upgrade
+    /// from all-zero preserves alphabetical order.
+    fn initialize_sort_orders(&mut self) {
+        // Collect all paths grouped by parent
+        let mut by_parent: HashMap<String, Vec<String>> = HashMap::new();
+        for path in self.groups_by_path.keys() {
+            by_parent
+                .entry(parent_path(path))
+                .or_default()
+                .push(path.clone());
+        }
+
+        // For each parent, sort siblings by (sort_order, name) and assign contiguous values
+        for (_parent, mut siblings) in by_parent {
+            siblings.sort_by(|a, b| {
+                let ga = &self.groups_by_path[a];
+                let gb = &self.groups_by_path[b];
+                ga.sort_order
+                    .cmp(&gb.sort_order)
+                    .then(ga.name.cmp(&gb.name))
+            });
+            for (i, path) in siblings.iter().enumerate() {
+                if let Some(g) = self.groups_by_path.get_mut(path) {
+                    g.sort_order = i as u32;
+                }
             }
         }
     }
@@ -91,7 +140,7 @@ impl GroupTree {
             .cloned()
             .collect();
 
-        root_groups.sort_by(|a, b| a.name.cmp(&b.name));
+        root_groups.sort_by_key(|g| g.sort_order);
 
         // Build children recursively
         for root in &mut root_groups {
@@ -111,7 +160,7 @@ impl GroupTree {
             .cloned()
             .collect();
 
-        children.sort_by(|a, b| a.name.cmp(&b.name));
+        children.sort_by_key(|g| g.sort_order);
 
         for child in &mut children {
             self.build_children(child);
@@ -121,7 +170,20 @@ impl GroupTree {
     }
 
     pub fn create_group(&mut self, path: &str) {
-        self.ensure_group_exists(path);
+        let created = self.ensure_group_exists(path);
+
+        // For each newly created path, bump existing siblings so the new group is at the top
+        for new_path in &created {
+            let parent = parent_path(new_path);
+
+            for group in self.groups_by_path.values_mut() {
+                if parent_path(&group.path) == parent && group.path != *new_path {
+                    group.sort_order += 1;
+                }
+            }
+            // New group stays at sort_order 0 (already the default from Group::new)
+        }
+
         self.rebuild_tree();
     }
 
@@ -159,6 +221,40 @@ impl GroupTree {
     pub fn toggle_collapsed(&mut self, path: &str) {
         if let Some(group) = self.groups_by_path.get_mut(path) {
             group.collapsed = !group.collapsed;
+            self.rebuild_tree();
+        }
+    }
+
+    pub fn get_group_mut(&mut self, path: &str) -> Option<&mut Group> {
+        self.groups_by_path.get_mut(path)
+    }
+
+    /// Returns sibling paths sorted by sort_order.
+    pub fn get_sibling_paths(&self, path: &str) -> Vec<String> {
+        let parent = parent_path(path);
+
+        let mut siblings: Vec<&Group> = self
+            .groups_by_path
+            .values()
+            .filter(|g| parent_path(&g.path) == parent)
+            .collect();
+
+        siblings.sort_by_key(|g| g.sort_order);
+        siblings.iter().map(|g| g.path.clone()).collect()
+    }
+
+    /// Swap sort_order values of two sibling groups and rebuild tree.
+    pub fn swap_group_order(&mut self, path_a: &str, path_b: &str) {
+        let order_a = self.groups_by_path.get(path_a).map(|g| g.sort_order);
+        let order_b = self.groups_by_path.get(path_b).map(|g| g.sort_order);
+
+        if let (Some(a), Some(b)) = (order_a, order_b) {
+            if let Some(g) = self.groups_by_path.get_mut(path_a) {
+                g.sort_order = b;
+            }
+            if let Some(g) = self.groups_by_path.get_mut(path_b) {
+                g.sort_order = a;
+            }
             self.rebuild_tree();
         }
     }
@@ -533,7 +629,9 @@ mod tests {
     }
 
     #[test]
-    fn test_groups_sorted_alphabetically() {
+    fn test_groups_initial_sort_order_uses_alphabetical_tiebreaker() {
+        // When all groups have sort_order 0 (e.g., after upgrade), initialize_sort_orders
+        // uses alphabetical tiebreaker to assign contiguous values
         let mut inst1 = Instance::new("z-session", "/tmp/z");
         inst1.group_path = "zebra".to_string();
         let mut inst2 = Instance::new("a-session", "/tmp/a");
@@ -547,5 +645,121 @@ mod tests {
         assert_eq!(roots[0].name, "apple");
         assert_eq!(roots[1].name, "mango");
         assert_eq!(roots[2].name, "zebra");
+    }
+
+    #[test]
+    fn test_sort_order_preserved_across_rebuild() {
+        let mut inst1 = Instance::new("z-session", "/tmp/z");
+        inst1.group_path = "zebra".to_string();
+        let mut inst2 = Instance::new("a-session", "/tmp/a");
+        inst2.group_path = "apple".to_string();
+        let instances = vec![inst1, inst2];
+
+        // Build tree, then manually swap order
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+        tree.swap_group_order("zebra", "apple");
+
+        let roots = tree.get_roots();
+        assert_eq!(roots[0].name, "zebra");
+        assert_eq!(roots[1].name, "apple");
+    }
+
+    #[test]
+    fn test_get_sibling_paths() {
+        let mut inst1 = Instance::new("a-session", "/tmp/a");
+        inst1.group_path = "alpha".to_string();
+        let mut inst2 = Instance::new("b-session", "/tmp/b");
+        inst2.group_path = "beta".to_string();
+        let mut inst3 = Instance::new("c-session", "/tmp/c");
+        inst3.group_path = "alpha/child1".to_string();
+        let mut inst4 = Instance::new("d-session", "/tmp/d");
+        inst4.group_path = "alpha/child2".to_string();
+        let instances = vec![inst1, inst2, inst3, inst4];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        // Root siblings
+        let root_siblings = tree.get_sibling_paths("alpha");
+        assert_eq!(root_siblings, vec!["alpha", "beta"]);
+
+        // Nested siblings
+        let nested_siblings = tree.get_sibling_paths("alpha/child1");
+        assert_eq!(nested_siblings, vec!["alpha/child1", "alpha/child2"]);
+    }
+
+    #[test]
+    fn test_swap_group_order() {
+        let mut inst1 = Instance::new("a-session", "/tmp/a");
+        inst1.group_path = "alpha".to_string();
+        let mut inst2 = Instance::new("b-session", "/tmp/b");
+        inst2.group_path = "beta".to_string();
+        let mut inst3 = Instance::new("c-session", "/tmp/c");
+        inst3.group_path = "gamma".to_string();
+        let instances = vec![inst1, inst2, inst3];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        // Initial: alpha(0), beta(1), gamma(2)
+        assert_eq!(tree.get_roots()[0].name, "alpha");
+        assert_eq!(tree.get_roots()[1].name, "beta");
+        assert_eq!(tree.get_roots()[2].name, "gamma");
+
+        // Swap alpha and beta
+        tree.swap_group_order("alpha", "beta");
+        assert_eq!(tree.get_roots()[0].name, "beta");
+        assert_eq!(tree.get_roots()[1].name, "alpha");
+        assert_eq!(tree.get_roots()[2].name, "gamma");
+    }
+
+    #[test]
+    fn test_create_group_inserts_at_top() {
+        let mut inst1 = Instance::new("a-session", "/tmp/a");
+        inst1.group_path = "alpha".to_string();
+        let mut inst2 = Instance::new("b-session", "/tmp/b");
+        inst2.group_path = "beta".to_string();
+        let instances = vec![inst1, inst2];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        // Create a new group; it should appear at the top
+        tree.create_group("omega");
+        let roots = tree.get_roots();
+        assert_eq!(roots[0].name, "omega");
+        assert_eq!(roots[1].name, "alpha");
+        assert_eq!(roots[2].name, "beta");
+    }
+
+    #[test]
+    fn test_initialize_sort_orders_idempotent() {
+        let mut inst1 = Instance::new("a-session", "/tmp/a");
+        inst1.group_path = "alpha".to_string();
+        let mut inst2 = Instance::new("b-session", "/tmp/b");
+        inst2.group_path = "beta".to_string();
+        let instances = vec![inst1, inst2];
+
+        let tree1 = GroupTree::new_with_groups(&instances, &[]);
+        let order1: Vec<String> = tree1.get_roots().iter().map(|g| g.name.clone()).collect();
+
+        // Build a second time with the same groups (simulating reload)
+        let groups = tree1.get_all_groups();
+        let tree2 = GroupTree::new_with_groups(&instances, &groups);
+        let order2: Vec<String> = tree2.get_roots().iter().map(|g| g.name.clone()).collect();
+
+        assert_eq!(order1, order2);
+    }
+
+    #[test]
+    fn test_create_nested_group_inserts_at_top_of_siblings() {
+        let mut inst1 = Instance::new("a-session", "/tmp/a");
+        inst1.group_path = "parent/child_a".to_string();
+        let mut inst2 = Instance::new("b-session", "/tmp/b");
+        inst2.group_path = "parent/child_b".to_string();
+        let instances = vec![inst1, inst2];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        // Create a new nested group under "parent"
+        tree.create_group("parent/new_child");
+
+        let roots = tree.get_roots();
+        assert_eq!(roots.len(), 1);
+        let parent = &roots[0];
+        assert_eq!(parent.children[0].name, "new_child");
     }
 }

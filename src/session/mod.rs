@@ -17,7 +17,7 @@ pub use config::{
     ContainerRuntimeName, DefaultTerminalMode, SandboxConfig, SessionConfig, ThemeConfig,
     TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
-pub use groups::{flatten_tree, Group, GroupTree, Item};
+pub use groups::{flatten_tree, parent_path, Group, GroupTree, Item};
 pub use instance::{Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo};
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,

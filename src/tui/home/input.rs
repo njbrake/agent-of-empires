@@ -483,6 +483,16 @@ impl HomeView {
                     }
                 }
             }
+            KeyCode::Up | KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Err(e) = self.handle_move(-1) {
+                    tracing::error!("Failed to move item: {}", e);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Err(e) = self.handle_move(1) {
+                    tracing::error!("Failed to move item: {}", e);
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_cursor(-1);
             }
