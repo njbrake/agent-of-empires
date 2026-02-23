@@ -25,7 +25,7 @@
 
           buildInputs = with pkgs; [
             zlib # required by vendored libgit2
-          ] ++ lib.optionals stdenv.isDarwin [
+          ] ++ lib.optionals stdenv.hostPlatform.isDarwin [
             libiconv
             darwin.apple_sdk.frameworks.Security
             darwin.apple_sdk.frameworks.SystemConfiguration

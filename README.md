@@ -54,7 +54,11 @@ curl -fsSL \
 brew install aoe
 
 # Nix
+<<<<<<< Updated upstream
 nix run github:njbrake/main#default
+=======
+nix run github:njbrake/agent-of-empires
+>>>>>>> Stashed changes
 
 # Build from source
 git clone https://github.com/njbrake/agent-of-empires
