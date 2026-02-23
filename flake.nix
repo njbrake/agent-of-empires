@@ -21,6 +21,7 @@
             pkg-config
             perl
             cmake
+            installShellFiles
           ];
 
           buildInputs = with pkgs; [
@@ -43,9 +44,29 @@
           aoe = craneLib.buildPackage (commonArgs // {
             inherit cargoArtifacts;
             cargoExtraArgs = "--package agent-of-empires";
-            # Tests are run in the separate aoe-test check below
             doCheck = false;
-            meta.mainProgram = "aoe";
+            postInstall = ''
+              installShellCompletion --cmd aoe \
+                --bash <($out/bin/aoe completion bash) \
+                --fish <($out/bin/aoe completion fish) \
+                --zsh <($out/bin/aoe completion zsh)
+            '';
+
+            meta = with pkgs.lib; {
+              description = "Terminal session manager for AI coding agents";
+              longDescription = ''
+                Agent of Empires (AoE) is a terminal session manager for AI coding
+                agents on Linux and macOS. Built on tmux, it allows running multiple
+                AI agents in parallel across different branches of your codebase,
+                each in its own isolated session with optional Docker sandboxing.
+
+                Supports Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI.
+              '';
+              homepage = "https://github.com/njbrake/agent-of-empires";
+              license = licenses.mit;
+              platforms = platforms.unix;
+              mainProgram = "aoe";
+            };
           });
         in
         {
