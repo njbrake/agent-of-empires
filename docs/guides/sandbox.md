@@ -188,7 +188,7 @@ AOE provides two official sandbox images:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, ripgrep, fzf |
+| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, git, ripgrep, fzf |
 | `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
 
 ### Dev Sandbox Tools
@@ -213,7 +213,7 @@ default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
 
 ## Custom Docker Images
 
-The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
+The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
 
 ### Step 1: Create a Dockerfile
 

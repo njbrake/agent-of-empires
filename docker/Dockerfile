@@ -1,5 +1,5 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
-# This image provides Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI in an isolated environment
+# This image provides Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, and Cursor CLI in an isolated environment
 
 FROM ubuntu:24.04
 
@@ -47,6 +47,9 @@ RUN npm install -g @google/gemini-cli
 RUN curl -LsSf https://mistral.ai/vibe/install.sh | bash
 ENV PATH="/root/.vibe/bin:${PATH}"
 
+# Install Cursor CLI
+RUN curl -fsSL https://cursor.com/install | bash
+
 # Create directories for credential mounts
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \
@@ -54,6 +57,7 @@ RUN mkdir -p /root/.claude \
     /root/.vibe \
     /root/.codex \
     /root/.gemini \
+    /root/.cursor \
     /root/.ssh
 
 # Allow Claude Code to use --dangerously-skip-permissions as root

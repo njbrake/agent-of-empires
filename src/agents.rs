@@ -113,10 +113,10 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "cursor",
         binary: "agent",
-        aliases: &[],
-        detection: DetectionMethod::RunWithArg("agent", "--version"),
-        yolo: Some(YoloMode::CliFlag("--force")),
-        instruction_flag: Some("--append-system-prompt {}"),
+        aliases: &["agent"],
+        detection: DetectionMethod::Which("agent"),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
+        instruction_flag: None,
         set_default_command: false,
         supports_host_launch: true,
         detect_status: status_detection::detect_cursor_status,
@@ -212,8 +212,8 @@ mod tests {
         assert_eq!(resolve_tool_name("gemini"), Some("gemini"));
         assert_eq!(resolve_tool_name("cursor"), Some("cursor"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
+        assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
-        assert_eq!(resolve_tool_name("agent"), None);
     }
 
     #[test]
