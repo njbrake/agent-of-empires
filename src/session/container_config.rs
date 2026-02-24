@@ -218,6 +218,21 @@ fn parse_credential_expires_at(content: &str) -> Option<u64> {
     value.get("claudeAiOauth")?.get("expiresAt")?.as_u64()
 }
 
+/// Decide whether an incoming credential should overwrite the existing one,
+/// based on `expiresAt` timestamps. Returns `true` if the incoming credential
+/// should be written.
+#[cfg(any(target_os = "macos", test))]
+fn should_overwrite_credential(existing_content: &str, incoming_content: &str) -> bool {
+    let existing_exp = parse_credential_expires_at(existing_content);
+    let incoming_exp = parse_credential_expires_at(incoming_content);
+
+    match (existing_exp, incoming_exp) {
+        (Some(existing), Some(incoming)) => incoming > existing,
+        (Some(_), None) => false,
+        _ => true,
+    }
+}
+
 /// Extract credentials from the macOS Keychain and write to a file.
 /// Returns Ok(true) if credentials were written, Ok(false) if not available.
 #[cfg(target_os = "macos")]
@@ -273,32 +288,16 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    // Compare expiresAt timestamps: only overwrite if keychain credential is fresher
-    // than the existing sandbox credential, or if either is unparseable.
+    // Only overwrite if the keychain credential is fresher than what the sandbox already has.
     if dest.exists() {
         if let Ok(existing_content) = std::fs::read_to_string(dest) {
-            let existing_exp = parse_credential_expires_at(&existing_content);
-            let keychain_exp = parse_credential_expires_at(trimmed);
-
-            if let (Some(existing), Some(keychain)) = (existing_exp, keychain_exp) {
-                if keychain <= existing {
-                    tracing::debug!(
-                        "Keychain credential for '{}' is not fresher (keychain={}, sandbox={}), keeping sandbox",
-                        service,
-                        keychain,
-                        existing
-                    );
-                    return Ok(false);
-                }
-            } else if existing_exp.is_some() && keychain_exp.is_none() {
-                // Sandbox is parseable but keychain is not -- keep sandbox.
+            if !should_overwrite_credential(&existing_content, trimmed) {
                 tracing::debug!(
-                    "Keychain credential for '{}' is unparseable but sandbox is valid, keeping sandbox",
-                    service
+                    "Keychain credential for '{}' is not fresher than sandbox, keeping sandbox",
+                    service,
                 );
                 return Ok(false);
             }
-            // All other cases (both unparseable, or only keychain parseable): overwrite.
         }
     }
 
@@ -1258,52 +1257,39 @@ mod tests {
     }
 
     #[test]
-    fn test_credential_freshness_comparison() {
-        let dir = TempDir::new().unwrap();
-        let dest = dir.path().join(".credentials.json");
-
-        let stale = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
-        let fresh = r#"{"claudeAiOauth":{"expiresAt":2000}}"#;
-
-        // Sandbox has fresh credential, keychain has stale: sandbox should be kept.
-        fs::write(&dest, fresh).unwrap();
-        let existing_exp = parse_credential_expires_at(fresh);
-        let keychain_exp = parse_credential_expires_at(stale);
-        assert!(existing_exp.is_some());
-        assert!(keychain_exp.is_some());
-        assert!(keychain_exp.unwrap() <= existing_exp.unwrap());
-
-        // Sandbox has stale credential, keychain has fresh: keychain should win.
-        fs::write(&dest, stale).unwrap();
-        let existing_exp = parse_credential_expires_at(stale);
-        let keychain_exp = parse_credential_expires_at(fresh);
-        assert!(keychain_exp.unwrap() > existing_exp.unwrap());
+    fn test_should_not_overwrite_with_stale_keychain() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":2000}}"#;
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(sandbox, keychain));
     }
 
     #[test]
-    fn test_credential_comparison_with_unparseable_files() {
-        // When sandbox is parseable but keychain is not, sandbox should be kept.
-        let valid = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
-        let invalid = "not-json";
+    fn test_should_overwrite_with_fresh_keychain() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":2000}}"#;
+        assert!(should_overwrite_credential(sandbox, keychain));
+    }
 
-        let existing_exp = parse_credential_expires_at(valid);
-        let keychain_exp = parse_credential_expires_at(invalid);
-        assert!(existing_exp.is_some());
-        assert!(keychain_exp.is_none());
-        // Decision: keep sandbox (existing is parseable, keychain is not).
+    #[test]
+    fn test_should_not_overwrite_equal_timestamps() {
+        let cred = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(cred, cred));
+    }
 
-        // When both are unparseable, keychain wins (fallback to current behavior).
-        let existing_exp = parse_credential_expires_at(invalid);
-        let keychain_exp = parse_credential_expires_at("also-not-json");
-        assert!(existing_exp.is_none());
-        assert!(keychain_exp.is_none());
-        // Decision: overwrite (both unparseable).
+    #[test]
+    fn test_should_not_overwrite_when_keychain_unparseable() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(sandbox, "not-json"));
+    }
 
-        // When only keychain is parseable, keychain wins.
-        let existing_exp = parse_credential_expires_at(invalid);
-        let keychain_exp = parse_credential_expires_at(valid);
-        assert!(existing_exp.is_none());
-        assert!(keychain_exp.is_some());
-        // Decision: overwrite (sandbox is unparseable).
+    #[test]
+    fn test_should_overwrite_when_both_unparseable() {
+        assert!(should_overwrite_credential("bad", "also-bad"));
+    }
+
+    #[test]
+    fn test_should_overwrite_when_only_keychain_parseable() {
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(should_overwrite_credential("not-json", keychain));
     }
 }
