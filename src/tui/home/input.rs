@@ -314,7 +314,8 @@ impl HomeView {
                 KeyCode::Esc => {
                     self.search_active = false;
                     self.search_query = Input::default();
-                    self.filtered_items = None;
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
                 }
                 KeyCode::Enter => {
                     self.search_active = false;
@@ -322,7 +323,7 @@ impl HomeView {
                 _ => {
                     self.search_query
                         .handle_event(&crossterm::event::Event::Key(key));
-                    self.update_filter();
+                    self.update_search();
                 }
             }
             return None;
@@ -330,6 +331,13 @@ impl HomeView {
 
         // Normal mode keybindings
         match key.code {
+            KeyCode::Esc => {
+                if !self.search_matches.is_empty() {
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
+                    self.search_query = Input::default();
+                }
+            }
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -368,20 +376,38 @@ impl HomeView {
                 self.search_query = Input::default();
             }
             KeyCode::Char('n') => {
-                let existing_titles: Vec<String> =
-                    self.instances.iter().map(|i| i.title.clone()).collect();
-                let existing_groups: Vec<String> = self
-                    .group_tree
-                    .get_all_groups()
-                    .iter()
-                    .map(|g| g.path.clone())
-                    .collect();
-                self.new_dialog = Some(NewSessionDialog::new(
-                    self.available_tools.clone(),
-                    existing_titles,
-                    existing_groups,
-                    self.storage.profile(),
-                ));
+                if !self.search_matches.is_empty() {
+                    self.search_match_index =
+                        (self.search_match_index + 1) % self.search_matches.len();
+                    self.cursor = self.search_matches[self.search_match_index];
+                    self.update_selected();
+                } else {
+                    let existing_titles: Vec<String> =
+                        self.instances.iter().map(|i| i.title.clone()).collect();
+                    let existing_groups: Vec<String> = self
+                        .group_tree
+                        .get_all_groups()
+                        .iter()
+                        .map(|g| g.path.clone())
+                        .collect();
+                    self.new_dialog = Some(NewSessionDialog::new(
+                        self.available_tools.clone(),
+                        existing_titles,
+                        existing_groups,
+                        self.storage.profile(),
+                    ));
+                }
+            }
+            KeyCode::Char('N') => {
+                if !self.search_matches.is_empty() {
+                    self.search_match_index = if self.search_match_index == 0 {
+                        self.search_matches.len() - 1
+                    } else {
+                        self.search_match_index - 1
+                    };
+                    self.cursor = self.search_matches[self.search_match_index];
+                    self.update_selected();
+                }
             }
             KeyCode::Char('s') => {
                 // Open settings view with selected session's project path (if any)
@@ -604,20 +630,14 @@ impl HomeView {
     }
 
     pub(super) fn move_cursor(&mut self, delta: i32) {
-        let items = if let Some(ref filtered) = self.filtered_items {
-            filtered.len()
-        } else {
-            self.flat_items.len()
-        };
-
-        if items == 0 {
+        if self.flat_items.is_empty() {
             return;
         }
 
         let new_cursor = if delta < 0 {
             self.cursor.saturating_sub((-delta) as usize)
         } else {
-            (self.cursor + delta as usize).min(items - 1)
+            (self.cursor + delta as usize).min(self.flat_items.len() - 1)
         };
 
         self.cursor = new_cursor;
@@ -625,23 +645,15 @@ impl HomeView {
     }
 
     pub(super) fn update_selected(&mut self) {
-        let item_idx = if let Some(ref filtered) = self.filtered_items {
-            filtered.get(self.cursor).copied()
-        } else {
-            Some(self.cursor)
-        };
-
-        if let Some(idx) = item_idx {
-            if let Some(item) = self.flat_items.get(idx) {
-                match item {
-                    Item::Session { id, .. } => {
-                        self.selected_session = Some(id.clone());
-                        self.selected_group = None;
-                    }
-                    Item::Group { path, .. } => {
-                        self.selected_session = None;
-                        self.selected_group = Some(path.clone());
-                    }
+        if let Some(item) = self.flat_items.get(self.cursor) {
+            match item {
+                Item::Session { id, .. } => {
+                    self.selected_session = Some(id.clone());
+                    self.selected_group = None;
+                }
+                Item::Group { path, .. } => {
+                    self.selected_session = None;
+                    self.selected_group = Some(path.clone());
                 }
             }
         }
@@ -658,38 +670,57 @@ impl HomeView {
         }
     }
 
-    pub(super) fn update_filter(&mut self) {
-        if self.search_query.value().is_empty() {
-            self.filtered_items = None;
+    pub(super) fn update_search(&mut self) {
+        self.search_matches.clear();
+        self.search_match_index = 0;
+
+        let query = self.search_query.value();
+        if query.is_empty() {
             return;
         }
 
-        let query = self.search_query.value().to_lowercase();
-        let mut matches = Vec::new();
+        use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+        use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+        let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+        let atom = Atom::new(
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+            false,
+        );
+
+        let mut scored: Vec<(usize, u16)> = Vec::new();
+        let mut buf = Vec::new();
 
         for (idx, item) in self.flat_items.iter().enumerate() {
-            match item {
+            let haystack = match item {
                 Item::Session { id, .. } => {
                     if let Some(inst) = self.instance_map.get(id) {
-                        if inst.title_lower.contains(&query)
-                            || inst.project_path_lower.contains(&query)
-                        {
-                            matches.push(idx);
-                        }
+                        format!("{} {}", inst.title, inst.project_path)
+                    } else {
+                        continue;
                     }
                 }
                 Item::Group { name, path, .. } => {
-                    if name.to_lowercase().contains(&query) || path.to_lowercase().contains(&query)
-                    {
-                        matches.push(idx);
-                    }
+                    format!("{} {}", name, path)
                 }
+            };
+
+            let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);
+            if let Some(score) = atom.score(haystack_utf32, &mut matcher) {
+                scored.push((idx, score));
             }
         }
 
-        self.filtered_items = Some(matches);
-        self.cursor = 0;
-        self.update_selected();
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        self.search_matches = scored.into_iter().map(|(idx, _)| idx).collect();
+
+        if let Some(&best) = self.search_matches.first() {
+            self.cursor = best;
+            self.update_selected();
+        }
     }
 
     /// Create a session with optional hooks. Delegates to the background

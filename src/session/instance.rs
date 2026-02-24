@@ -108,12 +108,6 @@ pub struct Instance {
     pub last_start_time: Option<std::time::Instant>,
     #[serde(skip)]
     pub last_error: Option<String>,
-
-    // Search optimization: pre-computed lowercase strings (not serialized)
-    #[serde(skip)]
-    pub title_lower: String,
-    #[serde(skip)]
-    pub project_path_lower: String,
 }
 
 impl Instance {
@@ -136,16 +130,7 @@ impl Instance {
             last_error_check: None,
             last_start_time: None,
             last_error: None,
-            title_lower: title.to_lowercase(),
-            project_path_lower: project_path.to_lowercase(),
         }
-    }
-
-    /// Update the pre-computed lowercase fields for search optimization.
-    /// Call this after loading instances from disk or modifying title/path.
-    pub fn update_search_cache(&mut self) {
-        self.title_lower = self.title.to_lowercase();
-        self.project_path_lower = self.project_path.to_lowercase();
     }
 
     pub fn is_sub_session(&self) -> bool {
@@ -770,25 +755,6 @@ mod tests {
         inst.tool = "claude".to_string();
         inst.command = "claude --resume abc123".to_string();
         assert_eq!(inst.get_tool_command(), "claude --resume abc123");
-    }
-
-    // Tests for update_search_cache
-    #[test]
-    fn test_update_search_cache() {
-        let mut inst = Instance::new("Test Title", "/Path/To/Project");
-        // Manually modify title
-        inst.title = "New Title".to_string();
-        inst.project_path = "/New/Path".to_string();
-
-        // Cache is stale
-        assert_ne!(inst.title_lower, "new title");
-        assert_ne!(inst.project_path_lower, "/new/path");
-
-        // Update cache
-        inst.update_search_cache();
-
-        assert_eq!(inst.title_lower, "new title");
-        assert_eq!(inst.project_path_lower, "/new/path");
     }
 
     // Tests for Status enum

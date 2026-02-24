@@ -125,7 +125,8 @@ pub struct HomeView {
     // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
-    pub(super) filtered_items: Option<Vec<usize>>,
+    pub(super) search_matches: Vec<usize>,
+    pub(super) search_match_index: usize,
 
     // Tool availability
     pub(super) available_tools: AvailableTools,
@@ -171,11 +172,7 @@ pub struct HomeView {
 
 impl HomeView {
     pub fn new(storage: Storage, available_tools: AvailableTools) -> anyhow::Result<Self> {
-        let (mut instances, groups) = storage.load_with_groups()?;
-
-        for inst in &mut instances {
-            inst.update_search_cache();
-        }
+        let (instances, groups) = storage.load_with_groups()?;
 
         let instance_map: HashMap<String, Instance> = instances
             .iter()
@@ -224,7 +221,8 @@ impl HomeView {
             pending_stop_session: None,
             search_active: false,
             search_query: Input::default(),
-            filtered_items: None,
+            search_matches: Vec::new(),
+            search_match_index: 0,
             available_tools,
             status_poller: StatusPoller::new(),
             pending_status_refresh: false,
@@ -262,7 +260,6 @@ impl HomeView {
                 inst.last_error_check = prev.last_error_check;
                 inst.last_start_time = prev.last_start_time;
             }
-            inst.update_search_cache();
         }
 
         self.instances = instances;
@@ -277,6 +274,10 @@ impl HomeView {
 
         if self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
             self.cursor = self.flat_items.len() - 1;
+        }
+
+        if !self.search_query.value().is_empty() {
+            self.update_search();
         }
 
         self.update_selected();
