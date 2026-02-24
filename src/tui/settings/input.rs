@@ -16,6 +16,8 @@ pub enum SettingsAction {
     Close,
     /// Close was cancelled due to unsaved changes
     UnsavedChangesWarning,
+    /// Live-preview a theme change (theme name)
+    PreviewTheme(String),
 }
 
 impl SettingsView {
@@ -170,7 +172,6 @@ impl SettingsView {
                     let field = &self.fields[self.selected_field];
                     match &field.value {
                         FieldValue::Bool(value) => {
-                            // Toggle boolean on Enter too
                             let new_value = !value;
                             self.fields[self.selected_field].value = FieldValue::Bool(new_value);
                             self.apply_field_to_config(self.selected_field);
@@ -191,13 +192,23 @@ impl SettingsView {
                             self.editing_input = Some(Input::new(value.to_string()));
                         }
                         FieldValue::Select { selected, options } => {
-                            // Cycle through options
                             let new_selected = (*selected + 1) % options.len();
+                            let new_options = options.clone();
                             self.fields[self.selected_field].value = FieldValue::Select {
                                 selected: new_selected,
-                                options: options.clone(),
+                                options: new_options,
                             };
                             self.apply_field_to_config(self.selected_field);
+
+                            if self.fields[self.selected_field].key == FieldKey::ThemeName {
+                                if let FieldValue::Select { selected, options } =
+                                    &self.fields[self.selected_field].value
+                                {
+                                    if let Some(name) = options.get(*selected) {
+                                        return SettingsAction::PreviewTheme(name.clone());
+                                    }
+                                }
+                            }
                         }
                         FieldValue::List(_) => {
                             // Expand list for editing
@@ -217,8 +228,21 @@ impl SettingsView {
                     && self.focus == SettingsFocus::Fields
                     && !self.fields.is_empty()
                 {
+                    let was_theme = self.fields[self.selected_field].key == FieldKey::ThemeName;
                     self.clear_profile_override(self.selected_field);
                     self.rebuild_fields();
+
+                    if was_theme {
+                        if let Some(field) =
+                            self.fields.iter().find(|f| f.key == FieldKey::ThemeName)
+                        {
+                            if let FieldValue::Select { selected, options } = &field.value {
+                                if let Some(name) = options.get(*selected) {
+                                    return SettingsAction::PreviewTheme(name.clone());
+                                }
+                            }
+                        }
+                    }
                 }
                 SettingsAction::Continue
             }
@@ -333,7 +357,6 @@ impl SettingsView {
                     }
                 }
 
-                // Update state and apply config after releasing borrows
                 if let Some(ref mut s) = self.list_edit_state {
                     s.selected_index = new_selected_idx;
                 }
@@ -414,6 +437,12 @@ impl SettingsView {
         };
 
         match key {
+            // Theme
+            FieldKey::ThemeName => {
+                if let Some(ref mut t) = config.theme {
+                    t.name = None;
+                }
+            }
             // Updates
             FieldKey::CheckEnabled => {
                 if let Some(ref mut u) = config.updates {

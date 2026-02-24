@@ -48,6 +48,60 @@ jobs:
           components: clippy
       - run: cargo clippy -- -D warnings
 
+  nix:
+    name: Nix Eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+      - name: Evaluate flake outputs (all systems)
+        run: |
+          set -euo pipefail
+          nix --version
+
+          echo "=== Flake metadata ==="
+          nix flake metadata
+
+          echo ""
+          echo "=== Flake structure ==="
+          nix flake show --all-systems
+
+          SYSTEMS="x86_64-linux aarch64-linux x86_64-darwin aarch64-darwin"
+
+          echo ""
+          echo "=== Evaluating packages for all systems ==="
+          for system in $SYSTEMS; do
+            echo ""
+            echo "--- $system ---"
+            printf "  default: "
+            if output=$(nix eval ".#packages.$system.default.drvPath" --raw 2>&1); then
+              echo "✓"
+            else
+              echo "✗"
+              echo "::error::Evaluation failed for packages.$system.default"
+              echo "$output"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=== Evaluating devShells for all systems ==="
+          for system in $SYSTEMS; do
+            printf "%s: " "$system"
+            if output=$(nix eval ".#devShells.$system.default.drvPath" --raw 2>&1); then
+              echo "✓"
+            else
+              echo "✗"
+              echo "::error::Evaluation failed for devShells.$system.default"
+              echo "$output"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=== All evaluations passed ==="
+
   website:
     name: Website Build
     runs-on: ubuntu-latest

@@ -386,6 +386,7 @@ pub fn play_for_transition(old: Status, new: Status, config: &SoundConfig) {
         Status::Waiting => config.on_waiting.as_deref(),
         Status::Idle => config.on_idle.as_deref(),
         Status::Error => config.on_error.as_deref(),
+        Status::Stopped => return,
         Status::Deleting => return, // No sound for deletion
     };
 

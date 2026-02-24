@@ -703,4 +703,27 @@ mod tests {
             Some(TmuxMouseMode::Enabled)
         );
     }
+
+    #[test]
+    fn test_merge_configs_with_theme_override() {
+        let global = Config::default();
+        let profile = ProfileConfig {
+            theme: Some(ThemeConfigOverride {
+                name: Some("tokyo-night".to_string()),
+            }),
+            ..Default::default()
+        };
+        let merged = merge_configs(global, &profile);
+        assert_eq!(merged.theme.name, "tokyo-night");
+    }
+
+    #[test]
+    fn test_merge_configs_theme_inherits_when_not_overridden() {
+        let mut global = Config::default();
+        global.theme.name = "catppuccin-latte".to_string();
+
+        let profile = ProfileConfig::default();
+        let merged = merge_configs(global, &profile);
+        assert_eq!(merged.theme.name, "catppuccin-latte");
+    }
 }

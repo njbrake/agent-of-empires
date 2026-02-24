@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_WAITING,
+    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_STOPPED, ICON_WAITING,
 };
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
@@ -231,6 +231,7 @@ impl HomeView {
                                 Status::Running => ICON_RUNNING,
                                 Status::Waiting => ICON_WAITING,
                                 Status::Idle => ICON_IDLE,
+                                Status::Stopped => ICON_STOPPED,
                                 Status::Error => ICON_ERROR,
                                 Status::Starting => ICON_STARTING,
                                 Status::Deleting => ICON_DELETING,
@@ -239,6 +240,7 @@ impl HomeView {
                                 Status::Running => theme.running,
                                 Status::Waiting => theme.waiting,
                                 Status::Idle => theme.idle,
+                                Status::Stopped => theme.dimmed,
                                 Status::Error => theme.error,
                                 Status::Starting => theme.dimmed,
                                 Status::Deleting => theme.waiting,
@@ -295,7 +297,7 @@ impl HomeView {
                 if let Some(wt_info) = &inst.worktree_info {
                     line_spans.push(Span::styled(
                         format!("  {}", wt_info.branch),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme.branch),
                     ));
                 }
                 if inst.is_sandboxed() {
@@ -303,7 +305,7 @@ impl HomeView {
                         ViewMode::Agent => {
                             line_spans.push(Span::styled(
                                 " [sandbox]",
-                                Style::default().fg(Color::Magenta),
+                                Style::default().fg(theme.sandbox),
                             ));
                         }
                         ViewMode::Terminal => {
@@ -313,7 +315,7 @@ impl HomeView {
                                 TerminalMode::Host => " [host]",
                             };
                             line_spans
-                                .push(Span::styled(mode_text, Style::default().fg(Color::Magenta)));
+                                .push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
                         }
                     }
                 }

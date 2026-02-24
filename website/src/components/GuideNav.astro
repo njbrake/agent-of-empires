@@ -1,0 +1,38 @@
+---
+interface NavItem {
+  label: string;
+  href: string;
+}
+
+interface Props {
+  prev?: NavItem;
+  next?: NavItem;
+}
+
+const { prev, next } = Astro.props;
+---
+
+<nav class="mt-16 pt-8 border-t border-surface-700/50 grid gap-4" style={`grid-template-columns: ${prev && next ? '1fr 1fr' : '1fr'};`} aria-label="Guide navigation">
+  {prev && (
+    <a href={prev.href} class="group feature-card rounded-xl p-5 flex items-center gap-3 no-underline" style={!next ? 'max-width: 50%;' : ''}>
+      <svg class="w-5 h-5 text-gray-500 group-hover:text-brand-400 transition-colors flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+      <div>
+        <span class="text-xs text-gray-500 uppercase tracking-wider">Previous</span>
+        <p class="text-sm font-medium text-gray-300 group-hover:text-white transition-colors mt-0.5">{prev.label}</p>
+      </div>
+    </a>
+  )}
+  {next && (
+    <a href={next.href} class={`group feature-card rounded-xl p-5 flex items-center justify-end gap-3 text-right no-underline ${!prev ? 'ml-auto' : ''}`} style={!prev ? 'max-width: 50%;' : ''}>
+      <div>
+        <span class="text-xs text-gray-500 uppercase tracking-wider">Next</span>
+        <p class="text-sm font-medium text-gray-300 group-hover:text-white transition-colors mt-0.5">{next.label}</p>
+      </div>
+      <svg class="w-5 h-5 text-gray-500 group-hover:text-brand-400 transition-colors flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+      </svg>
+    </a>
+  )}
+</nav>

@@ -123,6 +123,7 @@ impl SettingsView {
             .unwrap_or_default();
 
         let categories = vec![
+            SettingsCategory::Theme,
             SettingsCategory::Session,
             SettingsCategory::Hooks,
             SettingsCategory::Sandbox,

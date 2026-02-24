@@ -58,7 +58,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
         home_seed_files: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
-        preserve_files: &[".credentials.json"],
+        preserve_files: &[".credentials.json", "history.jsonl"],
     },
     AgentConfigMount {
         host_rel: ".local/share/opencode",
@@ -134,6 +134,24 @@ fn sync_agent_config(
         }
     }
 
+    // If the sandbox already has a "projects/" subdirectory, a prior container
+    // session ran and created state we must not overwrite (e.g. settings.json,
+    // statsig/, session metadata). Only seed files, copy_dirs, and keychain
+    // credentials are still synced; the general top-level file copy is skipped.
+    //
+    // Why "projects/"? Claude Code creates this directory on first run to store
+    // per-project session data. Its presence reliably indicates the container
+    // has been used before. If this sentinel changes upstream, container restarts
+    // would fall back to the old behavior of re-copying all host files (safe,
+    // just potentially overwriting container-side customizations).
+    let has_prior_data = sandbox_dir.join("projects").exists();
+    if has_prior_data {
+        tracing::info!(
+            "sync_agent_config: sandbox={} has prior session data, skipping general file copy",
+            sandbox_dir.display()
+        );
+    }
+
     for entry in std::fs::read_dir(host_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -159,6 +177,12 @@ fn sync_agent_config(
                     tracing::warn!("Failed to copy dir {}: {}", name_str, e);
                 }
             }
+            continue;
+        }
+
+        // Skip general top-level file copies on restart to preserve
+        // container-created files (settings.json, statsig/, etc.).
+        if has_prior_data {
             continue;
         }
 
@@ -194,6 +218,29 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Parse the `expiresAt` timestamp from a Claude Code credential JSON string.
+/// Returns `None` if the JSON is malformed or the field is missing/wrong type.
+#[cfg(any(target_os = "macos", test))]
+fn parse_credential_expires_at(content: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    value.get("claudeAiOauth")?.get("expiresAt")?.as_u64()
+}
+
+/// Decide whether an incoming credential should overwrite the existing one,
+/// based on `expiresAt` timestamps. Returns `true` if the incoming credential
+/// should be written.
+#[cfg(any(target_os = "macos", test))]
+fn should_overwrite_credential(existing_content: &str, incoming_content: &str) -> bool {
+    let existing_exp = parse_credential_expires_at(existing_content);
+    let incoming_exp = parse_credential_expires_at(incoming_content);
+
+    match (existing_exp, incoming_exp) {
+        (Some(existing), Some(incoming)) => incoming > existing,
+        (Some(_), None) => false,
+        _ => true,
+    }
 }
 
 /// Extract credentials from the macOS Keychain and write to a file.
@@ -249,6 +296,19 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
             service
         );
         return Ok(false);
+    }
+
+    // Only overwrite if the keychain credential is fresher than what the sandbox already has.
+    if dest.exists() {
+        if let Ok(existing_content) = std::fs::read_to_string(dest) {
+            if !should_overwrite_credential(&existing_content, trimmed) {
+                tracing::debug!(
+                    "Keychain credential for '{}' is not fresher than sandbox, keeping sandbox",
+                    service,
+                );
+                return Ok(false);
+            }
+        }
     }
 
     std::fs::write(dest, trimmed)?;
@@ -1097,6 +1157,70 @@ mod tests {
     }
 
     #[test]
+    fn test_history_preserved_across_resync() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        let sandbox = dir.path().join("sandbox");
+
+        // Host has a history file with host-only entries.
+        fs::write(host.join("history.jsonl"), "host-entry\n").unwrap();
+
+        // First sync copies it in.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &["history.jsonl"]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("history.jsonl")).unwrap(),
+            "host-entry\n"
+        );
+
+        // Container session appends entries.
+        fs::write(
+            sandbox.join("history.jsonl"),
+            "host-entry\ncontainer-session-1\ncontainer-session-2\n",
+        )
+        .unwrap();
+
+        // Re-sync (container restart) should NOT clobber the container's history.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &["history.jsonl"]).unwrap();
+        let content = fs::read_to_string(sandbox.join("history.jsonl")).unwrap();
+        assert!(
+            content.contains("container-session-1"),
+            "container history entries must survive re-sync"
+        );
+    }
+
+    #[test]
+    fn test_has_prior_data_skips_general_file_copy() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        let sandbox = dir.path().join("sandbox");
+
+        // First sync copies everything in.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            "{}"
+        );
+
+        // Simulate a prior container session by creating the "projects/" sentinel.
+        fs::create_dir_all(sandbox.join("projects")).unwrap();
+
+        // Container modifies settings.json during its session.
+        fs::write(sandbox.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
+
+        // Host updates settings.json independently.
+        fs::write(host.join("settings.json"), r#"{"theme":"light"}"#).unwrap();
+
+        // Re-sync should skip general file copies because projects/ exists,
+        // preserving the container's settings.json.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            r#"{"theme":"dark"}"#,
+            "container-side settings must not be overwritten when projects/ sentinel exists"
+        );
+    }
+
+    #[test]
     fn test_preserve_files_seeded_when_missing() {
         let dir = TempDir::new().unwrap();
         let host = setup_host_dir(&dir);
@@ -1108,5 +1232,74 @@ mod tests {
             fs::read_to_string(sandbox.join("auth.json")).unwrap(),
             r#"{"token":"abc"}"#
         );
+    }
+
+    // --- credential freshness tests ---
+
+    #[test]
+    fn test_parse_credential_expires_at_valid() {
+        let json = r#"{"claudeAiOauth":{"expiresAt":1700000000}}"#;
+        assert_eq!(parse_credential_expires_at(json), Some(1700000000));
+    }
+
+    #[test]
+    fn test_parse_credential_expires_at_missing_key() {
+        // Missing claudeAiOauth entirely.
+        assert_eq!(parse_credential_expires_at(r#"{"other":"data"}"#), None);
+        // Missing expiresAt inside claudeAiOauth.
+        assert_eq!(
+            parse_credential_expires_at(r#"{"claudeAiOauth":{"token":"abc"}}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_credential_expires_at_invalid_json() {
+        assert_eq!(parse_credential_expires_at("not json at all"), None);
+        assert_eq!(parse_credential_expires_at(""), None);
+    }
+
+    #[test]
+    fn test_parse_credential_expires_at_wrong_type() {
+        // expiresAt is a string instead of a number.
+        let json = r#"{"claudeAiOauth":{"expiresAt":"1700000000"}}"#;
+        assert_eq!(parse_credential_expires_at(json), None);
+    }
+
+    #[test]
+    fn test_should_not_overwrite_with_stale_keychain() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":2000}}"#;
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(sandbox, keychain));
+    }
+
+    #[test]
+    fn test_should_overwrite_with_fresh_keychain() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":2000}}"#;
+        assert!(should_overwrite_credential(sandbox, keychain));
+    }
+
+    #[test]
+    fn test_should_not_overwrite_equal_timestamps() {
+        let cred = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(cred, cred));
+    }
+
+    #[test]
+    fn test_should_not_overwrite_when_keychain_unparseable() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(sandbox, "not-json"));
+    }
+
+    #[test]
+    fn test_should_overwrite_when_both_unparseable() {
+        assert!(should_overwrite_credential("bad", "also-bad"));
+    }
+
+    #[test]
+    fn test_should_overwrite_when_only_keychain_parseable() {
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(should_overwrite_credential("not-json", keychain));
     }
 }

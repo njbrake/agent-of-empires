@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
+use super::styles::load_theme;
 use super::styles::Theme;
 use crate::session::{get_update_settings, load_config, save_config, Storage};
 use crate::tmux::AvailableTools;
@@ -78,10 +79,17 @@ impl App {
     pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
         let storage = Storage::new(profile)?;
         let mut home = HomeView::new(storage, available_tools)?;
-        let theme = Theme::default();
 
         // Check if we need to show welcome or changelog dialogs
         let mut config = load_config()?.unwrap_or_default();
+
+        // Load theme from config, defaulting to phosphor if empty
+        let theme_name = if config.theme.name.is_empty() {
+            "phosphor"
+        } else {
+            &config.theme.name
+        };
+        let theme = load_theme(theme_name);
         let current_version = env!("CARGO_PKG_VERSION").to_string();
 
         if !config.app_state.has_seen_welcome {
@@ -104,6 +112,11 @@ impl App {
             update_info: None,
             update_rx: None,
         })
+    }
+
+    pub fn set_theme(&mut self, name: &str) {
+        self.theme = load_theme(name);
+        self.needs_redraw = true;
     }
 
     pub async fn run(
@@ -286,25 +299,8 @@ impl App {
             _ => {}
         }
 
-        // Delegate to home view
         if let Some(action) = self.home.handle_key(key) {
-            match action {
-                Action::Quit => self.should_quit = true,
-                Action::AttachSession(id) => {
-                    self.attach_session(&id, terminal)?;
-                }
-                Action::AttachTerminal(id, mode) => {
-                    self.attach_terminal(&id, mode, terminal)?;
-                }
-                Action::SwitchProfile(profile) => {
-                    let storage = Storage::new(&profile)?;
-                    let tools = self.home.available_tools();
-                    self.home = HomeView::new(storage, tools)?;
-                }
-                Action::EditFile(path) => {
-                    self.edit_file(&path, terminal)?;
-                }
-            }
+            self.execute_action(action, terminal)?;
         }
 
         Ok(())
@@ -315,27 +311,64 @@ impl App {
         mouse: MouseEvent,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
-        // Delegate to home view
         if let Some(action) = self.home.handle_mouse(mouse) {
-            match action {
-                Action::Quit => self.should_quit = true,
-                Action::AttachSession(id) => {
-                    self.attach_session(&id, terminal)?;
-                }
-                Action::AttachTerminal(id, mode) => {
-                    self.attach_terminal(&id, mode, terminal)?;
-                }
-                Action::SwitchProfile(profile) => {
-                    let storage = Storage::new(&profile)?;
-                    let tools = self.home.available_tools();
-                    self.home = HomeView::new(storage, tools)?;
-                }
-                Action::EditFile(path) => {
-                    self.edit_file(&path, terminal)?;
-                }
-            }
+            self.execute_action(action, terminal)?;
         }
 
+        Ok(())
+    }
+
+    fn execute_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        match action {
+            Action::Quit => self.should_quit = true,
+            Action::AttachSession(id) => {
+                self.attach_session(&id, terminal)?;
+            }
+            Action::AttachTerminal(id, mode) => {
+                self.attach_terminal(&id, mode, terminal)?;
+            }
+            Action::SwitchProfile(profile) => {
+                let storage = Storage::new(&profile)?;
+                let tools = self.home.available_tools();
+                self.home = HomeView::new(storage, tools)?;
+            }
+            Action::EditFile(path) => {
+                self.edit_file(&path, terminal)?;
+            }
+            Action::StopSession(id) => {
+                if let Some(inst) = self.home.get_instance(&id) {
+                    let inst_clone = inst.clone();
+                    // Set Stopped immediately so the status poller won't
+                    // override to Error while stop() blocks (docker stop
+                    // can take up to 10s).
+                    self.home
+                        .set_instance_status(&id, crate::session::Status::Stopped);
+                    match inst_clone.stop() {
+                        Ok(()) => {
+                            crate::tmux::refresh_session_cache();
+                            self.home.reload()?;
+                            self.home
+                                .set_instance_status(&id, crate::session::Status::Stopped);
+                            self.home.save()?;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to stop session: {}", e);
+                            self.home.set_instance_error(&id, Some(e.to_string()));
+                            self.home
+                                .set_instance_status(&id, crate::session::Status::Error);
+                            self.home.save()?;
+                        }
+                    }
+                }
+            }
+            Action::SetTheme(name) => {
+                self.set_theme(&name);
+            }
+        }
         Ok(())
     }
 
@@ -394,10 +427,14 @@ impl App {
             // Skip on_launch hooks if they already ran in the background creation poller
             let skip_on_launch = self.home.take_on_launch_hooks_ran(session_id);
 
+            self.home
+                .set_instance_status(session_id, crate::session::Status::Starting);
             let mut inst = instance.clone();
             if let Err(e) = inst.start_with_size_opts(size, skip_on_launch) {
                 self.home
                     .set_instance_error(session_id, Some(e.to_string()));
+                self.home
+                    .set_instance_status(session_id, crate::session::Status::Error);
                 return Ok(());
             }
             self.home.set_instance_error(session_id, None);
@@ -542,6 +579,8 @@ pub enum Action {
     AttachTerminal(String, TerminalMode),
     SwitchProfile(String),
     EditFile(PathBuf),
+    StopSession(String),
+    SetTheme(String),
 }
 
 #[cfg(test)]

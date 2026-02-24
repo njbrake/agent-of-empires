@@ -85,7 +85,12 @@ impl Session {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to kill tmux session: {}", stderr);
+            // Session vanished between the exists() check and kill-session
+            // (e.g. process tree kill caused tmux to tear it down). That's
+            // fine -- the goal was to remove the session and it's gone.
+            if !stderr.contains("can't find session") {
+                bail!("Failed to kill tmux session: {}", stderr);
+            }
         }
 
         refresh_session_cache();

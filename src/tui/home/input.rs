@@ -35,6 +35,15 @@ impl HomeView {
                         self.settings_view = None;
                         self.confirm_dialog = None;
                         self.settings_close_confirm = false;
+                        // Revert theme to saved config (undo any preview)
+                        if let Ok(config) = resolve_config(self.storage.profile()) {
+                            let theme_name = if config.theme.name.is_empty() {
+                                "phosphor".to_string()
+                            } else {
+                                config.theme.name
+                            };
+                            return Some(Action::SetTheme(theme_name));
+                        }
                         return None;
                     }
                 }
@@ -44,11 +53,22 @@ impl HomeView {
         // Handle settings view (full-screen takeover)
         if let Some(ref mut settings) = self.settings_view {
             match settings.handle_key(key) {
-                SettingsAction::Continue => return None,
+                SettingsAction::Continue => {
+                    return None;
+                }
                 SettingsAction::Close => {
                     self.settings_view = None;
                     // Refresh config-dependent state in case settings changed
                     self.refresh_from_config();
+                    // Reload theme from saved config
+                    if let Ok(config) = resolve_config(self.storage.profile()) {
+                        let theme_name = if config.theme.name.is_empty() {
+                            "phosphor".to_string()
+                        } else {
+                            config.theme.name
+                        };
+                        return Some(Action::SetTheme(theme_name));
+                    }
                     return None;
                 }
                 SettingsAction::UnsavedChangesWarning => {
@@ -60,6 +80,9 @@ impl HomeView {
                     ));
                     self.settings_close_confirm = true;
                     return None;
+                }
+                SettingsAction::PreviewTheme(name) => {
+                    return Some(Action::SetTheme(name));
                 }
             }
         }
@@ -210,6 +233,7 @@ impl HomeView {
                 DialogResult::Continue => {}
                 DialogResult::Cancel => {
                     self.confirm_dialog = None;
+                    self.pending_stop_session = None;
                 }
                 DialogResult::Submit(_) => {
                     let action = dialog.action().to_string();
@@ -217,6 +241,10 @@ impl HomeView {
                     if action == "delete_group" {
                         if let Err(e) = self.delete_selected_group() {
                             tracing::error!("Failed to delete group: {}", e);
+                        }
+                    } else if action == "stop_session" {
+                        if let Some(session_id) = self.pending_stop_session.take() {
+                            return Some(Action::StopSession(session_id));
                         }
                     }
                 }
@@ -398,6 +426,19 @@ impl HomeView {
                             "Error",
                             &format!("Failed to open diff view: {}", e),
                         ));
+                    }
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(session_id) = &self.selected_session {
+                    if let Some(inst) = self.instance_map.get(session_id) {
+                        if inst.status == Status::Stopped || inst.status == Status::Deleting {
+                            return None;
+                        }
+                        let message = format!("Are you sure you want to stop '{}'?", inst.title);
+                        self.pending_stop_session = Some(session_id.clone());
+                        self.confirm_dialog =
+                            Some(ConfirmDialog::new("Stop Session", &message, "stop_session"));
                     }
                 }
             }
