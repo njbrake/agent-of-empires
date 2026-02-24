@@ -144,20 +144,15 @@ impl HomeView {
             return;
         }
 
-        let indices: Vec<usize> = if let Some(ref filtered) = self.filtered_items {
-            filtered.clone()
-        } else {
-            (0..self.flat_items.len()).collect()
-        };
-
-        let list_items: Vec<ListItem> = indices
+        let list_items: Vec<ListItem> = self
+            .flat_items
             .iter()
             .enumerate()
-            .filter_map(|(display_idx, &item_idx)| {
-                self.flat_items.get(item_idx).map(|item| {
-                    let is_selected = display_idx == self.cursor;
-                    self.render_item(item, is_selected, theme)
-                })
+            .map(|(idx, item)| {
+                let is_selected = idx == self.cursor;
+                let is_match =
+                    !self.search_matches.is_empty() && self.search_matches.contains(&idx);
+                self.render_item(item, is_selected, is_match, theme)
             })
             .collect();
 
@@ -198,11 +193,28 @@ impl HomeView {
                 spans.push(Span::styled(after, text_style));
             }
 
+            if !self.search_matches.is_empty() {
+                let count_text = format!(
+                    " [{}/{}]",
+                    self.search_match_index + 1,
+                    self.search_matches.len()
+                );
+                spans.push(Span::styled(count_text, Style::default().fg(theme.dimmed)));
+            } else if !value.is_empty() {
+                spans.push(Span::styled(" [0/0]", Style::default().fg(theme.dimmed)));
+            }
+
             frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
         }
     }
 
-    fn render_item(&self, item: &Item, is_selected: bool, theme: &Theme) -> ListItem<'_> {
+    fn render_item(
+        &self,
+        item: &Item,
+        is_selected: bool,
+        is_match: bool,
+        theme: &Theme,
+    ) -> ListItem<'_> {
         let indent = get_indent(item.depth());
 
         use std::borrow::Cow;
@@ -286,7 +298,12 @@ impl HomeView {
 
         let mut line_spans = Vec::with_capacity(5);
         line_spans.push(Span::raw(indent));
-        line_spans.push(Span::styled(format!("{} ", icon), style));
+        let icon_style = if is_match {
+            Style::default().fg(theme.search)
+        } else {
+            style
+        };
+        line_spans.push(Span::styled(format!("{} ", icon), icon_style));
         line_spans.push(Span::styled(
             text.into_owned(),
             if is_selected { style.bold() } else { style },
