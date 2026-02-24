@@ -276,8 +276,11 @@ impl HomeView {
             self.cursor = self.flat_items.len() - 1;
         }
 
-        if !self.search_query.value().is_empty() {
+        if self.search_active && !self.search_query.value().is_empty() {
             self.update_search();
+        } else if !self.search_matches.is_empty() {
+            // Recalculate match indices without moving the cursor
+            self.refresh_search_matches();
         }
 
         self.update_selected();

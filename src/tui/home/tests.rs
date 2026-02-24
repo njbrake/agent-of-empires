@@ -574,6 +574,27 @@ fn test_esc_in_normal_mode_clears_matches() {
 
 #[test]
 #[serial]
+fn test_reload_does_not_snap_cursor_after_enter() {
+    let mut env = create_test_env_with_sessions(5);
+    // Search and exit with Enter
+    env.view.handle_key(key(KeyCode::Char('/')));
+    env.view.handle_key(key(KeyCode::Char('s')));
+    env.view.handle_key(key(KeyCode::Enter));
+    assert!(!env.view.search_active);
+
+    // Navigate away from the search result
+    env.view.cursor = 4;
+    env.view.update_selected();
+
+    // Simulate periodic reload
+    env.view.reload().unwrap();
+
+    // Cursor should stay where the user put it, not snap back to best match
+    assert_eq!(env.view.cursor, 4);
+}
+
+#[test]
+#[serial]
 fn test_enter_keeps_matches_for_n_cycling() {
     let mut env = create_test_env_with_sessions(5);
     env.view.handle_key(key(KeyCode::Char('/')));

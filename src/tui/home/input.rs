@@ -670,6 +670,60 @@ impl HomeView {
         }
     }
 
+    /// Re-score matches after a reload without moving the cursor.
+    pub(super) fn refresh_search_matches(&mut self) {
+        let query = self.search_query.value();
+        if query.is_empty() {
+            self.search_matches.clear();
+            self.search_match_index = 0;
+            return;
+        }
+
+        use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+        use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+        let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+        let atom = Atom::new(
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+            false,
+        );
+
+        let mut scored: Vec<(usize, u16)> = Vec::new();
+        let mut buf = Vec::new();
+
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            let haystack = match item {
+                Item::Session { id, .. } => {
+                    if let Some(inst) = self.instance_map.get(id) {
+                        format!("{} {}", inst.title, inst.project_path)
+                    } else {
+                        continue;
+                    }
+                }
+                Item::Group { name, path, .. } => {
+                    format!("{} {}", name, path)
+                }
+            };
+
+            let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);
+            if let Some(score) = atom.score(haystack_utf32, &mut matcher) {
+                scored.push((idx, score));
+            }
+        }
+
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        self.search_matches = scored.into_iter().map(|(idx, _)| idx).collect();
+        // Clamp match_index in case matches shrank
+        if self.search_matches.is_empty() {
+            self.search_match_index = 0;
+        } else if self.search_match_index >= self.search_matches.len() {
+            self.search_match_index = self.search_matches.len() - 1;
+        }
+    }
+
     pub(super) fn update_search(&mut self) {
         self.search_matches.clear();
         self.search_match_index = 0;
