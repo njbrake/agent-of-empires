@@ -305,7 +305,10 @@ impl HomeView {
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
-                    if inst.status != Status::Deleting && inst.status != Status::Stopped {
+                    if inst.status != Status::Deleting
+                        && inst.status != Status::Stopped
+                        && update.status != Status::Stopped
+                    {
                         let old_status = inst.status;
                         inst.status = update.status;
                         inst.last_error = update.last_error.clone();
@@ -319,7 +322,10 @@ impl HomeView {
                     }
                 }
                 if let Some(inst) = self.instance_map.get_mut(&update.id) {
-                    if inst.status != Status::Deleting && inst.status != Status::Stopped {
+                    if inst.status != Status::Deleting
+                        && inst.status != Status::Stopped
+                        && update.status != Status::Stopped
+                    {
                         inst.status = update.status;
                         inst.last_error = update.last_error;
                     }
