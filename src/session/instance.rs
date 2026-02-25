@@ -590,6 +590,9 @@ impl Instance {
             Ok(status) => status,
             Err(_) => Status::Idle,
         };
+
+        // Clear stale error now that the session is healthy
+        self.last_error = None;
     }
 
     pub fn capture_output_with_size(
