@@ -1,9 +1,20 @@
 use super::*;
 use crate::session::{merge_configs, Config, ProfileConfig, SessionConfigOverride};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::fs;
+
+const TEST_PATH: &str = "/__aoe_nonexistent__/project";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl_key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::CONTROL)
+}
+
+fn alt_key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::ALT)
 }
 
 fn shift_key(code: KeyCode) -> KeyEvent {
@@ -11,18 +22,24 @@ fn shift_key(code: KeyCode) -> KeyEvent {
 }
 
 fn single_tool_dialog() -> NewSessionDialog {
-    NewSessionDialog::new_with_tools(vec!["claude"], "/tmp/project".to_string())
+    NewSessionDialog::new_with_tools(vec!["claude"], TEST_PATH.to_string())
 }
 
 fn multi_tool_dialog() -> NewSessionDialog {
-    NewSessionDialog::new_with_tools(vec!["claude", "opencode"], "/tmp/project".to_string())
+    NewSessionDialog::new_with_tools(vec!["claude", "opencode"], TEST_PATH.to_string())
+}
+
+fn set_valid_empty_path(dialog: &mut NewSessionDialog) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    dialog.path = Input::new(format!("{}/", tmp.path().display()));
+    tmp
 }
 
 #[test]
 fn test_initial_state() {
     let dialog = single_tool_dialog();
     assert_eq!(dialog.title.value(), "");
-    assert_eq!(dialog.path.value(), "/tmp/project");
+    assert_eq!(dialog.path.value(), TEST_PATH);
     assert_eq!(dialog.group.value(), "");
     assert_eq!(dialog.focused_field, 0);
     assert_eq!(dialog.tool_index, 0);
@@ -48,7 +65,7 @@ fn test_enter_submits_with_auto_title() {
                 "Expected a civilization name, got: {}",
                 data.title
             );
-            assert_eq!(data.path, "/tmp/project");
+            assert_eq!(data.path, TEST_PATH);
             assert_eq!(data.group, "");
             assert_eq!(data.tool, "claude");
         }
@@ -72,6 +89,7 @@ fn test_enter_preserves_custom_title() {
 #[test]
 fn test_tab_cycles_fields_single_tool() {
     let mut dialog = single_tool_dialog();
+    let _tmp = set_valid_empty_path(&mut dialog);
     assert_eq!(dialog.focused_field, 0);
 
     dialog.handle_key(key(KeyCode::Tab));
@@ -93,6 +111,7 @@ fn test_tab_cycles_fields_single_tool() {
 #[test]
 fn test_tab_cycles_fields_single_tool_with_worktree() {
     let mut dialog = single_tool_dialog();
+    let _tmp = set_valid_empty_path(&mut dialog);
     dialog.worktree_branch = Input::new("feature".to_string());
     assert_eq!(dialog.focused_field, 0);
 
@@ -118,6 +137,7 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
 #[test]
 fn test_tab_cycles_fields_multi_tool() {
     let mut dialog = multi_tool_dialog();
+    let _tmp = set_valid_empty_path(&mut dialog);
     assert_eq!(dialog.focused_field, 0);
 
     dialog.handle_key(key(KeyCode::Tab));
@@ -174,7 +194,208 @@ fn test_char_input_to_path() {
     dialog.focused_field = 1;
     dialog.handle_key(key(KeyCode::Char('/')));
     dialog.handle_key(key(KeyCode::Char('a')));
-    assert_eq!(dialog.path.value(), "/tmp/project/a");
+    assert_eq!(dialog.path.value(), format!("{TEST_PATH}/a"));
+}
+
+#[test]
+fn test_tab_autocompletes_path_with_single_directory_match() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
+    fs::write(tmp.path().join("project-file"), "not a directory").expect("failed to write file");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
+
+    dialog.handle_key(key(KeyCode::Tab));
+
+    assert_eq!(dialog.focused_field, 1);
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/project-alpha/", tmp.path().display())
+    );
+}
+
+#[test]
+fn test_tab_autocompletes_path_to_common_prefix_for_multiple_matches() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("client-api")).expect("failed to create directory");
+    fs::create_dir(tmp.path().join("client-web")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/cl", tmp.path().display()));
+
+    dialog.handle_key(key(KeyCode::Tab));
+
+    assert_eq!(dialog.focused_field, 1);
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/client-", tmp.path().display())
+    );
+}
+
+#[test]
+fn test_tab_moves_to_next_field_when_no_path_completion_exists() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    // Empty directory: path is valid, but there are no completion candidates.
+    let valid_empty_path = format!("{}/", tmp.path().display());
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(valid_empty_path.clone());
+
+    dialog.handle_key(key(KeyCode::Tab));
+
+    assert_eq!(dialog.focused_field, 2);
+    assert_eq!(dialog.path.value(), valid_empty_path);
+}
+
+#[test]
+fn test_tab_on_invalid_path_does_not_switch_field_and_flashes_path() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    let invalid_path = format!("{}/missing/subdir", tmp.path().display());
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(invalid_path.clone());
+
+    dialog.handle_key(key(KeyCode::Tab));
+
+    assert_eq!(dialog.focused_field, 1);
+    assert_eq!(dialog.path.value(), invalid_path);
+    assert!(dialog.is_path_invalid_flash_active());
+}
+
+#[test]
+fn test_invalid_path_flash_expires_after_tick() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/does/not/exist".to_string());
+    dialog.handle_key(key(KeyCode::Tab));
+    assert!(dialog.is_path_invalid_flash_active());
+
+    dialog.path_invalid_flash_until =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+    assert!(dialog.tick());
+    assert!(!dialog.is_path_invalid_flash_active());
+}
+
+#[test]
+fn test_tab_does_not_switch_field_when_path_has_candidates_without_extension() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("alpha")).expect("failed to create directory");
+    fs::create_dir(tmp.path().join("beta")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/", tmp.path().display()));
+
+    dialog.handle_key(key(KeyCode::Tab));
+
+    assert_eq!(dialog.focused_field, 1);
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/alpha", tmp.path().display())
+    );
+}
+
+#[test]
+fn test_tab_cycles_multiple_path_candidates() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("client-api")).expect("failed to create directory");
+    fs::create_dir(tmp.path().join("client-web")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/cl", tmp.path().display()));
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/client-", tmp.path().display())
+    );
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/client-api", tmp.path().display())
+    );
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/client-web", tmp.path().display())
+    );
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/client-api", tmp.path().display())
+    );
+}
+
+#[test]
+fn test_typing_key_accepts_selected_completion_and_resets_cycle_context() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("client-api")).expect("failed to create directory");
+    fs::create_dir(tmp.path().join("client-web")).expect("failed to create directory");
+    fs::create_dir(tmp.path().join("client-api").join("src")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/cl", tmp.path().display()));
+
+    dialog.handle_key(key(KeyCode::Tab)); // common prefix
+    dialog.handle_key(key(KeyCode::Tab)); // client-api
+    dialog.handle_key(key(KeyCode::Char('/'))); // accept selection and keep editing
+
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/client-api/", tmp.path().display())
+    );
+
+    dialog.handle_key(key(KeyCode::Tab)); // should complete inside selected directory, not cycle siblings
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/client-api/src/", tmp.path().display())
+    );
+}
+
+#[test]
+fn test_ctrl_left_jumps_to_previous_path_segment() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/tmp/alpha/beta".to_string());
+
+    dialog.handle_key(ctrl_key(KeyCode::Left));
+    dialog.handle_key(key(KeyCode::Char('X')));
+
+    assert_eq!(dialog.path.value(), "/tmp/alpha/Xbeta");
+}
+
+#[test]
+fn test_alt_b_jumps_to_previous_path_segment() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/tmp/alpha/beta".to_string());
+
+    dialog.handle_key(alt_key(KeyCode::Char('b')));
+    dialog.handle_key(key(KeyCode::Char('X')));
+
+    assert_eq!(dialog.path.value(), "/tmp/alpha/Xbeta");
+}
+
+#[test]
+fn test_ctrl_a_jumps_to_start_of_path() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/tmp/alpha/beta".to_string());
+
+    dialog.handle_key(ctrl_key(KeyCode::Char('a')));
+    dialog.handle_key(key(KeyCode::Char('X')));
+
+    assert_eq!(dialog.path.value(), "X/tmp/alpha/beta");
 }
 
 #[test]
@@ -330,6 +551,7 @@ fn test_submit_respects_create_new_branch() {
 #[test]
 fn test_new_branch_field_hidden_without_worktree() {
     let mut dialog = single_tool_dialog();
+    let _tmp = set_valid_empty_path(&mut dialog);
     assert_eq!(dialog.focused_field, 0);
 
     // Tab through all fields: title(0) -> path(1) -> yolo(2) -> worktree(3) -> group(4) -> wrap to 0
@@ -362,6 +584,7 @@ fn test_sandbox_image_initialized_with_effective_default() {
 #[test]
 fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
     let mut dialog = multi_tool_dialog();
+    let _tmp = set_valid_empty_path(&mut dialog);
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
 
@@ -394,6 +617,7 @@ fn test_tab_includes_sandbox_options_when_sandbox_enabled() {
 #[test]
 fn test_tab_skips_sandbox_image_when_sandbox_disabled() {
     let mut dialog = multi_tool_dialog();
+    let _tmp = set_valid_empty_path(&mut dialog);
     dialog.docker_available = true;
     dialog.sandbox_enabled = false;
 

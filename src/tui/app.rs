@@ -210,9 +210,8 @@ impl App {
                 refresh_needed = true;
             }
 
-            // Tick the dialog spinner if loading
-            if self.home.is_creation_pending() {
-                self.home.tick_dialog();
+            // Tick dialog animations/timers (spinner, transient flashes)
+            if self.home.tick_dialog() {
                 refresh_needed = true;
             }
 
