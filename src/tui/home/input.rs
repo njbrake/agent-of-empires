@@ -540,11 +540,18 @@ impl HomeView {
                         let current_profile = self.storage.profile().to_string();
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+                        let existing_groups: Vec<String> = self
+                            .group_tree
+                            .get_all_groups()
+                            .iter()
+                            .map(|g| g.path.clone())
+                            .collect();
                         self.rename_dialog = Some(RenameDialog::new(
                             &inst.title,
                             &inst.group_path,
                             &current_profile,
                             profiles,
+                            existing_groups,
                         ));
                     }
                 }
