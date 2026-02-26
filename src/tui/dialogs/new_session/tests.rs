@@ -1,9 +1,20 @@
 use super::*;
 use crate::session::{merge_configs, Config, ProfileConfig, SessionConfigOverride};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::fs;
+
+const TEST_PATH: &str = "/__aoe_nonexistent__/project";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl_key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::CONTROL)
+}
+
+fn alt_key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::ALT)
 }
 
 fn shift_key(code: KeyCode) -> KeyEvent {
@@ -11,18 +22,18 @@ fn shift_key(code: KeyCode) -> KeyEvent {
 }
 
 fn single_tool_dialog() -> NewSessionDialog {
-    NewSessionDialog::new_with_tools(vec!["claude"], "/tmp/project".to_string())
+    NewSessionDialog::new_with_tools(vec!["claude"], TEST_PATH.to_string())
 }
 
 fn multi_tool_dialog() -> NewSessionDialog {
-    NewSessionDialog::new_with_tools(vec!["claude", "opencode"], "/tmp/project".to_string())
+    NewSessionDialog::new_with_tools(vec!["claude", "opencode"], TEST_PATH.to_string())
 }
 
 #[test]
 fn test_initial_state() {
     let dialog = single_tool_dialog();
     assert_eq!(dialog.title.value(), "");
-    assert_eq!(dialog.path.value(), "/tmp/project");
+    assert_eq!(dialog.path.value(), TEST_PATH);
     assert_eq!(dialog.group.value(), "");
     assert_eq!(dialog.focused_field, 0);
     assert_eq!(dialog.tool_index, 0);
@@ -48,7 +59,7 @@ fn test_enter_submits_with_auto_title() {
                 "Expected a civilization name, got: {}",
                 data.title
             );
-            assert_eq!(data.path, "/tmp/project");
+            assert_eq!(data.path, TEST_PATH);
             assert_eq!(data.group, "");
             assert_eq!(data.tool, "claude");
         }
@@ -174,7 +185,230 @@ fn test_char_input_to_path() {
     dialog.focused_field = 1;
     dialog.handle_key(key(KeyCode::Char('/')));
     dialog.handle_key(key(KeyCode::Char('a')));
-    assert_eq!(dialog.path.value(), "/tmp/project/a");
+    assert_eq!(dialog.path.value(), format!("{TEST_PATH}/a"));
+}
+
+#[test]
+fn test_ghost_text_appears_for_single_match() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
+    fs::write(tmp.path().join("project-file"), "not a directory").expect("failed to write file");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
+    dialog.recompute_path_ghost();
+
+    assert_eq!(dialog.ghost_text(), Some("ject-alpha/"));
+}
+
+#[test]
+fn test_ghost_text_shows_common_prefix_for_multiple_matches() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("client-api")).expect("failed to create directory");
+    fs::create_dir(tmp.path().join("client-web")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/cl", tmp.path().display()));
+    dialog.recompute_path_ghost();
+
+    assert_eq!(dialog.ghost_text(), Some("ient-"));
+}
+
+#[test]
+fn test_ghost_text_none_when_no_matches() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/zzz_nonexistent", tmp.path().display()));
+    dialog.recompute_path_ghost();
+
+    assert_eq!(dialog.ghost_text(), None);
+}
+
+#[test]
+fn test_ghost_shows_slash_for_exact_directory_match() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("alpha")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/alpha", tmp.path().display()));
+    dialog.recompute_path_ghost();
+
+    assert_eq!(dialog.ghost_text(), Some("/"));
+}
+
+#[test]
+fn test_right_arrow_accepts_ghost_text() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
+    dialog.recompute_path_ghost();
+    assert!(dialog.ghost_text().is_some());
+
+    dialog.handle_key(key(KeyCode::Right));
+
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/project-alpha/", tmp.path().display())
+    );
+}
+
+#[test]
+fn test_end_key_accepts_ghost_text() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
+    dialog.recompute_path_ghost();
+    assert!(dialog.ghost_text().is_some());
+
+    dialog.handle_key(key(KeyCode::End));
+
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/project-alpha/", tmp.path().display())
+    );
+}
+
+#[test]
+fn test_right_arrow_at_mid_input_moves_cursor_normally() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/tmp/alpha/beta".to_string());
+    // Move cursor to start
+    dialog.handle_key(ctrl_key(KeyCode::Char('a')));
+    let cursor_before = dialog.path.visual_cursor();
+
+    dialog.handle_key(key(KeyCode::Right));
+    let cursor_after = dialog.path.visual_cursor();
+
+    // Cursor should have moved right by 1 (normal behavior)
+    assert_eq!(cursor_after, cursor_before + 1);
+}
+
+#[test]
+fn test_ghost_recomputes_after_accepting() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("alpha")).expect("failed to create directory");
+    fs::create_dir(tmp.path().join("alpha").join("inner")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/alp", tmp.path().display()));
+    dialog.recompute_path_ghost();
+    assert_eq!(dialog.ghost_text(), Some("ha/"));
+
+    dialog.handle_key(key(KeyCode::Right)); // accept ghost
+
+    assert_eq!(
+        dialog.path.value(),
+        format!("{}/alpha/", tmp.path().display())
+    );
+    // Ghost should have been recomputed for the next level
+    assert_eq!(dialog.ghost_text(), Some("inner/"));
+}
+
+#[test]
+fn test_tab_always_navigates_from_path_field() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
+    dialog.recompute_path_ghost();
+    assert!(dialog.ghost_text().is_some());
+
+    dialog.handle_key(key(KeyCode::Tab));
+
+    // Tab should navigate to next field, not accept ghost
+    assert_eq!(dialog.focused_field, 2);
+}
+
+#[test]
+fn test_ghost_cleared_when_leaving_path_field() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
+    dialog.recompute_path_ghost();
+    assert!(dialog.ghost_text().is_some());
+
+    dialog.handle_key(key(KeyCode::Tab));
+
+    assert_eq!(dialog.ghost_text(), None);
+}
+
+#[test]
+fn test_ghost_not_shown_when_cursor_not_at_end() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    fs::create_dir(tmp.path().join("alpha")).expect("failed to create directory");
+
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new(format!("{}/alp", tmp.path().display()));
+    // Move cursor to start
+    dialog.handle_key(ctrl_key(KeyCode::Char('a')));
+    dialog.recompute_path_ghost();
+
+    assert_eq!(dialog.ghost_text(), None);
+}
+
+#[test]
+fn test_invalid_path_flash_expires_after_tick() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path_invalid_flash_until =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+    assert!(dialog.tick());
+    assert!(!dialog.is_path_invalid_flash_active());
+}
+
+#[test]
+fn test_ctrl_left_jumps_to_previous_path_segment() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/tmp/alpha/beta".to_string());
+
+    dialog.handle_key(ctrl_key(KeyCode::Left));
+    dialog.handle_key(key(KeyCode::Char('X')));
+
+    assert_eq!(dialog.path.value(), "/tmp/alpha/Xbeta");
+}
+
+#[test]
+fn test_alt_b_jumps_to_previous_path_segment() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/tmp/alpha/beta".to_string());
+
+    dialog.handle_key(alt_key(KeyCode::Char('b')));
+    dialog.handle_key(key(KeyCode::Char('X')));
+
+    assert_eq!(dialog.path.value(), "/tmp/alpha/Xbeta");
+}
+
+#[test]
+fn test_ctrl_a_jumps_to_start_of_path() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 1;
+    dialog.path = Input::new("/tmp/alpha/beta".to_string());
+
+    dialog.handle_key(ctrl_key(KeyCode::Char('a')));
+    dialog.handle_key(key(KeyCode::Char('X')));
+
+    assert_eq!(dialog.path.value(), "X/tmp/alpha/beta");
 }
 
 #[test]
@@ -352,7 +586,6 @@ fn test_sandbox_disabled_by_default() {
 fn test_sandbox_image_initialized_with_effective_default() {
     use crate::containers;
     let dialog = multi_tool_dialog();
-    // The sandbox image input is initialized with the effective default
     assert_eq!(
         dialog.sandbox_image.value(),
         containers::get_container_runtime().effective_default_image()
@@ -441,7 +674,6 @@ fn test_submit_with_default_image_passes_through() {
     match result {
         DialogResult::Submit(data) => {
             assert!(data.sandbox);
-            // The image value from the input field is always passed through
             assert_eq!(
                 data.sandbox_image,
                 containers::get_container_runtime().effective_default_image()
@@ -463,7 +695,6 @@ fn test_submit_with_empty_image() {
     match result {
         DialogResult::Submit(data) => {
             assert!(data.sandbox);
-            // Empty string is passed through as-is
             assert_eq!(data.sandbox_image, "");
         }
         _ => panic!("Expected Submit"),
@@ -482,7 +713,6 @@ fn test_submit_sandbox_image_always_included() {
     match result {
         DialogResult::Submit(data) => {
             assert!(!data.sandbox);
-            // sandbox_image is always included (it's a String, not Option)
             assert_eq!(data.sandbox_image, "custom/image:tag");
         }
         _ => panic!("Expected Submit"),

@@ -1,11 +1,13 @@
 //! New session dialog
 
+mod path_input;
 mod render;
 
 #[cfg(test)]
 mod tests;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::Instant;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
@@ -18,6 +20,7 @@ use crate::session::Config;
 use crate::session::{civilizations, resolve_config};
 use crate::tmux::AvailableTools;
 use crate::tui::components::{DirPicker, DirPickerResult, ListPicker, ListPickerResult};
+use path_input::PathGhostCompletion;
 
 pub(super) struct FieldHelp {
     pub(super) name: &'static str,
@@ -99,6 +102,7 @@ pub struct NewSessionData {
 
 /// Spinner frames for loading animation
 pub(super) const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
+const PATH_FIELD: usize = 1;
 
 pub struct NewSessionDialog {
     pub(super) profile: String,
@@ -153,6 +157,10 @@ pub struct NewSessionDialog {
     pub(super) current_hook: Option<String>,
     /// Accumulated output lines from hook execution
     pub(super) hook_output: Vec<String>,
+    /// Temporary highlight state for invalid path input.
+    pub(super) path_invalid_flash_until: Option<Instant>,
+    /// Ghost text completion for the path field (fish-shell style).
+    path_ghost: Option<PathGhostCompletion>,
 }
 
 /// Shared logic for handling key events in an editable list (env keys or env values).
@@ -353,6 +361,8 @@ impl NewSessionDialog {
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
+            path_invalid_flash_until: None,
+            path_ghost: None,
         }
     }
 
@@ -392,9 +402,24 @@ impl NewSessionDialog {
         self.loading
     }
 
-    /// Advance the spinner animation frame. Call this periodically when loading.
-    pub fn tick(&mut self) {
-        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+    /// Advance dialog timers (spinner and transient highlights).
+    /// Returns true when visual state changed and the UI should redraw.
+    pub fn tick(&mut self) -> bool {
+        let mut changed = false;
+
+        if self.loading {
+            self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+            changed = true;
+        }
+
+        if let Some(until) = self.path_invalid_flash_until {
+            if Instant::now() >= until {
+                self.path_invalid_flash_until = None;
+                changed = true;
+            }
+        }
+
+        changed
     }
 
     #[cfg(test)]
@@ -449,6 +474,8 @@ impl NewSessionDialog {
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
+            path_invalid_flash_until: None,
+            path_ghost: None,
         }
     }
 
@@ -495,6 +522,8 @@ impl NewSessionDialog {
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
+            path_invalid_flash_until: None,
+            path_ghost: None,
         }
     }
 
@@ -537,6 +566,7 @@ impl NewSessionDialog {
             match self.dir_picker.handle_key(key) {
                 DirPickerResult::Selected(path) => {
                     self.path = Input::new(path);
+                    self.recompute_path_ghost();
                 }
                 DirPickerResult::Cancelled | DirPickerResult::Continue => {}
             }
@@ -614,7 +644,7 @@ impl NewSessionDialog {
 
         // Ctrl+P opens a context-sensitive picker
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            if self.focused_field == 1 {
+            if self.focused_field == PATH_FIELD {
                 let path_value = self.path.value().trim().to_string();
                 self.dir_picker.activate(&path_value);
                 return DialogResult::Continue;
@@ -632,6 +662,10 @@ impl NewSessionDialog {
                 }
                 return DialogResult::Continue;
             }
+        }
+
+        if self.handle_path_shortcuts(key) {
+            return DialogResult::Continue;
         }
 
         match key.code {
@@ -691,15 +725,27 @@ impl NewSessionDialog {
                 })
             }
             KeyCode::Tab | KeyCode::Down => {
+                if self.focused_field == PATH_FIELD {
+                    self.clear_path_ghost();
+                }
                 self.focused_field = (self.focused_field + 1) % max_field;
+                if self.focused_field == PATH_FIELD {
+                    self.recompute_path_ghost();
+                }
                 DialogResult::Continue
             }
             KeyCode::BackTab | KeyCode::Up => {
+                if self.focused_field == PATH_FIELD {
+                    self.clear_path_ghost();
+                }
                 self.focused_field = if self.focused_field == 0 {
                     max_field - 1
                 } else {
                     self.focused_field - 1
                 };
+                if self.focused_field == PATH_FIELD {
+                    self.recompute_path_ghost();
+                }
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right if self.focused_field == tool_field => {
@@ -771,6 +817,10 @@ impl NewSessionDialog {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
                     self.error_message = None;
+                    if self.focused_field == PATH_FIELD {
+                        self.path_invalid_flash_until = None;
+                        self.recompute_path_ghost();
+                    }
                 }
                 DialogResult::Continue
             }
@@ -840,7 +890,7 @@ impl NewSessionDialog {
 
         match self.focused_field {
             0 => &mut self.title,
-            1 => &mut self.path,
+            PATH_FIELD => &mut self.path,
             n if n == worktree_field => &mut self.worktree_branch,
             n if n == sandbox_image_field => &mut self.sandbox_image,
             n if n == group_field => &mut self.group,

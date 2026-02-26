@@ -480,17 +480,26 @@ impl HomeView {
         self.creation_poller.is_pending()
     }
 
-    /// Tick the dialog spinner animation if loading, and drain hook progress
-    pub fn tick_dialog(&mut self) {
+    /// Tick dialog animations/timers and drain hook progress.
+    /// Returns true when a redraw is needed.
+    pub fn tick_dialog(&mut self) -> bool {
+        let mut changed = false;
+
         if let Some(dialog) = &mut self.new_dialog {
+            if dialog.tick() {
+                changed = true;
+            }
+
             if dialog.is_loading() {
-                dialog.tick();
                 // Drain all pending hook progress messages
                 while let Some(progress) = self.creation_poller.try_recv_progress() {
                     dialog.push_hook_progress(progress);
+                    changed = true;
                 }
             }
         }
+
+        changed
     }
 
     pub fn has_dialog(&self) -> bool {

@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
+use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, PATH_FIELD, SPINNER_FRAMES};
 use crate::tui::components::render_text_field;
 use crate::tui::styles::Theme;
 
@@ -107,29 +107,25 @@ impl NewSessionDialog {
         let mut ci = 0; // chunk index
 
         // Title, Path (always visible)
-        let path_placeholder = if self.focused_field == 1 {
+        let path_placeholder = if self.focused_field == PATH_FIELD {
             Some("(Ctrl+P to browse directories)")
         } else {
             None
         };
 
-        let text_fields: [(&str, &tui_input::Input, Option<&str>); 2] = [
-            ("Title:", &self.title, Some("(random civ)")),
-            ("Path:", &self.path, path_placeholder),
-        ];
+        render_text_field(
+            frame,
+            chunks[ci],
+            "Title:",
+            &self.title,
+            self.focused_field == 0,
+            Some("(random civ)"),
+            theme,
+        );
+        ci += 1;
 
-        for (idx, (label, input, placeholder)) in text_fields.iter().enumerate() {
-            render_text_field(
-                frame,
-                chunks[ci],
-                label,
-                input,
-                idx == self.focused_field,
-                *placeholder,
-                theme,
-            );
-            ci += 1;
-        }
+        self.render_path_field(frame, chunks[ci], path_placeholder, theme);
+        ci += 1;
 
         // Tool (always shown, interactive or read-only)
         let yolo_mode_field = if has_tool_selection { 3 } else { 2 };
@@ -361,15 +357,22 @@ impl NewSessionDialog {
                 .wrap(Wrap { trim: true });
             frame.render_widget(error_paragraph, chunks[hint_chunk]);
         } else {
-            let mut hint_spans = vec![
-                Span::styled("Tab", Style::default().fg(theme.hint)),
-                Span::raw(" next  "),
-            ];
+            let mut hint_spans = Vec::new();
+            hint_spans.push(Span::styled("Tab", Style::default().fg(theme.hint)));
+            hint_spans.push(Span::raw(" next  "));
             if has_tool_selection {
                 hint_spans.push(Span::styled("←/→", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" tool  "));
             }
-            if self.focused_field == 1 {
+            if self.focused_field == PATH_FIELD {
+                if self.ghost_text().is_some() {
+                    hint_spans.push(Span::styled("→", Style::default().fg(theme.hint)));
+                    hint_spans.push(Span::raw(" accept  "));
+                }
+                hint_spans.push(Span::styled("C-←/M-b", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::raw(" prev seg  "));
+                hint_spans.push(Span::styled("Home/C-a", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::raw(" start  "));
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" browse  "));
             }
@@ -405,6 +408,78 @@ impl NewSessionDialog {
         if self.dir_picker.is_active() {
             self.dir_picker.render(frame, area, theme);
         }
+    }
+
+    fn render_path_field(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        placeholder: Option<&str>,
+        theme: &Theme,
+    ) {
+        let is_focused = self.focused_field == PATH_FIELD;
+        let flashing_invalid = self.is_path_invalid_flash_active();
+
+        let label_color = if flashing_invalid {
+            theme.error
+        } else if is_focused {
+            theme.accent
+        } else {
+            theme.text
+        };
+        let value_color = if flashing_invalid {
+            theme.error
+        } else if is_focused {
+            theme.accent
+        } else {
+            theme.text
+        };
+
+        let label_style = if is_focused {
+            Style::default().fg(label_color).underlined()
+        } else {
+            Style::default().fg(label_color)
+        };
+        let value_style = Style::default().fg(value_color);
+
+        let value = self.path.value();
+        let mut spans = vec![Span::styled("Path:", label_style), Span::raw(" ")];
+
+        if value.is_empty() && !is_focused {
+            if let Some(placeholder_text) = placeholder {
+                spans.push(Span::styled(placeholder_text, value_style));
+            }
+        } else if is_focused {
+            let cursor_pos = self.path.visual_cursor();
+            let cursor_style = if flashing_invalid {
+                Style::default().fg(theme.background).bg(theme.error)
+            } else {
+                Style::default().fg(theme.background).bg(theme.accent)
+            };
+
+            let before: String = value.chars().take(cursor_pos).collect();
+            let cursor_char: String = value
+                .chars()
+                .nth(cursor_pos)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            let after: String = value.chars().skip(cursor_pos + 1).collect();
+
+            if !before.is_empty() {
+                spans.push(Span::styled(before, value_style));
+            }
+            spans.push(Span::styled(cursor_char, cursor_style));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, value_style));
+            }
+            if let Some(ghost) = self.ghost_text() {
+                spans.push(Span::styled(ghost, Style::default().fg(theme.dimmed)));
+            }
+        } else {
+            spans.push(Span::styled(value, value_style));
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_env_field(&self, frame: &mut Frame, area: Rect, env_field: usize, theme: &Theme) {
