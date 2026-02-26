@@ -57,7 +57,12 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: Some(("Claude Code-credentials", ".credentials.json")),
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
-        home_seed_files: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
+        // Claude Code sets GIT_CONFIG_GLOBAL=/root/.sandbox-gitconfig when IS_SANDBOX=1;
+        // the file must exist or all git commands fail.
+        home_seed_files: &[
+            (".claude.json", r#"{"hasCompletedOnboarding":true}"#),
+            (".sandbox-gitconfig", ""),
+        ],
         preserve_files: &[".credentials.json", "history.jsonl"],
     },
     AgentConfigMount {
