@@ -148,6 +148,17 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         }
     }
 
+    // Validate that the final path exists and is a directory.
+    // This catches cases where the user typed a non-existent path in the TUI;
+    // without this check tmux silently falls back to the home directory.
+    let final_path_buf = PathBuf::from(&final_path);
+    if !final_path_buf.exists() {
+        bail!("Project path does not exist: {}", final_path);
+    }
+    if !final_path_buf.is_dir() {
+        bail!("Project path is not a directory: {}", final_path);
+    }
+
     let final_title = if params.title.is_empty() {
         civilizations::generate_random_title(existing_titles)
     } else {
