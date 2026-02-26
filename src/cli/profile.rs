@@ -26,6 +26,15 @@ pub enum ProfileCommands {
         name: String,
     },
 
+    /// Rename a profile
+    #[command(alias = "mv")]
+    Rename {
+        /// Current profile name
+        old_name: String,
+        /// New profile name
+        new_name: String,
+    },
+
     /// Show or set default profile
     Default {
         /// Profile name (optional, shows current if not provided)
@@ -38,6 +47,9 @@ pub async fn run(command: Option<ProfileCommands>) -> Result<()> {
         Some(ProfileCommands::List) | None => list_profiles().await,
         Some(ProfileCommands::Create { name }) => create_profile(&name).await,
         Some(ProfileCommands::Delete { name }) => delete_profile(&name).await,
+        Some(ProfileCommands::Rename { old_name, new_name }) => {
+            rename_profile(&old_name, &new_name).await
+        }
         Some(ProfileCommands::Default { name }) => {
             if let Some(n) = name {
                 set_default_profile(&n).await
@@ -79,6 +91,12 @@ async fn create_profile(name: &str) -> Result<()> {
     session::create_profile(name)?;
     println!("✓ Created profile: {}", name);
     println!("  Use with: agent-of-empires -p {}", name);
+    Ok(())
+}
+
+async fn rename_profile(old_name: &str, new_name: &str) -> Result<()> {
+    session::rename_profile(old_name, new_name)?;
+    println!("✓ Renamed profile: {} -> {}", old_name, new_name);
     Ok(())
 }
 

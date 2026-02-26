@@ -129,6 +129,37 @@ pub fn delete_profile(name: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn rename_profile(old_name: &str, new_name: &str) -> Result<()> {
+    if new_name.is_empty() {
+        anyhow::bail!("New profile name cannot be empty");
+    }
+    if new_name.contains('/') || new_name.contains('\\') {
+        anyhow::bail!("Profile name cannot contain path separators");
+    }
+
+    let base = get_app_dir()?;
+    let old_dir = base.join("profiles").join(old_name);
+    let new_dir = base.join("profiles").join(new_name);
+
+    if !old_dir.exists() {
+        anyhow::bail!("Profile '{}' does not exist", old_name);
+    }
+    if new_dir.exists() {
+        anyhow::bail!("Profile '{}' already exists", new_name);
+    }
+
+    fs::rename(&old_dir, &new_dir)?;
+
+    // Update default profile if the renamed profile was the default
+    if let Some(config) = load_config()? {
+        if config.default_profile == old_name {
+            set_default_profile(new_name)?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn set_default_profile(name: &str) -> Result<()> {
     let mut config = load_config()?.unwrap_or_default();
     config.default_profile = name.to_string();
