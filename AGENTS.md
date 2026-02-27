@@ -16,6 +16,7 @@
 - `src/update/`: version checking against GitHub releases.
 - `src/migrations/`: versioned data migrations for breaking changes (see below).
 - `tests/`: integration tests (`tests/*.rs`).
+- `tests/e2e/`: end-to-end tests exercising the full `aoe` binary (see E2E Tests below).
 - `docs/`: user-facing documentation and guides.
 - `scripts/`: installation and utility scripts.
 - `xtask/`: build automation workspace.
@@ -53,9 +54,35 @@
 
 ## Testing Guidelines
 
-- Use unit tests in-module (`#[cfg(test)]`) for pure logic; use `tests/*.rs` for end-to-end behavior.
-- Tests must be deterministic and clean up after themselves (tmux tests should use unique names like `aoe_test_*`).
+- Use unit tests in-module (`#[cfg(test)]`) for pure logic; use `tests/*.rs` for integration tests.
+- Tests must be deterministic and clean up after themselves (tmux tests should use unique names like `aoe_test_*` or `aoe_e2e_*`).
 - Avoid reading/writing real user state; prefer temp dirs (see `tempfile` usage in `src/session/storage.rs`).
+- New features touching TUI rendering, CLI subcommands, or session lifecycle should consider adding an e2e test.
+
+### E2E Tests
+
+Full-binary end-to-end tests live in `tests/e2e/`. They exercise `aoe` through tmux (for TUI tests) and as a subprocess (for CLI tests). Run them with:
+
+```sh
+cargo test --test e2e              # all e2e tests
+cargo test --test e2e -- --nocapture  # with screen dumps on failure
+```
+
+The test harness (`tests/e2e/harness.rs`) provides `TuiTestHarness` with:
+- `spawn_tui()` / `spawn(args)` -- launch `aoe` in a detached tmux session with isolated `$HOME`
+- `send_keys(keys)` / `type_text(text)` -- send keystrokes or literal text
+- `wait_for(text)` -- poll the screen until text appears (10s timeout, panics with screen dump)
+- `capture_screen()` / `assert_screen_contains(text)` -- one-shot screen assertions
+- `run_cli(args)` -- run `aoe` as a subprocess with the same env isolation
+
+TUI tests auto-skip if tmux is not installed. Docker-dependent tests use `#[ignore]` and require a running daemon. All tests use `#[serial]` for tmux isolation.
+
+#### Recording E2E Tests
+
+E2E tests can produce asciinema recordings (`.cast`) and GIF files automatically. This is useful for PR reviews and documenting TUI behavior.
+
+- **Local**: `RECORD_E2E=1 cargo test --test e2e -- --nocapture` (requires `asciinema` and `agg` on `$PATH`). Outputs go to `target/e2e-recordings/`.
+- **CI**: Add the `needs-recording` label to a PR. The `E2E Recordings` workflow will run the tests with recording enabled and upload GIF artifacts.
 
 ## Commit & Pull Request Guidelines
 

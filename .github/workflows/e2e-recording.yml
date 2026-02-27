@@ -1,0 +1,59 @@
+name: E2E Recordings
+
+on:
+  pull_request:
+    types: [labeled]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  record:
+    name: Record E2E Tests
+    if: github.event.label.name == 'needs-recording'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Install asciinema
+        run: |
+          # asciinema 3.x is a Rust binary; install from pip for simplicity
+          # (the pip package wraps the Rust binary on recent versions)
+          pipx install asciinema
+
+      - name: Install agg
+        run: |
+          # Download the latest agg release binary
+          AGG_VERSION="1.7.0"
+          curl -fsSL "https://github.com/asciinema/agg/releases/download/v${AGG_VERSION}/agg-x86_64-unknown-linux-gnu" -o /usr/local/bin/agg
+          chmod +x /usr/local/bin/agg
+
+      - name: Verify recording tools
+        run: |
+          tmux -V
+          asciinema --version
+          agg --version
+
+      - name: Build tests
+        run: cargo test --test e2e --no-run
+
+      - name: Run e2e tests with recording
+        env:
+          RECORD_E2E: "1"
+        run: cargo test --test e2e -- --nocapture
+
+      - name: Upload recordings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-recordings
+          path: |
+            target/e2e-recordings/*.gif
+            target/e2e-recordings/*.cast
+          if-no-files-found: warn
+          retention-days: 30
