@@ -88,7 +88,7 @@ E2E tests can produce asciinema recordings (`.cast`) and GIF files automatically
 
 - Branch names: `feature/...`, `fix/...`, `docs/...`, `refactor/...`.
 - Commit messages: use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `refactor:`).
-- PRs: include a clear “what/why”, how you tested (`cargo test`, plus any manual tmux/TUI checks), and screenshots/recordings for UI changes.
+- PRs: follow the template in `.github/pull_request_template.md`. When creating PRs via `gh pr create`, read the template first and use its structure for the `--body` argument. Include a clear “what/why”, how you tested (`cargo test`, plus any manual tmux/TUI checks), and screenshots/recordings for UI changes.
 
 ## Git Configuration
 
