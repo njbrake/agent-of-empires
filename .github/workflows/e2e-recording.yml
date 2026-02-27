@@ -12,6 +12,9 @@ jobs:
     name: Record E2E Tests
     if: github.event.label.name == 'needs-recording'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -21,14 +24,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tmux
 
       - name: Install asciinema
-        run: |
-          # asciinema 3.x is a Rust binary; install from pip for simplicity
-          # (the pip package wraps the Rust binary on recent versions)
-          pipx install asciinema
+        run: pipx install asciinema
 
       - name: Install agg
         run: |
-          # Download the latest agg release binary
           AGG_VERSION="1.7.0"
           curl -fsSL "https://github.com/asciinema/agg/releases/download/v${AGG_VERSION}/agg-x86_64-unknown-linux-gnu" -o /usr/local/bin/agg
           chmod +x /usr/local/bin/agg
@@ -47,7 +46,7 @@ jobs:
           RECORD_E2E: "1"
         run: cargo test --test e2e -- --nocapture
 
-      - name: Upload recordings
+      - name: Upload recordings as artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -57,3 +56,82 @@ jobs:
             target/e2e-recordings/*.cast
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Publish GIFs and comment on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          gifs=(target/e2e-recordings/*.gif)
+
+          if [ ${#gifs[@]} -eq 0 ]; then
+            echo "No GIF recordings found, skipping PR comment."
+            exit 0
+          fi
+
+          # Push GIFs to the e2e-recordings orphan branch so they are
+          # accessible via raw.githubusercontent.com and render inline.
+          RUN_DIR="run-${{ github.run_id }}"
+          REPO="${{ github.repository }}"
+          BRANCH="e2e-recordings"
+
+          # Set up a temporary worktree for the orphan branch.
+          tmp=$(mktemp -d)
+          git clone --depth 1 --branch "$BRANCH" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$tmp" 2>/dev/null \
+          || {
+            # Branch doesn't exist yet -- create an orphan.
+            git clone --depth 1 \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$tmp"
+            cd "$tmp"
+            git checkout --orphan "$BRANCH"
+            git rm -rf . > /dev/null 2>&1 || true
+            echo "# E2E Test Recordings" > README.md
+            echo "" >> README.md
+            echo "GIFs published by the E2E Recordings workflow. Each run-* directory" >> README.md
+            echo "corresponds to a GitHub Actions run." >> README.md
+            git add README.md
+            git commit -m "init: e2e-recordings branch"
+            cd -
+          }
+
+          # Copy GIFs into the run directory.
+          mkdir -p "$tmp/$RUN_DIR"
+          cp "${gifs[@]}" "$tmp/$RUN_DIR/"
+
+          cd "$tmp"
+          git add "$RUN_DIR"
+          git commit -m "recordings: PR #${{ github.event.pull_request.number }} (run ${{ github.run_id }})"
+          git push origin "$BRANCH"
+          cd -
+
+          # Build PR comment with inline GIF images.
+          RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${RUN_DIR}"
+          body="## E2E Test Recordings"$'\n\n'
+
+          for gif in "${gifs[@]}"; do
+            name=$(basename "$gif" .gif)
+            body+="### ${name}"$'\n\n'
+            body+="![${name}](${RAW_BASE}/${name}.gif)"$'\n\n'
+          done
+
+          body+="---"$'\n'
+          body+="*Raw recordings (.cast) available in the [e2e-recordings artifact](${{ github.server_url }}/${REPO}/actions/runs/${{ github.run_id }}).*"
+
+          # Post or update the comment to avoid duplicates on re-runs.
+          existing=$(gh api \
+            "repos/${REPO}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq '.[] | select(.body | startswith("## E2E Test Recordings")) | .id' \
+            | head -1)
+
+          if [ -n "$existing" ]; then
+            gh api \
+              "repos/${REPO}/issues/comments/${existing}" \
+              -X PATCH \
+              -f body="$body"
+            echo "Updated existing PR comment ${existing}"
+          else
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$body"
+            echo "Posted new PR comment"
+          fi
