@@ -138,7 +138,13 @@ impl TuiTestHarness {
         }
 
         // Pre-seed config.toml to skip the welcome dialog and update checks.
-        let config_dir = home_dir.path().join(".config").join("agent-of-empires");
+        // On Linux the app uses $XDG_CONFIG_HOME/agent-of-empires/ (set below),
+        // on macOS it uses $HOME/.agent-of-empires/.
+        let config_dir = if cfg!(target_os = "linux") {
+            home_dir.path().join(".config").join("agent-of-empires")
+        } else {
+            home_dir.path().join(".agent-of-empires")
+        };
         std::fs::create_dir_all(&config_dir).expect("create config dir");
         let config_content = format!(
             r#"[updates]
