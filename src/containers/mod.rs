@@ -156,6 +156,7 @@ mod tests {
             environment: vec![],
             cpu_limit: None,
             memory_limit: None,
+            port_mappings: vec![],
         };
 
         let args = container.build_create_args(&config);
@@ -184,6 +185,7 @@ mod tests {
             environment: vec![],
             cpu_limit: None,
             memory_limit: None,
+            port_mappings: vec![],
         };
 
         let args = container.build_create_args(&config);

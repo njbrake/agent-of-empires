@@ -98,6 +98,7 @@ enabled_by_default = false
 default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
 cpu_limit = "4"
 memory_limit = "8g"
+port_mappings = ["3000:3000", "5432:5432"]
 environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
 environment_values = { GH_TOKEN = "$AOE_GH_TOKEN" }
 extra_volumes = []
@@ -112,6 +113,7 @@ default_terminal_mode = "host"
 | `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image for containers |
 | `cpu_limit` | (none) | CPU limit (e.g., `"4"`) |
 | `memory_limit` | (none) | Memory limit (e.g., `"8g"`) |
+| `port_mappings` | `[]` | Host-to-container port mappings (e.g., `["3000:3000"]`) |
 | `environment` | `["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"]` | Host env var names to pass through |
 | `environment_values` | `{}` | Env vars with explicit values (see below) |
 | `extra_volumes` | `[]` | Additional Docker volume mounts |

@@ -16,6 +16,7 @@ pub struct ContainerConfig {
     pub environment: Vec<(String, String)>,
     pub cpu_limit: Option<String>,
     pub memory_limit: Option<String>,
+    pub port_mappings: Vec<String>,
 }
 
 #[enum_dispatch]

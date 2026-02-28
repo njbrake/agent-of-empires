@@ -143,6 +143,7 @@ fn test_container_lifecycle() {
         environment: vec![],
         cpu_limit: None,
         memory_limit: None,
+        port_mappings: vec![],
     };
 
     let container_id = container.create(&config).unwrap();
@@ -184,6 +185,7 @@ fn test_container_force_remove() {
         environment: vec![],
         cpu_limit: None,
         memory_limit: None,
+        port_mappings: vec![],
     };
 
     container.create(&config).unwrap();

@@ -229,6 +229,9 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit: Option<String>,
 
+    #[serde(default)]
+    pub port_mappings: Vec<String>,
+
     /// Default terminal mode for sandboxed sessions (host or container)
     #[serde(default)]
     pub default_terminal_mode: DefaultTerminalMode,
@@ -270,6 +273,7 @@ impl Default for SandboxConfig {
             auto_cleanup: true,
             cpu_limit: None,
             memory_limit: None,
+            port_mappings: Vec::new(),
             default_terminal_mode: DefaultTerminalMode::default(),
             volume_ignores: Vec::new(),
             mount_ssh: false,
@@ -566,6 +570,7 @@ mod tests {
             auto_cleanup = false
             cpu_limit = "2"
             memory_limit = "4g"
+            port_mappings = ["3000:3000", "5432:5432"]
         "#;
         let sb: SandboxConfig = toml::from_str(toml).unwrap();
         assert!(sb.enabled_by_default);
@@ -575,6 +580,10 @@ mod tests {
         assert!(!sb.auto_cleanup);
         assert_eq!(sb.cpu_limit, Some("2".to_string()));
         assert_eq!(sb.memory_limit, Some("4g".to_string()));
+        assert_eq!(
+            sb.port_mappings,
+            vec!["3000:3000".to_string(), "5432:5432".to_string()]
+        );
     }
 
     #[test]

@@ -161,6 +161,11 @@ impl RuntimeBase {
             args.push(format!("{}={}", key, value));
         }
 
+        for port in &config.port_mappings {
+            args.push("-p".to_string());
+            args.push(port.clone());
+        }
+
         if let Some(cpu) = &config.cpu_limit {
             args.push("--cpus".to_string());
             args.push(cpu.clone());
@@ -288,6 +293,7 @@ mod tests {
             environment: vec![],
             cpu_limit: None,
             memory_limit: None,
+            port_mappings: vec![],
         };
 
         let args = base.build_create_args("test-container", "alpine:latest", &config);
@@ -310,6 +316,7 @@ mod tests {
             environment: vec![],
             cpu_limit: None,
             memory_limit: None,
+            port_mappings: vec![],
         };
 
         let args = base.build_create_args("test-container", "alpine:latest", &config);
@@ -354,6 +361,7 @@ mod tests {
             environment: vec![("KEY".to_string(), "VALUE".to_string())],
             cpu_limit: Some("2".to_string()),
             memory_limit: Some("4g".to_string()),
+            port_mappings: vec!["3000:3000".to_string()],
         };
 
         let args = base.build_create_args("test", "ubuntu:latest", &config);
@@ -371,8 +379,37 @@ mod tests {
         assert!(args.contains(&"2".to_string()));
         assert!(args.contains(&"-m".to_string()));
         assert!(args.contains(&"4g".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"3000:3000".to_string()));
         assert!(args.contains(&"ubuntu:latest".to_string()));
         assert!(args.contains(&"sleep".to_string()));
         assert!(args.contains(&"infinity".to_string()));
+    }
+
+    #[test]
+    fn test_build_create_args_port_mappings() {
+        let base = RuntimeBase::DOCKER;
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: vec!["3000:3000".to_string(), "5432:5432".to_string()],
+        };
+
+        let args = base.build_create_args("test", "alpine:latest", &config);
+
+        // Both port mappings should appear with -p flags
+        let p_indices: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-p")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(p_indices.len(), 2);
+        assert_eq!(args[p_indices[0] + 1], "3000:3000");
+        assert_eq!(args[p_indices[1] + 1], "5432:5432");
     }
 }
