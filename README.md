@@ -80,13 +80,18 @@ In the TUI: `n` to create a session, `Enter` to attach, `t` to toggle terminal v
 
 ## Documentation
 
-- **[Installation](https://njbrake.github.io/agent-of-empires/installation)** -- prerequisites and install methods
-- **[Quick Start](https://njbrake.github.io/agent-of-empires/quick-start)** -- first steps and basic usage
-- **[Workflow Guide](https://njbrake.github.io/agent-of-empires/guides/workflow)** -- recommended setup with bare repos and worktrees
-- **[Docker Sandbox](https://njbrake.github.io/agent-of-empires/guides/sandbox)** -- container isolation for agents
-- **[Repo Config & Hooks](https://njbrake.github.io/agent-of-empires/guides/repo-config)** -- per-project settings and automation
-- **[Configuration Reference](https://njbrake.github.io/agent-of-empires/guides/configuration)** -- all config options
-- **[CLI Reference](https://njbrake.github.io/agent-of-empires/cli/reference)** -- complete command documentation
+- **[Installation](https://www.agent-of-empires.com/docs/installation)** -- prerequisites and install methods
+- **[Quick Start](https://www.agent-of-empires.com/docs/quick-start)** -- first steps and basic usage
+- **[Workflow Guide](https://www.agent-of-empires.com/docs/guides/workflow)** -- recommended setup with bare repos and worktrees
+- **[Git Worktrees](https://www.agent-of-empires.com/docs/guides/worktrees)** -- parallel agents on different branches
+- **[Docker Sandbox](https://www.agent-of-empires.com/docs/guides/sandbox)** -- container isolation for agents
+- **[Repo Config & Hooks](https://www.agent-of-empires.com/docs/guides/repo-config)** -- per-project settings and automation
+- **[Diff View](https://www.agent-of-empires.com/docs/guides/diff-view)** -- review and edit changes in the TUI
+- **[tmux Status Bar](https://www.agent-of-empires.com/docs/guides/tmux-status-bar)** -- integrated session monitoring
+- **[Sound Effects](https://www.agent-of-empires.com/docs/sounds)** -- audible agent status notifications
+- **[Configuration Reference](https://www.agent-of-empires.com/docs/guides/configuration)** -- all config options
+- **[CLI Reference](https://www.agent-of-empires.com/docs/cli/reference)** -- complete command documentation
+- **[Development](https://www.agent-of-empires.com/docs/development)** -- contributing and local setup
 
 ## FAQ
 
