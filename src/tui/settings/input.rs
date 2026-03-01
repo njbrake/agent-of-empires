@@ -538,6 +538,11 @@ impl SettingsView {
                     s.extra_volumes = None;
                 }
             }
+            FieldKey::PortMappings => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.port_mappings = None;
+                }
+            }
             FieldKey::VolumeIgnores => {
                 if let Some(ref mut s) = config.sandbox {
                     s.volume_ignores = None;

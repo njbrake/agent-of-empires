@@ -104,6 +104,9 @@ pub struct SandboxConfigOverride {
     pub extra_volumes: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_mappings: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +224,9 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(ref extra_volumes) = source.extra_volumes {
         target.extra_volumes = extra_volumes.clone();
+    }
+    if let Some(ref port_mappings) = source.port_mappings {
+        target.port_mappings = port_mappings.clone();
     }
     if let Some(ref environment) = source.environment {
         target.environment = environment.clone();

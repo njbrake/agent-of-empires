@@ -64,6 +64,7 @@ pub enum FieldKey {
     MemoryLimit,
     DefaultTerminalMode,
     ExtraVolumes,
+    PortMappings,
     VolumeIgnores,
     MountSsh,
     CustomInstruction,
@@ -418,6 +419,11 @@ fn build_sandbox_fields(
         global.sandbox.extra_volumes.clone(),
         sb.and_then(|s| s.extra_volumes.clone()),
     );
+    let (port_mappings, o_pm) = resolve_value(
+        scope,
+        global.sandbox.port_mappings.clone(),
+        sb.and_then(|s| s.port_mappings.clone()),
+    );
     let (volume_ignores, o7) = resolve_value(
         scope,
         global.sandbox.volume_ignores.clone(),
@@ -525,6 +531,14 @@ fn build_sandbox_fields(
             value: FieldValue::List(extra_volumes),
             category: SettingsCategory::Sandbox,
             has_override: o_ev,
+        },
+        SettingField {
+            key: FieldKey::PortMappings,
+            label: "Port Mappings",
+            description: "Expose container ports to host (e.g. 3000:3000)",
+            value: FieldValue::List(port_mappings),
+            category: SettingsCategory::Sandbox,
+            has_override: o_pm,
         },
         SettingField {
             key: FieldKey::VolumeIgnores,
@@ -863,6 +877,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.sandbox.environment_values = parse_env_values_list(v);
         }
         (FieldKey::ExtraVolumes, FieldValue::List(v)) => config.sandbox.extra_volumes = v.clone(),
+        (FieldKey::PortMappings, FieldValue::List(v)) => config.sandbox.port_mappings = v.clone(),
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::MountSsh, FieldValue::Bool(v)) => config.sandbox.mount_ssh = *v,
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
@@ -1054,6 +1069,14 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.extra_volumes,
                 &mut config.sandbox,
                 |s, val| s.extra_volumes = val,
+            );
+        }
+        (FieldKey::PortMappings, FieldValue::List(v)) => {
+            set_or_clear_override(
+                v.clone(),
+                &global.sandbox.port_mappings,
+                &mut config.sandbox,
+                |s, val| s.port_mappings = val,
             );
         }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => {
