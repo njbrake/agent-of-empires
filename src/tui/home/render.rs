@@ -617,6 +617,14 @@ impl HomeView {
                 Span::styled(" d", key_style),
                 Span::styled(" Del ", desc_style),
             ]);
+
+            if self.selected_session.is_some() {
+                spans.extend([
+                    Span::styled("│", sep_style),
+                    Span::styled(" r", key_style),
+                    Span::styled(" Edit ", desc_style),
+                ]);
+            }
         }
 
         spans.extend([
