@@ -18,6 +18,8 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 
 > If you find this project useful, please consider giving it a star on GitHub: it helps others discover the project!
 
+[![Agent of Empires Demo](https://img.youtube.com/vi/Kk8dX_F-P4E/maxresdefault.jpg)](https://www.youtube.com/watch?v=Kk8dX_F-P4E)
+
 ![Agent of Empires Demo](docs/assets/demo.gif)
 
 ## Features
