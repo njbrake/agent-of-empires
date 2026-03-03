@@ -20,8 +20,6 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 
 [![Agent of Empires Demo](https://img.youtube.com/vi/Kk8dX_F-P4E/maxresdefault.jpg)](https://www.youtube.com/watch?v=Kk8dX_F-P4E)
 
-![Agent of Empires Demo](docs/assets/demo.gif)
-
 ## Features
 
 - **Multi-agent support** -- Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, and Cursor CLI
