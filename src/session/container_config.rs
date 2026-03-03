@@ -4,7 +4,7 @@
 //! `ContainerConfig` structs. Includes sandbox directory sync, agent config
 //! mounting, and credential extraction.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -369,13 +369,39 @@ fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::pat
     Ok(sandbox_dir)
 }
 
+/// Find the deepest common ancestor of two paths, returning it along with
+/// a name derived from the ancestor directory.
+fn common_ancestor(a: &Path, b: &Path) -> (PathBuf, String) {
+    let mut ancestor = PathBuf::new();
+    let mut a_iter = a.components().peekable();
+    let mut b_iter = b.components().peekable();
+
+    while let (Some(ac), Some(bc)) = (a_iter.peek(), b_iter.peek()) {
+        if ac != bc {
+            break;
+        }
+        ancestor.push(ac.as_os_str());
+        a_iter.next();
+        b_iter.next();
+    }
+
+    let name = ancestor
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace".to_string());
+
+    (ancestor, name)
+}
+
 /// Compute volume mount paths for Docker container.
 ///
-/// For bare repo worktrees, mounts the entire bare repo and sets working_dir to the worktree.
-/// This allows git commands inside the container to access the full repository structure.
+/// For git worktrees (both bare and non-bare repos), mounts the entire main repo
+/// and sets working_dir to the worktree. This allows git commands inside the
+/// container to access the full repository structure, since worktrees reference
+/// the main repo's `.git/worktrees/` directory via relative paths.
 ///
 /// `project_path_str` is the raw project path string (used as the host mount path in the
-/// default case where no bare repo is detected).
+/// default case where no worktree is detected).
 ///
 /// Returns (host_mount_path, container_mount_path, working_dir)
 pub(crate) fn compute_volume_paths(
@@ -392,21 +418,33 @@ pub(crate) fn compute_volume_paths(
             .canonicalize()
             .unwrap_or_else(|_| project_path.to_path_buf());
 
-        // Check if main repo is a bare repo and project_path is a worktree within it
-        if GitWorktree::is_bare_repo(&main_repo) && main_repo_canonical != project_canonical {
-            // Bare repo worktree: mount the entire repo, set working_dir to the worktree
-            let repo_name = main_repo_canonical
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "workspace".to_string());
+        // Check if project_path is a worktree (different from the main repo root).
+        // Mount enough of the filesystem so the worktree's relative gitdir reference
+        // resolves correctly inside the container.
+        if main_repo_canonical != project_canonical {
+            // For bare repos (or any layout where the worktree is inside the main
+            // repo), mounting the main repo is sufficient.
+            // For non-bare repos, worktrees are typically siblings (e.g.,
+            // ~/scm/repo and ~/scm/repo-worktrees/branch), so we mount their
+            // common parent directory instead.
+            let (mount_root, mount_name) = if project_canonical.starts_with(&main_repo_canonical) {
+                // Worktree is inside the main repo (bare repo layout)
+                let name = main_repo_canonical
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "workspace".to_string());
+                (main_repo_canonical.clone(), name)
+            } else {
+                // Worktree is a sibling -- mount the common parent
+                common_ancestor(&main_repo_canonical, &project_canonical)
+            };
 
-            // Calculate relative path from main_repo to project_path (using canonical paths)
+            let container_base = format!("/workspace/{}", mount_name);
             let relative_worktree = project_canonical
-                .strip_prefix(&main_repo_canonical)
+                .strip_prefix(&mount_root)
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
 
-            let container_base = format!("/workspace/{}", repo_name);
             let working_dir = if relative_worktree.as_os_str().is_empty() {
                 container_base.clone()
             } else {
@@ -414,7 +452,7 @@ pub(crate) fn compute_volume_paths(
             };
 
             return Ok((
-                main_repo_canonical.to_string_lossy().to_string(),
+                mount_root.to_string_lossy().to_string(),
                 container_base,
                 working_dir,
             ));
@@ -781,6 +819,71 @@ mod tests {
         assert!(
             working_dir.ends_with("/main"),
             "Working dir should end with worktree name 'main', got: {}",
+            working_dir
+        );
+    }
+
+    #[test]
+    fn test_compute_volume_paths_non_bare_repo_worktree() {
+        let (_dir, repo_path) = setup_regular_repo();
+
+        // Create a worktree from the regular (non-bare) repo
+        let worktree_path = repo_path.parent().unwrap().join("my-worktree");
+        let head = git2::Repository::open(&repo_path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
+            .unwrap();
+        drop(repo);
+
+        let output = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "wt-branch",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+
+        if !output.status.success() {
+            // git not available, skip
+            return;
+        }
+
+        let project_path_str = worktree_path.to_str().unwrap();
+
+        let (mount_path, container_path, working_dir) =
+            compute_volume_paths(&worktree_path, project_path_str).unwrap();
+
+        let mount_path_canon = Path::new(&mount_path).canonicalize().unwrap();
+
+        // For non-bare repo worktree: mount the common parent of the repo and worktree,
+        // so the worktree's relative gitdir path resolves correctly.
+        let parent_canon = repo_path.parent().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            mount_path_canon, parent_canon,
+            "Should mount the common parent, not just the worktree"
+        );
+
+        // Container path should be /workspace/{parent_name}
+        let parent_name = parent_canon.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            container_path,
+            format!("/workspace/{}", parent_name),
+            "Container mount path should be /workspace/{{parent_name}}"
+        );
+
+        // Working dir should point to the worktree within the mount
+        assert!(
+            working_dir.ends_with("/my-worktree"),
+            "Working dir should end with worktree name, got: {}",
             working_dir
         );
     }
