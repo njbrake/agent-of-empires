@@ -210,16 +210,14 @@ impl Item {
     }
 }
 
-fn sort_by_key<T, F>(items: &mut [T], sort_order: SortOrder, key: F)
+fn sort_by_name<T, F>(items: &mut [T], sort_order: SortOrder, key: F)
 where
     F: Fn(&T) -> &str,
 {
     match sort_order {
-        SortOrder::Oldest | SortOrder::Newest => {
-            // Handled separately with created_at, not here
-        }
         SortOrder::AZ => items.sort_by_key(|a| key(a).to_lowercase()),
         SortOrder::ZA => items.sort_by_key(|b| std::cmp::Reverse(key(b).to_lowercase())),
+        _ => {}
     }
 }
 
@@ -263,7 +261,7 @@ pub fn flatten_tree(
     match sort_order {
         SortOrder::Oldest => ungrouped.sort_by_key(|i| i.created_at),
         SortOrder::Newest => ungrouped.sort_by_key(|i| Reverse(i.created_at)),
-        _ => sort_by_key(&mut ungrouped, sort_order, |i| &i.title),
+        _ => sort_by_name(&mut ungrouped, sort_order, |i| &i.title),
     }
 
     for inst in ungrouped {
@@ -283,7 +281,7 @@ pub fn flatten_tree(
         SortOrder::Newest => {
             roots_to_iterate.sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
         }
-        _ => sort_by_key(&mut roots_to_iterate, sort_order, |g| &g.name),
+        _ => sort_by_name(&mut roots_to_iterate, sort_order, |g| &g.name),
     }
 
     for root in roots_to_iterate {
@@ -323,7 +321,7 @@ fn flatten_group(
     match sort_order {
         SortOrder::Oldest => group_sessions.sort_by_key(|i| i.created_at),
         SortOrder::Newest => group_sessions.sort_by_key(|i| Reverse(i.created_at)),
-        _ => sort_by_key(&mut group_sessions, sort_order, |i| &i.title),
+        _ => sort_by_name(&mut group_sessions, sort_order, |i| &i.title),
     }
 
     for inst in group_sessions {
@@ -343,7 +341,7 @@ fn flatten_group(
             children_to_iterate
                 .sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
         }
-        _ => sort_by_key(&mut children_to_iterate, sort_order, |g| &g.name),
+        _ => sort_by_name(&mut children_to_iterate, sort_order, |g| &g.name),
     }
 
     for child in children_to_iterate {
