@@ -52,7 +52,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.11", features = ["v4"] }
 
 # Random
-rand = "0.9"
+rand = "0.10"
 
 # Directory utilities
 dirs = "6.0"
