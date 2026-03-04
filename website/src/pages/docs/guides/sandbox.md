@@ -68,8 +68,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `cpu_limit` | (none) | CPU limit (e.g., "4") |
 | `memory_limit` | (none) | Memory limit (e.g., "8g") |
-| `environment` | `[]` | Env var names to pass through from host |
-| `environment_values` | `{}` | Env vars with explicit values to inject (see below) |
+| `environment` | `[]` | Env vars for containers (bare KEY or KEY=VALUE, see below) |
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
 | `mount_ssh` | `false` | Mount `~/.ssh/` read-only into containers |
@@ -151,31 +150,22 @@ Example: `aoe-sandbox-a1b2c3d4`
 These terminal-related variables are **always** passed through for proper UI/theming:
 - `TERM`, `COLORTERM`, `FORCE_COLOR`, `NO_COLOR`
 
-Pass additional variables (like API keys) through containers by adding them to config:
+Pass additional variables through containers by adding them to the `environment` list. Each entry can be:
+
+- **`KEY`** (bare name) -- passes the host env var value into the container
+- **`KEY=VALUE`** -- sets an explicit value
 
 ```toml
 [sandbox]
-environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
+environment = [
+    "ANTHROPIC_API_KEY",                # pass through from host
+    "OPENAI_API_KEY",                   # pass through from host
+    "GH_TOKEN=$AOE_GH_TOKEN",          # read AOE_GH_TOKEN from host, inject as GH_TOKEN
+    "CUSTOM_API_KEY=sk-sandbox-key",    # literal value
+]
 ```
 
-These variables are read from your host environment and passed to containers (in addition to the terminal defaults above).
-
-### Sandbox-Specific Values (`environment_values`)
-
-Use `environment_values` to inject env vars with values that AOE manages directly, independent of your host environment. This is useful for giving sandboxes credentials that differ from (or don't exist on) the host:
-
-```toml
-[sandbox.environment_values]
-GH_TOKEN = "ghp_sandbox_scoped_token"
-CUSTOM_API_KEY = "sk-sandbox-only-key"
-```
-
-Values starting with `$` are read from a host env var instead of being used literally. This lets you store the actual secret in your shell profile rather than in the AOE config file:
-
-```toml
-[sandbox.environment_values]
-GH_TOKEN = "$AOE_GH_TOKEN"   # reads AOE_GH_TOKEN from host, injects as GH_TOKEN
-```
+For `KEY=VALUE` entries, values starting with `$` read from a host env var. This lets you store secrets in your shell profile rather than in the AOE config file:
 
 ```bash
 # In your .bashrc / .zshrc

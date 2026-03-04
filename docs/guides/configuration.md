@@ -99,8 +99,7 @@ default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
 cpu_limit = "4"
 memory_limit = "8g"
 port_mappings = ["3000:3000", "5432:5432"]
-environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
-environment_values = { GH_TOKEN = "$AOE_GH_TOKEN" }
+environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GH_TOKEN=$AOE_GH_TOKEN"]
 extra_volumes = []
 volume_ignores = ["node_modules", "target"]
 auto_cleanup = true
@@ -114,17 +113,17 @@ default_terminal_mode = "host"
 | `cpu_limit` | (none) | CPU limit (e.g., `"4"`) |
 | `memory_limit` | (none) | Memory limit (e.g., `"8g"`) |
 | `port_mappings` | `[]` | Host-to-container port mappings (e.g., `["3000:3000"]`) |
-| `environment` | `["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"]` | Host env var names to pass through |
-| `environment_values` | `{}` | Env vars with explicit values (see below) |
+| `environment` | `["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"]` | Env vars for containers (see below) |
 | `extra_volumes` | `[]` | Additional Docker volume mounts |
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` or `"container"` |
 
-### environment vs environment_values
+### environment entries
 
-- **`environment`** passes host env vars by name. The host value is read at container start.
-- **`environment_values`** injects fixed values. Values starting with `$` reference a host env var (e.g., `"$AOE_GH_TOKEN"` reads `AOE_GH_TOKEN` from the host). Use `$$` for a literal `$`.
+Each entry in the `environment` list can be:
+- **`KEY`** (bare name) -- passes the host env var value into the container
+- **`KEY=VALUE`** -- sets an explicit value; if VALUE starts with `$`, it reads from a host env var (e.g., `GH_TOKEN=$AOE_GH_TOKEN`). Use `$$` for a literal `$`.
 
 ## tmux
 

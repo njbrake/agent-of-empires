@@ -50,8 +50,7 @@ Override sandbox settings for this repo:
 [sandbox]
 enabled_by_default = true
 default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
-environment = ["NODE_ENV", "DATABASE_URL"]
-environment_values = { CUSTOM_KEY = "value" }
+environment = ["NODE_ENV", "DATABASE_URL", "CUSTOM_KEY=value"]
 volume_ignores = ["node_modules", ".next", "target"]
 extra_volumes = ["/data:/data:ro"]
 cpu_limit = "8"
@@ -110,8 +109,7 @@ default_tool = "claude"
 [sandbox]
 enabled_by_default = true
 default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
-environment = ["DATABASE_URL", "REDIS_URL"]
-environment_values = { NODE_ENV = "development" }
+environment = ["DATABASE_URL", "REDIS_URL", "NODE_ENV=development"]
 volume_ignores = ["node_modules", ".next"]
 
 [worktree]
