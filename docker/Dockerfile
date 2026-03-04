@@ -8,7 +8,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     curl \
     git \
-    git-lfs \
     build-essential \
     ca-certificates \
     gnupg \
@@ -17,9 +16,6 @@ RUN apt-get update && apt-get install -y \
     ripgrep \
     fzf \
     && rm -rf /var/lib/apt/lists/*
-
-# Set up Git LFS hooks globally
-RUN git lfs install
 
 # Install Node.js (required for Codex CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
