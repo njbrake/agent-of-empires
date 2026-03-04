@@ -491,11 +491,6 @@ impl SettingsView {
                     s.environment = None;
                 }
             }
-            FieldKey::EnvironmentValues => {
-                if let Some(ref mut s) = config.sandbox {
-                    s.environment_values = None;
-                }
-            }
             FieldKey::SandboxAutoCleanup => {
                 if let Some(ref mut s) = config.sandbox {
                     s.auto_cleanup = None;

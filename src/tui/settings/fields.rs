@@ -1,7 +1,5 @@
 //! Setting field definitions and config mapping
 
-use std::collections::HashMap;
-
 use crate::session::{
     validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
     TmuxMouseMode, TmuxStatusBarMode,
@@ -58,7 +56,6 @@ pub enum FieldKey {
     YoloModeDefault,
     DefaultImage,
     Environment,
-    EnvironmentValues,
     SandboxAutoCleanup,
     CpuLimit,
     MemoryLimit,
@@ -379,19 +376,6 @@ fn build_sandbox_fields(
         global.sandbox.environment.clone(),
         sb.and_then(|s| s.environment.clone()),
     );
-    let (environment_values, o_env_vals) = resolve_value(
-        scope,
-        global.sandbox.environment_values.clone(),
-        sb.and_then(|s| s.environment_values.clone()),
-    );
-    let env_values_list = {
-        let mut entries: Vec<String> = environment_values
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        entries.sort();
-        entries
-    };
     let (auto_cleanup, o5) = resolve_value(
         scope,
         global.sandbox.auto_cleanup,
@@ -475,19 +459,11 @@ fn build_sandbox_fields(
         },
         SettingField {
             key: FieldKey::Environment,
-            label: "Environment Variables",
-            description: "Var names to pass through from host (e.g. GITHUB_TOKEN)",
+            label: "Environment",
+            description: "Env vars: bare KEY passes host value, KEY=VALUE sets explicitly",
             value: FieldValue::List(environment),
             category: SettingsCategory::Sandbox,
             has_override: o4,
-        },
-        SettingField {
-            key: FieldKey::EnvironmentValues,
-            label: "Environment Values",
-            description: "Custom KEY=VALUE env vars for sandbox. Use $VAR to reference host vars",
-            value: FieldValue::List(env_values_list),
-            category: SettingsCategory::Sandbox,
-            has_override: o_env_vals,
         },
         SettingField {
             key: FieldKey::SandboxAutoCleanup,
@@ -873,9 +849,6 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
-        (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
-            config.sandbox.environment_values = parse_env_values_list(v);
-        }
         (FieldKey::ExtraVolumes, FieldValue::List(v)) => config.sandbox.extra_volumes = v.clone(),
         (FieldKey::PortMappings, FieldValue::List(v)) => config.sandbox.port_mappings = v.clone(),
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
@@ -1052,15 +1025,6 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &global.sandbox.environment,
                 &mut config.sandbox,
                 |s, val| s.environment = val,
-            );
-        }
-        (FieldKey::EnvironmentValues, FieldValue::List(v)) => {
-            let map = parse_env_values_list(v);
-            set_or_clear_override(
-                map,
-                &global.sandbox.environment_values,
-                &mut config.sandbox,
-                |s, val| s.environment_values = val,
             );
         }
         (FieldKey::ExtraVolumes, FieldValue::List(v)) => {
@@ -1304,23 +1268,6 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
         }
         _ => {}
     }
-}
-
-fn parse_env_values_list(entries: &[String]) -> HashMap<String, String> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            if let Some((key, value)) = entry.split_once('=') {
-                Some((key.to_string(), value.to_string()))
-            } else {
-                tracing::warn!(
-                    "Ignoring malformed environment value (missing '='): {}",
-                    entry
-                );
-                None
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]

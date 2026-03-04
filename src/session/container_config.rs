@@ -11,7 +11,7 @@ use anyhow::Result;
 use crate::containers::{ContainerConfig, VolumeMount};
 use crate::git::GitWorktree;
 
-use super::environment::{collect_env_keys, collect_env_values};
+use super::environment::collect_environment;
 use super::instance::SandboxInfo;
 
 /// Subdirectory name inside each agent's config dir for the shared sandbox config.
@@ -606,12 +606,7 @@ pub(crate) fn build_container_config(
         }
     }
 
-    let env_keys = collect_env_keys(&sandbox_config, sandbox_info);
-
-    let mut environment: Vec<(String, String)> = env_keys
-        .iter()
-        .filter_map(|key| std::env::var(key).ok().map(|val| (key.clone(), val)))
-        .collect();
+    let mut environment: Vec<(String, String)> = collect_environment(&sandbox_config, sandbox_info);
 
     if let Some(agent) = crate::agents::get_agent(tool) {
         for &(key, value) in agent.container_env {
@@ -623,8 +618,6 @@ pub(crate) fn build_container_config(
             }
         }
     }
-
-    environment.extend(collect_env_values(&sandbox_config, sandbox_info));
 
     // Add extra_volumes from config (host:container format)
     // Also collect container paths to filter conflicting volume_ignores later

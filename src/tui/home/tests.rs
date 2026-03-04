@@ -896,8 +896,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
         created_at: None,
-        extra_env_keys: None,
-        extra_env_values: None,
+        extra_env: None,
         custom_instruction: None,
     });
     instances.push(inst3);
@@ -965,8 +964,7 @@ fn test_group_has_containers() {
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
         created_at: None,
-        extra_env_keys: None,
-        extra_env_values: None,
+        extra_env: None,
         custom_instruction: None,
     });
 
@@ -1132,8 +1130,7 @@ fn test_delete_group_with_sessions_respects_container_option() {
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
         created_at: None,
-        extra_env_keys: None,
-        extra_env_values: None,
+        extra_env: None,
         custom_instruction: None,
     });
 

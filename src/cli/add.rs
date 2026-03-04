@@ -211,8 +211,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 image,
                 container_name,
                 created_at: None,
-                extra_env_keys: None,
-                extra_env_values: None,
+                extra_env: None,
                 custom_instruction: Config::load()
                     .ok()
                     .and_then(|c| c.sandbox.custom_instruction),

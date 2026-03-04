@@ -57,12 +57,10 @@ pub struct SandboxInfo {
     pub container_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
-    /// Additional environment variable keys to pass from host (session-specific)
+    /// Additional environment entries (session-specific).
+    /// `KEY` = pass through from host, `KEY=VALUE` = set explicitly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_env_keys: Option<Vec<String>>,
-    /// Additional KEY=VALUE environment variables (session-specific overrides)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_env_values: Option<std::collections::HashMap<String, String>>,
+    pub extra_env: Option<Vec<String>>,
     /// Custom instruction text to inject into agent launch command
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instruction: Option<String>,
@@ -693,8 +691,7 @@ mod tests {
             image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
-            extra_env_keys: None,
-            extra_env_values: None,
+            extra_env: None,
             custom_instruction: None,
         });
         assert!(!inst.is_sandboxed());
@@ -709,8 +706,7 @@ mod tests {
             image: "test-image".to_string(),
             container_name: "test".to_string(),
             created_at: None,
-            extra_env_keys: None,
-            extra_env_values: None,
+            extra_env: None,
             custom_instruction: None,
         });
         assert!(inst.is_sandboxed());
@@ -823,8 +819,7 @@ mod tests {
             image: "myimage:latest".to_string(),
             container_name: "test_container".to_string(),
             created_at: Some(Utc::now()),
-            extra_env_keys: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
-            extra_env_values: None,
+            extra_env: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
             custom_instruction: None,
         };
 
@@ -835,7 +830,7 @@ mod tests {
         assert_eq!(info.container_id, deserialized.container_id);
         assert_eq!(info.image, deserialized.image);
         assert_eq!(info.container_name, deserialized.container_name);
-        assert_eq!(info.extra_env_keys, deserialized.extra_env_keys);
+        assert_eq!(info.extra_env, deserialized.extra_env);
     }
 
     #[test]

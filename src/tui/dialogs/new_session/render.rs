@@ -515,29 +515,19 @@ impl NewSessionDialog {
     fn render_sandbox_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width: u16 = 72;
 
-        // Sandbox config fields: image, env vars, env values, inherited
+        // Sandbox config fields: image, env, inherited
         let env_list_height: u16 = if self.env_list_expanded {
-            (2 + self.extra_env_keys.len() as u16).clamp(4, 8)
+            (2 + self.extra_env.len() as u16).clamp(4, 8)
         } else {
             2
         };
-        let env_values_list_height: u16 = if self.env_values_list_expanded {
-            (2 + self.extra_env_values.len() as u16).clamp(4, 8)
-        } else {
-            2
-        };
-        let inherited_height: u16 = if self.inherited_expanded {
-            3 + self.inherited_settings.len().max(1) as u16
-        } else {
-            2
-        };
+        let inherited_height: u16 = 2 + self.inherited_settings.len().max(1) as u16;
 
         let constraints = vec![
-            Constraint::Length(2),                      // Image
-            Constraint::Length(env_list_height),        // Env vars
-            Constraint::Length(env_values_list_height), // Env values
-            Constraint::Length(inherited_height),       // Inherited settings
-            Constraint::Min(1),                         // Hints
+            Constraint::Length(2),                // Image
+            Constraint::Length(env_list_height),  // Environment
+            Constraint::Length(inherited_height), // Inherited settings
+            Constraint::Min(1),                   // Hints
         ];
 
         let fields_height: u16 = constraints
@@ -583,16 +573,12 @@ impl NewSessionDialog {
         );
         ci += 1;
 
-        // Env vars
+        // Environment
         self.render_env_field(frame, chunks[ci], self.sandbox_focused_field == 1, theme);
         ci += 1;
 
-        // Env values
-        self.render_env_values_field(frame, chunks[ci], self.sandbox_focused_field == 2, theme);
-        ci += 1;
-
-        // Inherited settings
-        self.render_inherited_field(frame, chunks[ci], self.sandbox_focused_field == 3, theme);
+        // Inherited settings (always visible, not focusable)
+        self.render_inherited_field(frame, chunks[ci], theme);
         ci += 1;
 
         // Hints
@@ -620,7 +606,7 @@ impl NewSessionDialog {
 
         if !self.env_list_expanded {
             // Collapsed view
-            let count = self.extra_env_keys.len();
+            let count = self.extra_env.len();
             let summary = if count == 0 {
                 "(empty - press Enter to add)".to_string()
             } else {
@@ -633,7 +619,7 @@ impl NewSessionDialog {
             };
 
             let line = Line::from(vec![
-                Span::styled("Env Vars:", label_style),
+                Span::styled("Environment:", label_style),
                 Span::raw(" "),
                 Span::styled(summary, summary_style),
             ]);
@@ -644,7 +630,7 @@ impl NewSessionDialog {
 
             // Header with controls hint
             let header = Line::from(vec![
-                Span::styled("Env Vars:", label_style),
+                Span::styled("Environment:", label_style),
                 Span::styled(
                     " (a)dd (d)el (Enter)edit (Esc)close",
                     Style::default().fg(theme.dimmed),
@@ -656,14 +642,14 @@ impl NewSessionDialog {
             if let Some(ref input) = self.env_editing_input {
                 if self.env_adding_new {
                     // Show existing items
-                    for (i, key) in self.extra_env_keys.iter().enumerate() {
+                    for (i, entry) in self.extra_env.iter().enumerate() {
                         let prefix = if i == self.env_selected_index {
                             "  > "
                         } else {
                             "    "
                         };
                         lines.push(Line::from(Span::styled(
-                            format!("{}{}", prefix, key),
+                            format!("{}{}", prefix, entry),
                             Style::default().fg(theme.text),
                         )));
                     }
@@ -676,7 +662,7 @@ impl NewSessionDialog {
                     lines.push(input_line);
                 } else {
                     // Editing existing item
-                    for (i, key) in self.extra_env_keys.iter().enumerate() {
+                    for (i, entry) in self.extra_env.iter().enumerate() {
                         if i == self.env_selected_index {
                             // Show editable input
                             let input_line = Line::from(vec![
@@ -691,7 +677,7 @@ impl NewSessionDialog {
                         } else {
                             let prefix = "    ";
                             lines.push(Line::from(Span::styled(
-                                format!("{}{}", prefix, key),
+                                format!("{}{}", prefix, entry),
                                 Style::default().fg(theme.text),
                             )));
                         }
@@ -699,13 +685,13 @@ impl NewSessionDialog {
                 }
             } else {
                 // Normal list display
-                if self.extra_env_keys.is_empty() {
+                if self.extra_env.is_empty() {
                     lines.push(Line::from(Span::styled(
-                        "    (press 'a' to add)",
+                        "    (press 'a' to add KEY or KEY=VALUE)",
                         Style::default().fg(theme.dimmed),
                     )));
                 } else {
-                    for (i, key) in self.extra_env_keys.iter().enumerate() {
+                    for (i, entry) in self.extra_env.iter().enumerate() {
                         let is_selected = i == self.env_selected_index;
                         let prefix = if is_selected { "  > " } else { "    " };
                         let style = if is_selected {
@@ -714,7 +700,7 @@ impl NewSessionDialog {
                             Style::default().fg(theme.text)
                         };
                         lines.push(Line::from(Span::styled(
-                            format!("{}{}", prefix, key),
+                            format!("{}{}", prefix, entry),
                             style,
                         )));
                     }
@@ -725,180 +711,30 @@ impl NewSessionDialog {
         }
     }
 
-    fn render_env_values_field(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        is_focused: bool,
-        theme: &Theme,
-    ) {
-        let label_style = if is_focused {
-            Style::default().fg(theme.accent).underlined()
+    fn render_inherited_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let label_style = Style::default().fg(theme.dimmed);
+        let mut lines: Vec<Line> = Vec::new();
+
+        lines.push(Line::from(Span::styled("Inherited Settings:", label_style)));
+
+        if self.inherited_settings.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (all defaults)",
+                Style::default().fg(theme.dimmed),
+            )));
         } else {
-            Style::default().fg(theme.text)
-        };
-
-        if !self.env_values_list_expanded {
-            let count = self.extra_env_values.len();
-            let summary = if count == 0 {
-                "(empty - press Enter to add)".to_string()
-            } else {
-                format!("[{} items]", count)
-            };
-            let summary_style = if count > 0 {
-                Style::default().fg(theme.accent)
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-
-            let line = Line::from(vec![
-                Span::styled("Env Values:", label_style),
-                Span::raw(" "),
-                Span::styled(summary, summary_style),
-            ]);
-            frame.render_widget(Paragraph::new(line), area);
-        } else {
-            let mut lines: Vec<Line> = Vec::new();
-
-            let header = Line::from(vec![
-                Span::styled("Env Values:", label_style),
-                Span::styled(
-                    " (a)dd (d)el (Enter)edit (Esc)close",
-                    Style::default().fg(theme.dimmed),
-                ),
-            ]);
-            lines.push(header);
-
-            if let Some(ref input) = self.env_values_editing_input {
-                if self.env_values_adding_new {
-                    for (i, entry) in self.extra_env_values.iter().enumerate() {
-                        let prefix = if i == self.env_values_selected_index {
-                            "  > "
-                        } else {
-                            "    "
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("{}{}", prefix, entry),
-                            Style::default().fg(theme.text),
-                        )));
-                    }
-                    let input_line = Line::from(vec![
-                        Span::styled("  + ", Style::default().fg(theme.accent)),
-                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
-                        Span::styled("_", Style::default().fg(theme.accent)),
-                    ]);
-                    lines.push(input_line);
-                } else {
-                    for (i, entry) in self.extra_env_values.iter().enumerate() {
-                        if i == self.env_values_selected_index {
-                            let input_line = Line::from(vec![
-                                Span::styled("  > ", Style::default().fg(theme.accent)),
-                                Span::styled(
-                                    input.value(),
-                                    Style::default().fg(theme.accent).bold(),
-                                ),
-                                Span::styled("_", Style::default().fg(theme.accent)),
-                            ]);
-                            lines.push(input_line);
-                        } else {
-                            lines.push(Line::from(Span::styled(
-                                format!("    {}", entry),
-                                Style::default().fg(theme.text),
-                            )));
-                        }
-                    }
-                }
-            } else if self.extra_env_values.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "    (press 'a' to add KEY=VALUE)",
-                    Style::default().fg(theme.dimmed),
-                )));
-            } else {
-                for (i, entry) in self.extra_env_values.iter().enumerate() {
-                    let is_selected = i == self.env_values_selected_index;
-                    let prefix = if is_selected { "  > " } else { "    " };
-                    let style = if is_selected {
-                        Style::default().fg(theme.accent).bold()
-                    } else {
-                        Style::default().fg(theme.text)
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{}{}", prefix, entry),
-                        style,
-                    )));
-                }
+            for (label, value) in &self.inherited_settings {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("    {}: ", label),
+                        Style::default().fg(theme.dimmed),
+                    ),
+                    Span::styled(value.as_str(), Style::default().fg(theme.accent)),
+                ]));
             }
-
-            frame.render_widget(Paragraph::new(lines), area);
         }
-    }
 
-    fn render_inherited_field(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        is_focused: bool,
-        theme: &Theme,
-    ) {
-        let label_style = if is_focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        let count = self.inherited_settings.len();
-        let arrow = if self.inherited_expanded {
-            "▾"
-        } else {
-            "▸"
-        };
-        let summary = if count == 0 {
-            "(all defaults)".to_string()
-        } else {
-            format!("({} active)", count)
-        };
-
-        if !self.inherited_expanded {
-            let summary_style = if count > 0 {
-                Style::default().fg(theme.accent)
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-            let line = Line::from(vec![
-                Span::styled(format!("{} ", arrow), label_style),
-                Span::styled("Inherited Settings ", label_style),
-                Span::styled(summary, summary_style),
-            ]);
-            frame.render_widget(Paragraph::new(line), area);
-        } else {
-            let mut lines: Vec<Line> = Vec::new();
-
-            let header = Line::from(vec![
-                Span::styled(format!("{} ", arrow), label_style),
-                Span::styled("Inherited Settings", label_style),
-            ]);
-            lines.push(header);
-            lines.push(Line::from(""));
-
-            if self.inherited_settings.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "    (all defaults)",
-                    Style::default().fg(theme.dimmed),
-                )));
-            } else {
-                for (label, value) in &self.inherited_settings {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("    {}: ", label),
-                            Style::default().fg(theme.dimmed),
-                        ),
-                        Span::styled(value.as_str(), Style::default().fg(theme.accent)),
-                    ]));
-                }
-            }
-
-            frame.render_widget(Paragraph::new(lines), area);
-        }
+        frame.render_widget(Paragraph::new(lines), area);
     }
 
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -943,10 +779,10 @@ impl NewSessionDialog {
             if idx == 7 && !has_sandbox {
                 continue; // Sandbox
             }
-            if (8..=11).contains(&idx) && !show_sandbox_options_help {
-                continue; // Image, Env, Env Values, Inherited
+            if (8..=9).contains(&idx) && !show_sandbox_options_help {
+                continue; // Image, Env
             }
-            // idx 12 (Group) always shown
+            // idx 10 (Group) always shown
 
             lines.push(Line::from(Span::styled(
                 help.name,

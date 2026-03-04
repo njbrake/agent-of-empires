@@ -34,8 +34,7 @@ impl HomeView {
             sandbox: data.sandbox,
             sandbox_image: data.sandbox_image,
             yolo_mode: data.yolo_mode,
-            extra_env_keys: data.extra_env_keys,
-            extra_env_values: data.extra_env_values,
+            extra_env: data.extra_env,
         };
 
         let build_result = builder::build_instance(params, &existing_titles)?;

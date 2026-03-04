@@ -1121,12 +1121,6 @@ fn test_sandbox_config_mode_tab_cycles() {
     assert_eq!(dialog.sandbox_focused_field, 1);
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.sandbox_focused_field, 2);
-
-    dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.sandbox_focused_field, 3);
-
-    dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.sandbox_focused_field, 0); // wrap
 }
 

@@ -73,15 +73,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Environment",
-        description: "Env var names to pass from host to container (extends global config)",
-    },
-    FieldHelp {
-        name: "Environment Values",
-        description: "Custom KEY=VALUE env vars injected into the sandbox container",
-    },
-    FieldHelp {
-        name: "Inherited Settings",
-        description: "Read-only view of sandbox settings from global/profile config",
+        description: "Env vars: bare KEY passes host value, KEY=VALUE sets explicitly",
     },
     FieldHelp {
         name: "Group",
@@ -102,10 +94,9 @@ pub struct NewSessionData {
     /// The sandbox image to use (always populated from the input field).
     pub sandbox_image: String,
     pub yolo_mode: bool,
-    /// Additional environment variable keys to pass from host to container.
-    pub extra_env_keys: Vec<String>,
-    /// Custom KEY=VALUE environment variables to inject into the container.
-    pub extra_env_values: Vec<String>,
+    /// Additional environment entries for the container.
+    /// `KEY` = pass through from host, `KEY=VALUE` = set explicitly.
+    pub extra_env: Vec<String>,
 }
 
 /// Spinner frames for loading animation
@@ -128,24 +119,17 @@ pub struct NewSessionDialog {
     pub(super) sandbox_image: Input,
     pub(super) docker_available: bool,
     pub(super) yolo_mode: bool,
-    /// Extra environment variable keys (session-specific)
-    pub(super) extra_env_keys: Vec<String>,
+    /// Extra environment entries (session-specific).
+    /// `KEY` = pass through, `KEY=VALUE` = set explicitly.
+    pub(super) extra_env: Vec<String>,
     /// Whether the env list is expanded (editing mode)
     pub(super) env_list_expanded: bool,
     /// Currently selected index in the env list
     pub(super) env_selected_index: usize,
-    /// Input for editing/adding env var keys
+    /// Input for editing/adding env entries
     pub(super) env_editing_input: Option<Input>,
     /// Whether we are adding a new entry (vs editing existing)
     pub(super) env_adding_new: bool,
-    /// Custom KEY=VALUE environment variables (session-specific)
-    pub(super) extra_env_values: Vec<String>,
-    pub(super) env_values_list_expanded: bool,
-    pub(super) env_values_selected_index: usize,
-    pub(super) env_values_editing_input: Option<Input>,
-    pub(super) env_values_adding_new: bool,
-    /// Whether the inherited settings section is expanded.
-    pub(super) inherited_expanded: bool,
     /// Pre-computed label/value pairs for non-default inherited sandbox settings.
     pub(super) inherited_settings: Vec<(String, String)>,
     pub(super) sandbox_config_mode: bool,
@@ -323,18 +307,12 @@ impl NewSessionDialog {
         let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
         let yolo_mode = config.session.yolo_mode_default;
 
-        // Initialize env keys, values, and inherited settings from config when sandbox is enabled
-        let (extra_env_keys, extra_env_values, inherited_settings) = if sandbox_enabled {
-            let env_values: Vec<String> = config
-                .sandbox
-                .environment_values
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect();
+        // Initialize env entries and inherited settings from config when sandbox is enabled
+        let (extra_env, inherited_settings) = if sandbox_enabled {
             let inherited = build_inherited_settings(&config.sandbox);
-            (config.sandbox.environment.clone(), env_values, inherited)
+            (config.sandbox.environment.clone(), inherited)
         } else {
-            (Vec::new(), Vec::new(), Vec::new())
+            (Vec::new(), Vec::new())
         };
 
         let profile_index = available_profiles
@@ -365,17 +343,11 @@ impl NewSessionDialog {
             ),
             docker_available,
             yolo_mode,
-            extra_env_keys,
+            extra_env,
             env_list_expanded: false,
             env_selected_index: 0,
             env_editing_input: None,
             env_adding_new: false,
-            extra_env_values,
-            env_values_list_expanded: false,
-            env_values_selected_index: 0,
-            env_values_editing_input: None,
-            env_values_adding_new: false,
-            inherited_expanded: false,
             inherited_settings,
             sandbox_config_mode: false,
             sandbox_focused_field: 0,
@@ -492,28 +464,18 @@ impl NewSessionDialog {
         // Reset sandbox image from resolved config (includes profile overrides)
         self.sandbox_image = Input::new(config.sandbox.default_image.clone());
 
-        // Reset env keys, values, inherited settings
+        // Reset env entries and inherited settings
         if self.sandbox_enabled {
-            self.extra_env_keys = config.sandbox.environment.clone();
-            self.extra_env_values = config
-                .sandbox
-                .environment_values
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect();
+            self.extra_env = config.sandbox.environment.clone();
             self.inherited_settings = build_inherited_settings(&config.sandbox);
         } else {
-            self.extra_env_keys.clear();
-            self.extra_env_values.clear();
+            self.extra_env.clear();
             self.inherited_settings.clear();
         }
 
         // Reset expanded states
         self.env_list_expanded = false;
         self.env_editing_input = None;
-        self.env_values_list_expanded = false;
-        self.env_values_editing_input = None;
-        self.inherited_expanded = false;
         self.sandbox_config_mode = false;
         self.sandbox_focused_field = 0;
     }
@@ -552,17 +514,11 @@ impl NewSessionDialog {
             ),
             docker_available: false,
             yolo_mode: false,
-            extra_env_keys: Vec::new(),
+            extra_env: Vec::new(),
             env_list_expanded: false,
             env_selected_index: 0,
             env_editing_input: None,
             env_adding_new: false,
-            extra_env_values: Vec::new(),
-            env_values_list_expanded: false,
-            env_values_selected_index: 0,
-            env_values_editing_input: None,
-            env_values_adding_new: false,
-            inherited_expanded: false,
             inherited_settings: Vec::new(),
             sandbox_config_mode: false,
             sandbox_focused_field: 0,
@@ -606,17 +562,11 @@ impl NewSessionDialog {
             ),
             docker_available: false,
             yolo_mode: false,
-            extra_env_keys: Vec::new(),
+            extra_env: Vec::new(),
             env_list_expanded: false,
             env_selected_index: 0,
             env_editing_input: None,
             env_adding_new: false,
-            extra_env_values: Vec::new(),
-            env_values_list_expanded: false,
-            env_values_selected_index: 0,
-            env_values_editing_input: None,
-            env_values_adding_new: false,
-            inherited_expanded: false,
             inherited_settings: Vec::new(),
             sandbox_config_mode: false,
             sandbox_focused_field: 0,
@@ -859,22 +809,12 @@ impl NewSessionDialog {
                 self.sandbox_enabled = !self.sandbox_enabled;
                 if self.sandbox_enabled {
                     let config = resolve_config(&self.profile).unwrap_or_default();
-                    self.extra_env_keys = config.sandbox.environment.clone();
-                    self.extra_env_values = config
-                        .sandbox
-                        .environment_values
-                        .iter()
-                        .map(|(k, v)| format!("{}={}", k, v))
-                        .collect();
+                    self.extra_env = config.sandbox.environment.clone();
                     self.inherited_settings = build_inherited_settings(&config.sandbox);
                 } else {
-                    self.extra_env_keys.clear();
+                    self.extra_env.clear();
                     self.env_list_expanded = false;
                     self.env_editing_input = None;
-                    self.extra_env_values.clear();
-                    self.env_values_list_expanded = false;
-                    self.env_values_editing_input = None;
-                    self.inherited_expanded = false;
                     self.inherited_settings.clear();
                     self.sandbox_config_mode = false;
                 }
@@ -911,19 +851,14 @@ impl NewSessionDialog {
 
     /// Handle key events when in sandbox configuration mode.
     fn handle_sandbox_config_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
-        // Sandbox config fields: 0=image, 1=env, 2=env_values, 3=inherited
+        // Sandbox config fields: 0=image, 1=env (inherited is always-visible, not focusable)
         const SANDBOX_IMAGE: usize = 0;
         const SANDBOX_ENV: usize = 1;
-        const SANDBOX_ENV_VALUES: usize = 2;
-        const SANDBOX_INHERITED: usize = 3;
-        const SANDBOX_MAX: usize = 4;
+        const SANDBOX_MAX: usize = 2;
 
         // Handle env list editing when expanded
         if self.env_list_expanded && self.sandbox_focused_field == SANDBOX_ENV {
             return self.handle_env_list_key(key);
-        }
-        if self.env_values_list_expanded && self.sandbox_focused_field == SANDBOX_ENV_VALUES {
-            return self.handle_env_values_list_key(key);
         }
 
         match key.code {
@@ -940,13 +875,7 @@ impl NewSessionDialog {
                 self.env_selected_index = 0;
                 DialogResult::Continue
             }
-            KeyCode::Enter if self.sandbox_focused_field == SANDBOX_ENV_VALUES => {
-                self.env_values_list_expanded = true;
-                self.env_values_selected_index = 0;
-                DialogResult::Continue
-            }
             KeyCode::Enter => {
-                // Non-expandable fields: return to main dialog
                 self.sandbox_config_mode = false;
                 DialogResult::Continue
             }
@@ -960,12 +889,6 @@ impl NewSessionDialog {
                 } else {
                     self.sandbox_focused_field - 1
                 };
-                DialogResult::Continue
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.sandbox_focused_field == SANDBOX_INHERITED =>
-            {
-                self.inherited_expanded = !self.inherited_expanded;
                 DialogResult::Continue
             }
             _ => {
@@ -985,25 +908,11 @@ impl NewSessionDialog {
             |value: &str, list: &[String]| !value.is_empty() && !list.contains(&value.to_string());
         handle_editable_list_key(
             key,
-            &mut self.extra_env_keys,
+            &mut self.extra_env,
             &mut self.env_list_expanded,
             &mut self.env_selected_index,
             &mut self.env_editing_input,
             &mut self.env_adding_new,
-            validate,
-        )
-    }
-
-    /// Handle key events when the env values list is expanded
-    fn handle_env_values_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
-        let validate = |value: &str, _list: &[String]| !value.is_empty() && value.contains('=');
-        handle_editable_list_key(
-            key,
-            &mut self.extra_env_values,
-            &mut self.env_values_list_expanded,
-            &mut self.env_values_selected_index,
-            &mut self.env_values_editing_input,
-            &mut self.env_values_adding_new,
             validate,
         )
     }
@@ -1068,13 +977,8 @@ impl NewSessionDialog {
             sandbox: self.sandbox_enabled,
             sandbox_image: self.sandbox_image.value().trim().to_string(),
             yolo_mode: self.yolo_mode,
-            extra_env_keys: if self.sandbox_enabled {
-                self.extra_env_keys.clone()
-            } else {
-                Vec::new()
-            },
-            extra_env_values: if self.sandbox_enabled {
-                self.extra_env_values.clone()
+            extra_env: if self.sandbox_enabled {
+                self.extra_env.clone()
             } else {
                 Vec::new()
             },
