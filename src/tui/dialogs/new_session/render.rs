@@ -364,7 +364,7 @@ impl NewSessionDialog {
         if self.confirm_create_dir.is_some() {
             let selected = self.confirm_create_dir.unwrap_or(false);
             let yes_style = if selected {
-                Style::default().fg(theme.error).bold()
+                Style::default().fg(theme.accent).bold()
             } else {
                 Style::default().fg(theme.dimmed)
             };
