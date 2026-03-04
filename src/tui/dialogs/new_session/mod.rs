@@ -161,6 +161,9 @@ pub struct NewSessionDialog {
     pub(super) path_invalid_flash_until: Option<Instant>,
     /// Ghost text completion for the path field (fish-shell style).
     path_ghost: Option<PathGhostCompletion>,
+    /// Inline confirmation for creating a non-existent directory.
+    /// None = inactive, Some(true) = Yes selected, Some(false) = No selected.
+    pub(super) confirm_create_dir: Option<bool>,
 }
 
 /// Shared logic for handling key events in an editable list (env keys or env values).
@@ -363,6 +366,7 @@ impl NewSessionDialog {
             hook_output: Vec::new(),
             path_invalid_flash_until: None,
             path_ghost: None,
+            confirm_create_dir: None,
         }
     }
 
@@ -476,6 +480,7 @@ impl NewSessionDialog {
             hook_output: Vec::new(),
             path_invalid_flash_until: None,
             path_ghost: None,
+            confirm_create_dir: None,
         }
     }
 
@@ -524,6 +529,7 @@ impl NewSessionDialog {
             hook_output: Vec::new(),
             path_invalid_flash_until: None,
             path_ghost: None,
+            confirm_create_dir: None,
         }
     }
 
@@ -546,6 +552,10 @@ impl NewSessionDialog {
                 self.show_help = false;
             }
             return DialogResult::Continue;
+        }
+
+        if self.confirm_create_dir.is_some() {
+            return self.handle_confirm_create_dir_key(key);
         }
 
         if self.group_picker.is_active() {
@@ -689,40 +699,12 @@ impl NewSessionDialog {
             }
             KeyCode::Enter => {
                 self.error_message = None;
-                let title_value = self.title.value().trim();
-                let final_title = if title_value.is_empty() {
-                    let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
-                    civilizations::generate_random_title(&refs)
-                } else {
-                    title_value.to_string()
-                };
-                let worktree_value = self.worktree_branch.value().trim();
-                let worktree_branch = if worktree_value.is_empty() {
-                    None
-                } else {
-                    Some(worktree_value.to_string())
-                };
-                DialogResult::Submit(NewSessionData {
-                    title: final_title,
-                    path: self.path.value().trim().to_string(),
-                    group: self.group.value().trim().to_string(),
-                    tool: self.available_tools[self.tool_index].to_string(),
-                    worktree_branch,
-                    create_new_branch: self.create_new_branch,
-                    sandbox: self.sandbox_enabled,
-                    sandbox_image: self.sandbox_image.value().trim().to_string(),
-                    yolo_mode: self.yolo_mode,
-                    extra_env_keys: if self.sandbox_enabled {
-                        self.extra_env_keys.clone()
-                    } else {
-                        Vec::new()
-                    },
-                    extra_env_values: if self.sandbox_enabled {
-                        self.extra_env_values.clone()
-                    } else {
-                        Vec::new()
-                    },
-                })
+                let path_str = self.path.value().trim().to_string();
+                if !std::path::Path::new(&path_str).exists() {
+                    self.confirm_create_dir = Some(false);
+                    return DialogResult::Continue;
+                }
+                self.build_submit_result()
             }
             KeyCode::Tab | KeyCode::Down => {
                 if self.focused_field == PATH_FIELD {
@@ -895,6 +877,93 @@ impl NewSessionDialog {
             n if n == sandbox_image_field => &mut self.sandbox_image,
             n if n == group_field => &mut self.group,
             _ => &mut self.title,
+        }
+    }
+
+    fn build_submit_result(&self) -> DialogResult<NewSessionData> {
+        let title_value = self.title.value().trim();
+        let final_title = if title_value.is_empty() {
+            let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
+            civilizations::generate_random_title(&refs)
+        } else {
+            title_value.to_string()
+        };
+        let worktree_value = self.worktree_branch.value().trim();
+        let worktree_branch = if worktree_value.is_empty() {
+            None
+        } else {
+            Some(worktree_value.to_string())
+        };
+        DialogResult::Submit(NewSessionData {
+            title: final_title,
+            path: self.path.value().trim().to_string(),
+            group: self.group.value().trim().to_string(),
+            tool: self.available_tools[self.tool_index].to_string(),
+            worktree_branch,
+            create_new_branch: self.create_new_branch,
+            sandbox: self.sandbox_enabled,
+            sandbox_image: self.sandbox_image.value().trim().to_string(),
+            yolo_mode: self.yolo_mode,
+            extra_env_keys: if self.sandbox_enabled {
+                self.extra_env_keys.clone()
+            } else {
+                Vec::new()
+            },
+            extra_env_values: if self.sandbox_enabled {
+                self.extra_env_values.clone()
+            } else {
+                Vec::new()
+            },
+        })
+    }
+
+    fn handle_confirm_create_dir_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        let selected = self.confirm_create_dir.as_mut().unwrap();
+        match key.code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                *selected = true;
+                DialogResult::Continue
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                *selected = false;
+                DialogResult::Continue
+            }
+            KeyCode::Tab => {
+                *selected = !*selected;
+                DialogResult::Continue
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.confirm_create_dir = None;
+                self.try_create_dir_and_submit()
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.confirm_create_dir = None;
+                self.focused_field = PATH_FIELD;
+                DialogResult::Continue
+            }
+            KeyCode::Enter => {
+                let yes = *selected;
+                self.confirm_create_dir = None;
+                if yes {
+                    self.try_create_dir_and_submit()
+                } else {
+                    self.focused_field = PATH_FIELD;
+                    DialogResult::Continue
+                }
+            }
+            _ => DialogResult::Continue,
+        }
+    }
+
+    fn try_create_dir_and_submit(&mut self) -> DialogResult<NewSessionData> {
+        let path_str = self.path.value().trim().to_string();
+        match std::fs::create_dir_all(&path_str) {
+            Ok(()) => self.build_submit_result(),
+            Err(e) => {
+                self.error_message = Some(format!("Failed to create directory: {}", e));
+                self.focused_field = PATH_FIELD;
+                DialogResult::Continue
+            }
         }
     }
 }

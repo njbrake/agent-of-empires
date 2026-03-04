@@ -3,7 +3,7 @@ use crate::session::{merge_configs, Config, ProfileConfig, SessionConfigOverride
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::fs;
 
-const TEST_PATH: &str = "/__aoe_nonexistent__/project";
+const TEST_PATH: &str = ".";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -883,4 +883,124 @@ fn test_profile_override_beats_global_default_tool() {
         "Profile override should select opencode over global claude"
     );
     assert_eq!(dialog.available_tools[dialog.tool_index], "opencode");
+}
+
+// --- confirm_create_dir tests ---
+
+fn nonexistent_dialog() -> NewSessionDialog {
+    NewSessionDialog::new_with_tools(vec!["claude"], "/__aoe_nonexistent__/project".to_string())
+}
+
+#[test]
+fn test_enter_with_nonexistent_path_enters_confirm() {
+    let mut dialog = nonexistent_dialog();
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    assert!(matches!(result, DialogResult::Continue));
+    assert_eq!(dialog.confirm_create_dir, Some(false));
+}
+
+#[test]
+fn test_enter_with_existing_path_submits_directly() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut dialog =
+        NewSessionDialog::new_with_tools(vec!["claude"], tmp.path().to_string_lossy().to_string());
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    assert!(matches!(result, DialogResult::Submit(_)));
+    assert!(dialog.confirm_create_dir.is_none());
+}
+
+#[test]
+fn test_confirm_esc_cancels() {
+    let mut dialog = nonexistent_dialog();
+    dialog.confirm_create_dir = Some(false);
+    let result = dialog.handle_key(key(KeyCode::Esc));
+    assert!(matches!(result, DialogResult::Continue));
+    assert!(dialog.confirm_create_dir.is_none());
+    assert_eq!(dialog.focused_field, PATH_FIELD);
+}
+
+#[test]
+fn test_confirm_n_cancels() {
+    let mut dialog = nonexistent_dialog();
+    dialog.confirm_create_dir = Some(true);
+    dialog.handle_key(key(KeyCode::Char('n')));
+    assert!(dialog.confirm_create_dir.is_none());
+    assert_eq!(dialog.focused_field, PATH_FIELD);
+}
+
+#[test]
+fn test_confirm_h_selects_yes() {
+    let mut dialog = nonexistent_dialog();
+    dialog.confirm_create_dir = Some(false);
+    dialog.handle_key(key(KeyCode::Char('h')));
+    assert_eq!(dialog.confirm_create_dir, Some(true));
+}
+
+#[test]
+fn test_confirm_l_selects_no() {
+    let mut dialog = nonexistent_dialog();
+    dialog.confirm_create_dir = Some(true);
+    dialog.handle_key(key(KeyCode::Char('l')));
+    assert_eq!(dialog.confirm_create_dir, Some(false));
+}
+
+#[test]
+fn test_confirm_tab_toggles() {
+    let mut dialog = nonexistent_dialog();
+    dialog.confirm_create_dir = Some(false);
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.confirm_create_dir, Some(true));
+    dialog.confirm_create_dir = Some(true);
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.confirm_create_dir, Some(false));
+}
+
+#[test]
+fn test_confirm_y_creates_dir_and_submits() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let new_path = tmp.path().join("new_project");
+    assert!(!new_path.exists());
+
+    let mut dialog =
+        NewSessionDialog::new_with_tools(vec!["claude"], new_path.to_string_lossy().to_string());
+    dialog.confirm_create_dir = Some(false);
+    let result = dialog.handle_key(key(KeyCode::Char('y')));
+    assert!(matches!(result, DialogResult::Submit(_)));
+    assert!(new_path.exists());
+}
+
+#[test]
+fn test_confirm_enter_yes_creates_dir_and_submits() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let new_path = tmp.path().join("another_dir");
+
+    let mut dialog =
+        NewSessionDialog::new_with_tools(vec!["claude"], new_path.to_string_lossy().to_string());
+    dialog.confirm_create_dir = Some(true);
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    assert!(matches!(result, DialogResult::Submit(_)));
+    assert!(new_path.exists());
+}
+
+#[test]
+fn test_confirm_enter_no_cancels() {
+    let mut dialog = nonexistent_dialog();
+    dialog.confirm_create_dir = Some(false);
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    assert!(matches!(result, DialogResult::Continue));
+    assert!(dialog.confirm_create_dir.is_none());
+    assert_eq!(dialog.focused_field, PATH_FIELD);
+}
+
+#[test]
+fn test_confirm_create_failure_shows_error() {
+    let mut dialog = NewSessionDialog::new_with_tools(
+        vec!["claude"],
+        "/proc/aoe_test_cannot_create".to_string(),
+    );
+    dialog.confirm_create_dir = Some(true);
+    let result = dialog.handle_key(key(KeyCode::Char('y')));
+    assert!(matches!(result, DialogResult::Continue));
+    assert!(dialog.error_message.is_some());
+    assert!(dialog.confirm_create_dir.is_none());
 }

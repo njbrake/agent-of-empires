@@ -361,7 +361,29 @@ impl NewSessionDialog {
 
         // Hints/errors (last chunk)
         let hint_chunk = ci;
-        if let Some(error) = &self.error_message {
+        if self.confirm_create_dir.is_some() {
+            let selected = self.confirm_create_dir.unwrap_or(false);
+            let yes_style = if selected {
+                Style::default().fg(theme.error).bold()
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let no_style = if !selected {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    "⚠ Path does not exist. Create? ",
+                    Style::default().fg(theme.error),
+                ),
+                Span::styled("[y]es", yes_style),
+                Span::raw(" "),
+                Span::styled("[N]o", no_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), chunks[hint_chunk]);
+        } else if let Some(error) = &self.error_message {
             let error_text = format!("✗ Error: {}", error);
             let error_paragraph = Paragraph::new(error_text)
                 .style(Style::default().fg(theme.error))
