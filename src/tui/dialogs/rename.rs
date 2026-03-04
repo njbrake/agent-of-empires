@@ -8,7 +8,8 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::tui::components::{
-    render_text_field, render_text_field_with_ghost, ListPicker, ListPickerResult,
+    longest_common_prefix, render_text_field, render_text_field_with_ghost, ListPicker,
+    ListPickerResult,
 };
 use crate::tui::styles::Theme;
 
@@ -122,8 +123,16 @@ impl RenameDialog {
         }
         matches.sort();
 
-        let best = &matches[0];
-        let ghost_text: String = best[value.len()..].to_string();
+        let ghost_text = if matches.len() == 1 {
+            matches[0][value.len()..].to_string()
+        } else {
+            let common = longest_common_prefix(&matches);
+            if common.len() > value.len() {
+                common[value.len()..].to_string()
+            } else {
+                matches[0][value.len()..].to_string()
+            }
+        };
 
         if ghost_text.is_empty() {
             return;

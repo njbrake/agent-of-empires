@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_input::Input;
 
 use super::NewSessionDialog;
+use crate::tui::components::longest_common_prefix;
 
 pub(super) struct GroupGhostCompletion {
     input_snapshot: String,
@@ -72,8 +73,16 @@ impl NewSessionDialog {
         }
         matches.sort();
 
-        let best = &matches[0];
-        let ghost_text: String = best[value.len()..].to_string();
+        let ghost_text = if matches.len() == 1 {
+            matches[0][value.len()..].to_string()
+        } else {
+            let common = longest_common_prefix(&matches);
+            if common.len() > value.len() {
+                common[value.len()..].to_string()
+            } else {
+                matches[0][value.len()..].to_string()
+            }
+        };
 
         if ghost_text.is_empty() {
             return;
