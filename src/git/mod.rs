@@ -131,8 +131,23 @@ impl GitWorktree {
         let repo = git2::Repository::discover(&self.repo_path)?;
 
         if create_branch {
-            let head = repo.head()?;
-            let commit = head.peel_to_commit()?;
+            // Find a commit to branch from. Try HEAD first, fall back to any
+            // existing branch. Bare repos often have HEAD pointing to a
+            // non-existent default branch (e.g., HEAD -> master but only main
+            // exists), so the fallback is necessary.
+            let commit_oid = if let Ok(head) = repo.head() {
+                head.peel_to_commit()?.id()
+            } else {
+                repo.branches(Some(git2::BranchType::Local))?
+                    .filter_map(|b| b.ok())
+                    .find_map(|(b, _)| b.get().target())
+                    .ok_or_else(|| {
+                        GitError::WorktreeCommandFailed(
+                            "No commits found to branch from".to_string(),
+                        )
+                    })?
+            };
+            let commit = repo.find_commit(commit_oid)?;
             repo.branch(branch, &commit, false)?;
         } else {
             let has_local = repo.find_branch(branch, git2::BranchType::Local).is_ok();
@@ -431,42 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_worktree_creates_new_worktree() {
-        let (dir, repo) = setup_test_repo();
-        let repo_path = repo.path().parent().unwrap();
-
-        let head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
-        repo.branch("test-branch", &commit, false).unwrap();
-
-        let wt_path = dir.path().join("test-worktree");
-        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
-        git_wt
-            .create_worktree("test-branch", &wt_path, false)
-            .unwrap();
-
-        assert!(wt_path.exists());
-        assert!(wt_path.join(".git").exists());
-    }
-
-    #[test]
-    fn test_create_worktree_with_new_branch() {
-        let (dir, repo) = setup_test_repo();
-        let repo_path = repo.path().parent().unwrap();
-
-        let wt_path = dir.path().join("new-branch-worktree");
-        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
-        git_wt
-            .create_worktree("new-branch", &wt_path, true)
-            .unwrap();
-
-        assert!(wt_path.exists());
-        assert!(repo
-            .find_branch("new-branch", git2::BranchType::Local)
-            .is_ok());
-    }
-
-    #[test]
     fn test_list_worktrees_returns_main_and_additional() {
         let (dir, repo) = setup_test_repo();
         let repo_path = repo.path().parent().unwrap();
@@ -681,26 +660,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_git_repo_recognizes_linked_worktree_bare_repo() {
-        let dir = setup_linked_worktree_bare_repo();
-
-        // The root directory with .git file should be recognized as a git repo
-        assert!(
-            GitWorktree::is_git_repo(dir.path()),
-            "Root of linked worktree setup should be recognized as git repo"
-        );
-
-        // The worktree should also be recognized
-        let main_wt = dir.path().join("main");
-        if main_wt.exists() {
-            assert!(
-                GitWorktree::is_git_repo(&main_wt),
-                "Worktree should be recognized as git repo"
-            );
-        }
-    }
-
-    #[test]
     fn test_is_git_repo_recognizes_worktree_gitfile_pointing_to_worktrees() {
         let Some((_dir, worktree_path)) = setup_linked_worktree_with_worktrees_gitfile() else {
             return;
@@ -716,106 +675,6 @@ mod tests {
         assert!(
             GitWorktree::is_git_repo(&nested_path),
             "Nested paths under worktree should also be recognized"
-        );
-    }
-
-    #[test]
-    fn test_is_bare_repo_returns_true_for_bare_repo() {
-        let dir = setup_linked_worktree_bare_repo();
-
-        // Root of linked worktree setup should be detected as bare
-        assert!(
-            GitWorktree::is_bare_repo(dir.path()),
-            "Linked worktree bare repo setup should be detected as bare"
-        );
-    }
-
-    #[test]
-    fn test_is_bare_repo_from_worktree_uses_main_repo_path() {
-        let dir = setup_linked_worktree_bare_repo();
-        let worktree_path = dir.path().join("main");
-
-        // Skip if worktree wasn't created (git command might not be available)
-        if !worktree_path.exists() {
-            return;
-        }
-
-        // When checking from a worktree directory, is_bare_repo may return false
-        // because git2 sees the worktree as having a working directory.
-        // This documents the current behavior - callers should use find_main_repo first.
-        let from_worktree = GitWorktree::is_bare_repo(&worktree_path);
-
-        // The correct approach: find the main repo first, then check if it's bare
-        let main_repo_path = GitWorktree::find_main_repo(&worktree_path).unwrap();
-        let from_main_repo = GitWorktree::is_bare_repo(&main_repo_path);
-
-        // Main repo path detection should always work correctly
-        assert!(
-            from_main_repo,
-            "is_bare_repo should return true when called with main_repo_path from find_main_repo"
-        );
-
-        // Document that direct worktree check may differ (this is why we use main_repo_path)
-        if !from_worktree {
-            // This is expected behavior - git2's is_bare() returns false for worktrees
-            // because they have a working directory. The fix is to always use
-            // find_main_repo() first, then check is_bare_repo() on that path.
-        }
-    }
-
-    #[test]
-    fn test_is_bare_repo_returns_false_for_regular_repo() {
-        let (_dir, repo) = setup_test_repo();
-        let repo_path = repo.path().parent().unwrap();
-
-        assert!(
-            !GitWorktree::is_bare_repo(repo_path),
-            "Regular repo should not be detected as bare"
-        );
-    }
-
-    #[test]
-    fn test_find_main_repo_works_with_linked_worktree_bare_repo() {
-        let dir = setup_linked_worktree_bare_repo();
-
-        // find_main_repo from root should return the root path
-        let result = GitWorktree::find_main_repo(dir.path());
-        assert!(
-            result.is_ok(),
-            "find_main_repo should succeed for linked worktree setup"
-        );
-
-        let main_repo = result.unwrap();
-        // Canonicalize both paths to handle macOS /var -> /private/var symlink
-        let expected = dir.path().canonicalize().unwrap();
-        assert_eq!(
-            main_repo, expected,
-            "find_main_repo should return the root directory for bare repo setup"
-        );
-    }
-
-    #[test]
-    fn test_find_main_repo_from_worktree_returns_root() {
-        let dir = setup_linked_worktree_bare_repo();
-        let worktree_path = dir.path().join("main");
-
-        // Skip if worktree wasn't created (git command might not be available)
-        if !worktree_path.exists() {
-            return;
-        }
-
-        // find_main_repo from a worktree should return the root path, not the worktree path
-        let result = GitWorktree::find_main_repo(&worktree_path);
-        assert!(
-            result.is_ok(),
-            "find_main_repo should succeed when called from a worktree"
-        );
-
-        let main_repo = result.unwrap();
-        let expected = dir.path().canonicalize().unwrap();
-        assert_eq!(
-            main_repo, expected,
-            "find_main_repo from worktree should return the root directory, not the worktree directory"
         );
     }
 
@@ -883,18 +742,6 @@ mod tests {
         assert!(
             GitWorktree::new(expected).is_ok(),
             "direct bare repo path should be accepted by GitWorktree::new"
-        );
-    }
-
-    #[test]
-    fn test_git_worktree_new_works_with_linked_worktree_bare_repo() {
-        let dir = setup_linked_worktree_bare_repo();
-
-        let main_repo_path = GitWorktree::find_main_repo(dir.path()).unwrap();
-        let result = GitWorktree::new(main_repo_path);
-        assert!(
-            result.is_ok(),
-            "GitWorktree::new should succeed for linked worktree setup"
         );
     }
 
@@ -1055,5 +902,319 @@ mod tests {
             err_msg.contains("worktree command failed"),
             "Expected WorktreeCommandFailed error, got: {err_msg}"
         );
+    }
+
+    // ---- Full worktree creation flow tests for regular repos ----
+
+    #[test]
+    fn test_regular_repo_create_worktree_existing_branch() {
+        let (dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        let head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        repo.branch("feature-a", &commit, false).unwrap();
+
+        let main_repo = GitWorktree::find_main_repo(repo_path).unwrap();
+        assert!(!GitWorktree::is_bare_repo(&main_repo));
+        let git_wt = GitWorktree::new(main_repo).unwrap();
+
+        let wt_path = dir.path().join("feature-a-wt");
+        git_wt
+            .create_worktree("feature-a", &wt_path, false)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
+    }
+
+    #[test]
+    fn test_regular_repo_create_worktree_new_branch() {
+        let (dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        let main_repo = GitWorktree::find_main_repo(repo_path).unwrap();
+        let git_wt = GitWorktree::new(main_repo).unwrap();
+
+        let wt_path = dir.path().join("new-feat-wt");
+        git_wt.create_worktree("new-feat", &wt_path, true).unwrap();
+
+        assert!(wt_path.exists());
+        assert!(repo
+            .find_branch("new-feat", git2::BranchType::Local)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_regular_repo_full_builder_flow() {
+        let (_dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        // Mimic what builder.rs does
+        assert!(GitWorktree::is_git_repo(repo_path));
+
+        let main_repo_path = GitWorktree::find_main_repo(repo_path).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path.clone()).unwrap();
+
+        let is_bare = GitWorktree::is_bare_repo(&main_repo_path);
+        assert!(!is_bare);
+
+        let template = if is_bare {
+            "./{branch}"
+        } else {
+            "../{repo-name}-worktrees/{branch}"
+        };
+        let wt_path = git_wt
+            .compute_path("my-branch", template, "abc12345")
+            .unwrap();
+
+        git_wt.create_worktree("my-branch", &wt_path, true).unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&wt_path);
+    }
+
+    // ---- Full worktree creation flow tests for linked bare repos ----
+
+    #[test]
+    fn test_linked_bare_repo_create_worktree_new_branch() {
+        let dir = setup_linked_worktree_bare_repo();
+        let main_wt = dir.path().join("main");
+        if !main_wt.exists() {
+            return; // git not available
+        }
+
+        let main_repo_path = GitWorktree::find_main_repo(dir.path()).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path).unwrap();
+
+        let wt_path = dir.path().join("new-feature");
+        git_wt
+            .create_worktree("new-feature", &wt_path, true)
+            .unwrap();
+
+        assert!(wt_path.exists(), "Worktree directory should be created");
+        assert!(
+            wt_path.join(".git").exists(),
+            "Worktree should have .git file"
+        );
+    }
+
+    #[test]
+    fn test_linked_bare_repo_create_worktree_existing_branch() {
+        let dir = setup_linked_worktree_bare_repo();
+        let main_wt = dir.path().join("main");
+        if !main_wt.exists() {
+            return;
+        }
+
+        let main_repo_path = GitWorktree::find_main_repo(dir.path()).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path.clone()).unwrap();
+
+        // Create a branch first
+        {
+            let repo = git2::Repository::discover(&main_repo_path).unwrap();
+            let head = repo.head().unwrap();
+            let commit = head.peel_to_commit().unwrap();
+            repo.branch("existing-branch", &commit, false).unwrap();
+        }
+
+        let wt_path = dir.path().join("existing-branch-wt");
+        git_wt
+            .create_worktree("existing-branch", &wt_path, false)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
+    }
+
+    #[test]
+    fn test_linked_bare_repo_create_worktree_from_worktree_dir() {
+        let dir = setup_linked_worktree_bare_repo();
+        let main_wt = dir.path().join("main");
+        if !main_wt.exists() {
+            return;
+        }
+
+        // Start from the worktree directory (as a user would)
+        let main_repo_path = GitWorktree::find_main_repo(&main_wt).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path.clone()).unwrap();
+
+        assert!(
+            GitWorktree::is_bare_repo(&main_repo_path),
+            "Should detect bare repo when resolved from worktree"
+        );
+
+        let wt_path = dir.path().join("from-wt-branch");
+        git_wt
+            .create_worktree("from-wt-branch", &wt_path, true)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
+    }
+
+    #[test]
+    fn test_linked_bare_repo_full_builder_flow() {
+        let dir = setup_linked_worktree_bare_repo();
+        let main_wt = dir.path().join("main");
+        if !main_wt.exists() {
+            return;
+        }
+
+        // Mimic the exact flow from builder.rs, starting from a worktree dir
+        let path = &main_wt;
+        assert!(
+            GitWorktree::is_git_repo(path),
+            "Worktree should be recognized as git repo"
+        );
+
+        let main_repo_path = GitWorktree::find_main_repo(path).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path.clone()).unwrap();
+
+        let is_bare = GitWorktree::is_bare_repo(&main_repo_path);
+        assert!(is_bare, "Should detect bare repo");
+
+        let template = if is_bare {
+            "./{branch}"
+        } else {
+            "../{repo-name}-worktrees/{branch}"
+        };
+        let wt_path = git_wt
+            .compute_path("builder-branch", template, "abc12345")
+            .unwrap();
+
+        git_wt
+            .create_worktree("builder-branch", &wt_path, true)
+            .unwrap();
+
+        assert!(
+            wt_path.exists(),
+            "Worktree should be created at computed path"
+        );
+        assert!(wt_path.join(".git").exists());
+
+        // Verify the worktree is a sibling inside the project dir (bare repo template)
+        assert_eq!(
+            wt_path.parent().unwrap().canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap(),
+            "Worktree should be a sibling directory in bare repo layout"
+        );
+    }
+
+    #[test]
+    fn test_linked_bare_repo_full_builder_flow_from_root() {
+        let dir = setup_linked_worktree_bare_repo();
+        let main_wt = dir.path().join("main");
+        if !main_wt.exists() {
+            return;
+        }
+
+        // Same as above, but starting from the root directory (not a worktree)
+        let path = dir.path();
+        assert!(
+            GitWorktree::is_git_repo(path),
+            "Bare repo root should be recognized as git repo"
+        );
+
+        let main_repo_path = GitWorktree::find_main_repo(path).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path.clone()).unwrap();
+
+        let is_bare = GitWorktree::is_bare_repo(&main_repo_path);
+        assert!(is_bare, "Should detect bare repo from root");
+
+        let template = "./{branch}";
+        let wt_path = git_wt
+            .compute_path("root-branch", template, "xyz99999")
+            .unwrap();
+
+        git_wt
+            .create_worktree("root-branch", &wt_path, true)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
+    }
+
+    // ---- Sibling bare repo worktree creation tests ----
+
+    #[test]
+    fn test_sibling_bare_repo_create_worktree_new_branch() {
+        let Some((_dir, bare_repo_path, _worktree_path)) = setup_sibling_bare_repo_worktree()
+        else {
+            return;
+        };
+
+        let main_repo_path = GitWorktree::find_main_repo(&bare_repo_path).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path).unwrap();
+
+        let wt_path = bare_repo_path.parent().unwrap().join("new-sibling-wt");
+        git_wt
+            .create_worktree("new-sibling", &wt_path, true)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
+    }
+
+    #[test]
+    fn test_sibling_bare_repo_create_worktree_existing_branch() {
+        let Some((_dir, bare_repo_path, _worktree_path)) = setup_sibling_bare_repo_worktree()
+        else {
+            return;
+        };
+
+        let main_repo_path = GitWorktree::find_main_repo(&bare_repo_path).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path.clone()).unwrap();
+
+        // Create a branch to check out
+        {
+            let repo = git2::Repository::discover(&main_repo_path).unwrap();
+            // Find any existing commit to branch from
+            let oid = repo
+                .reflog("HEAD")
+                .ok()
+                .and_then(|reflog| reflog.get(0).map(|e| e.id_new()))
+                .or_else(|| {
+                    repo.branches(Some(git2::BranchType::Local))
+                        .ok()
+                        .and_then(|mut branches| {
+                            branches.find_map(|b| b.ok().and_then(|(b, _)| b.get().target()))
+                        })
+                })
+                .expect("bare repo should have at least one commit");
+            let commit = repo.find_commit(oid).unwrap();
+            repo.branch("existing-sibling", &commit, false).unwrap();
+        }
+
+        let wt_path = bare_repo_path.parent().unwrap().join("existing-sibling-wt");
+        git_wt
+            .create_worktree("existing-sibling", &wt_path, false)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
+    }
+
+    #[test]
+    fn test_sibling_bare_repo_create_worktree_from_worktree_dir() {
+        let Some((_dir, _bare_repo_path, worktree_path)) = setup_sibling_bare_repo_worktree()
+        else {
+            return;
+        };
+
+        // Start from an existing worktree
+        let main_repo_path = GitWorktree::find_main_repo(&worktree_path).unwrap();
+        let git_wt = GitWorktree::new(main_repo_path).unwrap();
+
+        let wt_path = worktree_path.parent().unwrap().join("from-wt-sibling");
+        git_wt
+            .create_worktree("from-wt-sibling", &wt_path, true)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join(".git").exists());
     }
 }
