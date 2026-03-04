@@ -55,6 +55,8 @@ pub struct CreationPoller {
     progress_tx: mpsc::Sender<HookProgress>,
     _handle: thread::JoinHandle<()>,
     pending: bool,
+    /// Profile from the last creation request (for cross-profile saves)
+    last_profile: Option<String>,
 }
 
 impl CreationPoller {
@@ -80,6 +82,7 @@ impl CreationPoller {
             progress_tx,
             _handle: handle,
             pending: false,
+            last_profile: None,
         }
     }
 
@@ -214,6 +217,7 @@ impl CreationPoller {
 
     pub fn request_creation(&mut self, request: CreationRequest) {
         self.pending = true;
+        self.last_profile = Some(request.data.profile.clone());
         if self
             .request_tx
             .send((request, self.progress_tx.clone()))
@@ -222,6 +226,11 @@ impl CreationPoller {
             tracing::error!("Failed to send creation request: receiver thread died");
             self.pending = false;
         }
+    }
+
+    /// Get the profile from the last creation request
+    pub fn last_profile(&self) -> Option<String> {
+        self.last_profile.clone()
     }
 
     pub fn try_recv_result(&mut self) -> Option<CreationResult> {

@@ -186,6 +186,7 @@ fn test_has_dialog_returns_true_for_new_dialog() {
         Vec::new(),
         Vec::new(),
         "default",
+        vec!["default".to_string()],
     ));
     assert!(env.view.has_dialog());
 }

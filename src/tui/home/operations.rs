@@ -9,7 +9,20 @@ use super::HomeView;
 
 impl HomeView {
     pub(super) fn create_session(&mut self, data: NewSessionData) -> anyhow::Result<String> {
-        let existing_titles: Vec<&str> = self.instances.iter().map(|i| i.title.as_str()).collect();
+        let target_profile = data.profile.clone();
+        let is_cross_profile = target_profile != self.storage.profile();
+
+        // For cross-profile creation, use the target profile's instances for title dedup
+        let target_instances = if is_cross_profile {
+            Storage::new(&target_profile)?.load()?
+        } else {
+            Vec::new()
+        };
+        let existing_titles: Vec<&str> = if is_cross_profile {
+            target_instances.iter().map(|i| i.title.as_str()).collect()
+        } else {
+            self.instances.iter().map(|i| i.title.as_str()).collect()
+        };
 
         let params = InstanceParams {
             title: data.title,
@@ -27,15 +40,27 @@ impl HomeView {
 
         let build_result = builder::build_instance(params, &existing_titles)?;
         let instance = build_result.instance;
-
         let session_id = instance.id.clone();
-        self.instances.push(instance.clone());
-        self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
-        if !instance.group_path.is_empty() {
-            self.group_tree.create_group(&instance.group_path);
+
+        if is_cross_profile {
+            // Save to target profile's storage
+            let target_storage = Storage::new(&target_profile)?;
+            let (mut target_instances, target_groups) = target_storage.load_with_groups()?;
+            target_instances.push(instance.clone());
+            let mut target_tree = GroupTree::new_with_groups(&target_instances, &target_groups);
+            if !instance.group_path.is_empty() {
+                target_tree.create_group(&instance.group_path);
+            }
+            target_storage.save_with_groups(&target_instances, &target_tree)?;
+        } else {
+            self.instances.push(instance.clone());
+            self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+            if !instance.group_path.is_empty() {
+                self.group_tree.create_group(&instance.group_path);
+            }
+            self.storage
+                .save_with_groups(&self.instances, &self.group_tree)?;
         }
-        self.storage
-            .save_with_groups(&self.instances, &self.group_tree)?;
 
         self.reload()?;
         Ok(session_id)

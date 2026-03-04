@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-use super::{NewSessionDialog, PATH_FIELD};
+use super::NewSessionDialog;
 use crate::tui::components::longest_common_prefix;
 
 pub(super) struct PathGhostCompletion {
@@ -59,7 +59,7 @@ fn path_completion_base(parent_prefix: &str) -> Option<PathBuf> {
 
 impl NewSessionDialog {
     pub(super) fn handle_path_shortcuts(&mut self, key: KeyEvent) -> bool {
-        if self.focused_field != PATH_FIELD {
+        if self.focused_field != self.path_field() {
             return false;
         }
 

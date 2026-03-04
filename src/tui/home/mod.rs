@@ -444,17 +444,52 @@ impl HomeView {
                 ..
             } => {
                 let instance = *instance;
-                self.instances.push(instance.clone());
-                self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
-                if !instance.group_path.is_empty() {
-                    self.group_tree.create_group(&instance.group_path);
-                }
 
-                if let Err(e) = self
-                    .storage
-                    .save_with_groups(&self.instances, &self.group_tree)
-                {
-                    tracing::error!("Failed to save after creation: {}", e);
+                // Check if this was created for a different profile
+                let target_profile = self
+                    .creation_poller
+                    .last_profile()
+                    .unwrap_or_else(|| self.storage.profile().to_string());
+                let is_cross_profile = target_profile != self.storage.profile();
+
+                if is_cross_profile {
+                    // Save to target profile's storage
+                    match Storage::new(&target_profile) {
+                        Ok(target_storage) => match target_storage.load_with_groups() {
+                            Ok((mut target_instances, target_groups)) => {
+                                target_instances.push(instance.clone());
+                                let mut target_tree =
+                                    GroupTree::new_with_groups(&target_instances, &target_groups);
+                                if !instance.group_path.is_empty() {
+                                    target_tree.create_group(&instance.group_path);
+                                }
+                                if let Err(e) =
+                                    target_storage.save_with_groups(&target_instances, &target_tree)
+                                {
+                                    tracing::error!("Failed to save to target profile: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to load target profile data: {}", e);
+                            }
+                        },
+                        Err(e) => {
+                            tracing::error!("Failed to open target profile storage: {}", e);
+                        }
+                    }
+                } else {
+                    self.instances.push(instance.clone());
+                    self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+                    if !instance.group_path.is_empty() {
+                        self.group_tree.create_group(&instance.group_path);
+                    }
+
+                    if let Err(e) = self
+                        .storage
+                        .save_with_groups(&self.instances, &self.group_tree)
+                    {
+                        tracing::error!("Failed to save after creation: {}", e);
+                    }
                 }
 
                 if on_launch_hooks_ran {

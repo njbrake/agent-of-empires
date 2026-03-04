@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, PATH_FIELD, SPINNER_FRAMES};
+use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
 use crate::tui::components::{render_text_field, render_text_field_with_ghost};
 use crate::tui::styles::Theme;
 
@@ -15,59 +15,35 @@ impl NewSessionDialog {
             return;
         }
 
+        // If in sandbox config mode, render that overlay instead
+        if self.sandbox_config_mode {
+            self.render_sandbox_config(frame, area, theme);
+            return;
+        }
+
+        let has_profile_selection = self.has_profile_selection();
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
         let has_worktree = !self.worktree_branch.value().is_empty();
-        let sandbox_options_visible = has_sandbox && self.sandbox_enabled;
         let dialog_width = 80;
-        // Calculate env list heights based on expanded state and number of items
-        let env_list_height: u16 = if sandbox_options_visible {
-            if self.env_list_expanded {
-                (2 + self.extra_env_keys.len() as u16).clamp(4, 8)
-            } else {
-                2
-            }
-        } else {
-            0
-        };
-        let env_values_list_height: u16 = if sandbox_options_visible {
-            if self.env_values_list_expanded {
-                (2 + self.extra_env_values.len() as u16).clamp(4, 8)
-            } else {
-                2
-            }
-        } else {
-            0
-        };
-        let inherited_height: u16 = if sandbox_options_visible {
-            if self.inherited_expanded {
-                3 + self.inherited_settings.len().max(1) as u16
-            } else {
-                2
-            }
-        } else {
-            0
-        };
 
         // Build constraints dynamically based on visible fields only
-        let mut constraints = vec![
+        let mut constraints = Vec::new();
+        if has_profile_selection {
+            constraints.push(Constraint::Length(2)); // Profile
+        }
+        constraints.extend([
             Constraint::Length(2), // Title
             Constraint::Length(2), // Path
             Constraint::Length(2), // Tool (always shown, interactive or not)
             Constraint::Length(2), // YOLO mode checkbox (always visible)
             Constraint::Length(2), // Worktree Branch
-        ];
+        ]);
         if has_worktree {
             constraints.push(Constraint::Length(2)); // New Branch checkbox
         }
         if has_sandbox {
-            constraints.push(Constraint::Length(2)); // Sandbox checkbox
-        }
-        if sandbox_options_visible {
-            constraints.push(Constraint::Length(2)); // Image field
-            constraints.push(Constraint::Length(env_list_height)); // Env vars field
-            constraints.push(Constraint::Length(env_values_list_height)); // Env values field
-            constraints.push(Constraint::Length(inherited_height)); // Inherited settings
+            constraints.push(Constraint::Length(2)); // Sandbox checkbox (summary only)
         }
         constraints.push(Constraint::Length(2)); // Group (always, at the bottom)
 
@@ -84,7 +60,6 @@ impl NewSessionDialog {
         constraints.push(Constraint::Min(error_lines)); // Hints/errors
 
         // Compute dialog height from actual constraints
-        // border (2) + margin (2) + sum of field heights + hint line (2)
         let fields_height: u16 = constraints
             .iter()
             .map(|c| match c {
@@ -117,32 +92,56 @@ impl NewSessionDialog {
         // Render fields sequentially, tracking chunk index to match dynamic constraints
         let mut ci = 0; // chunk index
 
-        // Title, Path (always visible)
-        let path_placeholder = if self.focused_field == PATH_FIELD {
-            Some("(Ctrl+P to browse directories)")
+        // Field index calculations (must match handle_key)
+        let base = if has_profile_selection { 1 } else { 0 };
+        let title_field = base;
+        let yolo_mode_field = base + 2 + if has_tool_selection { 1 } else { 0 };
+        let worktree_field = yolo_mode_field + 1;
+        let new_branch_field = worktree_field + 1;
+        let mut next_field_idx = if has_worktree {
+            new_branch_field + 1
         } else {
-            None
+            worktree_field + 1
         };
+        let sandbox_field = if has_sandbox {
+            let f = next_field_idx;
+            next_field_idx += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        let group_field = next_field_idx;
 
+        // Profile picker (only when multiple profiles)
+        if has_profile_selection {
+            self.render_profile_field(frame, chunks[ci], theme);
+            ci += 1;
+        }
+
+        // Title
         render_text_field(
             frame,
             chunks[ci],
             "Title:",
             &self.title,
-            self.focused_field == 0,
+            self.focused_field == title_field,
             Some("(random civ)"),
             theme,
         );
         ci += 1;
 
+        // Path
+        let path_placeholder = if self.focused_field == self.path_field() {
+            Some("(Ctrl+P to browse directories)")
+        } else {
+            None
+        };
         self.render_path_field(frame, chunks[ci], path_placeholder, theme);
         ci += 1;
 
         // Tool (always shown, interactive or read-only)
-        let yolo_mode_field = if has_tool_selection { 3 } else { 2 };
-        let worktree_field = yolo_mode_field + 1;
-        let is_tool_focused = self.focused_field == 2;
-
+        let tool_field = base + 2;
+        let is_tool_focused = has_tool_selection && self.focused_field == tool_field;
         if has_tool_selection {
             let label_style = if is_tool_focused {
                 Style::default().fg(theme.accent).underlined()
@@ -179,7 +178,7 @@ impl NewSessionDialog {
         }
         ci += 1;
 
-        // YOLO Mode checkbox (always visible, right after tool)
+        // YOLO Mode checkbox
         {
             let is_yolo_focused = self.focused_field == yolo_mode_field;
             let yolo_label_style = if is_yolo_focused {
@@ -212,7 +211,7 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Worktree Branch (always visible)
+        // Worktree Branch
         let worktree_placeholder = if self.focused_field == worktree_field {
             Some("(leave empty to skip | Ctrl+P to browse branches)")
         } else {
@@ -230,7 +229,6 @@ impl NewSessionDialog {
         ci += 1;
 
         // New Branch checkbox (only when worktree is set)
-        let new_branch_field = worktree_field + 1;
         if has_worktree {
             let is_nb_focused = self.focused_field == new_branch_field;
             let nb_label_style = if is_nb_focused {
@@ -266,15 +264,8 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Sandbox checkbox (only when Docker available)
-        let mut next_field_idx = if has_worktree {
-            new_branch_field + 1
-        } else {
-            worktree_field + 1
-        };
+        // Sandbox checkbox with summary (only when Docker available)
         if has_sandbox {
-            let sandbox_field = next_field_idx;
-            next_field_idx += 1;
             let is_sandbox_focused = self.focused_field == sandbox_field;
             let sandbox_label_style = if is_sandbox_focused {
                 Style::default().fg(theme.accent).underlined()
@@ -289,59 +280,32 @@ impl NewSessionDialog {
                 Style::default().fg(theme.dimmed)
             };
 
-            let sandbox_line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled("Sandbox:", sandbox_label_style),
                 Span::raw(" "),
                 Span::styled(checkbox, checkbox_style),
                 Span::styled(
-                    " Run in Docker container",
+                    " Run in Docker",
                     if self.sandbox_enabled {
                         Style::default().fg(theme.accent)
                     } else {
                         Style::default().fg(theme.dimmed)
                     },
                 ),
-            ]);
-            frame.render_widget(Paragraph::new(sandbox_line), chunks[ci]);
-            ci += 1;
-        }
+            ];
 
-        if sandbox_options_visible {
-            // Image field
-            let sandbox_image_field = next_field_idx;
-            next_field_idx += 1;
-            render_text_field(
-                frame,
-                chunks[ci],
-                "  Image:",
-                &self.sandbox_image,
-                self.focused_field == sandbox_image_field,
-                None,
-                theme,
-            );
-            ci += 1;
+            if self.sandbox_enabled {
+                spans.push(Span::styled(
+                    "  (Ctrl+P to configure)",
+                    Style::default().fg(theme.dimmed),
+                ));
+            }
 
-            // Environment variables field
-            let env_field = next_field_idx;
-            next_field_idx += 1;
-            self.render_env_field(frame, chunks[ci], env_field, theme);
-            ci += 1;
-
-            // Environment values field (KEY=VALUE)
-            let env_values_field = next_field_idx;
-            next_field_idx += 1;
-            self.render_env_values_field(frame, chunks[ci], env_values_field, theme);
-            ci += 1;
-
-            // Inherited settings (read-only)
-            let inherited_field = next_field_idx;
-            next_field_idx += 1;
-            self.render_inherited_field(frame, chunks[ci], inherited_field, theme);
+            frame.render_widget(Paragraph::new(Line::from(spans)), chunks[ci]);
             ci += 1;
         }
 
         // Group (always visible, at the bottom before hints)
-        let group_field = next_field_idx;
         let group_placeholder =
             if !self.existing_groups.is_empty() && self.focused_field == group_field {
                 Some("(Ctrl+P to browse groups)")
@@ -398,7 +362,7 @@ impl NewSessionDialog {
                 hint_spans.push(Span::styled("←/→", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" tool  "));
             }
-            if self.focused_field == PATH_FIELD {
+            if self.focused_field == self.path_field() {
                 if self.ghost_text().is_some() {
                     hint_spans.push(Span::styled("→", Style::default().fg(theme.hint)));
                     hint_spans.push(Span::raw(" accept  "));
@@ -448,6 +412,34 @@ impl NewSessionDialog {
         }
     }
 
+    fn render_profile_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let is_focused = self.focused_field == 0;
+        let label_style = if is_focused {
+            Style::default().fg(theme.accent).underlined()
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        let selected = self.selected_profile();
+        let profile_style = if is_focused {
+            Style::default().fg(theme.accent).bold()
+        } else {
+            Style::default().fg(theme.accent)
+        };
+
+        let mut spans = vec![Span::styled("Profile:", label_style), Span::raw(" ")];
+
+        if self.available_profiles.len() > 1 {
+            spans.push(Span::styled("< ", Style::default().fg(theme.dimmed)));
+            spans.push(Span::styled(selected, profile_style));
+            spans.push(Span::styled(" >", Style::default().fg(theme.dimmed)));
+        } else {
+            spans.push(Span::styled(selected, profile_style));
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
     fn render_path_field(
         &self,
         frame: &mut Frame,
@@ -455,7 +447,7 @@ impl NewSessionDialog {
         placeholder: Option<&str>,
         theme: &Theme,
     ) {
-        let is_focused = self.focused_field == PATH_FIELD;
+        let is_focused = self.focused_field == self.path_field();
         let flashing_invalid = self.is_path_invalid_flash_active();
 
         let label_color = if flashing_invalid {
@@ -520,8 +512,106 @@ impl NewSessionDialog {
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    fn render_env_field(&self, frame: &mut Frame, area: Rect, env_field: usize, theme: &Theme) {
-        let is_focused = self.focused_field == env_field;
+    fn render_sandbox_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let dialog_width: u16 = 72;
+
+        // Sandbox config fields: image, env vars, env values, inherited
+        let env_list_height: u16 = if self.env_list_expanded {
+            (2 + self.extra_env_keys.len() as u16).clamp(4, 8)
+        } else {
+            2
+        };
+        let env_values_list_height: u16 = if self.env_values_list_expanded {
+            (2 + self.extra_env_values.len() as u16).clamp(4, 8)
+        } else {
+            2
+        };
+        let inherited_height: u16 = if self.inherited_expanded {
+            3 + self.inherited_settings.len().max(1) as u16
+        } else {
+            2
+        };
+
+        let constraints = vec![
+            Constraint::Length(2),                      // Image
+            Constraint::Length(env_list_height),        // Env vars
+            Constraint::Length(env_values_list_height), // Env values
+            Constraint::Length(inherited_height),       // Inherited settings
+            Constraint::Min(1),                         // Hints
+        ];
+
+        let fields_height: u16 = constraints
+            .iter()
+            .map(|c| match c {
+                Constraint::Length(n) => *n,
+                Constraint::Min(n) => *n,
+                _ => 0,
+            })
+            .sum();
+        let dialog_height = fields_height + 4;
+
+        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(" Sandbox Configuration ")
+            .title_style(Style::default().fg(theme.title).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints(constraints)
+            .split(inner);
+
+        let mut ci = 0;
+
+        // Image field
+        render_text_field(
+            frame,
+            chunks[ci],
+            "Image:",
+            &self.sandbox_image,
+            self.sandbox_focused_field == 0,
+            None,
+            theme,
+        );
+        ci += 1;
+
+        // Env vars
+        self.render_env_field(frame, chunks[ci], self.sandbox_focused_field == 1, theme);
+        ci += 1;
+
+        // Env values
+        self.render_env_values_field(frame, chunks[ci], self.sandbox_focused_field == 2, theme);
+        ci += 1;
+
+        // Inherited settings
+        self.render_inherited_field(frame, chunks[ci], self.sandbox_focused_field == 3, theme);
+        ci += 1;
+
+        // Hints
+        let hint_spans = vec![
+            Span::styled("Tab", Style::default().fg(theme.hint)),
+            Span::raw(" next  "),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
+            Span::raw(" edit  "),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::raw(" back"),
+        ];
+        frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[ci]);
+
+        if self.show_help {
+            self.render_help_overlay(frame, area, theme);
+        }
+    }
+
+    fn render_env_field(&self, frame: &mut Frame, area: Rect, is_focused: bool, theme: &Theme) {
         let label_style = if is_focused {
             Style::default().fg(theme.accent).underlined()
         } else {
@@ -543,7 +633,7 @@ impl NewSessionDialog {
             };
 
             let line = Line::from(vec![
-                Span::styled("  Env Vars:", label_style),
+                Span::styled("Env Vars:", label_style),
                 Span::raw(" "),
                 Span::styled(summary, summary_style),
             ]);
@@ -554,7 +644,7 @@ impl NewSessionDialog {
 
             // Header with controls hint
             let header = Line::from(vec![
-                Span::styled("  Env Vars:", label_style),
+                Span::styled("Env Vars:", label_style),
                 Span::styled(
                     " (a)dd (d)el (Enter)edit (Esc)close",
                     Style::default().fg(theme.dimmed),
@@ -639,10 +729,9 @@ impl NewSessionDialog {
         &self,
         frame: &mut Frame,
         area: Rect,
-        field_idx: usize,
+        is_focused: bool,
         theme: &Theme,
     ) {
-        let is_focused = self.focused_field == field_idx;
         let label_style = if is_focused {
             Style::default().fg(theme.accent).underlined()
         } else {
@@ -663,7 +752,7 @@ impl NewSessionDialog {
             };
 
             let line = Line::from(vec![
-                Span::styled("  Env Values:", label_style),
+                Span::styled("Env Values:", label_style),
                 Span::raw(" "),
                 Span::styled(summary, summary_style),
             ]);
@@ -672,7 +761,7 @@ impl NewSessionDialog {
             let mut lines: Vec<Line> = Vec::new();
 
             let header = Line::from(vec![
-                Span::styled("  Env Values:", label_style),
+                Span::styled("Env Values:", label_style),
                 Span::styled(
                     " (a)dd (d)el (Enter)edit (Esc)close",
                     Style::default().fg(theme.dimmed),
@@ -748,10 +837,9 @@ impl NewSessionDialog {
         &self,
         frame: &mut Frame,
         area: Rect,
-        field_idx: usize,
+        is_focused: bool,
         theme: &Theme,
     ) {
-        let is_focused = self.focused_field == field_idx;
         let label_style = if is_focused {
             Style::default().fg(theme.accent).underlined()
         } else {
@@ -777,7 +865,7 @@ impl NewSessionDialog {
                 Style::default().fg(theme.dimmed)
             };
             let line = Line::from(vec![
-                Span::styled(format!("  {} ", arrow), label_style),
+                Span::styled(format!("{} ", arrow), label_style),
                 Span::styled("Inherited Settings ", label_style),
                 Span::styled(summary, summary_style),
             ]);
@@ -786,7 +874,7 @@ impl NewSessionDialog {
             let mut lines: Vec<Line> = Vec::new();
 
             let header = Line::from(vec![
-                Span::styled(format!("  {} ", arrow), label_style),
+                Span::styled(format!("{} ", arrow), label_style),
                 Span::styled("Inherited Settings", label_style),
             ]);
             lines.push(header);
@@ -819,11 +907,14 @@ impl NewSessionDialog {
         let show_sandbox_options_help = has_sandbox && self.sandbox_enabled;
 
         let dialog_width: u16 = HELP_DIALOG_WIDTH;
-        let base_height: u16 = 20; // includes YOLO Mode and Group (always visible)
+        let has_profile_selection = self.has_profile_selection();
+        // Base fields: Title, Path, YOLO, Worktree, New Branch, Group + close hint
+        let base_height: u16 = 20;
         let dialog_height: u16 = base_height
+            + if has_profile_selection { 3 } else { 0 }
             + if has_tool_selection { 3 } else { 0 }
             + if has_sandbox { 3 } else { 0 }
-            + if show_sandbox_options_help { 12 } else { 0 }; // Image, Env, Env Values, Inherited
+            + if show_sandbox_options_help { 12 } else { 0 };
 
         let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
 
@@ -841,17 +932,21 @@ impl NewSessionDialog {
         let mut lines: Vec<Line> = Vec::new();
 
         for (idx, help) in FIELD_HELP.iter().enumerate() {
-            if idx == 2 && !has_tool_selection {
-                continue;
+            if idx == 0 && !has_profile_selection {
+                continue; // Profile
             }
-            // idx 3 (YOLO), 4 (Worktree), 5 (New Branch) are always shown
-            if idx == 6 && !has_sandbox {
-                continue;
+            // idx 1 (Title), idx 2 (Path) always shown
+            if idx == 3 && !has_tool_selection {
+                continue; // Tool
             }
-            if (7..=10).contains(&idx) && !show_sandbox_options_help {
-                continue;
+            // idx 4 (YOLO), 5 (Worktree), 6 (New Branch) always shown
+            if idx == 7 && !has_sandbox {
+                continue; // Sandbox
             }
-            // idx 11 (Group) is always shown
+            if (8..=11).contains(&idx) && !show_sandbox_options_help {
+                continue; // Image, Env, Env Values, Inherited
+            }
+            // idx 12 (Group) always shown
 
             lines.push(Line::from(Span::styled(
                 help.name,
@@ -888,7 +983,6 @@ impl NewSessionDialog {
             50
         };
         let dialog_height: u16 = if show_hook_output {
-            // spinner line + command line + output lines + cancel hint + padding
             (6 + max_output_lines as u16).min(area.height)
         } else if needs_extra_line {
             9
@@ -920,9 +1014,7 @@ impl NewSessionDialog {
         if show_hook_output {
             let mut lines = vec![];
 
-            // Status line with spinner
             let status_text = if let Some(ref cmd) = self.current_hook {
-                // Truncate long commands to fit the dialog
                 let max_cmd_len = (dialog_width as usize).saturating_sub(12);
                 if cmd.len() > max_cmd_len {
                     let truncated: String =
@@ -943,7 +1035,6 @@ impl NewSessionDialog {
                 Span::styled(status_text, Style::default().fg(theme.text)),
             ]));
 
-            // Show last N output lines
             let output_start = self.hook_output.len().saturating_sub(max_output_lines);
             let visible_lines = &self.hook_output[output_start..];
             let inner_width = (dialog_width as usize).saturating_sub(6);
@@ -961,9 +1052,8 @@ impl NewSessionDialog {
                 )));
             }
 
-            // Pad remaining lines so cancel hint stays at bottom
-            let used = 1 + visible_lines.len(); // status + output
-            let available = dialog_height.saturating_sub(4) as usize; // borders + cancel line
+            let used = 1 + visible_lines.len();
+            let available = dialog_height.saturating_sub(4) as usize;
             for _ in used..available {
                 lines.push(Line::from(""));
             }
