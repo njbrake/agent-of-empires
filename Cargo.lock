@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "agent-of-empires"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "anyhow",
  "cargo-husky",
