@@ -47,6 +47,17 @@ impl SettingsView {
             }
         }
 
+        // Handle help overlay
+        if self.show_help {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
+            ) {
+                self.show_help = false;
+            }
+            return SettingsAction::Continue;
+        }
+
         // Handle text editing mode
         if self.editing_input.is_some() {
             return self.handle_text_edit_key(key);
@@ -67,8 +78,8 @@ impl SettingsView {
                 SettingsAction::Continue
             }
 
-            // Close
-            (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
+            // Close from anywhere
+            (KeyCode::Char('q'), _) => {
                 if self.has_changes {
                     SettingsAction::UnsavedChangesWarning
                 } else {
@@ -76,8 +87,26 @@ impl SettingsView {
                 }
             }
 
-            // Switch scope tabs
-            (KeyCode::Tab, _) => {
+            // Escape goes up one level
+            (KeyCode::Esc, _) => match self.focus {
+                SettingsFocus::Fields => {
+                    self.focus = SettingsFocus::Categories;
+                    SettingsAction::Continue
+                }
+                SettingsFocus::Categories => {
+                    if self.has_changes {
+                        SettingsAction::UnsavedChangesWarning
+                    } else {
+                        SettingsAction::Close
+                    }
+                }
+            },
+
+            // Switch scope: [ and ] cycle between Global / Profile / Repo
+            (KeyCode::Char(']'), _) => {
+                if self.has_changes {
+                    return SettingsAction::UnsavedChangesWarning;
+                }
                 self.scope = match self.scope {
                     SettingsScope::Global => SettingsScope::Profile,
                     SettingsScope::Profile => {
@@ -92,7 +121,10 @@ impl SettingsView {
                 self.rebuild_fields();
                 SettingsAction::Continue
             }
-            (KeyCode::BackTab, _) => {
+            (KeyCode::Char('['), _) => {
+                if self.has_changes {
+                    return SettingsAction::UnsavedChangesWarning;
+                }
                 self.scope = match self.scope {
                     SettingsScope::Global => {
                         if self.project_path.is_some() {
@@ -108,13 +140,39 @@ impl SettingsView {
                 SettingsAction::Continue
             }
 
-            // Switch focus between categories and fields
-            (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
-                self.focus = SettingsFocus::Categories;
+            // Cycle through profiles when in Profile scope: { and }
+            (KeyCode::Char('}'), _) | (KeyCode::Char('{'), _) => {
+                if self.scope == SettingsScope::Profile && !self.available_profiles.is_empty() {
+                    if self.has_changes {
+                        return SettingsAction::UnsavedChangesWarning;
+                    }
+                    let current_idx = self
+                        .available_profiles
+                        .iter()
+                        .position(|p| p == &self.profile)
+                        .unwrap_or(0);
+                    let next_idx = if key.code == KeyCode::Char('}') {
+                        (current_idx + 1) % self.available_profiles.len()
+                    } else if current_idx == 0 {
+                        self.available_profiles.len() - 1
+                    } else {
+                        current_idx - 1
+                    };
+                    let new_profile = self.available_profiles[next_idx].clone();
+                    if let Err(e) = self.switch_profile(&new_profile) {
+                        self.error_message = Some(format!("Failed to load profile: {}", e));
+                    }
+                }
                 SettingsAction::Continue
             }
-            (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
+
+            // Switch focus between categories and fields
+            (KeyCode::Tab, _) | (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
                 self.focus = SettingsFocus::Fields;
+                SettingsAction::Continue
+            }
+            (KeyCode::BackTab, _) | (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
+                self.focus = SettingsFocus::Categories;
                 SettingsAction::Continue
             }
 
@@ -219,6 +277,12 @@ impl SettingsView {
                     // Move to fields when pressing Enter on a category
                     self.focus = SettingsFocus::Fields;
                 }
+                SettingsAction::Continue
+            }
+
+            // Toggle help overlay
+            (KeyCode::Char('?'), _) => {
+                self.show_help = true;
                 SettingsAction::Continue
             }
 

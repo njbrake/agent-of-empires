@@ -114,6 +114,35 @@ fn resolve_optional<T: Clone>(
     }
 }
 
+/// Convert a FieldValue to a human-readable display string.
+fn value_display_string(value: &FieldValue) -> String {
+    match value {
+        FieldValue::Bool(v) => if *v { "on" } else { "off" }.to_string(),
+        FieldValue::Text(v) => {
+            if v.is_empty() {
+                "(empty)".to_string()
+            } else {
+                v.clone()
+            }
+        }
+        FieldValue::Number(v) => v.to_string(),
+        FieldValue::Select { selected, options } => {
+            options.get(*selected).cloned().unwrap_or_default()
+        }
+        FieldValue::List(items) => format!("[{} items]", items.len()),
+        FieldValue::OptionalText(v) => v.clone().unwrap_or_else(|| "(empty)".to_string()),
+    }
+}
+
+/// Build the inherited display string when a field has an override.
+fn inherited_if(has_override: bool, global_value: FieldValue) -> Option<String> {
+    if has_override {
+        Some(value_display_string(&global_value))
+    } else {
+        None
+    }
+}
+
 /// Helper to set or clear a profile override based on whether value matches global.
 fn set_or_clear_override<T, S, F>(
     new_value: T,
@@ -157,8 +186,10 @@ pub struct SettingField {
     pub description: &'static str,
     pub value: FieldValue,
     pub category: SettingsCategory,
-    /// Whether this field has a profile override (only relevant in profile scope)
+    /// Whether this field has a profile/repo override
     pub has_override: bool,
+    /// Human-readable display of the inherited (global/base) value, set when has_override is true
+    pub inherited_display: Option<String>,
 }
 
 impl SettingField {
@@ -229,6 +260,18 @@ fn build_theme_fields(
     let options: Vec<String> = AVAILABLE_THEMES.iter().map(|s| s.to_string()).collect();
     let selected = options.iter().position(|s| s == &name).unwrap_or(0);
 
+    let global_selected = options
+        .iter()
+        .position(|s| s == &global.theme.name)
+        .unwrap_or(0);
+    let inherited = inherited_if(
+        has_override,
+        FieldValue::Select {
+            selected: global_selected,
+            options: options.clone(),
+        },
+    );
+
     vec![SettingField {
         key: FieldKey::ThemeName,
         label: "Theme",
@@ -236,6 +279,7 @@ fn build_theme_fields(
         value: FieldValue::Select { selected, options },
         category: SettingsCategory::Theme,
         has_override,
+        inherited_display: inherited,
     }]
 }
 
@@ -270,6 +314,7 @@ fn build_updates_fields(
             value: FieldValue::Bool(check_enabled),
             category: SettingsCategory::Updates,
             has_override: o1,
+            inherited_display: inherited_if(o1, FieldValue::Bool(global.updates.check_enabled)),
         },
         SettingField {
             key: FieldKey::CheckIntervalHours,
@@ -278,6 +323,10 @@ fn build_updates_fields(
             value: FieldValue::Number(check_interval),
             category: SettingsCategory::Updates,
             has_override: o2,
+            inherited_display: inherited_if(
+                o2,
+                FieldValue::Number(global.updates.check_interval_hours),
+            ),
         },
         SettingField {
             key: FieldKey::NotifyInCli,
@@ -286,6 +335,7 @@ fn build_updates_fields(
             value: FieldValue::Bool(notify_in_cli),
             category: SettingsCategory::Updates,
             has_override: o3,
+            inherited_display: inherited_if(o3, FieldValue::Bool(global.updates.notify_in_cli)),
         },
     ]
 }
@@ -326,6 +376,10 @@ fn build_worktree_fields(
             value: FieldValue::Text(path_template),
             category: SettingsCategory::Worktree,
             has_override: o1,
+            inherited_display: inherited_if(
+                o1,
+                FieldValue::Text(global.worktree.path_template.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::BareRepoPathTemplate,
@@ -334,6 +388,10 @@ fn build_worktree_fields(
             value: FieldValue::Text(bare_repo_template),
             category: SettingsCategory::Worktree,
             has_override: o2,
+            inherited_display: inherited_if(
+                o2,
+                FieldValue::Text(global.worktree.bare_repo_path_template.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::WorktreeAutoCleanup,
@@ -342,6 +400,7 @@ fn build_worktree_fields(
             value: FieldValue::Bool(auto_cleanup),
             category: SettingsCategory::Worktree,
             has_override: o3,
+            inherited_display: inherited_if(o3, FieldValue::Bool(global.worktree.auto_cleanup)),
         },
         SettingField {
             key: FieldKey::DeleteBranchOnCleanup,
@@ -350,6 +409,10 @@ fn build_worktree_fields(
             value: FieldValue::Bool(delete_branch_on_cleanup),
             category: SettingsCategory::Worktree,
             has_override: o4,
+            inherited_display: inherited_if(
+                o4,
+                FieldValue::Bool(global.worktree.delete_branch_on_cleanup),
+            ),
         },
     ]
 }
@@ -440,6 +503,18 @@ fn build_sandbox_fields(
         ContainerRuntimeName::AppleContainer => 1,
     };
 
+    let global_terminal_mode_selected = match global.sandbox.default_terminal_mode {
+        DefaultTerminalMode::Host => 0,
+        DefaultTerminalMode::Container => 1,
+    };
+    let terminal_mode_options = vec!["Host".into(), "Container".into()];
+
+    let global_container_runtime_selected = match global.sandbox.container_runtime {
+        ContainerRuntimeName::Docker => 0,
+        ContainerRuntimeName::AppleContainer => 1,
+    };
+    let container_runtime_options = vec!["Docker".into(), "Apple Container".into()];
+
     vec![
         SettingField {
             key: FieldKey::SandboxEnabledByDefault,
@@ -448,6 +523,10 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(enabled_by_default),
             category: SettingsCategory::Sandbox,
             has_override: o1,
+            inherited_display: inherited_if(
+                o1,
+                FieldValue::Bool(global.sandbox.enabled_by_default),
+            ),
         },
         SettingField {
             key: FieldKey::DefaultImage,
@@ -456,6 +535,10 @@ fn build_sandbox_fields(
             value: FieldValue::Text(default_image),
             category: SettingsCategory::Sandbox,
             has_override: o3,
+            inherited_display: inherited_if(
+                o3,
+                FieldValue::Text(global.sandbox.default_image.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::Environment,
@@ -464,6 +547,10 @@ fn build_sandbox_fields(
             value: FieldValue::List(environment),
             category: SettingsCategory::Sandbox,
             has_override: o4,
+            inherited_display: inherited_if(
+                o4,
+                FieldValue::List(global.sandbox.environment.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::SandboxAutoCleanup,
@@ -472,6 +559,7 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(auto_cleanup),
             category: SettingsCategory::Sandbox,
             has_override: o5,
+            inherited_display: inherited_if(o5, FieldValue::Bool(global.sandbox.auto_cleanup)),
         },
         SettingField {
             key: FieldKey::CpuLimit,
@@ -480,6 +568,10 @@ fn build_sandbox_fields(
             value: FieldValue::OptionalText(cpu_limit),
             category: SettingsCategory::Sandbox,
             has_override: o_cpu,
+            inherited_display: inherited_if(
+                o_cpu,
+                FieldValue::OptionalText(global.sandbox.cpu_limit.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::MemoryLimit,
@@ -488,6 +580,10 @@ fn build_sandbox_fields(
             value: FieldValue::OptionalText(memory_limit),
             category: SettingsCategory::Sandbox,
             has_override: o_mem,
+            inherited_display: inherited_if(
+                o_mem,
+                FieldValue::OptionalText(global.sandbox.memory_limit.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::DefaultTerminalMode,
@@ -495,10 +591,17 @@ fn build_sandbox_fields(
             description: "Default terminal for sandboxed sessions (toggle with 'c' key)",
             value: FieldValue::Select {
                 selected: terminal_mode_selected,
-                options: vec!["Host".into(), "Container".into()],
+                options: terminal_mode_options.clone(),
             },
             category: SettingsCategory::Sandbox,
             has_override: o6,
+            inherited_display: inherited_if(
+                o6,
+                FieldValue::Select {
+                    selected: global_terminal_mode_selected,
+                    options: terminal_mode_options,
+                },
+            ),
         },
         SettingField {
             key: FieldKey::ExtraVolumes,
@@ -507,6 +610,10 @@ fn build_sandbox_fields(
             value: FieldValue::List(extra_volumes),
             category: SettingsCategory::Sandbox,
             has_override: o_ev,
+            inherited_display: inherited_if(
+                o_ev,
+                FieldValue::List(global.sandbox.extra_volumes.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::PortMappings,
@@ -515,6 +622,10 @@ fn build_sandbox_fields(
             value: FieldValue::List(port_mappings),
             category: SettingsCategory::Sandbox,
             has_override: o_pm,
+            inherited_display: inherited_if(
+                o_pm,
+                FieldValue::List(global.sandbox.port_mappings.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::VolumeIgnores,
@@ -523,6 +634,10 @@ fn build_sandbox_fields(
             value: FieldValue::List(volume_ignores),
             category: SettingsCategory::Sandbox,
             has_override: o7,
+            inherited_display: inherited_if(
+                o7,
+                FieldValue::List(global.sandbox.volume_ignores.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::MountSsh,
@@ -531,6 +646,7 @@ fn build_sandbox_fields(
             value: FieldValue::Bool(mount_ssh),
             category: SettingsCategory::Sandbox,
             has_override: o8,
+            inherited_display: inherited_if(o8, FieldValue::Bool(global.sandbox.mount_ssh)),
         },
         SettingField {
             key: FieldKey::CustomInstruction,
@@ -539,6 +655,10 @@ fn build_sandbox_fields(
             value: FieldValue::OptionalText(custom_instruction),
             category: SettingsCategory::Sandbox,
             has_override: o_ci,
+            inherited_display: inherited_if(
+                o_ci,
+                FieldValue::OptionalText(global.sandbox.custom_instruction.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::ContainerRuntime,
@@ -546,10 +666,17 @@ fn build_sandbox_fields(
             description: "Container runtime for sandboxing (Docker or Apple Container on macOS)",
             value: FieldValue::Select {
                 selected: container_runtime_selected,
-                options: vec!["Docker".into(), "Apple Container".into()],
+                options: container_runtime_options.clone(),
             },
             category: SettingsCategory::Sandbox,
             has_override: o_cr,
+            inherited_display: inherited_if(
+                o_cr,
+                FieldValue::Select {
+                    selected: global_container_runtime_selected,
+                    options: container_runtime_options,
+                },
+            ),
         },
     ]
 }
@@ -582,6 +709,18 @@ fn build_tmux_fields(
         TmuxMouseMode::Disabled => 2,
     };
 
+    let global_status_bar_selected = match global.tmux.status_bar {
+        TmuxStatusBarMode::Auto => 0,
+        TmuxStatusBarMode::Enabled => 1,
+        TmuxStatusBarMode::Disabled => 2,
+    };
+    let global_mouse_selected = match global.tmux.mouse {
+        TmuxMouseMode::Auto => 0,
+        TmuxMouseMode::Enabled => 1,
+        TmuxMouseMode::Disabled => 2,
+    };
+    let tmux_options = vec!["Auto".into(), "Enabled".into(), "Disabled".into()];
+
     vec![
         SettingField {
             key: FieldKey::StatusBar,
@@ -589,10 +728,17 @@ fn build_tmux_fields(
             description: "Control tmux status bar styling (Auto respects your tmux config)",
             value: FieldValue::Select {
                 selected: status_bar_selected,
-                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+                options: tmux_options.clone(),
             },
             category: SettingsCategory::Tmux,
             has_override: status_bar_override,
+            inherited_display: inherited_if(
+                status_bar_override,
+                FieldValue::Select {
+                    selected: global_status_bar_selected,
+                    options: tmux_options.clone(),
+                },
+            ),
         },
         SettingField {
             key: FieldKey::Mouse,
@@ -600,10 +746,17 @@ fn build_tmux_fields(
             description: "Control mouse scrolling (Auto respects your tmux config)",
             value: FieldValue::Select {
                 selected: mouse_selected,
-                options: vec!["Auto".into(), "Enabled".into(), "Disabled".into()],
+                options: tmux_options.clone(),
             },
             category: SettingsCategory::Tmux,
             has_override: mouse_override,
+            inherited_display: inherited_if(
+                mouse_override,
+                FieldValue::Select {
+                    selected: global_mouse_selected,
+                    options: tmux_options,
+                },
+            ),
         },
     ]
 }
@@ -633,14 +786,27 @@ fn build_session_fields(
         session.and_then(|s| s.yolo_mode_default),
     );
 
+    let global_tool_selected =
+        crate::agents::settings_index_from_name(global.session.default_tool.as_deref());
+
     vec![
         SettingField {
             key: FieldKey::DefaultTool,
             label: "Default Tool",
             description: "Default coding tool for new sessions",
-            value: FieldValue::Select { selected, options },
+            value: FieldValue::Select {
+                selected,
+                options: options.clone(),
+            },
             category: SettingsCategory::Session,
             has_override,
+            inherited_display: inherited_if(
+                has_override,
+                FieldValue::Select {
+                    selected: global_tool_selected,
+                    options,
+                },
+            ),
         },
         SettingField {
             key: FieldKey::YoloModeDefault,
@@ -649,6 +815,10 @@ fn build_session_fields(
             value: FieldValue::Bool(yolo_mode_default),
             category: SettingsCategory::Session,
             has_override: yolo_override,
+            inherited_display: inherited_if(
+                yolo_override,
+                FieldValue::Bool(global.session.yolo_mode_default),
+            ),
         },
     ]
 }
@@ -704,6 +874,12 @@ fn build_sound_fields(
         snd.map(|s| s.on_error.is_some()).unwrap_or(false),
     );
 
+    let global_mode_selected = match &global.sound.mode {
+        SoundMode::Random => 0,
+        SoundMode::Specific(_) => 1,
+    };
+    let sound_mode_options = vec!["Random".into(), "Specific".into()];
+
     vec![
         SettingField {
             key: FieldKey::SoundEnabled,
@@ -712,6 +888,7 @@ fn build_sound_fields(
             value: FieldValue::Bool(enabled),
             category: SettingsCategory::Sound,
             has_override: o1,
+            inherited_display: inherited_if(o1, FieldValue::Bool(global.sound.enabled)),
         },
         SettingField {
             key: FieldKey::SoundMode,
@@ -719,10 +896,17 @@ fn build_sound_fields(
             description: "How to select sounds (Random or Specific file name)",
             value: FieldValue::Select {
                 selected: mode_selected,
-                options: vec!["Random".into(), "Specific".into()],
+                options: sound_mode_options.clone(),
             },
             category: SettingsCategory::Sound,
             has_override: o2,
+            inherited_display: inherited_if(
+                o2,
+                FieldValue::Select {
+                    selected: global_mode_selected,
+                    options: sound_mode_options,
+                },
+            ),
         },
         SettingField {
             key: FieldKey::SoundOnStart,
@@ -731,6 +915,10 @@ fn build_sound_fields(
             value: FieldValue::OptionalText(on_start),
             category: SettingsCategory::Sound,
             has_override: o3,
+            inherited_display: inherited_if(
+                o3,
+                FieldValue::OptionalText(global.sound.on_start.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::SoundOnRunning,
@@ -739,6 +927,10 @@ fn build_sound_fields(
             value: FieldValue::OptionalText(on_running),
             category: SettingsCategory::Sound,
             has_override: o4,
+            inherited_display: inherited_if(
+                o4,
+                FieldValue::OptionalText(global.sound.on_running.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::SoundOnWaiting,
@@ -747,6 +939,10 @@ fn build_sound_fields(
             value: FieldValue::OptionalText(on_waiting),
             category: SettingsCategory::Sound,
             has_override: o5,
+            inherited_display: inherited_if(
+                o5,
+                FieldValue::OptionalText(global.sound.on_waiting.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::SoundOnIdle,
@@ -755,6 +951,10 @@ fn build_sound_fields(
             value: FieldValue::OptionalText(on_idle),
             category: SettingsCategory::Sound,
             has_override: o6,
+            inherited_display: inherited_if(
+                o6,
+                FieldValue::OptionalText(global.sound.on_idle.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::SoundOnError,
@@ -763,6 +963,10 @@ fn build_sound_fields(
             value: FieldValue::OptionalText(on_error),
             category: SettingsCategory::Sound,
             has_override: o7,
+            inherited_display: inherited_if(
+                o7,
+                FieldValue::OptionalText(global.sound.on_error.clone()),
+            ),
         },
     ]
 }
@@ -793,6 +997,10 @@ fn build_hooks_fields(
             value: FieldValue::List(on_create),
             category: SettingsCategory::Hooks,
             has_override: o1,
+            inherited_display: inherited_if(
+                o1,
+                FieldValue::List(global.hooks.on_create.clone()),
+            ),
         },
         SettingField {
             key: FieldKey::HookOnLaunch,
@@ -801,6 +1009,10 @@ fn build_hooks_fields(
             value: FieldValue::List(on_launch),
             category: SettingsCategory::Hooks,
             has_override: o2,
+            inherited_display: inherited_if(
+                o2,
+                FieldValue::List(global.hooks.on_launch.clone()),
+            ),
         },
     ]
 }
