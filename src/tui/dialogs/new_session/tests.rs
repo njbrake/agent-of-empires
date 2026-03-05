@@ -831,6 +831,7 @@ fn test_profile_override_sets_default_tool() {
         session: Some(SessionConfigOverride {
             default_tool: Some("opencode".to_string()),
             yolo_mode_default: None,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -858,6 +859,7 @@ fn test_profile_override_beats_global_default_tool() {
         session: Some(SessionConfigOverride {
             default_tool: Some("opencode".to_string()),
             yolo_mode_default: None,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -1081,7 +1083,7 @@ fn test_enter_on_sandbox_submits() {
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
-    dialog.focused_field = 5; // sandbox field
+    dialog.focused_field = 6; // sandbox field
 
     let result = dialog.handle_key(key(KeyCode::Enter));
     // Enter should submit, not enter config mode
@@ -1094,7 +1096,7 @@ fn test_ctrl_p_on_disabled_sandbox_does_not_open_config() {
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = false;
-    dialog.focused_field = 5; // sandbox field
+    dialog.focused_field = 6; // sandbox field
 
     dialog.handle_key(ctrl_key(KeyCode::Char('p')));
     assert!(!dialog.sandbox_config_mode);

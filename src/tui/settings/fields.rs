@@ -71,6 +71,8 @@ pub enum FieldKey {
     Mouse,
     // Session
     DefaultTool,
+    AgentExtraArgs,
+    AgentCommandOverride,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -162,6 +164,17 @@ fn set_or_clear_override<T, S, F>(
         let s = section.get_or_insert_with(S::default);
         set_field(s, Some(new_value));
     }
+}
+
+/// Parse a list of "key=value" strings into a HashMap.
+fn parse_key_value_list(items: &[String]) -> std::collections::HashMap<String, String> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let (k, v) = item.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect()
 }
 
 /// Value types for settings fields
@@ -786,8 +799,59 @@ fn build_session_fields(
         session.and_then(|s| s.yolo_mode_default),
     );
 
+    // Agent extra args: HashMap -> Vec<String> of "key=value" items for List field
+    let (extra_args_map, extra_args_override) = resolve_value(
+        scope,
+        global.session.agent_extra_args.clone(),
+        session.and_then(|s| s.agent_extra_args.clone()),
+    );
+    let extra_args_list: Vec<String> = {
+        let mut items: Vec<_> = extra_args_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    // Agent command override: HashMap -> Vec<String> of "key=value" items
+    let (cmd_override_map, cmd_override_override) = resolve_value(
+        scope,
+        global.session.agent_command_override.clone(),
+        session.and_then(|s| s.agent_command_override.clone()),
+    );
+    let cmd_override_list: Vec<String> = {
+        let mut items: Vec<_> = cmd_override_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
     let global_tool_selected =
         crate::agents::settings_index_from_name(global.session.default_tool.as_deref());
+
+    let global_extra_args_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_extra_args
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_cmd_override_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_command_override
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
 
     vec![
         SettingField {
@@ -818,6 +882,30 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 yolo_override,
                 FieldValue::Bool(global.session.yolo_mode_default),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentExtraArgs,
+            label: "Agent Extra Args",
+            description: "Per-agent extra arguments (agent=args, e.g. opencode=--port 8080)",
+            value: FieldValue::List(extra_args_list),
+            category: SettingsCategory::Session,
+            has_override: extra_args_override,
+            inherited_display: inherited_if(
+                extra_args_override,
+                FieldValue::List(global_extra_args_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentCommandOverride,
+            label: "Agent Command Override",
+            description: "Per-agent command override replacing the binary (agent=command)",
+            value: FieldValue::List(cmd_override_list),
+            category: SettingsCategory::Session,
+            has_override: cmd_override_override,
+            inherited_display: inherited_if(
+                cmd_override_override,
+                FieldValue::List(global_cmd_override_list),
             ),
         },
     ]
@@ -1107,6 +1195,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.session.default_tool =
                 crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
         }
+        (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
+            config.session.agent_extra_args = parse_key_value_list(v);
+        }
+        (FieldKey::AgentCommandOverride, FieldValue::List(v)) => {
+            config.session.agent_command_override = parse_key_value_list(v);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
         (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
@@ -1385,6 +1479,34 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &mut config.session,
                 |s, val| s.yolo_mode_default = val,
             );
+        }
+        (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            if map == global.session.agent_extra_args {
+                if let Some(ref mut s) = config.session {
+                    s.agent_extra_args = None;
+                }
+            } else {
+                use crate::session::SessionConfigOverride;
+                let s = config
+                    .session
+                    .get_or_insert_with(SessionConfigOverride::default);
+                s.agent_extra_args = Some(map);
+            }
+        }
+        (FieldKey::AgentCommandOverride, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            if map == global.session.agent_command_override {
+                if let Some(ref mut s) = config.session {
+                    s.agent_command_override = None;
+                }
+            } else {
+                use crate::session::SessionConfigOverride;
+                let s = config
+                    .session
+                    .get_or_insert_with(SessionConfigOverride::default);
+                s.agent_command_override = Some(map);
+            }
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {

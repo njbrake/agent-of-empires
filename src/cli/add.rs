@@ -57,6 +57,14 @@ pub struct AddArgs {
     /// Automatically trust repository hooks without prompting
     #[arg(long = "trust-hooks")]
     trust_hooks: bool,
+
+    /// Extra arguments to append after the agent binary
+    #[arg(long)]
+    extra_args: Option<String>,
+
+    /// Override the agent binary command
+    #[arg(long)]
+    cmd_override: Option<String>,
 }
 
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
@@ -182,6 +190,14 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     instance.yolo_mode = args.yolo;
+
+    if let Some(ref extra) = args.extra_args {
+        instance.extra_args = extra.clone();
+    }
+
+    if let Some(ref cmd) = args.cmd_override {
+        instance.command = cmd.clone();
+    }
 
     // Handle sandbox setup
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();

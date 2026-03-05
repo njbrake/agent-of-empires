@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 
 use super::config::{
@@ -149,6 +150,12 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yolo_mode_default: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_extra_args: Option<HashMap<String, String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_command_override: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -301,6 +308,12 @@ pub fn apply_session_overrides(
     }
     if let Some(yolo_mode_default) = source.yolo_mode_default {
         target.yolo_mode_default = yolo_mode_default;
+    }
+    if let Some(ref args) = source.agent_extra_args {
+        target.agent_extra_args = args.clone();
+    }
+    if let Some(ref overrides) = source.agent_command_override {
+        target.agent_command_override = overrides.clone();
     }
 }
 

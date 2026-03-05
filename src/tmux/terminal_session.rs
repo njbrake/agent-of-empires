@@ -62,6 +62,11 @@ impl TerminalSession {
 
         refresh_session_cache();
 
+        Command::new("tmux")
+            .args(["set-option", "-t", &self.name, "remain-on-exit", "on"])
+            .output()
+            .ok();
+
         Ok(())
     }
 
@@ -203,6 +208,11 @@ impl ContainerTerminalSession {
         }
 
         refresh_session_cache();
+
+        Command::new("tmux")
+            .args(["set-option", "-t", &self.name, "remain-on-exit", "on"])
+            .output()
+            .ok();
 
         Ok(())
     }

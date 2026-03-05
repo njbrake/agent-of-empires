@@ -587,6 +587,16 @@ impl SettingsView {
                     s.yolo_mode_default = None;
                 }
             }
+            FieldKey::AgentExtraArgs => {
+                if let Some(ref mut s) = config.session {
+                    s.agent_extra_args = None;
+                }
+            }
+            FieldKey::AgentCommandOverride => {
+                if let Some(ref mut s) = config.session {
+                    s.agent_command_override = None;
+                }
+            }
             FieldKey::DefaultTerminalMode => {
                 if let Some(ref mut s) = config.sandbox {
                     s.default_terminal_mode = None;

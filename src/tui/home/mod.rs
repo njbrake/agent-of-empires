@@ -85,6 +85,7 @@ pub(super) const ICON_WAITING: &str = "◐";
 pub(super) const ICON_IDLE: &str = "○";
 pub(super) const ICON_ERROR: &str = "✕";
 pub(super) const ICON_STARTING: &str = "◌";
+pub(super) const ICON_UNKNOWN: &str = "?";
 pub(super) const ICON_STOPPED: &str = "■";
 pub(super) const ICON_DELETING: &str = "✗";
 pub(super) const ICON_COLLAPSED: &str = "▶";

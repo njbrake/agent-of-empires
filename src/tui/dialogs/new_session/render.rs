@@ -21,6 +21,12 @@ impl NewSessionDialog {
             return;
         }
 
+        // If in tool config mode, render that overlay instead
+        if self.tool_config_mode {
+            self.render_tool_config(frame, area, theme);
+            return;
+        }
+
         let has_profile_selection = self.has_profile_selection();
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
@@ -166,15 +172,45 @@ impl NewSessionDialog {
                 tool_spans.push(Span::styled(*tool_name, style));
             }
 
+            // Show Ctrl+P hint and summary of tool config
+            let has_config =
+                !self.extra_args.value().is_empty() || !self.command_override.value().is_empty();
+            if has_config {
+                tool_spans.push(Span::styled(
+                    "  (configured)",
+                    Style::default().fg(theme.dimmed),
+                ));
+            }
+            if is_tool_focused {
+                tool_spans.push(Span::styled(
+                    if has_config {
+                        "  Ctrl+P: edit"
+                    } else {
+                        "  (Ctrl+P to configure)"
+                    },
+                    Style::default().fg(theme.dimmed),
+                ));
+            }
+
             frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
         } else {
             let tool_style = Style::default().fg(theme.text);
-            let tool_line = Line::from(vec![
+            let mut tool_spans = vec![
                 Span::styled("Tool:", tool_style),
                 Span::raw(" "),
                 Span::styled(self.available_tools[0], Style::default().fg(theme.accent)),
-            ]);
-            frame.render_widget(Paragraph::new(tool_line), chunks[ci]);
+            ];
+
+            let has_config =
+                !self.extra_args.value().is_empty() || !self.command_override.value().is_empty();
+            if has_config {
+                tool_spans.push(Span::styled(
+                    "  (configured)",
+                    Style::default().fg(theme.dimmed),
+                ));
+            }
+
+            frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
         }
         ci += 1;
 
@@ -381,6 +417,10 @@ impl NewSessionDialog {
                 }
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" groups  "));
+            }
+            if self.focused_field == tool_field {
+                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::raw(" configure  "));
             }
             if self.focused_field == worktree_field {
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
@@ -591,6 +631,103 @@ impl NewSessionDialog {
             Span::raw(" back"),
         ];
         frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[ci]);
+
+        if self.show_help {
+            self.render_help_overlay(frame, area, theme);
+        }
+    }
+
+    fn render_tool_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let dialog_width: u16 = 72;
+
+        let constraints = vec![
+            Constraint::Length(2), // Command Override
+            Constraint::Length(2), // Extra Args
+            Constraint::Min(1),    // Hints
+        ];
+
+        let fields_height: u16 = constraints
+            .iter()
+            .map(|c| match c {
+                Constraint::Length(n) => *n,
+                Constraint::Min(n) => *n,
+                _ => 0,
+            })
+            .sum();
+        let dialog_height = fields_height + 4;
+
+        let selected_tool = self
+            .available_tools
+            .get(self.tool_index)
+            .copied()
+            .unwrap_or("claude");
+        let title = format!(" Tool Configuration: {} ", selected_tool);
+
+        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(title)
+            .title_style(Style::default().fg(theme.title).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints(constraints)
+            .split(inner);
+
+        // Command Override
+        let cmd_placeholder = if self.tool_config_focused_field == 0 {
+            Some("(replaces default binary)")
+        } else if self.command_override.value().is_empty() {
+            Some("(default)")
+        } else {
+            None
+        };
+        render_text_field(
+            frame,
+            chunks[0],
+            "Command:",
+            &self.command_override,
+            self.tool_config_focused_field == 0,
+            cmd_placeholder,
+            theme,
+        );
+
+        // Extra Args
+        let args_placeholder = if self.tool_config_focused_field == 1 {
+            Some("(e.g. --port 8080)")
+        } else if self.extra_args.value().is_empty() {
+            Some("(none)")
+        } else {
+            None
+        };
+        render_text_field(
+            frame,
+            chunks[1],
+            "Extra Args:",
+            &self.extra_args,
+            self.tool_config_focused_field == 1,
+            args_placeholder,
+            theme,
+        );
+
+        // Hints
+        let hint_spans = vec![
+            Span::styled("Tab", Style::default().fg(theme.hint)),
+            Span::raw(" next  "),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
+            Span::raw(" done  "),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::raw(" back"),
+        ];
+        frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[2]);
 
         if self.show_help {
             self.render_help_overlay(frame, area, theme);
