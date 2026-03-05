@@ -21,6 +21,8 @@ pub(crate) struct RuntimeBase {
     pub remove_subcommand: &'static str,
     /// Whether this runtime supports the `:ro` read-only volume flag
     pub supports_read_only_volumes: bool,
+    /// Whether this runtime supports `-v` on remove to clean up anonymous volumes
+    pub supports_remove_volumes: bool,
 }
 
 impl RuntimeBase {
@@ -31,6 +33,7 @@ impl RuntimeBase {
         pull_prefix: &["pull"],
         remove_subcommand: "rm",
         supports_read_only_volumes: true,
+        supports_remove_volumes: true,
     };
 
     pub const APPLE_CONTAINER: Self = Self {
@@ -40,6 +43,7 @@ impl RuntimeBase {
         pull_prefix: &["image", "pull"],
         remove_subcommand: "delete",
         supports_read_only_volumes: false,
+        supports_remove_volumes: false,
     };
 
     pub fn command(&self) -> Command {
@@ -238,9 +242,11 @@ impl RuntimeBase {
         if force {
             args.push("-f".to_string());
         }
-        // Remove anonymous volumes with the container to prevent orphaned volume buildup.
-        // This does NOT affect named volumes (like auth volumes).
-        args.push("-v".to_string());
+        if self.supports_remove_volumes {
+            // Remove anonymous volumes with the container to prevent orphaned volume buildup.
+            // This does NOT affect named volumes (like auth volumes).
+            args.push("-v".to_string());
+        }
         args.push(name.to_string());
 
         let output = self.command().args(&args).output()?;

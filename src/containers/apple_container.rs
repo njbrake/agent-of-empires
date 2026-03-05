@@ -99,29 +99,16 @@ impl ContainerRuntimeInterface for AppleContainer {
     }
 
     fn remove(&self, name: &str, force: bool) -> Result<()> {
-        let mut args = vec!["delete".to_string()];
-        if force {
-            args.push("-f".to_string());
-        }
-        // NOTE: unlike in docker, apple container doesn't support `-v`
-        // to automatically remove anonymous volumes
-        args.push(name.to_string());
-
-        let output = self.base.command().args(&args).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("No such container") {
-                return Err(DockerError::ContainerNotFound(name.to_string()));
-            }
-            return Err(DockerError::RemoveFailed(stderr.to_string()));
-        }
-
-        Ok(())
+        self.base.remove(name, force)
     }
 
     fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String {
-        let cmd_str = format!(r#""{}""#, cmd);
+        // Apple Container has a very limited initial PATH, so we wrap the
+        // command in `sh -c` to get a proper shell environment.
+        // Use single quotes with escaped embedded quotes to avoid issues
+        // with double-quote metacharacters ($, `, \, !) in the command.
+        let escaped = cmd.replace('\'', "'\\''");
+        let cmd_str = format!("'{}'", escaped);
 
         if let Some(opt_str) = options {
             [

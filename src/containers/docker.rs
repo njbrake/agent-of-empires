@@ -102,6 +102,8 @@ impl ContainerRuntimeInterface for Docker {
     }
 
     fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String {
+        // Docker containers inherit a full PATH, so the command can be
+        // appended directly without wrapping in `sh -c` (unlike Apple Container).
         self.base.exec_command(name, options, cmd)
     }
 
