@@ -45,6 +45,11 @@ impl SettingsView {
         if let Some(ref dialog) = self.custom_instruction_dialog {
             dialog.render(frame, area, theme);
         }
+
+        // Render help overlay on top
+        if self.show_help {
+            self.render_help_overlay(frame, area, theme);
+        }
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -70,6 +75,13 @@ impl SettingsView {
         let global_style = scope_style(SettingsScope::Global);
         let profile_style = scope_style(SettingsScope::Profile);
 
+        let profile_label =
+            if self.scope == SettingsScope::Profile && self.available_profiles.len() > 1 {
+                format!("Profile: {} {}/{}", self.profile, "{", "}")
+            } else {
+                format!("Profile: {}", self.profile)
+            };
+
         let mut spans = vec![
             Span::styled("  Settings", Style::default().fg(theme.text)),
             Span::styled(modified, Style::default().fg(theme.error)),
@@ -79,11 +91,10 @@ impl SettingsView {
             Span::styled(" ]", Style::default().fg(theme.border)),
             Span::raw("  "),
             Span::styled("[ ", Style::default().fg(theme.border)),
-            Span::styled(format!("Profile: {}", self.profile), profile_style),
+            Span::styled(profile_label, profile_style),
             Span::styled(" ]", Style::default().fg(theme.border)),
         ];
 
-        // Show Repo tab when a project path is available
         if self.project_path.is_some() {
             let repo_style = scope_style(SettingsScope::Repo);
             spans.push(Span::raw("  "));
@@ -342,9 +353,15 @@ impl SettingsView {
             Style::default().fg(theme.text)
         };
 
-        // Show override indicator for profile scope
-        let override_indicator = if field.has_override && self.scope == SettingsScope::Profile {
-            Span::styled(" (override)", Style::default().fg(theme.accent))
+        let override_indicator = if field.has_override && self.scope != SettingsScope::Global {
+            if let Some(ref inherited) = field.inherited_display {
+                Span::styled(
+                    format!(" (override, inherits: {})", inherited),
+                    Style::default().fg(theme.accent),
+                )
+            } else {
+                Span::styled(" (override)", Style::default().fg(theme.accent))
+            }
         } else {
             Span::raw("")
         };
@@ -717,20 +734,192 @@ impl SettingsView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let help_text = if self.custom_instruction_dialog.is_some() {
-            "Tab: switch focus | Enter: edit/confirm | Esc: cancel"
+        let key_style = Style::default().fg(theme.accent);
+        let desc_style = Style::default().fg(theme.dimmed);
+
+        let spans: Vec<Span> = if self.custom_instruction_dialog.is_some() {
+            vec![
+                Span::styled("Tab", key_style),
+                Span::styled(": focus  ", desc_style),
+                Span::styled("Enter", key_style),
+                Span::styled(": confirm  ", desc_style),
+                Span::styled("Esc", key_style),
+                Span::styled(": cancel", desc_style),
+            ]
         } else if self.editing_input.is_some() {
-            "Enter: confirm | Esc: cancel"
+            vec![
+                Span::styled("Enter", key_style),
+                Span::styled(": confirm  ", desc_style),
+                Span::styled("Esc", key_style),
+                Span::styled(": cancel", desc_style),
+            ]
         } else if self.list_edit_state.is_some() {
-            "a: add | d: delete | Enter: edit | Esc: close list"
+            vec![
+                Span::styled("a", key_style),
+                Span::styled(": add  ", desc_style),
+                Span::styled("d", key_style),
+                Span::styled(": delete  ", desc_style),
+                Span::styled("Enter", key_style),
+                Span::styled(": edit  ", desc_style),
+                Span::styled("Esc", key_style),
+                Span::styled(": close list", desc_style),
+            ]
         } else {
-            "Tab: switch scope | Arrow keys: navigate | Enter: edit | Space: toggle | Ctrl+s: save | Esc: close"
+            let mut s: Vec<Span> = Vec::new();
+
+            match self.focus {
+                SettingsFocus::Categories => {
+                    s.extend([
+                        Span::styled("j/k", key_style),
+                        Span::styled(": nav  ", desc_style),
+                        Span::styled("Enter/Tab", key_style),
+                        Span::styled(": fields  ", desc_style),
+                    ]);
+                }
+                SettingsFocus::Fields => {
+                    s.extend([
+                        Span::styled("j/k", key_style),
+                        Span::styled(": nav  ", desc_style),
+                        Span::styled("Enter", key_style),
+                        Span::styled(": edit  ", desc_style),
+                        Span::styled("Space", key_style),
+                        Span::styled(": toggle  ", desc_style),
+                    ]);
+                    // Show reset hint when on an override field in Profile/Repo scope
+                    if self.scope != SettingsScope::Global
+                        && !self.fields.is_empty()
+                        && self.fields[self.selected_field].has_override
+                    {
+                        s.extend([
+                            Span::styled("r", key_style),
+                            Span::styled(": reset  ", desc_style),
+                        ]);
+                    }
+                }
+            }
+
+            s.extend([
+                Span::styled("[]", key_style),
+                Span::styled(": scope  ", desc_style),
+            ]);
+
+            if self.scope == SettingsScope::Profile && self.available_profiles.len() > 1 {
+                s.extend([
+                    Span::styled("{}", key_style),
+                    Span::styled(": profile  ", desc_style),
+                ]);
+            }
+
+            s.extend([
+                Span::styled("Ctrl+s", key_style),
+                Span::styled(": save  ", desc_style),
+                Span::styled("?", key_style),
+                Span::styled(": help  ", desc_style),
+                Span::styled("q", key_style),
+                Span::styled(": close", desc_style),
+            ]);
+
+            s
         };
 
-        let help = Paragraph::new(help_text)
-            .style(Style::default().fg(theme.dimmed))
-            .alignment(ratatui::layout::Alignment::Center);
+        let help = Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Center);
 
         frame.render_widget(help, inner);
+    }
+
+    fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let dialog_width = 58u16;
+        let dialog_height = 28u16;
+
+        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+
+        let dialog_area = Rect {
+            x,
+            y,
+            width: dialog_width.min(area.width),
+            height: dialog_height.min(area.height),
+        };
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .style(Style::default().bg(theme.background))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Settings Help ")
+            .title_style(
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let shortcuts: Vec<(&str, Vec<(&str, &str)>)> = vec![
+            (
+                "Navigation",
+                vec![
+                    ("j/k, Up/Dn", "Move up / down"),
+                    ("Tab, l/h", "Switch to fields / categories"),
+                    ("Enter", "Edit field / expand list / select"),
+                    ("Esc", "Back one level (fields -> categories -> close)"),
+                ],
+            ),
+            (
+                "Editing",
+                vec![
+                    ("Space", "Toggle boolean field"),
+                    ("Enter/Esc", "Confirm / cancel text edit"),
+                    ("r", "Reset field to inherited value (Profile/Repo)"),
+                ],
+            ),
+            (
+                "Scope & Profile",
+                vec![
+                    ("[ ]", "Cycle scope (Global / Profile / Repo)"),
+                    ("{ }", "Cycle profile (in Profile scope)"),
+                ],
+            ),
+            (
+                "List Editing",
+                vec![
+                    ("a", "Add item"),
+                    ("d", "Delete item"),
+                    ("Enter", "Edit item"),
+                    ("Esc", "Close list"),
+                ],
+            ),
+            (
+                "Other",
+                vec![
+                    ("Ctrl+s", "Save settings"),
+                    ("?", "Toggle this help"),
+                    ("q", "Close settings"),
+                ],
+            ),
+        ];
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        for (section, keys) in shortcuts {
+            lines.push(Line::from(Span::styled(
+                section,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for (key, desc) in keys {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:14}", key), Style::default().fg(theme.waiting)),
+                    Span::styled(desc, Style::default().fg(theme.text)),
+                ]));
+            }
+            lines.push(Line::from(""));
+        }
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, inner);
     }
 }
