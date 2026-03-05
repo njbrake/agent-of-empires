@@ -10,6 +10,18 @@ pub mod template;
 use error::{GitError, Result};
 use template::{resolve_template, TemplateVars};
 
+/// Open a git repository at the given path without searching parent directories.
+/// Unlike `git2::Repository::discover`, this does not walk up the directory tree,
+/// preventing unrelated ancestor repos (e.g., a dotfile-managed home directory)
+/// from being found.
+pub(crate) fn open_repo_at(path: &Path) -> std::result::Result<git2::Repository, git2::Error> {
+    git2::Repository::open_ext(
+        path,
+        git2::RepositoryOpenFlags::NO_SEARCH,
+        std::iter::empty::<&OsStr>(),
+    )
+}
+
 pub struct WorktreeEntry {
     pub path: PathBuf,
     pub branch: Option<String>,
@@ -29,20 +41,20 @@ impl GitWorktree {
     }
 
     pub fn is_git_repo(path: &Path) -> bool {
-        git2::Repository::discover(path).is_ok()
+        open_repo_at(path).is_ok()
             || Self::find_main_repo_from_linked_worktree_gitfile(path).is_some()
     }
 
     /// Returns true if the repository is a bare repo (including linked worktree bare repo setups).
     /// This is useful for choosing appropriate worktree path templates.
     pub fn is_bare_repo(path: &Path) -> bool {
-        git2::Repository::discover(path)
+        open_repo_at(path)
             .map(|repo| repo.is_bare())
             .unwrap_or(false)
     }
 
     pub fn find_main_repo(path: &Path) -> Result<PathBuf> {
-        if let Ok(repo) = git2::Repository::discover(path) {
+        if let Ok(repo) = open_repo_at(path) {
             if let Some(main_repo) = Self::find_main_repo_from_worktree_gitdir(repo.path()) {
                 return Ok(main_repo);
             }
@@ -65,27 +77,22 @@ impl GitWorktree {
             return Ok(bare_repo_path);
         }
 
-        // Fallback for linked worktree layouts that git2::Repository::discover doesn't handle.
+        // Fallback for linked worktree layouts that open_repo_at doesn't handle.
         Self::find_main_repo_from_linked_worktree_gitfile(path).ok_or(GitError::NotAGitRepo)
     }
 
     /// For linked worktrees, `.git` is a file containing `gitdir: <path>`.
     /// If that path points to `.../worktrees/<name>`, return the repository root.
+    ///
+    /// Only checks the given path directly (does not walk up parent directories).
     fn find_main_repo_from_linked_worktree_gitfile(path: &Path) -> Option<PathBuf> {
-        let mut current = if path.is_file() { path.parent()? } else { path };
-        loop {
-            let git_entry = current.join(".git");
-            if git_entry.is_file() {
-                let gitdir = Self::read_gitdir_from_file(&git_entry)?;
-                return Self::find_main_repo_from_worktree_gitdir(&gitdir);
-            }
-
-            if git_entry.exists() {
-                return None;
-            }
-
-            current = current.parent()?;
+        let dir = if path.is_file() { path.parent()? } else { path };
+        let git_entry = dir.join(".git");
+        if git_entry.is_file() {
+            let gitdir = Self::read_gitdir_from_file(&git_entry)?;
+            return Self::find_main_repo_from_worktree_gitdir(&gitdir);
         }
+        None
     }
 
     fn read_gitdir_from_file(git_file: &Path) -> Option<PathBuf> {
@@ -128,7 +135,7 @@ impl GitWorktree {
         // previously used by a now-deleted worktree directory.
         self.prune_worktrees()?;
 
-        let repo = git2::Repository::discover(&self.repo_path)?;
+        let repo = open_repo_at(&self.repo_path)?;
 
         if create_branch {
             // Find a commit to branch from. Try HEAD first, fall back to any
@@ -280,7 +287,7 @@ impl GitWorktree {
     }
 
     pub fn list_worktrees(&self) -> Result<Vec<WorktreeEntry>> {
-        let repo = git2::Repository::discover(&self.repo_path)?;
+        let repo = open_repo_at(&self.repo_path)?;
         let worktrees = repo.worktrees()?;
 
         let mut entries = vec![];
@@ -385,7 +392,7 @@ impl GitWorktree {
     }
 
     pub fn get_current_branch(path: &Path) -> Result<String> {
-        let repo = git2::Repository::discover(path)?;
+        let repo = open_repo_at(path)?;
         let head = repo.head()?;
 
         if let Some(branch_name) = head.shorthand() {
@@ -670,11 +677,12 @@ mod tests {
             "Worktree path with .git -> <bare>/worktrees/<name> should be recognized"
         );
 
+        // Nested subdirectories should NOT be recognized as git repos (no walk-up)
         let nested_path = worktree_path.join("nested");
         std::fs::create_dir_all(&nested_path).unwrap();
         assert!(
-            GitWorktree::is_git_repo(&nested_path),
-            "Nested paths under worktree should also be recognized"
+            !GitWorktree::is_git_repo(&nested_path),
+            "Nested paths should not walk up to find ancestor repos"
         );
     }
 
@@ -684,19 +692,19 @@ mod tests {
             return;
         };
 
-        let nested_path = worktree_path.join("nested");
-        std::fs::create_dir_all(&nested_path).unwrap();
-
         let expected = dir.path().canonicalize().unwrap();
         assert_eq!(
             GitWorktree::find_main_repo(&worktree_path).unwrap(),
             expected,
             "find_main_repo should resolve linked worktree path back to bare repo root"
         );
-        assert_eq!(
-            GitWorktree::find_main_repo(&nested_path).unwrap(),
-            expected,
-            "find_main_repo should resolve nested linked worktree path back to bare repo root"
+
+        // Nested subdirectories should NOT resolve (no walk-up)
+        let nested_path = worktree_path.join("nested");
+        std::fs::create_dir_all(&nested_path).unwrap();
+        assert!(
+            GitWorktree::find_main_repo(&nested_path).is_err(),
+            "find_main_repo should not walk up from nested paths"
         );
     }
 
@@ -706,23 +714,23 @@ mod tests {
             return;
         };
 
-        let nested_path = worktree_path.join("nested");
-        std::fs::create_dir_all(&nested_path).unwrap();
-
         let expected = bare_repo_path.canonicalize().unwrap();
         assert_eq!(
             GitWorktree::find_main_repo(&worktree_path).unwrap(),
             expected,
             "find_main_repo should resolve sibling bare-repo worktree to bare repo path"
         );
-        assert_eq!(
-            GitWorktree::find_main_repo(&nested_path).unwrap(),
-            expected,
-            "find_main_repo should resolve nested sibling bare-repo worktree path to bare repo path"
-        );
         assert!(
             GitWorktree::new(expected).is_ok(),
             "resolved bare repo path should be accepted by GitWorktree::new"
+        );
+
+        // Nested subdirectories should NOT resolve (no walk-up)
+        let nested_path = worktree_path.join("nested");
+        std::fs::create_dir_all(&nested_path).unwrap();
+        assert!(
+            GitWorktree::find_main_repo(&nested_path).is_err(),
+            "find_main_repo should not walk up from nested paths"
         );
     }
 
@@ -1015,7 +1023,7 @@ mod tests {
 
         // Create a branch first
         {
-            let repo = git2::Repository::discover(&main_repo_path).unwrap();
+            let repo = open_repo_at(&main_repo_path).unwrap();
             let head = repo.head().unwrap();
             let commit = head.peel_to_commit().unwrap();
             repo.branch("existing-branch", &commit, false).unwrap();
@@ -1171,7 +1179,7 @@ mod tests {
 
         // Create a branch to check out
         {
-            let repo = git2::Repository::discover(&main_repo_path).unwrap();
+            let repo = open_repo_at(&main_repo_path).unwrap();
             // Find any existing commit to branch from
             let oid = repo
                 .reflog("HEAD")

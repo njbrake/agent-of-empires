@@ -408,54 +408,64 @@ pub(crate) fn compute_volume_paths(
     project_path: &Path,
     project_path_str: &str,
 ) -> Result<(String, String, String)> {
-    // Try to find the main repo if this is a git repository
-    if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
-        // Canonicalize paths for reliable comparison (handles symlinks like /tmp -> /private/tmp)
-        let main_repo_canonical = main_repo
-            .canonicalize()
-            .unwrap_or_else(|_| main_repo.clone());
-        let project_canonical = project_path
-            .canonicalize()
-            .unwrap_or_else(|_| project_path.to_path_buf());
+    // Only look for a main repo if the project path itself has a .git entry (file or
+    // directory). This prevents git2::Repository::discover from walking up the directory
+    // tree and finding an unrelated ancestor repo (e.g., a dotfile-managed home directory),
+    // which would cause aoe to mount that ancestor -- potentially the user's entire $HOME --
+    // into the container.
+    //
+    // Legitimate git repos have a .git directory; worktrees have a .git file containing a
+    // gitdir pointer. Both cases are covered by this check.
+    if project_path.join(".git").exists() {
+        if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
+            // Canonicalize paths for reliable comparison (handles symlinks like /tmp -> /private/tmp)
+            let main_repo_canonical = main_repo
+                .canonicalize()
+                .unwrap_or_else(|_| main_repo.clone());
+            let project_canonical = project_path
+                .canonicalize()
+                .unwrap_or_else(|_| project_path.to_path_buf());
 
-        // Check if project_path is a worktree (different from the main repo root).
-        // Mount enough of the filesystem so the worktree's relative gitdir reference
-        // resolves correctly inside the container.
-        if main_repo_canonical != project_canonical {
-            // For bare repos (or any layout where the worktree is inside the main
-            // repo), mounting the main repo is sufficient.
-            // For non-bare repos, worktrees are typically siblings (e.g.,
-            // ~/scm/repo and ~/scm/repo-worktrees/branch), so we mount their
-            // common parent directory instead.
-            let (mount_root, mount_name) = if project_canonical.starts_with(&main_repo_canonical) {
-                // Worktree is inside the main repo (bare repo layout)
-                let name = main_repo_canonical
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "workspace".to_string());
-                (main_repo_canonical.clone(), name)
-            } else {
-                // Worktree is a sibling -- mount the common parent
-                common_ancestor(&main_repo_canonical, &project_canonical)
-            };
+            // Check if project_path is a worktree (different from the main repo root).
+            // Mount enough of the filesystem so the worktree's relative gitdir reference
+            // resolves correctly inside the container.
+            if main_repo_canonical != project_canonical {
+                // For bare repos (or any layout where the worktree is inside the main
+                // repo), mounting the main repo is sufficient.
+                // For non-bare repos, worktrees are typically siblings (e.g.,
+                // ~/scm/repo and ~/scm/repo-worktrees/branch), so we mount their
+                // common parent directory instead.
+                let (mount_root, mount_name) =
+                    if project_canonical.starts_with(&main_repo_canonical) {
+                        // Worktree is inside the main repo (bare repo layout)
+                        let name = main_repo_canonical
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "workspace".to_string());
+                        (main_repo_canonical.clone(), name)
+                    } else {
+                        // Worktree is a sibling -- mount the common parent
+                        common_ancestor(&main_repo_canonical, &project_canonical)
+                    };
 
-            let container_base = format!("/workspace/{}", mount_name);
-            let relative_worktree = project_canonical
-                .strip_prefix(&mount_root)
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
+                let container_base = format!("/workspace/{}", mount_name);
+                let relative_worktree = project_canonical
+                    .strip_prefix(&mount_root)
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
 
-            let working_dir = if relative_worktree.as_os_str().is_empty() {
-                container_base.clone()
-            } else {
-                format!("{}/{}", container_base, relative_worktree.display())
-            };
+                let working_dir = if relative_worktree.as_os_str().is_empty() {
+                    container_base.clone()
+                } else {
+                    format!("{}/{}", container_base, relative_worktree.display())
+                };
 
-            return Ok((
-                mount_root.to_string_lossy().to_string(),
-                container_base,
-                working_dir,
-            ));
+                return Ok((
+                    mount_root.to_string_lossy().to_string(),
+                    container_base,
+                    working_dir,
+                ));
+            }
         }
     }
 
@@ -897,6 +907,37 @@ mod tests {
 
         // Working dir should be set
         assert!(!working_dir.is_empty());
+    }
+
+    #[test]
+    fn test_compute_volume_paths_subdir_of_ancestor_repo_not_mounted() {
+        // Simulates the scenario from GitHub issue #375: a user has a git repo at
+        // their home directory (e.g., for dotfile management) and sets their project
+        // path to a non-git subdirectory like ~/playground. Without the guard,
+        // git2::Repository::discover walks up and finds the ancestor repo, causing
+        // the entire parent (home directory) to be mounted into the container.
+        let dir = TempDir::new().unwrap();
+
+        // Create a git repo at the "parent" (simulating ~/  with dotfile management)
+        let _repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Create a subdirectory that is NOT its own git repo (simulating ~/playground)
+        let subdir = dir.path().join("playground");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let project_path_str = subdir.to_str().unwrap();
+
+        let (mount_path, container_path, working_dir) =
+            compute_volume_paths(&subdir, project_path_str).unwrap();
+
+        // The subdirectory should be mounted directly, NOT the parent repo
+        assert_eq!(
+            mount_path,
+            subdir.to_string_lossy().to_string(),
+            "Should mount the subdirectory itself, not the ancestor git repo"
+        );
+        assert_eq!(container_path, working_dir);
+        assert_eq!(container_path, "/workspace/playground");
     }
 
     // --- sandbox config tests ---
