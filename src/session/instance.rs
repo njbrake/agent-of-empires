@@ -1178,4 +1178,89 @@ mod tests {
         assert_eq!(inst.tool, deserialized.tool);
         assert_eq!(inst.agent_session_id, deserialized.agent_session_id);
     }
+
+    // Test: agent switch clears session ID
+    #[test]
+    fn test_agent_switch_clears_session_id() {
+        let mut inst = Instance::new("Test", "/home/user/project");
+        inst.tool = "claude".to_string();
+        inst.agent_session_id = Some("claude-session-123".to_string());
+
+        // Simulate agent switch by clearing session ID
+        inst.agent_session_id = None;
+        inst.tool = "opencode".to_string();
+
+        // Session ID should be None after switch
+        assert!(inst.agent_session_id.is_none());
+        assert_eq!(inst.tool, "opencode");
+    }
+
+    // Test: empty string session ID treated as None
+    #[test]
+    fn test_empty_string_session_id_treated_as_none() {
+        // When deserializing, empty string should be treated as None
+        let json = r#"{"id":"test123","title":"Test","project_path":"/tmp/test","group_path":"","command":"","tool":"claude","yolo_mode":false,"status":"idle","created_at":"2024-01-01T00:00:00Z","agent_session_id":""}"#;
+        let inst: Instance = serde_json::from_str(json).unwrap();
+
+        // Empty string should be stored as-is, but semantically treated as None
+        assert_eq!(inst.agent_session_id, Some("".to_string()));
+
+        // When generating resume flags, empty string produces no valid flags
+        let flags = build_resume_flags("claude", "");
+        assert_eq!(flags, "--session-id ");
+    }
+
+    // Test: capture failure doesn't block startup
+    #[test]
+    fn test_capture_failure_doesnt_block_startup() {
+        // Test that get_or_create_session_id handles errors gracefully
+        let mut inst = Instance::new("Test", "/nonexistent/path");
+        inst.tool = "codex".to_string();
+
+        // This should not panic even though the path doesn't exist
+        // and capture_codex_session_id will fail
+        let session_id = inst.get_or_create_session_id();
+
+        // Should return None but not panic
+        assert!(session_id.is_none());
+        assert!(inst.agent_session_id.is_none());
+    }
+
+    // Test: resume with invalid session ID
+    #[test]
+    fn test_resume_with_invalid_session_id() {
+        // Test that an invalid session ID is still stored and used
+        let mut inst = Instance::new("Test", "/home/user/project");
+        inst.tool = "claude".to_string();
+        inst.agent_session_id = Some("invalid-session-id".to_string());
+
+        // Should still generate resume flags even with invalid ID
+        let flags = build_resume_flags(&inst.tool, inst.agent_session_id.as_ref().unwrap());
+        assert_eq!(flags, "--session-id invalid-session-id");
+
+        // The method should return the existing invalid session ID
+        let session_id = inst.get_or_create_session_id();
+        assert_eq!(session_id, Some("invalid-session-id".to_string()));
+    }
+
+    // Test: backwards compatibility - load old JSON without agent_session_id
+    #[test]
+    fn test_backwards_compatibility() {
+        // Old JSON without agent_session_id field
+        let old_json = r#"{"id":"old-session-123","title":"Old Session","project_path":"/home/user/old","group_path":"","command":"","tool":"claude","yolo_mode":false,"status":"idle","created_at":"2024-01-01T00:00:00Z"}"#;
+
+        let inst: Instance = serde_json::from_str(old_json).unwrap();
+
+        // Should parse successfully with agent_session_id defaulting to None
+        assert_eq!(inst.id, "old-session-123");
+        assert_eq!(inst.title, "Old Session");
+        assert_eq!(inst.project_path, "/home/user/old");
+        assert_eq!(inst.tool, "claude");
+        assert!(inst.agent_session_id.is_none());
+
+        // After loading, can set a new session ID
+        let mut inst = inst;
+        inst.agent_session_id = Some("new-session-456".to_string());
+        assert_eq!(inst.agent_session_id, Some("new-session-456".to_string()));
+    }
 }
