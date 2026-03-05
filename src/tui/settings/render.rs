@@ -878,8 +878,8 @@ impl SettingsView {
             (
                 "Scope & Profile",
                 vec![
-                    ("[ ]", "Cycle scope (Global / Profile / Repo)"),
-                    ("{ }", "Cycle profile (in Profile scope)"),
+                    ("[ and ]", "Cycle scope (Global / Profile / Repo)"),
+                    ("{ and }", "Cycle profile (in Profile scope)"),
                 ],
             ),
             (
