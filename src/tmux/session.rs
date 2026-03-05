@@ -283,7 +283,8 @@ mod tests {
         }
 
         let session_name = format!("aoe_test_remain_{}", std::process::id());
-        // Create a session that runs a command which exits immediately
+        // Create a session with a brief sleep so we can set remain-on-exit before it
+        // exits (avoids race condition where command finishes before set-option runs)
         let output = Command::new("tmux")
             .args([
                 "new-session",
@@ -294,20 +295,20 @@ mod tests {
                 "80",
                 "-y",
                 "24",
-                "echo 'hello'; exit 0",
+                "sleep 1",
             ])
             .output()
             .expect("tmux new-session");
         assert!(output.status.success());
 
-        // Set remain-on-exit so the pane stays after exit
+        // Set remain-on-exit before the process exits
         Command::new("tmux")
             .args(["set-option", "-t", &session_name, "remain-on-exit", "on"])
             .output()
             .ok();
 
-        // Wait for command to finish
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Wait for the sleep command to finish
+        std::thread::sleep(std::time::Duration::from_millis(1500));
 
         // Session should still exist (remain-on-exit keeps it)
         let exists = Command::new("tmux")
