@@ -148,6 +148,9 @@ impl Instance {
     }
 
     fn has_custom_command(&self) -> bool {
+        if !self.extra_args.is_empty() {
+            return true;
+        }
         if self.command.is_empty() {
             return false;
         }

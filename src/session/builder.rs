@@ -64,6 +64,8 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         }
     }
 
+    let config = Config::load().unwrap_or_default();
+
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()
         .map(|p| p.to_string_lossy().to_string())
@@ -78,8 +80,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository");
         }
-
-        let config = Config::load()?;
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
@@ -179,7 +179,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
 
     // Apply agent_command_override and agent_extra_args from resolved config.
     // Per-session values from params take priority over config.
-    let config = Config::load().unwrap_or_default();
     if !params.command_override.is_empty() {
         instance.command = params.command_override;
     } else if let Some(cmd_override) = config.session.agent_command_override.get(&params.tool) {
@@ -207,9 +206,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             } else {
                 Some(params.extra_env.clone())
             },
-            custom_instruction: Config::load()
-                .ok()
-                .and_then(|c| c.sandbox.custom_instruction),
+            custom_instruction: config.sandbox.custom_instruction.clone(),
         });
     }
 

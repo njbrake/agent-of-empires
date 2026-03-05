@@ -275,6 +275,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_remain_on_exit_and_pane_dead() {
         if !tmux_available() {
             eprintln!("Skipping test: tmux not available");
@@ -333,6 +334,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_is_pane_dead_on_running_session() {
         if !tmux_available() {
             eprintln!("Skipping test: tmux not available");
