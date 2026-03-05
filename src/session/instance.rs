@@ -520,7 +520,7 @@ impl Instance {
     /// Get the container working directory for this instance.
     pub fn container_workdir(&self) -> String {
         container_config::compute_volume_paths(Path::new(&self.project_path), &self.project_path)
-            .map(|(_, _, wd)| wd)
+            .map(|(_, wd)| wd)
             .unwrap_or_else(|_| "/workspace".to_string())
     }
 
