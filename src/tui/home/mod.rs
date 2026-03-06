@@ -596,8 +596,8 @@ impl HomeView {
         self.available_tools.clone()
     }
 
-    /// Rebuild the profile picker dialog with fresh data from disk.
-    pub(super) fn reopen_profile_picker(&mut self) {
+    /// Show the profile picker dialog with fresh data from disk.
+    pub(super) fn show_profile_picker(&mut self) {
         use crate::session::list_profiles;
         use crate::tui::dialogs::{ProfileEntry, ProfilePickerDialog};
 

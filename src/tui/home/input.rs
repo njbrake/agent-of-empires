@@ -342,7 +342,7 @@ impl HomeView {
                             ));
                         }
                         // Reopen picker with updated profile list
-                        self.reopen_profile_picker();
+                        self.show_profile_picker();
                     }
                 },
             }
@@ -387,7 +387,7 @@ impl HomeView {
                 self.show_help = true;
             }
             KeyCode::Char('P') => {
-                self.reopen_profile_picker();
+                self.show_profile_picker();
             }
             KeyCode::Char('t') => {
                 self.view_mode = match self.view_mode {
