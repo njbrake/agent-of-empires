@@ -596,6 +596,30 @@ impl HomeView {
         self.available_tools.clone()
     }
 
+    /// Rebuild the profile picker dialog with fresh data from disk.
+    pub(super) fn reopen_profile_picker(&mut self) {
+        use crate::session::list_profiles;
+        use crate::tui::dialogs::{ProfileEntry, ProfilePickerDialog};
+
+        let current_profile = self.storage.profile().to_string();
+        let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+        let entries: Vec<ProfileEntry> = profiles
+            .iter()
+            .map(|name| {
+                let session_count = Storage::new(name)
+                    .and_then(|s| s.load())
+                    .map(|instances| instances.len())
+                    .unwrap_or(0);
+                ProfileEntry {
+                    name: name.clone(),
+                    session_count,
+                    is_active: name == &current_profile,
+                }
+            })
+            .collect();
+        self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
+    }
+
     pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
         if let Some(inst) = self.instance_map.get_mut(id) {
             inst.status = status;

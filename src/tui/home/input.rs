@@ -10,8 +10,8 @@ use crate::session::{flatten_tree, list_profiles, repo_config, resolve_config, I
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    InfoDialog, NewSessionData, NewSessionDialog, ProfileEntry, ProfilePickerAction,
-    ProfilePickerDialog, RenameDialog, UnifiedDeleteDialog,
+    InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction, RenameDialog,
+    UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -317,33 +317,34 @@ impl HomeView {
                 DialogResult::Cancel => {
                     self.profile_picker_dialog = None;
                 }
-                DialogResult::Submit(action) => {
-                    self.profile_picker_dialog = None;
-                    match action {
-                        ProfilePickerAction::Switch(name) => {
-                            return Some(Action::SwitchProfile(name));
-                        }
-                        ProfilePickerAction::Created(name) => {
-                            match crate::session::create_profile(&name) {
-                                Ok(()) => return Some(Action::SwitchProfile(name)),
-                                Err(e) => {
-                                    self.info_dialog = Some(InfoDialog::new(
-                                        "Error",
-                                        &format!("Failed to create profile: {}", e),
-                                    ));
-                                }
-                            }
-                        }
-                        ProfilePickerAction::Deleted(name) => {
-                            if let Err(e) = crate::session::delete_profile(&name) {
+                DialogResult::Submit(action) => match action {
+                    ProfilePickerAction::Switch(name) => {
+                        self.profile_picker_dialog = None;
+                        return Some(Action::SwitchProfile(name));
+                    }
+                    ProfilePickerAction::Created(name) => {
+                        self.profile_picker_dialog = None;
+                        match crate::session::create_profile(&name) {
+                            Ok(()) => return Some(Action::SwitchProfile(name)),
+                            Err(e) => {
                                 self.info_dialog = Some(InfoDialog::new(
                                     "Error",
-                                    &format!("Failed to delete profile: {}", e),
+                                    &format!("Failed to create profile: {}", e),
                                 ));
                             }
                         }
                     }
-                }
+                    ProfilePickerAction::Deleted(name) => {
+                        if let Err(e) = crate::session::delete_profile(&name) {
+                            self.info_dialog = Some(InfoDialog::new(
+                                "Error",
+                                &format!("Failed to delete profile: {}", e),
+                            ));
+                        }
+                        // Reopen picker with updated profile list
+                        self.reopen_profile_picker();
+                    }
+                },
             }
             return None;
         }
@@ -386,24 +387,7 @@ impl HomeView {
                 self.show_help = true;
             }
             KeyCode::Char('P') => {
-                let current_profile = self.storage.profile().to_string();
-                let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                let entries: Vec<ProfileEntry> = profiles
-                    .iter()
-                    .map(|name| {
-                        let session_count = crate::session::Storage::new(name)
-                            .and_then(|s| s.load())
-                            .map(|instances| instances.len())
-                            .unwrap_or(0);
-                        ProfileEntry {
-                            name: name.clone(),
-                            session_count,
-                            is_active: name == &current_profile,
-                        }
-                    })
-                    .collect();
-                self.profile_picker_dialog =
-                    Some(ProfilePickerDialog::new(entries, &current_profile));
+                self.reopen_profile_picker();
             }
             KeyCode::Char('t') => {
                 self.view_mode = match self.view_mode {
