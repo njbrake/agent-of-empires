@@ -159,6 +159,10 @@ impl Instance {
             .unwrap_or(true)
     }
 
+    pub fn expects_shell(&self) -> bool {
+        crate::tmux::utils::is_shell_command(self.get_tool_command())
+    }
+
     pub fn get_tool_command(&self) -> &str {
         if self.command.is_empty() {
             crate::agents::get_agent(&self.tool)
@@ -618,15 +622,16 @@ impl Instance {
             self.has_custom_command(),
             detected
         );
+        let is_shell_stale = || !self.expects_shell() && session.is_pane_running_shell();
         self.status = match detected {
             Status::Idle if self.has_custom_command() => {
-                if session.is_pane_dead() {
+                if session.is_pane_dead() || is_shell_stale() {
                     Status::Error
                 } else {
                     Status::Unknown
                 }
             }
-            Status::Idle if session.is_pane_dead() => Status::Error,
+            Status::Idle if session.is_pane_dead() || is_shell_stale() => Status::Error,
             other => other,
         };
 
@@ -1022,6 +1027,23 @@ mod tests {
         inst.tool = "unknown_agent".to_string();
         inst.command = "some-binary".to_string();
         assert!(inst.has_custom_command());
+    }
+
+    #[test]
+    fn test_expects_shell() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        assert!(!inst.expects_shell());
+
+        inst.tool = "unknown-tool".to_string();
+        inst.command = String::new();
+        assert!(inst.expects_shell());
+
+        inst.tool = "claude".to_string();
+        inst.command = "bash".to_string();
+        assert!(inst.expects_shell());
+
+        inst.command = "my-agent".to_string();
+        assert!(!inst.expects_shell());
     }
 
     #[test]
