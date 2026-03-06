@@ -1,5 +1,7 @@
 //! tmux utility functions
 
+use std::process::Command;
+
 pub fn strip_ansi(content: &str) -> String {
     let mut result = content.to_string();
 
@@ -34,6 +36,16 @@ pub fn sanitize_session_name(name: &str) -> String {
         })
         .take(20)
         .collect()
+}
+
+pub fn is_pane_dead(session_name: &str) -> bool {
+    Command::new("tmux")
+        .args(["display-message", "-t", session_name, "-p", "#{pane_dead}"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

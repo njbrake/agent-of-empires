@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::utils::sanitize_session_name;
+use super::utils::{is_pane_dead, sanitize_session_name};
 use super::{
     refresh_session_cache, session_exists_from_cache, CONTAINER_TERMINAL_PREFIX, TERMINAL_PREFIX,
 };
@@ -39,13 +39,7 @@ impl TerminalSession {
     }
 
     pub fn is_pane_dead(&self) -> bool {
-        Command::new("tmux")
-            .args(["display-message", "-t", &self.name, "-p", "#{pane_dead}"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim() == "1")
-            .unwrap_or(false)
+        is_pane_dead(&self.name)
     }
 
     pub fn create(&self, working_dir: &str) -> Result<()> {
@@ -200,13 +194,7 @@ impl ContainerTerminalSession {
     }
 
     pub fn is_pane_dead(&self) -> bool {
-        Command::new("tmux")
-            .args(["display-message", "-t", &self.name, "-p", "#{pane_dead}"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim() == "1")
-            .unwrap_or(false)
+        is_pane_dead(&self.name)
     }
 
     pub fn create_with_size(
