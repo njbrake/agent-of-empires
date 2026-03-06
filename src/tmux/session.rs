@@ -3,7 +3,9 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::{refresh_session_cache, session_exists_from_cache, SESSION_PREFIX};
+use super::{
+    refresh_session_cache, session_exists_from_cache, utils::is_pane_dead, SESSION_PREFIX,
+};
 use crate::cli::truncate_id;
 use crate::process;
 use crate::session::Status;
@@ -74,13 +76,7 @@ impl Session {
     }
 
     pub fn is_pane_dead(&self) -> bool {
-        Command::new("tmux")
-            .args(["display-message", "-t", &self.name, "-p", "#{pane_dead}"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim() == "1")
-            .unwrap_or(false)
+        is_pane_dead(&self.name)
     }
 
     pub fn kill(&self) -> Result<()> {
