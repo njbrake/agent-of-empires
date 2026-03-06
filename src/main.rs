@@ -10,10 +10,43 @@ use clap_complete::generate;
 #[tokio::main]
 async fn main() -> Result<()> {
     if std::env::var("AGENT_OF_EMPIRES_DEBUG").is_ok() {
-        tracing_subscriber::fmt()
-            .with_env_filter("agent_of_empires=debug")
-            .init();
+        let log_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("agent-of-empires")
+            .join("logs");
+
+        if std::fs::create_dir_all(&log_dir).is_ok() {
+            let log_file = log_dir.join(format!(
+                "aoe_{}.log",
+                chrono::Local::now().format("%Y%m%d_%H%M%S")
+            ));
+            eprintln!("Logging to: {:?}", log_file);
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_file)
+            {
+                tracing_subscriber::fmt()
+                    .with_env_filter("agent_of_empires=debug,aoe=debug")
+                    .with_writer(std::sync::Mutex::new(file))
+                    .with_ansi(false)
+                    .init();
+            } else {
+                tracing_subscriber::fmt()
+                    .with_env_filter("agent_of_empires=debug,aoe=debug")
+                    .init();
+            }
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter("agent_of_empires=debug,aoe=debug")
+                .init();
+        }
     }
+
+    tracing::debug!(
+        "Application starting - version {}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     let cli = Cli::parse();
 
@@ -43,7 +76,7 @@ async fn main() -> Result<()> {
         migrations::run_migrations()?;
     }
 
-    match cli.command {
+    let result = match cli.command {
         Some(Commands::Add(args)) => cli::add::run(&profile, args).await,
         Some(Commands::List(args)) => cli::list::run(&profile, args).await,
         Some(Commands::Remove(args)) => cli::remove::run(&profile, args).await,
@@ -54,5 +87,8 @@ async fn main() -> Result<()> {
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
         None => tui::run(&profile).await,
         _ => unreachable!(),
-    }
+    };
+
+    tracing::debug!("Application shutting down");
+    result
 }
