@@ -130,12 +130,31 @@ pub struct Instance {
     pub last_error: Option<String>,
 }
 
-/// Generate a new UUID for Claude Code session
+/// Generate a new UUID for Claude Code session.
+///
+/// Creates a new universally unique identifier (UUID v4) for use as a Claude Code session ID.
+/// This function is used when a new Claude Code session is started without an existing session
+/// to resume from. The UUID is converted to a string representation suitable for passing to
+/// Claude Code CLI commands.
 fn generate_claude_session_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-/// Capture session ID from OpenCode CLI with 5-second timeout
+/// Capture session ID from OpenCode CLI with 5-second timeout.
+///
+/// Executes `opencode session list --format json` in a subprocess with a 5-second timeout.
+/// Parses the JSON output to extract the first session ID from the list. This is used to
+/// resume an existing OpenCode session instead of starting a new one.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The `opencode` command cannot be spawned
+/// - The command execution fails before completing
+/// - The command times out after 5 seconds
+/// - The command exits with a non-zero status code
+/// - The JSON output cannot be parsed
+/// - No sessions are found in the response
 fn capture_opencode_session_id() -> Result<String> {
     let child = std::process::Command::new("opencode")
         .args(["session", "list", "--format", "json"])
@@ -176,7 +195,20 @@ fn capture_opencode_session_id() -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("No OpenCode sessions found"))
 }
 
-/// Capture session ID from Codex filesystem
+/// Capture session ID from Codex filesystem.
+///
+/// Scans the `~/.codex/sessions` directory to find an existing Codex session directory.
+/// Returns the name of the first session directory found. This is used to resume an existing
+/// Codex session. The `_working_dir` parameter is accepted for future use (e.g., matching
+/// sessions by working directory) but is currently unused.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The home directory cannot be determined
+/// - The `~/.codex/sessions` directory does not exist
+/// - Reading the sessions directory fails
+/// - No session directories are found
 fn capture_codex_session_id(_working_dir: &str) -> Result<String> {
     let codex_dir = dirs::home_dir()
         .context("Cannot determine home directory")?
@@ -199,7 +231,12 @@ fn capture_codex_session_id(_working_dir: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("No Codex sessions found"))
 }
 
-/// Build resume flags for agent command
+/// Build resume flags for agent command.
+///
+/// Constructs a tool-specific command-line flag string to resume an existing session.
+/// Each agent tool uses a different flag format: Claude uses `--session-id`, OpenCode uses
+/// `--session`, and Codex uses `resume` as a subcommand. For unrecognized tools, returns
+/// an empty string.
 fn build_resume_flags(tool: &str, session_id: &str) -> String {
     match tool {
         "claude" => format!("--session-id {}", session_id),
@@ -245,7 +282,18 @@ impl Instance {
         self.yolo_mode
     }
 
-    /// Generate or capture session ID based on agent type
+    /// Generate or capture session ID based on agent type.
+    ///
+    /// Idempotent method that retrieves or creates a session ID for the configured agent tool.
+    /// If a session ID has already been obtained, it is returned immediately. Otherwise:
+    /// - For Claude: generates a new UUID
+    /// - For OpenCode: attempts to capture an existing session ID via CLI
+    /// - For Codex: attempts to find an existing session in the filesystem
+    /// - For other tools: returns None
+    ///
+    /// Any errors during capture (e.g., CLI timeout, missing sessions directory) are logged
+    /// at debug level and treated as if no session ID was found. The session ID is cached
+    /// in `self.agent_session_id` for future calls.
     pub fn get_or_create_session_id(&mut self) -> Option<String> {
         // Return existing session ID if already set
         if self.agent_session_id.is_some() {
