@@ -112,6 +112,10 @@ impl HomeView {
         if let Some(dialog) = &self.info_dialog {
             dialog.render(frame, area, theme);
         }
+
+        if let Some(dialog) = &self.profile_picker_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {

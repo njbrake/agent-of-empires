@@ -22,7 +22,8 @@ use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, InfoDialog,
-    NewSessionData, NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    NewSessionData, NewSessionDialog, ProfilePickerDialog, RenameDialog, UnifiedDeleteDialog,
+    WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -119,6 +120,7 @@ pub struct HomeView {
     pub(super) welcome_dialog: Option<WelcomeDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
+    pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     /// Session to attach after the custom instruction warning dialog is dismissed
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
@@ -226,6 +228,7 @@ impl HomeView {
             welcome_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
+            profile_picker_dialog: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
             search_active: false,
@@ -555,6 +558,7 @@ impl HomeView {
             || self.welcome_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
+            || self.profile_picker_dialog.is_some()
             || self.settings_view.is_some()
             || self.diff_view.is_some()
     }
@@ -590,19 +594,6 @@ impl HomeView {
 
     pub fn available_tools(&self) -> AvailableTools {
         self.available_tools.clone()
-    }
-
-    pub(super) fn get_next_profile(&self) -> Option<String> {
-        use crate::session::list_profiles;
-
-        let profiles = list_profiles().ok()?;
-        if profiles.len() <= 1 {
-            return None;
-        }
-        let current = self.storage.profile();
-        let current_idx = profiles.iter().position(|p| p == current).unwrap_or(0);
-        let next_idx = (current_idx + 1) % profiles.len();
-        Some(profiles[next_idx].clone())
     }
 
     pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {

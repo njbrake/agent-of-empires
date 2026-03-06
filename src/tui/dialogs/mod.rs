@@ -8,6 +8,7 @@ mod group_delete_options;
 mod hook_trust;
 mod info;
 mod new_session;
+mod profile_picker;
 mod rename;
 mod welcome;
 
@@ -19,6 +20,7 @@ pub use group_delete_options::{GroupDeleteOptions, GroupDeleteOptionsDialog};
 pub use hook_trust::{HookTrustAction, HookTrustDialog};
 pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
+pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};
 pub use rename::{RenameData, RenameDialog};
 pub use welcome::WelcomeDialog;
 
