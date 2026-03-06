@@ -332,12 +332,10 @@ fn default_sandbox_image() -> String {
 }
 
 fn default_sandbox_environment() -> Vec<String> {
-    vec![
-        "TERM".to_string(),
-        "COLORTERM".to_string(),
-        "FORCE_COLOR".to_string(),
-        "NO_COLOR".to_string(),
-    ]
+    crate::session::environment::DEFAULT_TERMINAL_ENV_VARS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Default terminal mode for sandboxed sessions
@@ -460,6 +458,13 @@ pub fn save_config(config: &Config) -> Result<()> {
     let content = toml::to_string_pretty(config)?;
     fs::write(&path, content)?;
     Ok(())
+}
+
+/// Load the user's default profile name, falling back to "default" on error.
+pub fn resolve_default_profile() -> String {
+    Config::load()
+        .map(|c| c.default_profile)
+        .unwrap_or_else(|_| "default".to_string())
 }
 
 pub fn get_update_settings() -> UpdatesConfig {

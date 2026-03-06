@@ -324,9 +324,7 @@ impl Instance {
             None
         } else {
             // Start with global+profile hooks as the base
-            let profile = super::config::Config::load()
-                .map(|c| c.default_profile)
-                .unwrap_or_else(|_| "default".to_string());
+            let profile = super::config::resolve_default_profile();
             let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
                 .map(|c| c.hooks.on_launch)
                 .unwrap_or_default();

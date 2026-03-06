@@ -460,6 +460,11 @@ impl SettingsView {
                 if let Some(input) = input {
                     let text = input.value().to_string();
                     if !text.is_empty() {
+                        // Validate env var references before accepting
+                        if self.fields[self.selected_field].key == FieldKey::Environment {
+                            self.error_message = crate::session::validate_env_entry(&text);
+                        }
+
                         if let FieldValue::List(ref mut items) =
                             self.fields[self.selected_field].value
                         {

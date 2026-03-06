@@ -1031,7 +1031,8 @@ impl NewSessionDialog {
     fn handle_env_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
         let validate =
             |value: &str, list: &[String]| !value.is_empty() && !list.contains(&value.to_string());
-        handle_editable_list_key(
+        let snapshot: Vec<String> = self.extra_env.clone();
+        let result = handle_editable_list_key(
             key,
             &mut self.extra_env,
             &mut self.env_list_expanded,
@@ -1039,7 +1040,17 @@ impl NewSessionDialog {
             &mut self.env_editing_input,
             &mut self.env_adding_new,
             validate,
-        )
+        );
+
+        // Validate the current entry if the list changed
+        if self.extra_env != snapshot {
+            self.error_message = self
+                .extra_env
+                .get(self.env_selected_index)
+                .and_then(|entry| crate::session::validate_env_entry(entry));
+        }
+
+        result
     }
 
     fn reload_tool_config(&mut self) {

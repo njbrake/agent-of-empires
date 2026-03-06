@@ -521,19 +521,22 @@ pub(crate) fn build_container_config(
 
     let mut volumes = project_volumes;
 
-    let sandbox_config = match super::config::Config::load() {
-        Ok(c) => {
-            tracing::debug!(
-                "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
-                c.sandbox.extra_volumes,
-                c.sandbox.mount_ssh,
-                c.sandbox.volume_ignores
-            );
-            c.sandbox
-        }
-        Err(e) => {
-            tracing::warn!("Failed to load config, using defaults: {}", e);
-            Default::default()
+    let sandbox_config = {
+        let profile = super::config::resolve_default_profile();
+        match super::profile_config::resolve_config(&profile) {
+            Ok(c) => {
+                tracing::debug!(
+                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
+                    c.sandbox.extra_volumes,
+                    c.sandbox.mount_ssh,
+                    c.sandbox.volume_ignores
+                );
+                c.sandbox
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load config, using defaults: {}", e);
+                Default::default()
+            }
         }
     };
 
