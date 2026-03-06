@@ -1,0 +1,70 @@
+name: Weekly Codebase Review
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Every Monday at 2 PM UTC
+  workflow_dispatch: # Allow manual triggers
+
+jobs:
+  codebase-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Weekly codebase review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are performing a weekly codebase review for the Agent of Empires project.
+
+            Your goal: find ONE concrete opportunity to simplify, consolidate, or improve the
+            codebase. Quality over quantity -- only file an issue if you find something genuinely
+            worth doing.
+
+            Review process:
+            1. Read AGENTS.md to understand the project conventions
+            2. Explore the source code in src/, looking for:
+               - Duplicated logic that could be consolidated into a shared function or module
+               - Overly complex code that could be simplified
+               - Dead code or unused imports/modules
+               - Inconsistent patterns where one approach is clearly better
+               - Missing abstractions that would make the code cleaner
+               - Technical debt that has accumulated
+               - Error handling that could be improved
+               - Tests that are missing for critical paths
+            3. Check recent commits with `git log --oneline -30` to understand what has changed
+               recently and avoid suggesting things already in progress
+            4. Search existing open issues to avoid filing duplicates:
+               use mcp__github__list_issues to check for similar issues
+
+            Decision criteria:
+            - The improvement should be specific and actionable (not vague like "improve error handling")
+            - It should provide clear value (simplification, fewer bugs, better maintainability)
+            - It should be reasonably scoped (completable in a single PR)
+            - Do NOT suggest adding documentation, comments, or cosmetic changes
+            - Do NOT suggest dependency upgrades unless there is a concrete problem
+
+            If you find a worthwhile improvement:
+            - File a single GitHub issue using mcp__github__create_issue
+            - Title should be clear and specific (e.g., "Consolidate duplicated tmux session lookup logic")
+            - Label it with "enhancement" and "codebase-health"
+            - Body should include:
+              - What the current state is (with file paths and line references)
+              - What the improvement would be
+              - Why it matters
+              - Rough scope estimate (small/medium/large)
+
+            If nothing stands out, that is perfectly fine. Do not file an issue just for the sake
+            of it. Simply finish without creating one.
+          claude_args: |
+            --allowedTools "Read,Glob,Grep,Bash(git log:*),Bash(git diff:*),Bash(wc:*),mcp__github__list_issues,mcp__github__search_issues,mcp__github__create_issue"
