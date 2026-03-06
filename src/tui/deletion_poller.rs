@@ -125,6 +125,9 @@ impl DeletionPoller {
         // Kill paired terminal session if it exists
         let _ = request.instance.kill_terminal();
 
+        // Clean up hook status files
+        crate::hooks::cleanup_hook_status_dir(&request.instance.id);
+
         DeletionResult {
             session_id: request.session_id.clone(),
             success: errors.is_empty(),
