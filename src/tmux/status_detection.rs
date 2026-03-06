@@ -1,6 +1,7 @@
 //! Status detection for agent sessions
 
 use crate::session::Status;
+use regex::Regex;
 
 use super::utils::strip_ansi;
 
@@ -47,7 +48,17 @@ pub fn detect_claude_status(content: &str) -> Status {
         return Status::Running;
     }
 
+    // Claude Code spinner: "<spinner> <verb>…" with optional stats after
+    // e.g. "✳ Twisting… (10m 6s · ↓ 18.3k tokens · thinking)"
+    // Must NOT match completion lines like "✻ Worked for 1m 52s"
+    const CLAUDE_SPINNER_CHARS: &[&str] = &["·", "✢", "✳", "✶", "✻", "✽", "●"];
+    let chars = CLAUDE_SPINNER_CHARS.join("");
+    let claude_spinner_re = Regex::new(&format!(r"^[{}] \S+…", chars)).unwrap();
     for line in &lines {
+        let trimmed = line.trim();
+        if claude_spinner_re.is_match(trimmed) {
+            return Status::Running;
+        }
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -499,6 +510,21 @@ mod tests {
         );
         assert_eq!(detect_claude_status("Processing ⠋"), Status::Running);
         assert_eq!(detect_claude_status("Loading ⠹"), Status::Running);
+
+        // New Claude Code spinner patterns: <spinner> <verb>…
+        assert_eq!(detect_claude_status("✶ Hashing…"), Status::Running);
+        assert_eq!(detect_claude_status("✻ Reading…"), Status::Running);
+        assert_eq!(detect_claude_status("● Thinking…"), Status::Running);
+        assert_eq!(detect_claude_status("· Searching…"), Status::Running);
+        assert_eq!(detect_claude_status("✳ Writing…"), Status::Running);
+        assert_eq!(detect_claude_status("✽ Editing…"), Status::Running);
+        assert_eq!(detect_claude_status("✢ Running…"), Status::Running);
+
+        // Spinner with timing/token stats after ellipsis
+        assert_eq!(
+            detect_claude_status("✳ Twisting… (10m 6s · ↓ 18.3k tokens · thinking)"),
+            Status::Running
+        );
     }
 
     #[test]
@@ -525,6 +551,10 @@ mod tests {
     fn test_detect_claude_status_idle() {
         assert_eq!(detect_claude_status("completed the task"), Status::Idle);
         assert_eq!(detect_claude_status("some random output"), Status::Idle);
+
+        // Completion messages with spinner chars should NOT be Running
+        assert_eq!(detect_claude_status("✻ Worked for 1m 52s"), Status::Idle);
+        assert_eq!(detect_claude_status("✶ Completed in 30s"), Status::Idle);
     }
 
     #[test]
