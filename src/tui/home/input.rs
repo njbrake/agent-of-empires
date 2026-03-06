@@ -335,14 +335,18 @@ impl HomeView {
                         }
                     }
                     ProfilePickerAction::Deleted(name) => {
-                        if let Err(e) = crate::session::delete_profile(&name) {
-                            self.info_dialog = Some(InfoDialog::new(
-                                "Error",
-                                &format!("Failed to delete profile: {}", e),
-                            ));
+                        match crate::session::delete_profile(&name) {
+                            Ok(()) => {
+                                self.show_profile_picker();
+                            }
+                            Err(e) => {
+                                self.profile_picker_dialog = None;
+                                self.info_dialog = Some(InfoDialog::new(
+                                    "Error",
+                                    &format!("Failed to delete profile: {}", e),
+                                ));
+                            }
                         }
-                        // Reopen picker with updated profile list
-                        self.show_profile_picker();
                     }
                 },
             }
