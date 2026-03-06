@@ -38,6 +38,16 @@ impl TerminalSession {
             .unwrap_or(false)
     }
 
+    pub fn is_pane_dead(&self) -> bool {
+        Command::new("tmux")
+            .args(["display-message", "-t", &self.name, "-p", "#{pane_dead}"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim() == "1")
+            .unwrap_or(false)
+    }
+
     pub fn create(&self, working_dir: &str) -> Result<()> {
         self.create_with_size(working_dir, None, None)
     }
@@ -186,6 +196,16 @@ impl ContainerTerminalSession {
             .args(["has-session", "-t", &self.name])
             .output()
             .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    pub fn is_pane_dead(&self) -> bool {
+        Command::new("tmux")
+            .args(["display-message", "-t", &self.name, "-p", "#{pane_dead}"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim() == "1")
             .unwrap_or(false)
     }
 
@@ -432,5 +452,105 @@ mod tests {
 
         // Command should be last
         assert_eq!(args.last().unwrap(), "docker exec -it container /bin/bash");
+    }
+
+    fn tmux_available() -> bool {
+        Command::new("tmux")
+            .arg("-V")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_terminal_session_is_pane_dead_after_command_exits() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_terminal_dead_{}", std::process::id());
+        let session = TerminalSession {
+            name: session_name.clone(),
+        };
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 1",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        Command::new("tmux")
+            .args(["set-option", "-t", &session_name, "remain-on-exit", "on"])
+            .output()
+            .ok();
+
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+
+        assert!(
+            session.is_pane_dead(),
+            "Terminal session pane should be dead after command exits"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_terminal_session_is_pane_dead_on_running_session() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_terminal_alive_{}", std::process::id());
+        let session = TerminalSession {
+            name: session_name.clone(),
+        };
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 30",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        Command::new("tmux")
+            .args(["set-option", "-t", &session_name, "remain-on-exit", "on"])
+            .output()
+            .ok();
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(
+            !session.is_pane_dead(),
+            "Terminal session pane should be alive while command running"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
     }
 }
