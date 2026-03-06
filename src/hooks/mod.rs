@@ -1,8 +1,8 @@
 //! Claude Code hooks management for status detection.
 //!
 //! AoE installs hooks into Claude Code's `settings.json` that write session
-//! status (`running`/`waiting`) to a file. This provides reliable status
-//! detection without parsing tmux pane content.
+//! status (`running`/`waiting`/`idle`) to a file. This provides reliable
+//! status detection without parsing tmux pane content.
 
 mod status_file;
 
@@ -14,7 +14,7 @@ use serde_json::Value;
 pub use status_file::{cleanup_hook_status_dir, hook_status_dir, read_hook_status};
 
 /// Base directory for all AoE hook status files.
-const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
+pub(crate) const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
 
 /// Marker substring used to identify AoE-managed hooks in settings.json.
 /// Any hook command containing this string is considered ours.

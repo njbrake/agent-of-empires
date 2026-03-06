@@ -1,15 +1,14 @@
 //! Status file I/O for Claude Code hooks-based status detection.
 //!
-//! Claude Code hooks write `running` or `waiting` to a well-known file path
-//! so AoE can detect agent status without parsing tmux pane content.
+//! Claude Code hooks write `running`, `waiting`, or `idle` to a well-known
+//! file path so AoE can detect agent status without parsing tmux pane content.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::session::Status;
 
-/// Base directory for all AoE hook status files.
-const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
+use super::HOOK_STATUS_BASE;
 
 /// Status files older than this are considered stale (safety net for crashed sessions).
 const STALENESS_THRESHOLD: Duration = Duration::from_secs(5 * 60);
