@@ -938,6 +938,14 @@ impl Instance {
         tracing::debug!("container cmd: {}", cmd.as_ref().map_or("none", |v| v));
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
+        if let Err(e) = crate::tmux::env::set_hidden_env(
+            session.name(),
+            crate::tmux::env::AOE_INSTANCE_ID_KEY,
+            &self.id,
+        ) {
+            tracing::warn!("Failed to set AOE_INSTANCE_ID in tmux env: {}", e);
+        }
+
         self.persist_session_id(&profile);
         self.deferred_capture_session_id(&profile);
 
