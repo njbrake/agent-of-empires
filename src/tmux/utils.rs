@@ -48,6 +48,40 @@ pub fn is_pane_dead(session_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns the current command running in the session's active pane (e.g. "bash", "claude").
+pub fn pane_current_command(session_name: &str) -> Option<String> {
+    Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{pane_current_command}",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Shells that indicate the agent is not running (the pane was restored by
+/// tmux-resurrect, the agent crashed back to a prompt, or the user exited).
+const KNOWN_SHELLS: &[&str] = &[
+    "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "pwsh",
+];
+
+fn is_shell_command(cmd: &str) -> bool {
+    KNOWN_SHELLS.contains(&cmd)
+}
+
+/// Returns true if the pane is alive but running a plain shell instead of an agent.
+pub fn is_pane_running_shell(session_name: &str) -> bool {
+    pane_current_command(session_name)
+        .map(|cmd| is_shell_command(&cmd))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +155,27 @@ mod tests {
         assert!(result.starts_with("test"));
         assert!(result.contains('_'));
         assert!(!result.contains('😀'));
+    }
+
+    #[test]
+    fn test_is_shell_command_recognizes_common_shells() {
+        for shell in KNOWN_SHELLS {
+            assert!(
+                is_shell_command(shell),
+                "{shell} should be recognized as a shell"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_shell_command_rejects_agent_binaries() {
+        for cmd in [
+            "claude", "opencode", "codex", "gemini", "cursor", "sleep", "python",
+        ] {
+            assert!(
+                !is_shell_command(cmd),
+                "{cmd} should not be recognized as a shell"
+            );
+        }
     }
 }

@@ -622,13 +622,15 @@ impl Instance {
         );
         self.status = match detected {
             Status::Idle if self.has_custom_command() => {
-                if session.is_pane_dead() {
+                if session.is_pane_dead() || session.is_pane_running_shell() {
                     Status::Error
                 } else {
                     Status::Unknown
                 }
             }
-            Status::Idle if session.is_pane_dead() => Status::Error,
+            Status::Idle if session.is_pane_dead() || session.is_pane_running_shell() => {
+                Status::Error
+            }
             other => other,
         };
 
