@@ -18,6 +18,11 @@ use crate::tmux;
 use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
 
+const OPENCODE_MAX_RETRY_ATTEMPTS: u32 = 3;
+const OPENCODE_RETRY_DELAY: Duration = Duration::from_secs(2);
+const OPENCODE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const OPENCODE_CAPTURE_DEADLINE: Duration = Duration::from_secs(15);
+
 fn default_true() -> bool {
     true
 }
@@ -161,12 +166,15 @@ fn generate_claude_session_id() -> String {
 /// - The JSON output cannot be parsed
 /// - No sessions are found in the response
 fn capture_opencode_session_id(project_path: &str) -> Result<String> {
-    let max_attempts = 3;
-    let retry_delay = Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + OPENCODE_CAPTURE_DEADLINE;
+    let mut last_err = None;
 
-    for attempt in 0..max_attempts {
+    for attempt in 0..OPENCODE_MAX_RETRY_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(retry_delay);
+            if std::time::Instant::now() + OPENCODE_RETRY_DELAY > deadline {
+                break;
+            }
+            std::thread::sleep(OPENCODE_RETRY_DELAY);
             tracing::debug!(
                 "Retrying OpenCode session capture (attempt {})",
                 attempt + 1
@@ -175,18 +183,18 @@ fn capture_opencode_session_id(project_path: &str) -> Result<String> {
 
         match try_capture_opencode_session_id(project_path) {
             Ok(id) => return Ok(id),
-            Err(e) if attempt < max_attempts - 1 => {
+            Err(e) => {
                 tracing::debug!(
                     "OpenCode session capture attempt {} failed: {}",
                     attempt + 1,
                     e
                 );
-                continue;
+                last_err = Some(e);
             }
-            Err(e) => return Err(e),
         }
     }
-    unreachable!()
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("OpenCode session capture timed out")))
 }
 
 /// Single attempt to capture an OpenCode session ID.
@@ -208,11 +216,11 @@ fn try_capture_opencode_session_id(project_path: &str) -> Result<String> {
         let _ = tx.send(child.wait_with_output());
     });
 
-    let output = match rx.recv_timeout(Duration::from_secs(5)) {
+    let output = match rx.recv_timeout(OPENCODE_COMMAND_TIMEOUT) {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to execute opencode: {}", e)),
         Err(_) => {
-            tracing::debug!("OpenCode session list timed out after 5 seconds");
+            tracing::debug!("OpenCode session list timed out");
             let _ = nix::sys::signal::kill(Pid::from_raw(child_id as i32), Signal::SIGKILL);
             return Err(anyhow::anyhow!("OpenCode session list timed out"));
         }
@@ -271,7 +279,7 @@ fn try_capture_opencode_session_id(project_path: &str) -> Result<String> {
 /// for `.jsonl` rollout files and extracts the UUID from the most recent one.
 /// Codex filenames follow the pattern `rollout-<timestamp>-<uuid>.jsonl`.
 /// Respects `CODEX_HOME` env var, falling back to `~/.codex`.
-fn capture_codex_session_id(_project_path: &str) -> Result<String> {
+fn capture_codex_session_id(project_path: &str) -> Result<String> {
     let codex_home = match std::env::var("CODEX_HOME") {
         Ok(val) => std::path::PathBuf::from(val),
         Err(_) => dirs::home_dir()
@@ -296,10 +304,22 @@ fn capture_codex_session_id(_project_path: &str) -> Result<String> {
 
     session_entries.sort_by(|a, b| b.1.cmp(&a.1));
 
-    session_entries
-        .first()
-        .and_then(|(path, _)| extract_codex_uuid_from_filename(path))
-        .ok_or_else(|| anyhow::anyhow!("No valid Codex session files found"))
+    let canonical_project = std::fs::canonicalize(project_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(project_path));
+
+    // Prefer the most recent session whose CWD matches the project directory
+    let cwd_match = session_entries.iter().find(|(path, _)| {
+        extract_codex_cwd_from_file(path)
+            .and_then(|cwd| std::fs::canonicalize(&cwd).ok())
+            .map(|cwd| cwd == canonical_project)
+            .unwrap_or(false)
+    });
+
+    let chosen = cwd_match
+        .or_else(|| session_entries.first())
+        .and_then(|(path, _)| extract_codex_uuid_from_filename(path));
+
+    chosen.ok_or_else(|| anyhow::anyhow!("No valid Codex session files found"))
 }
 
 /// Extract UUID from a Codex rollout filename.
@@ -321,6 +341,22 @@ fn extract_codex_uuid_from_filename(path: &std::path::Path) -> Option<String> {
     }
     // Fallback: return the full stem (for non-standard filenames or thread names)
     Some(stem.to_string())
+}
+
+/// Extract the working directory from a Codex rollout `.jsonl` file.
+///
+/// The first line is always a `session_meta` event containing `payload.cwd`.
+/// Returns `None` if the file cannot be read or the field is missing.
+fn extract_codex_cwd_from_file(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&first_line).ok()?;
+    parsed
+        .get("payload")
+        .and_then(|p| p.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Recursively collect Codex session `.jsonl` files, descending into date-partitioned dirs.
