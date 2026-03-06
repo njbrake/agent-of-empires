@@ -246,11 +246,14 @@ fn try_capture_opencode_session_id(project_path: &str) -> Result<String> {
         })
         .collect();
 
-    // Sort by updated time (most recent first)
+    // Sort by updated time (most recent first).
+    // OpenCode stores `updated` as a numeric epoch (Date.now() milliseconds), not a string.
     matching.sort_by(|a, b| {
-        let a_time = a.get("updated").and_then(|v| v.as_str()).unwrap_or("");
-        let b_time = b.get("updated").and_then(|v| v.as_str()).unwrap_or("");
-        b_time.cmp(a_time)
+        let a_time = a.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let b_time = b.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        b_time
+            .partial_cmp(&a_time)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     // Use directory match if found, otherwise fall back to first session
@@ -265,16 +268,16 @@ fn try_capture_opencode_session_id(project_path: &str) -> Result<String> {
 /// Capture session ID from Codex filesystem.
 ///
 /// Walks the Codex sessions directory (including date-partitioned `YYYY/MM/DD/` subdirectories)
-/// and returns the most recently modified session. Respects `CODEX_HOME` env var, falling back
-/// to `~/.codex`.
+/// for `.jsonl` rollout files and extracts the UUID from the most recent one.
+/// Codex filenames follow the pattern `rollout-<timestamp>-<uuid>.jsonl`.
+/// Respects `CODEX_HOME` env var, falling back to `~/.codex`.
 fn capture_codex_session_id(_project_path: &str) -> Result<String> {
-    let codex_home = std::env::var("CODEX_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .expect("Cannot determine home directory")
-                .join(".codex")
-        });
+    let codex_home = match std::env::var("CODEX_HOME") {
+        Ok(val) => std::path::PathBuf::from(val),
+        Err(_) => dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+            .join(".codex"),
+    };
     let sessions_dir = codex_home.join("sessions");
 
     if !sessions_dir.exists() {
@@ -291,21 +294,39 @@ fn capture_codex_session_id(_project_path: &str) -> Result<String> {
         anyhow::bail!("No Codex sessions found in {}", sessions_dir.display());
     }
 
-    // Sort by modification time, most recent first
     session_entries.sort_by(|a, b| b.1.cmp(&a.1));
 
     session_entries
         .first()
-        .and_then(|(path, _)| path.file_name())
-        .and_then(|name| name.to_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("No Codex sessions found"))
+        .and_then(|(path, _)| extract_codex_uuid_from_filename(path))
+        .ok_or_else(|| anyhow::anyhow!("No valid Codex session files found"))
 }
 
-/// Recursively collect Codex session directories, descending into date-partitioned dirs.
+/// Extract UUID from a Codex rollout filename.
+///
+/// Codex filenames follow the pattern `rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`.
+/// The UUID is the last hyphen-delimited segment before `.jsonl`, comprising 5 groups
+/// (e.g. `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+fn extract_codex_uuid_from_filename(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    // Pattern: rollout-YYYY-MM-DDThh-mm-ss-<uuid>
+    // The UUID is always 36 chars (8-4-4-4-12) at the end of the stem
+    if stem.len() >= 36 {
+        let candidate = &stem[stem.len() - 36..];
+        if candidate.chars().filter(|&c| c == '-').count() == 4
+            && candidate.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        {
+            return Some(candidate.to_string());
+        }
+    }
+    // Fallback: return the full stem (for non-standard filenames or thread names)
+    Some(stem.to_string())
+}
+
+/// Recursively collect Codex session `.jsonl` files, descending into date-partitioned dirs.
 ///
 /// Directories whose names are all ASCII digits (e.g. `2025`, `03`, `06`) are treated as
-/// date components and recursed into. All other directories are treated as session entries.
+/// date components and recursed into. Files ending in `.jsonl` are collected as session entries.
 fn collect_codex_sessions(
     dir: &std::path::Path,
     entries: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>,
@@ -318,13 +339,13 @@ fn collect_codex_sessions(
             let name_str = name.to_string_lossy();
             if name_str.chars().all(|c| c.is_ascii_digit()) {
                 collect_codex_sessions(&path, entries)?;
-            } else {
-                let modified = entry
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                entries.push((path, modified));
             }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            entries.push((path, modified));
         }
     }
     Ok(())
@@ -333,21 +354,31 @@ fn collect_codex_sessions(
 /// Build resume flags for agent command.
 ///
 /// Constructs a tool-specific command-line flag string to resume an existing session.
-/// Each agent tool uses a different flag format: Claude uses `--resume`, OpenCode uses
-/// `--session`, and Codex uses `resume` as a subcommand. For unrecognized tools, returns
+/// Each agent tool uses a different flag format, and for unrecognized tools returns
 /// an empty string.
-fn build_resume_flags(tool: &str, session_id: &str) -> String {
+///
+/// For Claude, the flag depends on whether conversation data already exists:
+/// `--resume` only works for sessions that have prior conversation data, while
+/// `--session-id` creates or attaches to a session unconditionally.
+fn build_resume_flags(tool: &str, session_id: &str, is_existing_session: bool) -> String {
     match tool {
-        "claude" => format!("--resume {}", session_id),
+        "claude" if is_existing_session => format!("--resume {}", session_id),
+        "claude" => format!("--session-id {}", session_id),
         "opencode" => format!("--session {}", session_id),
         "codex" => format!("resume {}", session_id),
         _ => String::new(),
     }
 }
 
-fn append_resume_flags(tool: &str, session_id: Option<&str>, cmd: &mut String, context: &str) {
+fn append_resume_flags(
+    tool: &str,
+    session_id: Option<&str>,
+    is_existing_session: bool,
+    cmd: &mut String,
+    context: &str,
+) {
     if let Some(session_id) = session_id {
-        let resume_flags = build_resume_flags(tool, session_id);
+        let resume_flags = build_resume_flags(tool, session_id, is_existing_session);
         if !resume_flags.is_empty() {
             *cmd = format!("{} {}", cmd, resume_flags);
             tracing::debug!(
@@ -408,9 +439,12 @@ impl Instance {
     /// Any errors during capture (e.g., CLI timeout, missing sessions directory) are logged
     /// at debug level and treated as if no session ID was found. The session ID is cached
     /// in `self.agent_session_id` for future calls.
-    pub fn acquire_session_id(&mut self) -> Option<String> {
+    ///
+    /// Returns `(session_id, is_existing)` where `is_existing` indicates whether
+    /// the session was previously persisted (relevant for Claude's flag selection).
+    pub fn acquire_session_id(&mut self) -> (Option<String>, bool) {
         if self.agent_session_id.is_some() {
-            return self.agent_session_id.clone();
+            return (self.agent_session_id.clone(), true);
         }
 
         let session_id = match self.tool.as_str() {
@@ -438,7 +472,7 @@ impl Instance {
             self.agent_session_id = session_id.clone();
         }
 
-        session_id
+        (session_id, false)
     }
 
     fn acquire_session_id_from_host(&self) -> Option<String> {
@@ -477,12 +511,15 @@ impl Instance {
                     .map_err(|e| tracing::debug!("Failed to parse container opencode JSON: {}", e))
                     .ok()?;
 
-                // In container context, just pick the most recently updated session
+                // In container context, just pick the most recently updated session.
+                // OpenCode stores `updated` as a numeric epoch (Date.now() milliseconds).
                 let mut sorted = sessions;
                 sorted.sort_by(|a, b| {
-                    let a_time = a.get("updated").and_then(|v| v.as_str()).unwrap_or("");
-                    let b_time = b.get("updated").and_then(|v| v.as_str()).unwrap_or("");
-                    b_time.cmp(a_time)
+                    let a_time = a.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let b_time = b.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    b_time
+                        .partial_cmp(&a_time)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
 
                 sorted
@@ -492,12 +529,16 @@ impl Instance {
             }
             "codex" => {
                 let output = container
-                    .exec(&["ls", "-t", "/root/.codex/sessions/"])
+                    .exec(&[
+                        "sh",
+                        "-c",
+                        "find /root/.codex/sessions/ -name '*.jsonl' -printf '%T@ %p\\n' | sort -rn | head -1",
+                    ])
                     .map_err(|e| tracing::debug!("Container exec failed for codex: {}", e))
                     .ok()?;
 
                 if !output.status.success() {
-                    tracing::debug!("ls codex sessions failed inside container");
+                    tracing::debug!("find codex sessions failed inside container");
                     return None;
                 }
 
@@ -505,8 +546,10 @@ impl Instance {
                 stdout
                     .lines()
                     .next()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
+                    .and_then(|line| line.split_once(' '))
+                    .and_then(|(_, path)| {
+                        extract_codex_uuid_from_filename(std::path::Path::new(path))
+                    })
             }
             _ => None,
         }
@@ -729,7 +772,7 @@ impl Instance {
                 }
             }
 
-            let session_id = self.acquire_session_id();
+            let (session_id, is_existing) = self.acquire_session_id();
 
             let sandbox = self.sandbox_info.as_ref().unwrap();
             let agent = crate::agents::get_agent(&self.tool);
@@ -765,6 +808,7 @@ impl Instance {
             append_resume_flags(
                 &self.tool,
                 session_id.as_deref(),
+                is_existing,
                 &mut tool_cmd,
                 "sandboxed",
             );
@@ -808,10 +852,11 @@ impl Instance {
                                 }
                             }
                         }
-                        let session_id = self.acquire_session_id();
+                        let (session_id, is_existing) = self.acquire_session_id();
                         append_resume_flags(
                             &self.tool,
                             session_id.as_deref(),
+                            is_existing,
                             &mut cmd,
                             "host agent",
                         );
@@ -835,8 +880,14 @@ impl Instance {
                         }
                     }
                 }
-                let session_id = self.acquire_session_id();
-                append_resume_flags(&self.tool, session_id.as_deref(), &mut cmd, "host custom");
+                let (session_id, is_existing) = self.acquire_session_id();
+                append_resume_flags(
+                    &self.tool,
+                    session_id.as_deref(),
+                    is_existing,
+                    &mut cmd,
+                    "host custom",
+                );
                 Some(wrap_command_ignore_suspend(&cmd))
             }
         };
@@ -1449,25 +1500,31 @@ mod tests {
         assert!(inst.agent_session_id.is_none());
     }
 
-    // Tests for resume flag construction
     #[test]
-    fn test_build_claude_resume_flags() {
+    fn test_build_claude_resume_flags_existing() {
         let session_id = "abc123-def456";
-        let flags = build_resume_flags("claude", session_id);
+        let flags = build_resume_flags("claude", session_id, true);
         assert_eq!(flags, "--resume abc123-def456");
+    }
+
+    #[test]
+    fn test_build_claude_session_id_flags_new() {
+        let session_id = "abc123-def456";
+        let flags = build_resume_flags("claude", session_id, false);
+        assert_eq!(flags, "--session-id abc123-def456");
     }
 
     #[test]
     fn test_build_opencode_resume_flags() {
         let session_id = "session-789";
-        let flags = build_resume_flags("opencode", session_id);
+        let flags = build_resume_flags("opencode", session_id, false);
         assert_eq!(flags, "--session session-789");
     }
 
     #[test]
     fn test_build_codex_resume_flags() {
         let session_id = "codex-session-xyz";
-        let flags = build_resume_flags("codex", session_id);
+        let flags = build_resume_flags("codex", session_id, false);
         assert_eq!(flags, "resume codex-session-xyz");
     }
 
@@ -1540,12 +1597,10 @@ mod tests {
         let mut inst = Instance::new("Test", "/nonexistent/path");
         inst.tool = "codex".to_string();
 
-        // This should not panic even though the path doesn't exist
-        // and capture_codex_session_id will fail
-        let session_id = inst.acquire_session_id();
+        let (session_id, is_existing) = inst.acquire_session_id();
 
-        // Should return None but not panic
         assert!(session_id.is_none());
+        assert!(!is_existing);
         assert!(inst.agent_session_id.is_none());
     }
 
@@ -1557,13 +1612,14 @@ mod tests {
         inst.tool = "claude".to_string();
         inst.agent_session_id = Some("invalid-session-id".to_string());
 
-        // Should still generate resume flags even with invalid ID
-        let flags = build_resume_flags(&inst.tool, inst.agent_session_id.as_ref().unwrap());
+        // With an existing (persisted) session, should use --resume
+        let flags = build_resume_flags(&inst.tool, inst.agent_session_id.as_ref().unwrap(), true);
         assert_eq!(flags, "--resume invalid-session-id");
 
-        // The method should return the existing invalid session ID
-        let session_id = inst.acquire_session_id();
+        // The method should return the existing session ID and mark it as existing
+        let (session_id, is_existing) = inst.acquire_session_id();
         assert_eq!(session_id, Some("invalid-session-id".to_string()));
+        assert!(is_existing);
     }
 
     // Test: backwards compatibility - load old JSON without agent_session_id
@@ -1610,7 +1666,7 @@ mod tests {
 
     #[test]
     fn test_build_unknown_tool_resume_flags() {
-        let flags = build_resume_flags("mistral", "session-123");
+        let flags = build_resume_flags("mistral", "session-123", false);
         assert!(flags.is_empty());
     }
 
@@ -1619,10 +1675,12 @@ mod tests {
         let mut inst = Instance::new("Test", "/tmp/test");
         inst.tool = "claude".to_string();
 
-        let first = inst.acquire_session_id();
-        let second = inst.acquire_session_id();
+        let (first, first_existing) = inst.acquire_session_id();
+        let (second, second_existing) = inst.acquire_session_id();
 
         assert!(first.is_some());
+        assert!(!first_existing);
+        assert!(second_existing);
         assert_eq!(first, second);
     }
 
@@ -1751,9 +1809,19 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
 
-        std::fs::create_dir(sessions_dir.join("old-session")).unwrap();
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        std::fs::write(
+            sessions_dir.join(format!("rollout-2025-01-01T00-00-00-{}.jsonl", uuid_old)),
+            "{}",
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
-        std::fs::create_dir(sessions_dir.join("new-session")).unwrap();
+        std::fs::write(
+            sessions_dir.join(format!("rollout-2025-01-02T00-00-00-{}.jsonl", uuid_new)),
+            "{}",
+        )
+        .unwrap();
 
         let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
         collect_codex_sessions(&sessions_dir, &mut entries).unwrap();
@@ -1761,10 +1829,9 @@ mod tests {
 
         let selected = entries
             .first()
-            .and_then(|(p, _)| p.file_name())
-            .and_then(|n| n.to_str())
+            .and_then(|(p, _)| extract_codex_uuid_from_filename(p))
             .unwrap();
-        assert_eq!(selected, "new-session");
+        assert_eq!(selected, uuid_new);
     }
 
     #[test]
@@ -1772,14 +1839,20 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sessions_dir = tmp.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
-        std::fs::create_dir(sessions_dir.join("test-session")).unwrap();
+
+        let uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        std::fs::write(
+            sessions_dir.join(format!("rollout-2025-03-06T10-30-00-{}.jsonl", uuid)),
+            "{}",
+        )
+        .unwrap();
 
         let old_val = std::env::var("CODEX_HOME").ok();
         std::env::set_var("CODEX_HOME", tmp.path());
 
         let result = capture_codex_session_id("/tmp/test");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "test-session");
+        assert_eq!(result.unwrap(), uuid);
 
         match old_val {
             Some(v) => std::env::set_var("CODEX_HOME", v),
@@ -1794,19 +1867,49 @@ mod tests {
 
         let date_path = sessions_dir.join("2025").join("03").join("06");
         std::fs::create_dir_all(&date_path).unwrap();
-        std::fs::create_dir(date_path.join("my-deep-session")).unwrap();
-        std::fs::create_dir(sessions_dir.join("flat-session")).unwrap();
+
+        let uuid_deep = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        let uuid_flat = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        std::fs::write(
+            date_path.join(format!("rollout-2025-03-06T12-00-00-{}.jsonl", uuid_deep)),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(
+            sessions_dir.join(format!("rollout-2025-01-01T00-00-00-{}.jsonl", uuid_flat)),
+            "{}",
+        )
+        .unwrap();
 
         let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
         collect_codex_sessions(&sessions_dir, &mut entries).unwrap();
 
-        let names: Vec<String> = entries
+        let uuids: Vec<String> = entries
             .iter()
-            .filter_map(|(p, _)| p.file_name().and_then(|n| n.to_str()).map(String::from))
+            .filter_map(|(p, _)| extract_codex_uuid_from_filename(p))
             .collect();
 
-        assert!(names.contains(&"my-deep-session".to_string()));
-        assert!(names.contains(&"flat-session".to_string()));
-        assert_eq!(names.len(), 2);
+        assert!(uuids.contains(&uuid_deep.to_string()));
+        assert!(uuids.contains(&uuid_flat.to_string()));
+        assert_eq!(uuids.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_codex_uuid_from_filename() {
+        let uuid = "abcdef01-2345-6789-abcd-ef0123456789";
+        let path = std::path::PathBuf::from(format!("rollout-2025-03-06T12-00-00-{}.jsonl", uuid));
+        assert_eq!(
+            extract_codex_uuid_from_filename(&path),
+            Some(uuid.to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_codex_uuid_fallback_for_non_standard_filename() {
+        let path = std::path::PathBuf::from("my-thread-name.jsonl");
+        assert_eq!(
+            extract_codex_uuid_from_filename(&path),
+            Some("my-thread-name".to_string())
+        );
     }
 }
