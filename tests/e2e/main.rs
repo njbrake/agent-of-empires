@@ -20,5 +20,6 @@ mod harness;
 mod cli;
 mod errors;
 mod new_session;
+mod profile_picker;
 mod sandbox;
 mod tui_launch;
