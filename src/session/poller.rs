@@ -338,6 +338,7 @@ impl Drop for SessionPoller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_adaptive_interval_initial() {
@@ -563,6 +564,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_thread_budget_cap() {
         let original = ACTIVE_POLLER_COUNT.load(Ordering::SeqCst);
         ACTIVE_POLLER_COUNT.store(MAX_POLLER_THREADS, Ordering::SeqCst);
@@ -589,6 +591,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_poller_is_running_after_start() {
         let mut poller = SessionPoller::new("test-session".to_string());
         poller.start(
@@ -607,6 +610,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_poller_cleanup_decrements_counter() {
         use std::sync::{Arc, Mutex};
 
