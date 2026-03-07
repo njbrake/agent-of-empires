@@ -165,20 +165,27 @@ fn generate_claude_session_id() -> String {
 pub fn claude_poll_fn() -> impl Fn() -> Option<String> + Send + 'static {
     move || {
         let latest = dirs::home_dir()?.join(".claude/debug/latest");
-        let target = std::fs::read_link(&latest).ok()?;
-        // Walk up from the target to find a UUID-shaped directory component.
-        // Typical target: .../sessions/<UUID>/debug.log
-        let mut path = target.as_path();
-        loop {
-            let name = path.file_name()?.to_str()?;
-            if name.len() == 36
-                && name.chars().filter(|&c| c == '-').count() == 4
-                && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-            {
-                return Some(name.to_string());
-            }
-            path = path.parent()?;
+        extract_uuid_from_symlink_target(&latest)
+    }
+}
+
+/// Read a symlink and walk its target path components looking for a UUID segment.
+///
+/// Returns the first 36-character hex-and-dash component that matches the UUID
+/// format (8-4-4-4-12). Returns `None` if the symlink is missing, broken, or
+/// its target contains no UUID-shaped path component.
+fn extract_uuid_from_symlink_target(symlink_path: &std::path::Path) -> Option<String> {
+    let target = std::fs::read_link(symlink_path).ok()?;
+    let mut path = target.as_path();
+    loop {
+        let name = path.file_name()?.to_str()?;
+        if name.len() == 36
+            && name.chars().filter(|&c| c == '-').count() == 4
+            && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        {
+            return Some(name.to_string());
         }
+        path = path.parent()?;
     }
 }
 
@@ -1289,7 +1296,11 @@ impl Instance {
             .map(|d| d.as_millis() as f64)
             .unwrap_or(0.0);
 
-        let mut poller = SessionPoller::new();
+        let tmux_session_name = self
+            .tmux_session()
+            .map(|s| s.name().to_string())
+            .unwrap_or_default();
+        let mut poller = SessionPoller::new(tmux_session_name);
         let instance_id = self.id.clone();
         let initial_known = self.agent_session_id.clone();
 
@@ -2283,5 +2294,271 @@ mod tests {
             extract_codex_uuid_from_filename(&path),
             Some("my-thread-name".to_string())
         );
+    }
+
+    #[test]
+    fn test_claude_poll_fn_extracts_uuid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let sessions_dir = tmp.path().join("sessions").join(uuid);
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let debug_log = sessions_dir.join("debug.log");
+        std::fs::write(&debug_log, "").unwrap();
+
+        let symlink_path = tmp.path().join("latest");
+        std::os::unix::fs::symlink(&debug_log, &symlink_path).unwrap();
+
+        let result = extract_uuid_from_symlink_target(&symlink_path);
+        assert_eq!(result, Some(uuid.to_string()));
+    }
+
+    #[test]
+    fn test_claude_poll_fn_missing_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent-symlink");
+        assert_eq!(extract_uuid_from_symlink_target(&missing), None);
+    }
+
+    #[test]
+    fn test_claude_poll_fn_invalid_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("no-uuid-here");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let target_file = target_dir.join("somefile.log");
+        std::fs::write(&target_file, "").unwrap();
+
+        let symlink_path = tmp.path().join("latest");
+        std::os::unix::fs::symlink(&target_file, &symlink_path).unwrap();
+
+        assert_eq!(extract_uuid_from_symlink_target(&symlink_path), None);
+    }
+
+    #[test]
+    fn test_claude_poll_fn_broken_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dangling_target = tmp.path().join("sessions/dead-uuid/debug.log");
+        let symlink_path = tmp.path().join("latest");
+        std::os::unix::fs::symlink(&dangling_target, &symlink_path).unwrap();
+
+        assert_eq!(extract_uuid_from_symlink_target(&symlink_path), None);
+    }
+
+    #[test]
+    fn test_build_exclusion_set_empty() {
+        let result = build_exclusion_set("nonexistent-instance-id-12345");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_exclusion_filters_claimed_sessions() {
+        let sessions_json = serde_json::json!([
+            {"id": "A", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "C", "directory": "/tmp/my-project", "updated": 1735775000000_u64},
+            {"id": "B", "directory": "/tmp/my-project", "updated": 1735774000000_u64},
+            {"id": "D", "directory": "/tmp/my-project", "updated": 1735773000000_u64},
+        ]);
+        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("A".to_string());
+        exclusion.insert("B".to_string());
+
+        let project_path = "/tmp/my-project";
+        let canonical_path = std::fs::canonicalize(project_path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_path));
+        let canonical_str = canonical_path.to_string_lossy();
+
+        let mut matching: Vec<&serde_json::Value> = sessions
+            .iter()
+            .filter(|s| {
+                s.get("directory")
+                    .or_else(|| s.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|dir| {
+                        let session_path = std::fs::canonicalize(dir)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(dir));
+                        session_path.to_string_lossy() == canonical_str
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        matching.sort_by(|a, b| {
+            let a_time = a.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let b_time = b.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            b_time
+                .partial_cmp(&a_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        matching.retain(|s| s.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0) >= 0.0);
+
+        matching.retain(|s| {
+            s.get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| !exclusion.contains(id))
+                .unwrap_or(true)
+        });
+
+        let best = matching.first().unwrap();
+        assert_eq!(best["id"].as_str().unwrap(), "C");
+    }
+
+    #[test]
+    fn test_opencode_capture_with_exclusion() {
+        let sessions_json = serde_json::json!([
+            {"id": "best-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "second-best", "directory": "/tmp/my-project", "updated": 1735775000000_u64},
+        ]);
+        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("best-session".to_string());
+
+        let project_path = "/tmp/my-project";
+        let canonical_path = std::fs::canonicalize(project_path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_path));
+        let canonical_str = canonical_path.to_string_lossy();
+
+        let mut matching: Vec<&serde_json::Value> = sessions
+            .iter()
+            .filter(|s| {
+                s.get("directory")
+                    .or_else(|| s.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|dir| {
+                        let session_path = std::fs::canonicalize(dir)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(dir));
+                        session_path.to_string_lossy() == canonical_str
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        matching.sort_by(|a, b| {
+            let a_time = a.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let b_time = b.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            b_time
+                .partial_cmp(&a_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        matching.retain(|s| {
+            s.get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| !exclusion.contains(id))
+                .unwrap_or(true)
+        });
+
+        let session = matching.first().copied().or_else(|| sessions.first());
+        let id = session.and_then(|s| s["id"].as_str()).unwrap();
+        assert_eq!(id, "second-best");
+    }
+
+    #[test]
+    fn test_opencode_capture_all_excluded() {
+        let sessions_json = serde_json::json!([
+            {"id": "sess-1", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "sess-2", "directory": "/tmp/my-project", "updated": 1735775000000_u64},
+        ]);
+        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("sess-1".to_string());
+        exclusion.insert("sess-2".to_string());
+
+        let project_path = "/tmp/my-project";
+        let canonical_path = std::fs::canonicalize(project_path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_path));
+        let canonical_str = canonical_path.to_string_lossy();
+
+        let mut matching: Vec<&serde_json::Value> = sessions
+            .iter()
+            .filter(|s| {
+                s.get("directory")
+                    .or_else(|| s.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|dir| {
+                        let session_path = std::fs::canonicalize(dir)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(dir));
+                        session_path.to_string_lossy() == canonical_str
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        matching.sort_by(|a, b| {
+            let a_time = a.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let b_time = b.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            b_time
+                .partial_cmp(&a_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        matching.retain(|s| {
+            s.get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| !exclusion.contains(id))
+                .unwrap_or(true)
+        });
+
+        assert!(
+            matching.is_empty(),
+            "All sessions are excluded, matching should be empty"
+        );
+    }
+
+    #[test]
+    fn test_opencode_timestamp_guard() {
+        let sessions_json = serde_json::json!([
+            {"id": "old-session", "directory": "/tmp/my-project", "updated": 1000000000000_u64},
+            {"id": "new-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "stale-session", "directory": "/tmp/my-project", "updated": 1500000000000_u64},
+        ]);
+        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+
+        let launch_time_ms: f64 = 1735000000000.0;
+        let exclusion: HashSet<String> = HashSet::new();
+
+        let project_path = "/tmp/my-project";
+        let canonical_path = std::fs::canonicalize(project_path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_path));
+        let canonical_str = canonical_path.to_string_lossy();
+
+        let mut matching: Vec<&serde_json::Value> = sessions
+            .iter()
+            .filter(|s| {
+                s.get("directory")
+                    .or_else(|| s.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|dir| {
+                        let session_path = std::fs::canonicalize(dir)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(dir));
+                        session_path.to_string_lossy() == canonical_str
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        matching.sort_by(|a, b| {
+            let a_time = a.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let b_time = b.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            b_time
+                .partial_cmp(&a_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        matching
+            .retain(|s| s.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0) >= launch_time_ms);
+
+        matching.retain(|s| {
+            s.get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| !exclusion.contains(id))
+                .unwrap_or(true)
+        });
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0]["id"].as_str().unwrap(), "new-session");
     }
 }
