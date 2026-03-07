@@ -4,7 +4,7 @@
 //! `ContainerConfig` structs. Includes sandbox directory sync, agent config
 //! mounting, and credential extraction.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -434,19 +434,20 @@ pub(crate) fn compute_volume_paths(
                     ));
                 } else {
                     // Worktree is a sibling of the main repo (non-bare layout).
-                    // Mount each separately as direct children of /workspace/ to
-                    // avoid exposing unrelated sibling directories.
-                    let repo_name = main_repo_canonical
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "repo".to_string());
-                    let wt_name = project_canonical
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "worktree".to_string());
+                    // Mount each separately under /workspace/, preserving their
+                    // relative path structure from their common ancestor. This
+                    // ensures the worktree's .git file (which contains a relative
+                    // gitdir path) resolves correctly inside the container.
+                    let common = common_ancestor(&main_repo_canonical, &project_canonical);
+                    let repo_rel = main_repo_canonical
+                        .strip_prefix(&common)
+                        .unwrap_or(&main_repo_canonical);
+                    let wt_rel = project_canonical
+                        .strip_prefix(&common)
+                        .unwrap_or(&project_canonical);
 
-                    let repo_container = format!("/workspace/{}", repo_name);
-                    let wt_container = format!("/workspace/{}", wt_name);
+                    let repo_container = format!("/workspace/{}", repo_rel.display());
+                    let wt_container = format!("/workspace/{}", wt_rel.display());
 
                     return Ok((
                         vec![
@@ -734,6 +735,20 @@ pub(crate) fn build_container_config(
     })
 }
 
+/// Find the longest common ancestor path of two absolute paths.
+fn common_ancestor(a: &Path, b: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    let mut a_components = a.components();
+    let mut b_components = b.components();
+    loop {
+        match (a_components.next(), b_components.next()) {
+            (Some(ac), Some(bc)) if ac == bc => result.push(ac),
+            _ => break,
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,6 +1012,138 @@ mod tests {
         );
         assert_eq!(volumes[0].container_path, working_dir);
         assert_eq!(volumes[0].container_path, "/workspace/playground");
+    }
+
+    #[test]
+    fn test_common_ancestor() {
+        assert_eq!(
+            common_ancestor(Path::new("/a/b/c"), Path::new("/a/b/d")),
+            PathBuf::from("/a/b")
+        );
+        assert_eq!(
+            common_ancestor(Path::new("/a/b"), Path::new("/a/b")),
+            PathBuf::from("/a/b")
+        );
+        assert_eq!(
+            common_ancestor(Path::new("/a/b/c"), Path::new("/x/y/z")),
+            PathBuf::from("/")
+        );
+    }
+
+    #[test]
+    fn test_compute_volume_paths_non_bare_worktree_nested_layout() {
+        // Simulates a host layout where the worktree is nested deeper than the
+        // main repo relative to their common ancestor (e.g., repo at
+        // /scm/my-repo and worktree at /scm/worktrees/my-repo/1).
+        let dir = TempDir::new().unwrap();
+        let repo_path = dir.path().join("my-repo");
+        fs::create_dir_all(&repo_path).unwrap();
+        let repo = git2::Repository::init(&repo_path).unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            let oid = index.write_tree().unwrap();
+            let sig = git2::Signature::now("test", "test@test.com").unwrap();
+            let tree = repo.find_tree(oid).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+
+        let worktrees_dir = dir.path().join("worktrees").join("my-repo");
+        fs::create_dir_all(&worktrees_dir).unwrap();
+        let worktree_path = worktrees_dir.join("1");
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap().id();
+        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
+            .unwrap();
+        drop(repo);
+
+        let output = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "wt-branch",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+
+        if !output.status.success() {
+            return;
+        }
+
+        // AoE's create_worktree converts .git to relative paths via
+        // convert_git_file_to_relative. Replicate that here since we
+        // called git directly.
+        let git_file = worktree_path.join(".git");
+        let content = fs::read_to_string(&git_file).unwrap();
+        let abs_path = content
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:").map(str::trim))
+            .unwrap();
+        if Path::new(abs_path).is_absolute() {
+            let wt_canon = worktree_path.canonicalize().unwrap();
+            let gitdir_canon = Path::new(abs_path).canonicalize().unwrap();
+            if let Some(rel) = crate::git::GitWorktree::diff_paths(&gitdir_canon, &wt_canon) {
+                fs::write(&git_file, format!("gitdir: {}\n", rel.display())).unwrap();
+            }
+        }
+
+        let project_path_str = worktree_path.to_str().unwrap();
+        let (volumes, working_dir) =
+            compute_volume_paths(&worktree_path, project_path_str).unwrap();
+
+        assert_eq!(volumes.len(), 2);
+
+        // The container paths must preserve relative depth so the .git file's
+        // relative gitdir path resolves correctly.
+        let repo_canon = repo_path.canonicalize().unwrap();
+        let wt_canon = worktree_path.canonicalize().unwrap();
+        let common = common_ancestor(&repo_canon, &wt_canon);
+        let expected_repo = format!(
+            "/workspace/{}",
+            repo_canon.strip_prefix(&common).unwrap().display()
+        );
+        let expected_wt = format!(
+            "/workspace/{}",
+            wt_canon.strip_prefix(&common).unwrap().display()
+        );
+
+        assert_eq!(volumes[0].container_path, expected_repo);
+        assert_eq!(volumes[1].container_path, expected_wt);
+        assert_eq!(working_dir, expected_wt);
+
+        // Verify the .git file's relative path resolves correctly in the
+        // container layout.
+        let content = fs::read_to_string(&git_file).unwrap();
+        let gitdir_rel = content
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:").map(str::trim))
+            .unwrap();
+
+        let resolved = PathBuf::from(&working_dir).join(gitdir_rel);
+
+        // Normalize the path (resolve .. components)
+        let mut normalized = Vec::new();
+        for component in resolved.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                c => normalized.push(c.as_os_str().to_owned()),
+            }
+        }
+        let normalized: PathBuf = normalized.iter().collect();
+
+        // Should land inside the main repo's .git/worktrees/ directory
+        assert!(
+            normalized
+                .to_string_lossy()
+                .starts_with(&volumes[0].container_path),
+            "Resolved gitdir path '{}' should start with main repo container path '{}'",
+            normalized.display(),
+            volumes[0].container_path
+        );
     }
 
     // --- sandbox config tests ---
