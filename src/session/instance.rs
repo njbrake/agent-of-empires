@@ -927,15 +927,23 @@ fn capture_from_container(
 
             uuid.filter(|id| !exclusion.contains(id))
         }
-        _ => None,
+        _ => {
+            tracing::debug!(
+                "Container capture not implemented for agent {:?}, instance {}",
+                tool,
+                instance_id
+            );
+            None
+        }
     }
 }
 
 /// Persist an agent session ID to storage and tmux env for a given instance.
 ///
-/// Both the synchronous `persist_session_id` method and the background
-/// `deferred_capture_session_id` thread funnel through this helper so the
-/// load-mutate-save-env-set logic lives in exactly one place.
+/// Used only during synchronous pre-launch (e.g. `persist_session_id` for
+/// Claude) when no poller is active yet. Post-launch persistence goes
+/// exclusively through the poller channel -> `apply_session_id_updates()`
+/// in the TUI thread to avoid concurrent writes to `sessions.json`.
 fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str) {
     if !is_valid_session_id(session_id) {
         tracing::warn!(
@@ -972,13 +980,24 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
         tracing::warn!("Failed to save instances for session ID persistence: {}", e);
     } else {
         tracing::debug!("Session ID persisted for {}", instance_id);
-        if let Err(e) = crate::tmux::env::set_hidden_env(
-            &tmux_name,
-            crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
-            session_id,
-        ) {
-            tracing::warn!("Failed to write captured session ID to tmux env: {}", e);
-        }
+        publish_session_to_tmux_env(&tmux_name, session_id);
+    }
+}
+
+/// Publish a captured session ID to the tmux environment only.
+///
+/// Background threads (deferred capture, poller on_change) call this instead
+/// of `persist_session_to_storage` so they never race with the TUI thread's
+/// `save()`. The tmux env is the source of truth for `build_exclusion_set()`
+/// (cross-instance dedup), while `sessions.json` is written exclusively by
+/// the TUI thread via `apply_session_id_updates()`.
+fn publish_session_to_tmux_env(tmux_session_name: &str, session_id: &str) {
+    if let Err(e) = crate::tmux::env::set_hidden_env(
+        tmux_session_name,
+        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+        session_id,
+    ) {
+        tracing::warn!("Failed to write captured session ID to tmux env: {}", e);
     }
 }
 
@@ -1438,7 +1457,7 @@ impl Instance {
         }
 
         self.persist_session_id(&profile);
-        self.deferred_capture_session_id(&profile);
+        self.deferred_capture_session_id();
         let poller_launch_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as f64)
@@ -1464,9 +1483,9 @@ impl Instance {
     ///
     /// Some agents (OpenCode, Codex, Gemini, Vibe) create their own sessions on
     /// launch, so the ID cannot be known in advance. This method polls the agent's
-    /// CLI or filesystem until a session appears, then persists it so that future
-    /// relaunches resume the same conversation.
-    fn deferred_capture_session_id(&mut self, profile: &str) {
+    /// CLI or filesystem until a session appears, then signals the `CaptureGate`
+    /// so the poller can propagate it through the channel to the TUI thread.
+    fn deferred_capture_session_id(&mut self) {
         if self.agent_session_id.is_some() {
             return;
         }
@@ -1481,8 +1500,11 @@ impl Instance {
         let instance_id = self.id.clone();
         let tool = self.tool.clone();
         let project_path = self.project_path.clone();
-        let profile = profile.to_string();
         let is_sandboxed = self.is_sandboxed();
+        let tmux_session_name = self
+            .tmux_session()
+            .map(|s| s.name().to_string())
+            .unwrap_or_default();
 
         let launch_time_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1513,7 +1535,9 @@ impl Instance {
                             attempt,
                             session_id
                         );
-                        persist_session_to_storage(&profile, &instance_id, session_id);
+                        if !tmux_session_name.is_empty() {
+                            publish_session_to_tmux_env(&tmux_session_name, session_id);
+                        }
                         gate_for_thread.complete(Some(session_id.clone()));
                         return;
                     }
@@ -1547,7 +1571,6 @@ impl Instance {
                     error = %e,
                     "Failed to spawn deferred session capture thread"
                 );
-                // Signal the gate so the poller is not stuck waiting
                 if let Some(ref gate) = self.capture_gate {
                     gate.complete(None);
                 }
@@ -1655,14 +1678,17 @@ impl Instance {
             _ => return,
         };
 
-        let profile = super::config::Config::load()
-            .map(|c| c.default_profile)
-            .unwrap_or_else(|_| "default".to_string());
+        let cb_tmux_name = self
+            .tmux_session()
+            .map(|s| s.name().to_string())
+            .unwrap_or_default();
         let cb_instance_id = self.id.clone();
 
         let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id: &str| {
             tracing::info!("Session ID changed for {}: {}", cb_instance_id, new_id);
-            persist_session_to_storage(&profile, &cb_instance_id, new_id);
+            if !cb_tmux_name.is_empty() {
+                publish_session_to_tmux_env(&cb_tmux_name, new_id);
+            }
         });
 
         if poller.start(
@@ -2449,6 +2475,26 @@ mod tests {
         let json = r#"{"id":"test123","title":"Test","project_path":"/tmp/test","group_path":"","command":"","tool":"claude","yolo_mode":false,"status":"idle","created_at":"2024-01-01T00:00:00Z","agent_session_id":"abc-123"}"#;
         let inst: Instance = serde_json::from_str(json).unwrap();
         assert_eq!(inst.agent_session_id, Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_build_gemini_resume_flags() {
+        let session_id = "gemini-session-abc";
+        let flags = build_resume_flags("gemini", session_id, true);
+        assert_eq!(flags, "--resume gemini-session-abc");
+
+        let flags_new = build_resume_flags("gemini", session_id, false);
+        assert_eq!(flags_new, "--resume gemini-session-abc");
+    }
+
+    #[test]
+    fn test_build_vibe_resume_flags() {
+        let session_id = "vibe-session-xyz";
+        let flags = build_resume_flags("vibe", session_id, true);
+        assert_eq!(flags, "--resume vibe-session-xyz");
+
+        let flags_new = build_resume_flags("vibe", session_id, false);
+        assert_eq!(flags_new, "--resume vibe-session-xyz");
     }
 
     #[test]

@@ -57,7 +57,10 @@ impl CaptureGate {
     ///
     /// `captured_id` is `Some(id)` on success, `None` if all attempts were exhausted.
     pub fn complete(&self, captured_id: Option<String>) {
-        let mut state = self.inner.lock().expect("CaptureGate lock poisoned");
+        let Ok(mut state) = self.inner.lock() else {
+            tracing::warn!("CaptureGate lock poisoned in complete(), captured ID lost");
+            return;
+        };
         state.done = true;
         state.captured_id = captured_id;
         self.cond.notify_all();
@@ -68,11 +71,14 @@ impl CaptureGate {
     /// Uses a timeout so the poller thread is never stuck indefinitely if the capture
     /// thread panics or is cancelled.
     pub fn wait(&self, timeout: Duration) -> Option<String> {
-        let state = self.inner.lock().expect("CaptureGate lock poisoned");
-        let result = self
-            .cond
-            .wait_timeout_while(state, timeout, |s| !s.done)
-            .expect("CaptureGate lock poisoned");
+        let Ok(state) = self.inner.lock() else {
+            tracing::warn!("CaptureGate lock poisoned in wait(), returning None");
+            return None;
+        };
+        let Ok(result) = self.cond.wait_timeout_while(state, timeout, |s| !s.done) else {
+            tracing::warn!("CaptureGate lock poisoned during wait(), returning None");
+            return None;
+        };
         result.0.captured_id.clone()
     }
 }
