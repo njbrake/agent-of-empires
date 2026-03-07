@@ -440,11 +440,14 @@ fn try_capture_opencode_session_id(
         Some(launch_time_ms),
     );
 
-    // Use directory match if found, otherwise fall back to first session
-    let session = matching
-        .first()
-        .copied()
-        .or_else(|| session_entries.first());
+    // Use directory match if found, otherwise fall back to most recent
+    // non-excluded session (without directory filter, but still respecting
+    // exclusion and launch-time constraints).
+    let session = matching.first().copied().or_else(|| {
+        filter_agent_sessions(&session_entries, None, exclusion, Some(launch_time_ms))
+            .into_iter()
+            .next()
+    });
 
     session
         .and_then(|s| s["id"].as_str())
@@ -627,11 +630,8 @@ fn capture_gemini_session_id(project_path: &str, exclusion: &HashSet<String>) ->
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
     candidates.retain(|(path, _)| {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        !exclusion.contains(stem)
+        let id = extract_gemini_session_id_from_file(path).unwrap_or_default();
+        !exclusion.contains(&id)
     });
 
     let canonical_project = std::fs::canonicalize(project_path)

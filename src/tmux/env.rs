@@ -161,18 +161,18 @@ pub fn get_hidden_env_batch(session_names: &[&str], key: &str) -> Vec<(String, O
         return Vec::new();
     }
 
-    // Try batch command first
-    let mut args = vec!["show-environment".to_string(), "-h".to_string()];
-    for session_name in session_names {
+    // Build a batch tmux command: each segment needs the full
+    // `show-environment -h` prefix since `;` is a command separator.
+    let mut args: Vec<String> = Vec::new();
+    for (i, session_name) in session_names.iter().enumerate() {
+        if i > 0 {
+            args.push(";".to_string());
+        }
+        args.push("show-environment".to_string());
+        args.push("-h".to_string());
         args.push("-t".to_string());
         args.push(session_name.to_string());
         args.push(key.to_string());
-        args.push(";".to_string());
-    }
-
-    // Remove trailing semicolon if present
-    if args.last().is_some_and(|s| s == ";") {
-        args.pop();
     }
 
     let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
