@@ -291,6 +291,11 @@ impl SessionPoller {
             Err(e) => {
                 tracing::warn!("Failed to spawn poller thread {}: {}", thread_label, e);
                 ACTIVE_POLLER_COUNT.fetch_sub(1, Ordering::SeqCst);
+                // Restore cmd_rx so this poller can be retried.
+                // The closure was consumed by the failed spawn, so recreate the channel.
+                let (tx, rx) = mpsc::channel();
+                self.cmd_tx = tx;
+                self.cmd_rx = Some(rx);
                 false
             }
         }

@@ -128,7 +128,7 @@ pub fn remove_hidden_env(session_name: &str, key: &str) -> anyhow::Result<()> {
 pub fn clear_all_hidden_env(session_name: &str) {
     for key in [AOE_INSTANCE_ID_KEY, AOE_CAPTURED_SESSION_ID_KEY] {
         if let Err(e) = remove_hidden_env(session_name, key) {
-            tracing::warn!("Failed to clear stale {key} env var: {e}");
+            tracing::debug!("Failed to clear stale {key} env var: {e}");
         }
     }
     invalidate_cache_session(session_name);
