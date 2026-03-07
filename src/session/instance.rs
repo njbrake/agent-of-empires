@@ -262,7 +262,7 @@ fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> {
 /// 2. Sorts by `updated` timestamp descending (most recent first)
 /// 3. If `launch_time_ms` is `Some`, removes sessions older than that threshold
 /// 4. Removes sessions whose IDs appear in `exclusion`
-fn filter_opencode_sessions<'a>(
+fn filter_agent_sessions<'a>(
     sessions: &'a [serde_json::Value],
     project_path: Option<&str>,
     exclusion: &HashSet<String>,
@@ -411,7 +411,7 @@ fn try_capture_opencode_session_id(
     let sessions: Vec<serde_json::Value> =
         serde_json::from_str(&stdout).context("Failed to parse OpenCode session list JSON")?;
 
-    let matching = filter_opencode_sessions(
+    let matching = filter_agent_sessions(
         &sessions,
         Some(project_path),
         exclusion,
@@ -589,7 +589,7 @@ fn build_resume_flags(tool: &str, session_id: &str, is_existing_session: bool) -
             format!("{} {}", flag, session_id)
         }
         ResumeStrategy::Subcommand(sub) => format!("{} {}", sub, session_id),
-        ResumeStrategy::None => String::new(),
+        ResumeStrategy::Unsupported => String::new(),
     }
 }
 
@@ -677,7 +677,7 @@ fn capture_from_container(
                 .map_err(|e| tracing::debug!("Deferred container JSON parse: {}", e))
                 .ok()?;
 
-            let matching = filter_opencode_sessions(&sessions, None, exclusion, None);
+            let matching = filter_agent_sessions(&sessions, None, exclusion, None);
             matching
                 .first()
                 .and_then(|s| s["id"].as_str())
@@ -2294,7 +2294,7 @@ mod tests {
         let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
 
         let matching =
-            filter_opencode_sessions(&sessions, Some("/tmp/my-project"), &HashSet::new(), None);
+            filter_agent_sessions(&sessions, Some("/tmp/my-project"), &HashSet::new(), None);
 
         let session = matching.first().copied().or_else(|| sessions.first());
         let id = session.and_then(|s| s["id"].as_str()).unwrap();
@@ -2482,7 +2482,7 @@ mod tests {
         exclusion.insert("B".to_string());
 
         let matching =
-            filter_opencode_sessions(&sessions, Some("/tmp/my-project"), &exclusion, Some(0.0));
+            filter_agent_sessions(&sessions, Some("/tmp/my-project"), &exclusion, Some(0.0));
 
         let best = matching.first().unwrap();
         assert_eq!(best["id"].as_str().unwrap(), "C");
@@ -2499,8 +2499,7 @@ mod tests {
         let mut exclusion = HashSet::new();
         exclusion.insert("best-session".to_string());
 
-        let matching =
-            filter_opencode_sessions(&sessions, Some("/tmp/my-project"), &exclusion, None);
+        let matching = filter_agent_sessions(&sessions, Some("/tmp/my-project"), &exclusion, None);
 
         let session = matching.first().copied().or_else(|| sessions.first());
         let id = session.and_then(|s| s["id"].as_str()).unwrap();
@@ -2519,8 +2518,7 @@ mod tests {
         exclusion.insert("sess-1".to_string());
         exclusion.insert("sess-2".to_string());
 
-        let matching =
-            filter_opencode_sessions(&sessions, Some("/tmp/my-project"), &exclusion, None);
+        let matching = filter_agent_sessions(&sessions, Some("/tmp/my-project"), &exclusion, None);
 
         assert!(
             matching.is_empty(),
@@ -2540,7 +2538,7 @@ mod tests {
         let launch_time_ms: f64 = 1735000000000.0;
         let exclusion: HashSet<String> = HashSet::new();
 
-        let matching = filter_opencode_sessions(
+        let matching = filter_agent_sessions(
             &sessions,
             Some("/tmp/my-project"),
             &exclusion,

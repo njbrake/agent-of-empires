@@ -39,7 +39,7 @@ pub enum ResumeStrategy {
     /// other flags land after it.
     Subcommand(&'static str),
     /// Agent does not support session resume.
-    None,
+    Unsupported,
 }
 
 /// Configuration for installing status-detection hooks into an agent's settings file.
@@ -126,7 +126,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_vibe_status,
         container_env: &[],
         hook_config: None,
-        resume_strategy: ResumeStrategy::None,
+        resume_strategy: ResumeStrategy::Unsupported,
     },
     AgentDef {
         name: "codex",
@@ -156,7 +156,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_gemini_status,
         container_env: &[],
         hook_config: None,
-        resume_strategy: ResumeStrategy::None,
+        resume_strategy: ResumeStrategy::Unsupported,
     },
     AgentDef {
         name: "cursor",
@@ -172,7 +172,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".cursor/settings.json",
         }),
-        resume_strategy: ResumeStrategy::None,
+        resume_strategy: ResumeStrategy::Unsupported,
     },
 ];
 
