@@ -19,6 +19,9 @@ const SANDBOX_SUBDIR: &str = "sandbox";
 
 /// Declarative definition of an agent CLI's config directory for sandbox mounting.
 struct AgentConfigMount {
+    /// Canonical agent name from the agent registry (e.g. "claude", "opencode").
+    /// Used to filter mounts so only the active tool's config is mounted.
+    tool_name: &'static str,
     /// Path relative to home (e.g. ".claude").
     host_rel: &'static str,
     /// Path suffix relative to container home (e.g. ".claude").
@@ -47,6 +50,7 @@ struct AgentConfigMount {
 /// To add a new agent, add an entry here -- no code changes needed.
 const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
     AgentConfigMount {
+        tool_name: "claude",
         host_rel: ".claude",
         container_suffix: ".claude",
         skip_entries: &["sandbox", "projects"],
@@ -66,6 +70,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[".credentials.json", "history.jsonl"],
     },
     AgentConfigMount {
+        tool_name: "opencode",
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
         skip_entries: &["sandbox"],
@@ -76,6 +81,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "codex",
         host_rel: ".codex",
         container_suffix: ".codex",
         skip_entries: &["sandbox"],
@@ -86,6 +92,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "gemini",
         host_rel: ".gemini",
         container_suffix: ".gemini",
         skip_entries: &["sandbox"],
@@ -96,6 +103,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "vibe",
         host_rel: ".vibe",
         container_suffix: ".vibe",
         skip_entries: &["sandbox"],
@@ -106,6 +114,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "cursor",
         host_rel: ".cursor",
         container_suffix: ".cursor",
         skip_entries: &["sandbox"],
@@ -564,20 +573,21 @@ pub(crate) fn build_container_config(
         }
     }
 
-    let opencode_config = home.join(".config").join("opencode");
-    if opencode_config.exists() {
-        volumes.push(VolumeMount {
-            host_path: opencode_config.to_string_lossy().to_string(),
-            container_path: format!("{}/.config/opencode", CONTAINER_HOME),
-            read_only: true,
-        });
+    if tool == "opencode" {
+        let opencode_config = home.join(".config").join("opencode");
+        if opencode_config.exists() {
+            volumes.push(VolumeMount {
+                host_path: opencode_config.to_string_lossy().to_string(),
+                container_path: format!("{}/.config/opencode", CONTAINER_HOME),
+                read_only: true,
+            });
+        }
     }
 
     // Sync host agent config into a shared sandbox directory per agent and
-    // bind-mount it read-write. All containers share the same directory (1:N),
-    // so in-container changes persist.
+    // bind-mount it read-write. Only mount the config for the active tool.
     // Agent definitions are in AGENT_CONFIG_MOUNTS -- add new agents there, not here.
-    for mount in AGENT_CONFIG_MOUNTS {
+    for mount in AGENT_CONFIG_MOUNTS.iter().filter(|m| m.tool_name == tool) {
         let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
 
         let sandbox_dir = match prepare_sandbox_dir(mount, &home) {
@@ -1263,8 +1273,55 @@ mod tests {
     #[test]
     fn test_agent_config_mounts_have_valid_entries() {
         for mount in AGENT_CONFIG_MOUNTS {
+            assert!(!mount.tool_name.is_empty());
             assert!(!mount.host_rel.is_empty());
             assert!(!mount.container_suffix.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_agent_config_mounts_each_tool_has_exactly_one() {
+        let tool_names: Vec<&str> = AGENT_CONFIG_MOUNTS.iter().map(|m| m.tool_name).collect();
+        // Each tool name should appear exactly once
+        for name in &tool_names {
+            let count = tool_names.iter().filter(|n| *n == name).count();
+            assert_eq!(count, 1, "tool_name '{}' appears {} times", name, count);
+        }
+    }
+
+    #[test]
+    fn test_agent_config_mounts_filter_by_tool() {
+        let claude_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "claude")
+            .collect();
+        assert_eq!(claude_mounts.len(), 1);
+        assert_eq!(claude_mounts[0].host_rel, ".claude");
+
+        let cursor_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "cursor")
+            .collect();
+        assert_eq!(cursor_mounts.len(), 1);
+        assert_eq!(cursor_mounts[0].host_rel, ".cursor");
+
+        // Unknown tool should match nothing
+        let unknown_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "unknown")
+            .collect();
+        assert_eq!(unknown_mounts.len(), 0);
+    }
+
+    #[test]
+    fn test_agent_config_mounts_match_agent_registry() {
+        // Every mount should correspond to a registered agent
+        for mount in AGENT_CONFIG_MOUNTS {
+            assert!(
+                crate::agents::get_agent(mount.tool_name).is_some(),
+                "AGENT_CONFIG_MOUNTS entry '{}' has no matching agent in the registry",
+                mount.tool_name
+            );
         }
     }
 
