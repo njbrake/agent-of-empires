@@ -1622,14 +1622,20 @@ impl Instance {
             persist_session_to_storage(&profile, &cb_instance_id, new_id);
         });
 
-        poller.start(
-            instance_id,
+        if poller.start(
+            instance_id.clone(),
             poll_fn,
             on_change,
             initial_known,
             self.capture_gate.clone(),
-        );
-        self.session_id_poller = Some(Arc::new(Mutex::new(poller)));
+        ) {
+            self.session_id_poller = Some(Arc::new(Mutex::new(poller)));
+        } else {
+            tracing::warn!(
+                "Failed to start session poller for instance {}, poller will not be stored",
+                instance_id
+            );
+        }
     }
 
     fn stop_poller(&self) {
