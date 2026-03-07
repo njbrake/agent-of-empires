@@ -256,6 +256,36 @@ impl GitWorktree {
         Ok(())
     }
 
+    /// Convert a worktree's .git file from relative back to absolute path.
+    ///
+    /// This reverses `convert_git_file_to_relative` so that `git worktree remove`
+    /// can validate the worktree. Git requires an absolute gitdir path for removal.
+    fn convert_git_file_to_absolute(worktree_path: &Path) -> Result<()> {
+        let git_file = worktree_path.join(".git");
+        if !git_file.exists() || !git_file.is_file() {
+            return Ok(());
+        }
+
+        let content = std::fs::read_to_string(&git_file)?;
+        let Some(gitdir_line) = content.lines().find(|l| l.starts_with("gitdir:")) else {
+            return Ok(());
+        };
+
+        let gitdir_value = gitdir_line.trim_start_matches("gitdir:").trim();
+        let gitdir_path = Path::new(gitdir_value);
+
+        if gitdir_path.is_absolute() {
+            return Ok(()); // Already absolute
+        }
+
+        // Resolve the relative path against the worktree directory
+        let absolute = worktree_path.join(gitdir_path).canonicalize()?;
+        let new_content = format!("gitdir: {}\n", absolute.display());
+        std::fs::write(&git_file, new_content)?;
+
+        Ok(())
+    }
+
     /// Calculate a relative path from `base` to `target`.
     /// Returns None if the paths have no common ancestor.
     pub(crate) fn diff_paths(target: &Path, base: &Path) -> Option<PathBuf> {
@@ -321,6 +351,11 @@ impl GitWorktree {
         if !path.exists() {
             return Err(GitError::WorktreeNotFound(path.to_path_buf()));
         }
+
+        // Restore the .git file to an absolute path before removal.
+        // create_worktree() converts it to relative for Docker compatibility,
+        // but git worktree remove requires an absolute gitdir path for validation.
+        Self::convert_git_file_to_absolute(path)?;
 
         let path_str = path
             .to_str()
