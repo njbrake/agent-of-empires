@@ -263,7 +263,7 @@ impl HomeView {
             if !matches!(inst.tool.as_str(), "claude" | "opencode") {
                 continue;
             }
-            if inst.poller.is_some() {
+            if inst.session_id_poller.is_some() {
                 continue;
             }
             if let Ok(session) = inst.tmux_session() {
@@ -291,7 +291,7 @@ impl HomeView {
                 inst.last_error = prev.last_error.clone();
                 inst.last_error_check = prev.last_error_check;
                 inst.last_start_time = prev.last_start_time;
-                inst.poller = prev.poller.clone();
+                inst.session_id_poller = prev.session_id_poller.clone();
             }
         }
 

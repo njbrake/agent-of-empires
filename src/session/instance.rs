@@ -141,7 +141,7 @@ pub struct Instance {
     #[serde(skip)]
     pub last_error: Option<String>,
     #[serde(skip)]
-    pub poller: Option<Arc<Mutex<SessionPoller>>>,
+    pub session_id_poller: Option<Arc<Mutex<SessionPoller>>>,
     #[serde(skip)]
     deferred_capture_handle: Option<Arc<Mutex<Option<std::thread::JoinHandle<()>>>>>,
 }
@@ -263,7 +263,7 @@ fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> {
 /// 3. If `launch_time_ms` is `Some`, removes sessions older than that threshold
 /// 4. Removes sessions whose IDs appear in `exclusion`
 fn filter_agent_sessions<'a>(
-    sessions: &'a [serde_json::Value],
+    session_entries: &'a [serde_json::Value],
     project_path: Option<&str>,
     exclusion: &HashSet<String>,
     launch_time_ms: Option<f64>,
@@ -273,7 +273,7 @@ fn filter_agent_sessions<'a>(
             std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
         let canonical_str = canonical_path.to_string_lossy();
 
-        sessions
+        session_entries
             .iter()
             .filter(|s| {
                 s.get("directory")
@@ -288,7 +288,7 @@ fn filter_agent_sessions<'a>(
             })
             .collect()
     } else {
-        sessions.iter().collect()
+        session_entries.iter().collect()
     };
 
     matching.sort_by(|a, b| {
@@ -408,18 +408,21 @@ fn try_capture_opencode_session_id(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let sessions: Vec<serde_json::Value> =
+    let session_entries: Vec<serde_json::Value> =
         serde_json::from_str(&stdout).context("Failed to parse OpenCode session list JSON")?;
 
     let matching = filter_agent_sessions(
-        &sessions,
+        &session_entries,
         Some(project_path),
         exclusion,
         Some(launch_time_ms),
     );
 
     // Use directory match if found, otherwise fall back to first session
-    let session = matching.first().copied().or_else(|| sessions.first());
+    let session = matching
+        .first()
+        .copied()
+        .or_else(|| session_entries.first());
 
     session
         .and_then(|s| s["id"].as_str())
@@ -673,11 +676,11 @@ fn capture_from_container(
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let sessions: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+            let session_entries: Vec<serde_json::Value> = serde_json::from_str(&stdout)
                 .map_err(|e| tracing::debug!("Deferred container JSON parse: {}", e))
                 .ok()?;
 
-            let matching = filter_agent_sessions(&sessions, None, exclusion, None);
+            let matching = filter_agent_sessions(&session_entries, None, exclusion, None);
             matching
                 .first()
                 .and_then(|s| s["id"].as_str())
@@ -785,7 +788,7 @@ impl Instance {
             last_error_check: None,
             last_start_time: None,
             last_error: None,
-            poller: None,
+            session_id_poller: None,
             deferred_capture_handle: None,
         }
     }
@@ -1393,11 +1396,11 @@ impl Instance {
         });
 
         poller.start(instance_id, poll_fn, on_change, initial_known);
-        self.poller = Some(Arc::new(Mutex::new(poller)));
+        self.session_id_poller = Some(Arc::new(Mutex::new(poller)));
     }
 
     fn stop_poller(&self) {
-        if let Some(ref poller_arc) = self.poller {
+        if let Some(ref poller_arc) = self.session_id_poller {
             if let Ok(mut poller) = poller_arc.lock() {
                 poller.stop();
             }
@@ -1410,7 +1413,7 @@ impl Instance {
 
     pub fn restart_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         self.stop_poller();
-        self.poller = None;
+        self.session_id_poller = None;
         self.join_deferred_capture();
         self.deferred_capture_handle = None;
 
@@ -2291,12 +2294,20 @@ mod tests {
             {"id": "correct-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
             {"id": "older-match", "directory": "/tmp/my-project", "updated": 1735689600000_u64},
         ]);
-        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
 
-        let matching =
-            filter_agent_sessions(&sessions, Some("/tmp/my-project"), &HashSet::new(), None);
+        let matching = filter_agent_sessions(
+            &session_entries,
+            Some("/tmp/my-project"),
+            &HashSet::new(),
+            None,
+        );
 
-        let session = matching.first().copied().or_else(|| sessions.first());
+        let session = matching
+            .first()
+            .copied()
+            .or_else(|| session_entries.first());
         let id = session.and_then(|s| s["id"].as_str()).unwrap();
 
         assert_eq!(id, "correct-session");
@@ -2475,14 +2486,19 @@ mod tests {
             {"id": "B", "directory": "/tmp/my-project", "updated": 1735774000000_u64},
             {"id": "D", "directory": "/tmp/my-project", "updated": 1735773000000_u64},
         ]);
-        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
 
         let mut exclusion = HashSet::new();
         exclusion.insert("A".to_string());
         exclusion.insert("B".to_string());
 
-        let matching =
-            filter_agent_sessions(&sessions, Some("/tmp/my-project"), &exclusion, Some(0.0));
+        let matching = filter_agent_sessions(
+            &session_entries,
+            Some("/tmp/my-project"),
+            &exclusion,
+            Some(0.0),
+        );
 
         let best = matching.first().unwrap();
         assert_eq!(best["id"].as_str().unwrap(), "C");
@@ -2494,14 +2510,19 @@ mod tests {
             {"id": "best-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
             {"id": "second-best", "directory": "/tmp/my-project", "updated": 1735775000000_u64},
         ]);
-        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
 
         let mut exclusion = HashSet::new();
         exclusion.insert("best-session".to_string());
 
-        let matching = filter_agent_sessions(&sessions, Some("/tmp/my-project"), &exclusion, None);
+        let matching =
+            filter_agent_sessions(&session_entries, Some("/tmp/my-project"), &exclusion, None);
 
-        let session = matching.first().copied().or_else(|| sessions.first());
+        let session = matching
+            .first()
+            .copied()
+            .or_else(|| session_entries.first());
         let id = session.and_then(|s| s["id"].as_str()).unwrap();
         assert_eq!(id, "second-best");
     }
@@ -2512,13 +2533,15 @@ mod tests {
             {"id": "sess-1", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
             {"id": "sess-2", "directory": "/tmp/my-project", "updated": 1735775000000_u64},
         ]);
-        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
 
         let mut exclusion = HashSet::new();
         exclusion.insert("sess-1".to_string());
         exclusion.insert("sess-2".to_string());
 
-        let matching = filter_agent_sessions(&sessions, Some("/tmp/my-project"), &exclusion, None);
+        let matching =
+            filter_agent_sessions(&session_entries, Some("/tmp/my-project"), &exclusion, None);
 
         assert!(
             matching.is_empty(),
@@ -2533,13 +2556,14 @@ mod tests {
             {"id": "new-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
             {"id": "stale-session", "directory": "/tmp/my-project", "updated": 1500000000000_u64},
         ]);
-        let sessions: Vec<serde_json::Value> = serde_json::from_value(sessions_json).unwrap();
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
 
         let launch_time_ms: f64 = 1735000000000.0;
         let exclusion: HashSet<String> = HashSet::new();
 
         let matching = filter_agent_sessions(
-            &sessions,
+            &session_entries,
             Some("/tmp/my-project"),
             &exclusion,
             Some(launch_time_ms),
