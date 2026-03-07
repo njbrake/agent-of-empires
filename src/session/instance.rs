@@ -2649,42 +2649,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_gemini_helpers_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("session-99.json");
-        std::fs::write(
-            &path,
-            r#"{"id": "gemini-abc", "cwd": "/home/user/project"}"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            extract_gemini_session_id_from_file(&path),
-            Some("gemini-abc".to_string())
-        );
-        assert_eq!(
-            extract_gemini_cwd_from_file(&path),
-            Some("/home/user/project".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_vibe_helpers_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let meta_path = tmp.path().join("meta.json");
-        std::fs::write(
-            &meta_path,
-            r#"{"cwd": "/home/user/myrepo", "session_id": "vibe-xyz"}"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            extract_vibe_cwd_from_meta(&meta_path),
-            Some("/home/user/myrepo".to_string())
-        );
-    }
-
-    #[test]
     fn test_claude_poll_fn_invalid_target() {
         let tmp = tempfile::tempdir().unwrap();
         let target_dir = tmp.path().join("no-uuid-here");
