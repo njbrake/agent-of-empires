@@ -5,10 +5,26 @@
 //! child processes, making them ideal for storing session metadata.
 
 use anyhow::bail;
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::RwLock;
+use std::time::{Duration, Instant};
 
 pub const AOE_INSTANCE_ID_KEY: &str = "AOE_INSTANCE_ID";
 pub const AOE_CAPTURED_SESSION_ID_KEY: &str = "AOE_CAPTURED_SESSION_ID";
+
+const ENV_CACHE_TTL: Duration = Duration::from_secs(30);
+
+struct EnvCacheEntry {
+    value: String,
+    fetched_at: Instant,
+}
+
+struct EnvCache {
+    entries: Option<HashMap<(String, String), EnvCacheEntry>>,
+}
+
+static ENV_CACHE: RwLock<EnvCache> = RwLock::new(EnvCache { entries: None });
 
 /// Set a hidden environment variable in a tmux session
 ///
@@ -23,13 +39,48 @@ pub fn set_hidden_env(session_name: &str, key: &str, value: &str) -> anyhow::Res
         bail!("Failed to set hidden env var: {}", stderr);
     }
 
+    invalidate_cache_entry(session_name, key);
     Ok(())
 }
 
 /// Get a hidden environment variable from a tmux session
 ///
+/// Results are cached for [`ENV_CACHE_TTL`] to reduce subprocess spawns during
+/// polling. Only positive hits (variable exists with a value) are cached; misses
+/// always go through tmux so newly-set variables are picked up immediately.
+///
 /// Returns `None` if the variable is unset or if the command fails.
 pub fn get_hidden_env(session_name: &str, key: &str) -> Option<String> {
+    let cache_key = (session_name.to_string(), key.to_string());
+
+    if let Ok(cache) = ENV_CACHE.read() {
+        if let Some(entries) = &cache.entries {
+            if let Some(entry) = entries.get(&cache_key) {
+                if entry.fetched_at.elapsed() < ENV_CACHE_TTL {
+                    return Some(entry.value.clone());
+                }
+            }
+        }
+    }
+
+    let value = fetch_hidden_env(session_name, key)?;
+
+    if let Ok(mut cache) = ENV_CACHE.write() {
+        let entries = cache.entries.get_or_insert_with(HashMap::new);
+        entries.insert(
+            cache_key,
+            EnvCacheEntry {
+                value: value.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    Some(value)
+}
+
+/// Raw tmux call to read a hidden env var (bypasses cache).
+fn fetch_hidden_env(session_name: &str, key: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["show-environment", "-h", "-t", session_name, key])
         .output()
@@ -66,6 +117,7 @@ pub fn remove_hidden_env(session_name: &str, key: &str) -> anyhow::Result<()> {
         bail!("Failed to remove hidden env var: {}", stderr);
     }
 
+    invalidate_cache_entry(session_name, key);
     Ok(())
 }
 
@@ -77,6 +129,23 @@ pub fn clear_all_hidden_env(session_name: &str) {
     for key in [AOE_INSTANCE_ID_KEY, AOE_CAPTURED_SESSION_ID_KEY] {
         if let Err(e) = remove_hidden_env(session_name, key) {
             tracing::warn!("Failed to clear stale {key} env var: {e}");
+        }
+    }
+    invalidate_cache_session(session_name);
+}
+
+fn invalidate_cache_entry(session_name: &str, key: &str) {
+    if let Ok(mut cache) = ENV_CACHE.write() {
+        if let Some(entries) = &mut cache.entries {
+            entries.remove(&(session_name.to_string(), key.to_string()));
+        }
+    }
+}
+
+fn invalidate_cache_session(session_name: &str) {
+    if let Ok(mut cache) = ENV_CACHE.write() {
+        if let Some(entries) = &mut cache.entries {
+            entries.retain(|(s, _), _| s != session_name);
         }
     }
 }
@@ -116,13 +185,31 @@ pub fn get_hidden_env_batch(session_names: &[&str], key: &str) -> Vec<(String, O
             .collect()
     };
 
-    match output {
+    let results = match output {
         Ok(out) if out.status.success() => {
             parse_batch_output(&String::from_utf8_lossy(&out.stdout), session_names)
                 .unwrap_or_else(fallback)
         }
         _ => fallback(),
+    };
+
+    if let Ok(mut cache) = ENV_CACHE.write() {
+        let entries = cache.entries.get_or_insert_with(HashMap::new);
+        let now = Instant::now();
+        for (session_name, value) in &results {
+            if let Some(v) = value {
+                entries.insert(
+                    (session_name.clone(), key.to_string()),
+                    EnvCacheEntry {
+                        value: v.clone(),
+                        fetched_at: now,
+                    },
+                );
+            }
+        }
     }
+
+    results
 }
 
 /// Parse output from batch show-environment command.
@@ -160,8 +247,151 @@ fn parse_batch_output(
 }
 
 #[cfg(test)]
+fn clear_env_cache() {
+    if let Ok(mut cache) = ENV_CACHE.write() {
+        cache.entries = None;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cache_populate_and_lookup() {
+        clear_env_cache();
+        let key = ("cache_test_sess".to_string(), "MY_KEY".to_string());
+
+        if let Ok(mut cache) = ENV_CACHE.write() {
+            let entries = cache.entries.get_or_insert_with(HashMap::new);
+            entries.insert(
+                key.clone(),
+                EnvCacheEntry {
+                    value: "cached_val".to_string(),
+                    fetched_at: Instant::now(),
+                },
+            );
+        }
+
+        let hit = ENV_CACHE.read().ok().and_then(|c| {
+            c.entries
+                .as_ref()?
+                .get(&key)
+                .filter(|e| e.fetched_at.elapsed() < ENV_CACHE_TTL)
+                .map(|e| e.value.clone())
+        });
+        assert_eq!(hit, Some("cached_val".to_string()));
+        clear_env_cache();
+    }
+
+    #[test]
+    fn test_cache_stale_entry_not_returned() {
+        clear_env_cache();
+        let key = ("stale_sess".to_string(), "MY_KEY".to_string());
+
+        if let Ok(mut cache) = ENV_CACHE.write() {
+            let entries = cache.entries.get_or_insert_with(HashMap::new);
+            entries.insert(
+                key.clone(),
+                EnvCacheEntry {
+                    value: "old_val".to_string(),
+                    fetched_at: Instant::now() - Duration::from_secs(60),
+                },
+            );
+        }
+
+        let hit = ENV_CACHE.read().ok().and_then(|c| {
+            c.entries
+                .as_ref()?
+                .get(&key)
+                .filter(|e| e.fetched_at.elapsed() < ENV_CACHE_TTL)
+                .map(|e| e.value.clone())
+        });
+        assert_eq!(hit, None);
+        clear_env_cache();
+    }
+
+    #[test]
+    fn test_invalidate_cache_entry_removes_key() {
+        clear_env_cache();
+        let session = "inv_test_sess";
+        let key = "MY_KEY";
+
+        if let Ok(mut cache) = ENV_CACHE.write() {
+            let entries = cache.entries.get_or_insert_with(HashMap::new);
+            entries.insert(
+                (session.to_string(), key.to_string()),
+                EnvCacheEntry {
+                    value: "val".to_string(),
+                    fetched_at: Instant::now(),
+                },
+            );
+        }
+
+        invalidate_cache_entry(session, key);
+
+        let exists = ENV_CACHE
+            .read()
+            .ok()
+            .and_then(|c| {
+                c.entries
+                    .as_ref()
+                    .map(|e| e.contains_key(&(session.to_string(), key.to_string())))
+            })
+            .unwrap_or(false);
+        assert!(!exists);
+        clear_env_cache();
+    }
+
+    #[test]
+    fn test_invalidate_cache_session_removes_all_keys_for_session() {
+        clear_env_cache();
+        let session = "sess_clear";
+        let other = "sess_keep";
+
+        if let Ok(mut cache) = ENV_CACHE.write() {
+            let entries = cache.entries.get_or_insert_with(HashMap::new);
+            entries.insert(
+                (session.to_string(), "K1".to_string()),
+                EnvCacheEntry {
+                    value: "v1".to_string(),
+                    fetched_at: Instant::now(),
+                },
+            );
+            entries.insert(
+                (session.to_string(), "K2".to_string()),
+                EnvCacheEntry {
+                    value: "v2".to_string(),
+                    fetched_at: Instant::now(),
+                },
+            );
+            entries.insert(
+                (other.to_string(), "K1".to_string()),
+                EnvCacheEntry {
+                    value: "keep".to_string(),
+                    fetched_at: Instant::now(),
+                },
+            );
+        }
+
+        invalidate_cache_session(session);
+
+        let remaining = ENV_CACHE
+            .read()
+            .ok()
+            .and_then(|c| c.entries.as_ref().map(|e| e.len()))
+            .unwrap_or(0);
+        assert_eq!(remaining, 1);
+
+        let kept = ENV_CACHE.read().ok().and_then(|c| {
+            c.entries
+                .as_ref()?
+                .get(&(other.to_string(), "K1".to_string()))
+                .map(|e| e.value.clone())
+        });
+        assert_eq!(kept, Some("keep".to_string()));
+        clear_env_cache();
+    }
 
     #[test]
     fn test_parse_key_value() {
