@@ -191,17 +191,27 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     instance.yolo_mode = args.yolo;
 
+    let config = Config::load()?;
+
+    // Apply extra_args and command override: CLI flags take priority, then config defaults
     if let Some(ref extra) = args.extra_args {
         instance.extra_args = extra.clone();
+    } else if let Some(extra) = config.session.agent_extra_args.get(&instance.tool) {
+        if !extra.is_empty() {
+            instance.extra_args = extra.clone();
+        }
     }
 
     if let Some(ref cmd) = args.cmd_override {
         instance.command = cmd.clone();
+    } else if let Some(cmd_override) = config.session.agent_command_override.get(&instance.tool) {
+        if !cmd_override.is_empty() {
+            instance.command = cmd_override.clone();
+        }
     }
 
     // Handle sandbox setup
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
-    let config = Config::load()?;
 
     let runtime = containers::get_container_runtime();
     if use_sandbox || config.sandbox.enabled_by_default {
