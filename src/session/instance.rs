@@ -2227,18 +2227,6 @@ mod tests {
         assert_eq!(inst.tool, "opencode");
     }
 
-    // Test: empty string session ID treated as None (this test is now covered by test_empty_string_deserializes_to_none)
-    // Kept for backwards compatibility check that the deserializer works correctly
-    #[test]
-    fn test_empty_string_session_id_treated_as_none() {
-        // When deserializing, empty string should be treated as None
-        let json = r#"{"id":"test123","title":"Test","project_path":"/tmp/test","group_path":"","command":"","tool":"claude","yolo_mode":false,"status":"idle","created_at":"2024-01-01T00:00:00Z","agent_session_id":""}"#;
-        let inst: Instance = serde_json::from_str(json).unwrap();
-
-        // Empty string should deserialize to None, not Some("")
-        assert_eq!(inst.agent_session_id, None);
-    }
-
     #[test]
     fn test_opencode_acquire_returns_none_for_deferred_capture() {
         let mut inst = Instance::new("Test", "/tmp/test");
@@ -2395,47 +2383,6 @@ mod tests {
         assert!(!first_existing);
         assert!(second_existing);
         assert_eq!(first, second);
-    }
-
-    // Tests the timeout+SIGKILL pattern, not the actual capture_opencode_session_id
-    // function, since that requires the opencode binary to be installed.
-    #[test]
-    fn test_opencode_timeout_returns_error() {
-        let result = slow_command_with_timeout();
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("timed out"));
-    }
-
-    fn slow_command_with_timeout() -> Result<String> {
-        let child = std::process::Command::new("sleep")
-            .args(["10"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn sleep command")?;
-
-        let child_id = child.id();
-        let (tx, rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let _ = tx.send(child.wait_with_output());
-        });
-
-        let _output = match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to execute: {}", e)),
-            Err(_) => {
-                tracing::debug!("Command timed out after 1 second");
-                let _ = nix::sys::signal::kill(
-                    Pid::from_raw(child_id as nix::libc::pid_t),
-                    Signal::SIGKILL,
-                );
-                return Err(anyhow::anyhow!("Command timed out"));
-            }
-        };
-
-        Ok("dummy".to_string())
     }
 
     #[test]

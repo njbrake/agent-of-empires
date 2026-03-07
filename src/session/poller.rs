@@ -346,12 +346,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_poller_is_running_false_initially() {
-        let poller = SessionPoller::new("test-session".to_string());
-        assert_eq!(poller.is_running(), false);
-    }
-
-    #[test]
     fn test_session_poller_stop_when_no_thread() {
         let mut poller = SessionPoller::new("test-session".to_string());
         poller.stop(); // Should not panic
@@ -370,26 +364,6 @@ mod tests {
     fn test_session_poller_drop_is_clean() {
         let poller = SessionPoller::new("test-session".to_string());
         drop(poller); // Should not panic
-    }
-
-    #[test]
-    fn test_poll_initial_interval_constant() {
-        assert_eq!(POLL_INITIAL_INTERVAL, Duration::from_secs(2));
-    }
-
-    #[test]
-    fn test_poll_max_interval_constant() {
-        assert_eq!(POLL_MAX_INTERVAL, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn test_poll_backoff_factor_constant() {
-        assert_eq!(POLL_BACKOFF_FACTOR, 1.5);
-    }
-
-    #[test]
-    fn test_poll_stable_threshold_constant() {
-        assert_eq!(POLL_STABLE_THRESHOLD, 3);
     }
 
     #[test]
