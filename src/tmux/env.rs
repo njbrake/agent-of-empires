@@ -69,6 +69,18 @@ pub fn remove_hidden_env(session_name: &str, key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Clear all AoE hidden environment variables from a tmux session.
+///
+/// Best-effort: logs warnings on failure rather than propagating errors,
+/// since stale env vars are harmless if the session is about to be recreated.
+pub fn clear_all_hidden_env(session_name: &str) {
+    for key in [AOE_INSTANCE_ID_KEY, AOE_CAPTURED_SESSION_KEY] {
+        if let Err(e) = remove_hidden_env(session_name, key) {
+            tracing::warn!("Failed to clear stale {key} env var: {e}");
+        }
+    }
+}
+
 /// Get hidden environment variables from multiple sessions in a single tmux command
 ///
 /// Attempts to batch-read from all sessions with a single command. Falls back to
