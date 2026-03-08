@@ -100,12 +100,14 @@ pub struct HomeView {
     pub(super) group_tree: GroupTree,
     pub(super) flat_items: Vec<Item>,
 
+    // UI state
     pub(super) cursor: usize,
     pub(super) selected_session: Option<String>,
     pub(super) selected_group: Option<String>,
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
 
+    // Dialogs
     pub(super) show_help: bool,
     pub(super) new_dialog: Option<NewSessionDialog>,
     pub(super) confirm_dialog: Option<ConfirmDialog>,
@@ -124,18 +126,23 @@ pub struct HomeView {
     /// Session to stop after the confirmation dialog is accepted
     pub(super) pending_stop_session: Option<String>,
 
+    // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
     pub(super) search_matches: Vec<usize>,
     pub(super) search_match_index: usize,
 
+    // Tool availability
     pub(super) available_tools: AvailableTools,
 
+    // Performance: background status polling
     pub(super) status_poller: StatusPoller,
     pub(super) pending_status_refresh: bool,
 
+    // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
 
+    // Performance: background session creation (for sandbox)
     pub(super) creation_poller: CreationPoller,
     /// Set to true if user cancelled while creation was pending
     pub(super) creation_cancelled: bool,
