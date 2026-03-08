@@ -100,14 +100,12 @@ pub struct HomeView {
     pub(super) group_tree: GroupTree,
     pub(super) flat_items: Vec<Item>,
 
-    // UI state
     pub(super) cursor: usize,
     pub(super) selected_session: Option<String>,
     pub(super) selected_group: Option<String>,
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
 
-    // Dialogs
     pub(super) show_help: bool,
     pub(super) new_dialog: Option<NewSessionDialog>,
     pub(super) confirm_dialog: Option<ConfirmDialog>,
@@ -126,23 +124,18 @@ pub struct HomeView {
     /// Session to stop after the confirmation dialog is accepted
     pub(super) pending_stop_session: Option<String>,
 
-    // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
     pub(super) search_matches: Vec<usize>,
     pub(super) search_match_index: usize,
 
-    // Tool availability
     pub(super) available_tools: AvailableTools,
 
-    // Performance: background status polling
     pub(super) status_poller: StatusPoller,
     pub(super) pending_status_refresh: bool,
 
-    // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
 
-    // Performance: background session creation (for sandbox)
     pub(super) creation_poller: CreationPoller,
     /// Set to true if user cancelled while creation was pending
     pub(super) creation_cancelled: bool,
@@ -256,9 +249,8 @@ impl HomeView {
                 .unwrap_or(35),
         };
 
-        // Resume session ID discovery for pre-existing running sessions (TUI
-        // relaunch case). Claude/OpenCode get pollers; Codex/Gemini/Vibe get a
-        // one-shot retroactive capture since they have no poller.
+        // Recover session IDs for pre-existing sessions: pollers for Claude/OpenCode,
+        // retroactive capture for others.
         let mut recovered_session_id = false;
         for inst in &mut view.instances {
             let has_live_tmux = inst
@@ -308,8 +300,7 @@ impl HomeView {
                 inst.session_id_poller = prev.session_id_poller.clone();
                 inst.deferred_capture_handle = prev.deferred_capture_handle.clone();
                 inst.capture_gate = prev.capture_gate.clone();
-                // Prefer in-memory agent_session_id (may be fresher from poller)
-                // over disk value, but keep disk value if in-memory is None
+                // Use in-memory session_id if present; fallback to disk.
                 inst.agent_session_id = prev
                     .agent_session_id
                     .clone()
@@ -421,7 +412,7 @@ impl HomeView {
     pub fn apply_session_id_updates(&mut self) -> bool {
         let mut updates: Vec<(String, String)> = Vec::new();
         for inst in &self.instances {
-            // 1. Poller channel (Claude, OpenCode)
+            // Poller channel (Claude, OpenCode)
             if let Some((_id, session_id)) = inst
                 .session_id_poller
                 .as_ref()
@@ -432,7 +423,7 @@ impl HomeView {
                 continue;
             }
 
-            // 2. Completed capture gates (all agents with deferred capture)
+            // Completed capture gates (deferred capture agents)
             if inst.agent_session_id.is_none() {
                 if let Some(session_id) = inst.capture_gate.as_ref().and_then(|g| g.try_take()) {
                     updates.push((inst.id.clone(), session_id));
@@ -688,9 +679,7 @@ impl HomeView {
         self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
     }
 
-    /// Mutate an instance in both `instance_map` (authoritative for in-memory state) and
-    /// the `instances` Vec (used for persistence/iteration). This prevents the two stores
-    /// from diverging when fields are updated between `reload()` calls.
+    /// Update an instance in both instance_map and instances vec to keep them in sync.
     pub(super) fn mutate_instance(&mut self, id: &str, f: impl Fn(&mut Instance)) {
         if let Some(inst) = self.instance_map.get_mut(id) {
             f(inst);
@@ -719,7 +708,7 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        // Only start the terminal once via instance_map (authoritative), then sync to Vec
+        // Start via instance_map (authoritative), then sync to vec
         let result = self
             .instance_map
             .get_mut(id)
@@ -737,10 +726,7 @@ impl HomeView {
         result
     }
 
-    /// Restart an instance in-place on the owned map entry, so that new poller/capture
-    /// threads are stored in the long-lived Instance (not a temporary clone whose Drop
-    /// would block the TUI thread). The `instances` vec is not mutated here because
-    /// `reload()` is called after tmux attach returns, which resyncs it from storage.
+    /// Restart in-place in instance_map to preserve poller threads; reload() syncs vec later.
     pub fn restart_instance_with_size_opts(
         &mut self,
         id: &str,
