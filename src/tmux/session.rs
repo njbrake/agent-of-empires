@@ -54,7 +54,20 @@ impl Session {
             return Ok(());
         }
 
-        let args = build_create_args(&self.name, working_dir, command, size);
+        let mut args = build_create_args(&self.name, working_dir, command, size);
+
+        // Chain set-option -p so remain-on-exit is set atomically with session creation.
+        // Using pane-level (-p) avoids bleeding into user-created panes in the same session.
+        args.extend([
+            ";".to_string(),
+            "set-option".to_string(),
+            "-p".to_string(),
+            "-t".to_string(),
+            self.name.clone(),
+            "remain-on-exit".to_string(),
+            "on".to_string(),
+        ]);
+
         let output = Command::new("tmux").args(&args).output()?;
 
         // Note: With -d flag, tmux new-session returns 0 even if the shell command fails.
@@ -67,12 +80,6 @@ impl Session {
         }
 
         super::refresh_session_cache();
-
-        // Keep the pane open when the command exits so users can inspect crash output
-        Command::new("tmux")
-            .args(["set-option", "-t", &self.name, "remain-on-exit", "on"])
-            .output()
-            .ok();
 
         Ok(())
     }
@@ -285,8 +292,7 @@ mod tests {
         }
 
         let session_name = format!("aoe_test_remain_{}", std::process::id());
-        // Create a session with a brief sleep so we can set remain-on-exit before it
-        // exits (avoids race condition where command finishes before set-option runs)
+        // Chain set-option -p with new-session to avoid race condition
         let output = Command::new("tmux")
             .args([
                 "new-session",
@@ -298,16 +304,17 @@ mod tests {
                 "-y",
                 "24",
                 "sleep 1",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
             ])
             .output()
             .expect("tmux new-session");
         assert!(output.status.success());
-
-        // Set remain-on-exit before the process exits
-        Command::new("tmux")
-            .args(["set-option", "-t", &session_name, "remain-on-exit", "on"])
-            .output()
-            .ok();
 
         // Wait for the sleep command to finish
         std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -358,15 +365,17 @@ mod tests {
                 "-y",
                 "24",
                 "sleep 30",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
             ])
             .output()
             .expect("tmux new-session");
         assert!(output.status.success());
-
-        Command::new("tmux")
-            .args(["set-option", "-t", &session_name, "remain-on-exit", "on"])
-            .output()
-            .ok();
 
         std::thread::sleep(std::time::Duration::from_millis(200));
 
