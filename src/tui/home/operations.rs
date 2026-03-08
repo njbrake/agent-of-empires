@@ -264,14 +264,17 @@ impl HomeView {
             }
 
             // No profile change - update in place
-            if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            // Read old title before mutation so we can detect renames
+            let old_title = self.get_instance(&id).map(|i| i.title.clone());
+
+            self.mutate_instance(&id, |inst| {
                 inst.title = effective_title.clone();
                 inst.group_path = effective_group.clone();
-            }
+            });
 
             // Handle tmux rename if title changed
-            if let Some(inst) = self.get_instance(&id) {
-                if inst.title != effective_title {
+            if old_title.is_some_and(|t| t != effective_title) {
+                if let Some(inst) = self.get_instance(&id) {
                     let tmux_session = inst.tmux_session()?;
                     if tmux_session.exists() {
                         let new_tmux_name =
