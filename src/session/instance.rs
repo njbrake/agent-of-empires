@@ -183,22 +183,14 @@ fn generate_claude_session_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-/// Create a polling closure for Claude that reads the debug `latest` symlink.
+/// Polling closure that extracts Claude's session UUID from `~/.claude/debug/latest`.
 ///
-/// Newer Claude versions use `~/.claude/debug-logs/latest`; older ones use
-/// `~/.claude/debug/latest`. We try both paths in order. The symlink target
-/// is `<UUID>.txt` -- we extract the UUID (8-4-4-4-12 hex format).
-/// Returns `None` on any failure (missing symlink, invalid path, non-UUID).
+/// The symlink points to `<UUID>.txt`. Requires debug mode (`--debug` / `DEBUG=1`).
 pub fn claude_poll_fn() -> impl Fn() -> Option<String> + Send + 'static {
     move || {
         let home = dirs::home_dir()?;
-        let candidates = [
-            home.join(".claude/debug-logs/latest"),
-            home.join(".claude/debug/latest"),
-        ];
-        candidates
-            .iter()
-            .find_map(|path| extract_uuid_from_symlink_target(path))
+        let path = home.join(".claude/debug/latest");
+        extract_uuid_from_symlink_target(&path)
     }
 }
 
@@ -589,13 +581,10 @@ fn collect_codex_sessions(
     Ok(())
 }
 
-/// Capture session ID from Gemini CLI filesystem.
+/// Capture Gemini session ID from `~/.gemini/tmp/<dir>/chats/session-*.json`.
 ///
-/// Gemini stores sessions at `~/.gemini/tmp/<project_hash>/chats/session-*.json`.
-/// The project hash is a SHA-256 hex digest of the absolute project path.
-/// Each session file contains a `sessionId` field. We compute the expected
-/// project hash, scan only the matching subdirectory, and return the `sessionId`
-/// from the most recently modified session file.
+/// `<dir>` is a SHA-256 hash (legacy) or slug (current). We try the hash as a
+/// fast path, then scan all subdirs and verify via the `projectHash` JSON field.
 fn capture_gemini_session_id(project_path: &str, exclusion: &HashSet<String>) -> Result<String> {
     use sha2::{Digest, Sha256};
 
@@ -615,8 +604,7 @@ fn capture_gemini_session_id(project_path: &str, exclusion: &HashSet<String>) ->
         Sha256::digest(canonical_project.to_string_lossy().as_bytes())
     );
 
-    // Try the exact project hash directory first; fall back to scanning all subdirs
-    // in case the hash format varies across Gemini CLI versions.
+    // Hash-named dir (legacy) as fast path; fall back to scanning all subdirs.
     let project_dirs: Vec<std::path::PathBuf> = {
         let exact = tmp_dir.join(&expected_hash);
         if exact.is_dir() {
@@ -637,7 +625,6 @@ fn capture_gemini_session_id(project_path: &str, exclusion: &HashSet<String>) ->
             continue;
         }
 
-        // When scanning non-exact dirs, verify the projectHash inside the session file
         let is_exact_match = project_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -654,6 +641,7 @@ fn capture_gemini_session_id(project_path: &str, exclusion: &HashSet<String>) ->
                 continue;
             }
 
+            // For slug-named dirs, verify projectHash inside the file.
             if !is_exact_match {
                 let file_hash = extract_gemini_project_hash_from_file(&path).unwrap_or_default();
                 if file_hash != expected_hash {
@@ -717,15 +705,19 @@ fn extract_gemini_project_hash_from_file(path: &std::path::Path) -> Option<Strin
         .map(String::from)
 }
 
-/// Capture session ID from Mistral Vibe filesystem.
+/// Capture Vibe session ID from `meta.json` files in the session log directory.
 ///
-/// Vibe stores sessions at `~/.vibe/logs/session/session_<ts>_<id[:8]>/meta.json`.
-/// Directory names are NOT valid session IDs. The actual UUID lives inside
-/// `meta.json` under the `session_id` field. CWD is at `environment.working_directory`.
+/// Default path: `~/.vibe/logs/session/`; overridden by `VIBE_HOME` env var
+/// (resolves to `$VIBE_HOME/logs/session/`).
+/// Each session dir contains `meta.json` with `session_id` and
+/// `environment.working_directory`. Returns the most recent match for the project.
 fn capture_vibe_session_id(project_path: &str, exclusion: &HashSet<String>) -> Result<String> {
-    let vibe_home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-        .join(".vibe");
+    let vibe_home = match std::env::var("VIBE_HOME") {
+        Ok(val) => std::path::PathBuf::from(val),
+        Err(_) => dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+            .join(".vibe"),
+    };
     let sessions_dir = vibe_home.join("logs").join("session");
 
     if !sessions_dir.exists() {
@@ -735,7 +727,6 @@ fn capture_vibe_session_id(project_path: &str, exclusion: &HashSet<String>) -> R
         );
     }
 
-    // Collect (session_id_from_meta, meta_path, mtime) tuples
     let mut candidates: Vec<(String, std::path::PathBuf, std::time::SystemTime)> = Vec::new();
 
     for entry in resilient_read_dir(&sessions_dir)? {
