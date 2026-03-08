@@ -704,7 +704,7 @@ fn generate_id() -> String {
 /// breaking out of the outer `bash -c '...'` wrapper.
 fn wrap_command_ignore_suspend(cmd: &str) -> String {
     let escaped = cmd.replace('\'', "'\\''");
-    format!("bash -c 'stty susp undef; exec {}'", escaped)
+    format!("bash -c 'stty susp undef; exec env {}'", escaped)
 }
 
 #[cfg(test)]
