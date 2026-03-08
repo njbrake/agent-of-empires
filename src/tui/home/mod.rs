@@ -628,6 +628,23 @@ impl HomeView {
         }
     }
 
+    /// Like `mutate_instance`, but for fallible operations. Applies `f` to
+    /// both `instance_map` and `instances` vec. If the first call returns an
+    /// error, the second copy is left untouched and the error is propagated.
+    pub(super) fn try_mutate_instance(
+        &mut self,
+        id: &str,
+        f: impl Fn(&mut Instance) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        if let Some(inst) = self.instance_map.get_mut(id) {
+            f(inst)?;
+        }
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            f(inst)?;
+        }
+        Ok(())
+    }
+
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
         self.mutate_instance(id, |inst| inst.last_error = error.clone());
     }
@@ -637,13 +654,7 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_terminal_with_size(size)?;
-            let terminal_info = inst.terminal_info.clone();
-            if let Some(map_inst) = self.instance_map.get_mut(id) {
-                map_inst.terminal_info = terminal_info;
-            }
-        }
+        self.try_mutate_instance(id, |inst| inst.start_terminal_with_size(size))?;
         self.save()?;
         Ok(())
     }
@@ -698,9 +709,6 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_container_terminal_with_size(size)?;
-        }
-        Ok(())
+        self.try_mutate_instance(id, |inst| inst.start_container_terminal_with_size(size))
     }
 }

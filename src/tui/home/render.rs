@@ -241,7 +241,7 @@ impl HomeView {
                 (icon, text, style)
             }
             Item::Session { id, .. } => {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     match self.view_mode {
                         ViewMode::Agent => {
                             let icon = match inst.status {
@@ -317,7 +317,7 @@ impl HomeView {
         ));
 
         if let Item::Session { id, .. } = item {
-            if let Some(inst) = self.instance_map.get(id) {
+            if let Some(inst) = self.get_instance(id) {
                 if let Some(wt_info) = &inst.worktree_info {
                     line_spans.push(Span::styled(
                         format!("  {}", wt_info.branch),
@@ -370,7 +370,7 @@ impl HomeView {
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     self.preview_cache.content = inst
                         .capture_output_with_size(height as usize, width, height)
                         .unwrap_or_default();
@@ -402,7 +402,7 @@ impl HomeView {
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     self.terminal_preview_cache.content = inst
                         .terminal_tmux_session()
                         .and_then(|s| s.capture_pane(height as usize))
@@ -435,7 +435,7 @@ impl HomeView {
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     self.container_terminal_preview_cache.content = inst
                         .container_terminal_tmux_session()
                         .and_then(|s| s.capture_pane(height as usize))
@@ -472,7 +472,7 @@ impl HomeView {
                 self.refresh_preview_cache_if_needed(inner.width, inner.height);
 
                 if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         Preview::render_with_cache(
                             frame,
                             inner,
@@ -494,7 +494,7 @@ impl HomeView {
 
                 if let Some(id) = selected_id {
                     // Determine which terminal to preview based on mode
-                    let terminal_mode = if let Some(inst) = self.instance_map.get(&id) {
+                    let terminal_mode = if let Some(inst) = self.get_instance(&id) {
                         if inst.is_sandboxed() {
                             self.get_terminal_mode(&id)
                         } else {
@@ -521,7 +521,7 @@ impl HomeView {
                     }
 
                     // Now borrow instance for rendering
-                    if let Some(inst) = self.instance_map.get(&id) {
+                    if let Some(inst) = self.get_instance(&id) {
                         let (terminal_running, preview_content) = match terminal_mode {
                             TerminalMode::Container => {
                                 let running = inst
@@ -600,7 +600,7 @@ impl HomeView {
         // Show c: container/host hint for sandboxed sessions in Terminal view
         if self.view_mode == ViewMode::Terminal {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     if inst.is_sandboxed() {
                         spans.extend([
                             Span::styled("│", sep_style),
