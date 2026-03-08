@@ -51,20 +51,13 @@ const POLL_MAX_INTERVAL: Duration = Duration::from_secs(60);
 const POLL_BACKOFF_FACTOR: f64 = 1.5;
 const POLL_STABLE_THRESHOLD: u32 = 3;
 
-/// Bounds how long the poller blocks on a capture gate (covers the full capture
-/// cycle of initial_delay + max_attempts * retry_delay with margin).
+/// Timeout for deferred capture completion, with margin for retry delays.
 const CAPTURE_GATE_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Coordination gate between the deferred capture thread and the session poller.
+/// Synchronization gate between deferred capture and polling threads.
 ///
-/// When an agent (e.g. opencode) requires both a deferred capture (to discover the
-/// initial session ID) and continuous polling (to detect later changes), the poller
-/// must wait for the capture to finish before entering its poll loop. This avoids
-/// concurrent writes to the storage file and redundant work.
-///
-/// The capture thread calls [`CaptureGate::complete`] when it finishes (with or
-/// without a result). The poller thread calls [`CaptureGate::wait`] to block until
-/// the gate opens, then uses the captured ID as its `initial_known` value.
+/// Ensures capture completes before polling starts, avoiding concurrent storage writes.
+/// The capture thread calls [`CaptureGate::complete`]; the poller calls [`CaptureGate::wait`].
 pub struct CaptureGate {
     inner: Mutex<CaptureGateState>,
     cond: Condvar,
@@ -115,12 +108,8 @@ impl CaptureGate {
         result.0.captured_id.clone()
     }
 
-    /// Non-blocking check: if the gate is complete and holds a captured ID,
-    /// take it (returns `Some(id)` exactly once). Subsequent calls return `None`.
-    ///
-    /// Used by the TUI thread in `apply_session_id_updates()` to drain completed
-    /// captures without blocking, preserving the invariant that only the TUI
-    /// thread writes to `sessions.json`.
+    /// Non-blocking check: if complete, take and return the captured ID (once only).
+    /// Subsequent calls return `None`.
     pub fn try_take(&self) -> Option<String> {
         let Ok(mut state) = self.inner.lock() else {
             return None;
@@ -177,7 +166,6 @@ impl AdaptiveInterval {
         }
     }
 
-    /// Get the current interval duration
     pub fn current(&self) -> Duration {
         self.current
     }
@@ -199,7 +187,6 @@ impl AdaptiveInterval {
         self.stable_count = 0;
     }
 
-    /// Reset interval to initial state (external trigger)
     pub fn reset(&mut self) {
         self.record_change();
     }
@@ -214,10 +201,7 @@ pub enum PollCommand {
     Stop,
 }
 
-/// Manages polling thread lifecycle and communication.
-///
-/// Results flow back to the TUI via `result_rx`, matching the channel pattern
-/// used by `StatusPoller`, `DeletionPoller`, and `CreationPoller`.
+/// Manages polling thread lifecycle and inter-thread communication via mpsc channels.
 pub struct SessionPoller {
     session_name: String,
     cmd_tx: mpsc::Sender<PollCommand>,
@@ -338,8 +322,8 @@ impl SessionPoller {
                 loop {
                     match cmd_rx.recv_timeout(interval.current()) {
                         Ok(PollCommand::Stop) => break,
-                        Ok(PollCommand::PollNow) => { /* fall through to poll */ }
-                        Err(RecvTimeoutError::Timeout) => { /* fall through to poll */ }
+                        Ok(PollCommand::PollNow) => {}
+                        Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
 
@@ -371,8 +355,7 @@ impl SessionPoller {
             }
             Err(e) => {
                 tracing::warn!("Failed to spawn poller thread {}: {}", thread_label, e);
-                // Restore channels so this poller can be retried.
-                // The closure was consumed by the failed spawn, so recreate both.
+                // Restore channels to allow retrying spawn
                 let (cmd_tx, cmd_rx) = mpsc::channel();
                 self.cmd_tx = cmd_tx;
                 self.cmd_rx = Some(cmd_rx);

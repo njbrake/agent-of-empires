@@ -128,31 +128,24 @@ pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_command_override: HashMap<String, String>,
 
-    /// Max retry attempts for OpenCode session capture
     #[serde(default = "default_opencode_max_retry_attempts")]
     pub opencode_max_retry_attempts: u32,
 
-    /// Delay between OpenCode session capture retries (seconds)
     #[serde(default = "default_opencode_retry_delay_secs")]
     pub opencode_retry_delay_secs: u64,
 
-    /// Timeout for OpenCode session list command (seconds)
     #[serde(default = "default_opencode_command_timeout_secs")]
     pub opencode_command_timeout_secs: u64,
 
-    /// Overall deadline for OpenCode session capture (seconds)
     #[serde(default = "default_opencode_capture_deadline_secs")]
     pub opencode_capture_deadline_secs: u64,
 
-    /// Initial delay before deferred session capture starts (seconds)
     #[serde(default = "default_deferred_capture_initial_delay_secs")]
     pub deferred_capture_initial_delay_secs: u64,
 
-    /// Max attempts for deferred session capture
     #[serde(default = "default_deferred_capture_max_attempts")]
     pub deferred_capture_max_attempts: u32,
 
-    /// Delay between deferred session capture retries (seconds)
     #[serde(default = "default_deferred_capture_retry_delay_secs")]
     pub deferred_capture_retry_delay_secs: u64,
 }

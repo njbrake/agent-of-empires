@@ -111,7 +111,7 @@ pub struct SandboxInfo {
     pub custom_instruction: Option<String>,
 }
 
-/// Deserializer for agent_session_id that converts empty and whitespace-only strings to None
+/// Deserialize agent_session_id, treating empty/whitespace strings as None.
 fn deserialize_session_id<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -178,12 +178,7 @@ pub struct Instance {
     pub(crate) capture_gate: Option<Arc<CaptureGate>>,
 }
 
-/// Generate a new UUID for Claude Code session.
-///
-/// Creates a new universally unique identifier (UUID v4) for use as a Claude Code session ID.
-/// This function is used when a new Claude Code session is started without an existing session
-/// to resume from. The UUID is converted to a string representation suitable for passing to
-/// Claude Code CLI commands.
+/// Generate a new UUID v4 for a Claude Code session.
 fn generate_claude_session_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -360,15 +355,9 @@ fn filter_agent_sessions<'a>(
 
 /// Capture session ID from OpenCode CLI with retry logic.
 ///
-/// Retries up to `opencode_max_retry_attempts` times (default 3) with
-/// `opencode_retry_delay_secs` between attempts (default 2s). Each attempt runs
-/// `opencode session list --format json` with a configurable timeout
-/// (`opencode_command_timeout_secs`, default 5s). An overall deadline
-/// (`opencode_capture_deadline_secs`, default 15s) caps the total capture time.
-///
-/// When a `project_path` is provided, sessions are filtered to prefer those matching
-/// the project directory, sorted by most recently updated. Falls back to the first session
-/// if no directory match is found.
+/// Retries with configurable attempts, delays, and an overall deadline (see
+/// `SessionConfig`). Each attempt runs `opencode session list --format json`
+/// and selects the best match by project directory and update time.
 ///
 /// # Errors
 ///
@@ -673,10 +662,7 @@ fn capture_gemini_session_id(project_path: &str, exclusion: &HashSet<String>) ->
         .ok_or_else(|| anyhow::anyhow!("No Gemini session found matching project path"))
 }
 
-/// Extract the session ID from a Gemini session JSON file.
-///
-/// Falls back to the filename stem if the `id` field is absent, since Gemini
-/// also accepts `--resume <index>` or `--resume` (latest).
+/// Extract session ID from a Gemini session JSON file, falling back to filename stem.
 fn extract_gemini_session_id_from_file(path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -857,9 +843,8 @@ fn append_resume_flags(
             Some(ResumeStrategy::Subcommand(_))
         );
         if is_subcommand {
-            // Subcommand-style resume (e.g. `codex resume <id>`) must appear
-            // right after the binary name so other flags land after it.
-            // Assumes unquoted binary path (no spaces); fine for $PATH lookups.
+            // Subcommand resume must appear right after the binary name.
+            // Assumes unquoted binary path (no spaces in $PATH lookups).
             if let Some(space_pos) = cmd.find(' ') {
                 let binary = &cmd[..space_pos];
                 let flags = &cmd[space_pos..];
