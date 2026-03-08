@@ -70,9 +70,9 @@ impl HomeView {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 
-            self.mutate_instance(&id, |inst| inst.status = Status::Deleting);
+            self.set_instance_status(&id, Status::Deleting);
 
-            if let Some(inst) = self.instance_map.get(&id) {
+            if let Some(inst) = self.get_instance(&id) {
                 let request = DeletionRequest {
                     session_id: id.clone(),
                     instance: inst.clone(),
@@ -127,7 +127,7 @@ impl HomeView {
                     inst.group_path = String::new();
                 });
 
-                if let Some(inst) = self.instance_map.get(&session_id) {
+                if let Some(inst) = self.get_instance(&session_id) {
                     let delete_worktree = options.delete_worktrees
                         && inst
                             .worktree_info
@@ -185,8 +185,7 @@ impl HomeView {
 
             // Get current values for comparison
             let (current_title, current_group) = self
-                .instance_map
-                .get(&id)
+                .get_instance(&id)
                 .map(|i| (i.title.clone(), i.group_path.clone()))
                 .unwrap_or_default();
 
@@ -226,7 +225,7 @@ impl HomeView {
                     instance.group_path = effective_group.clone();
 
                     // Handle tmux rename if title changed
-                    if let Some(orig_inst) = self.instance_map.get(&id) {
+                    if let Some(orig_inst) = self.get_instance(&id) {
                         if orig_inst.title != effective_title {
                             let tmux_session = orig_inst.tmux_session()?;
                             if tmux_session.exists() {
@@ -273,7 +272,7 @@ impl HomeView {
             }
 
             // Handle tmux rename if title changed
-            if let Some(inst) = self.instance_map.get(&id) {
+            if let Some(inst) = self.get_instance(&id) {
                 if inst.title != effective_title {
                     let tmux_session = inst.tmux_session()?;
                     if tmux_session.exists() {

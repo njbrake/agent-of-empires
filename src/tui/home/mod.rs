@@ -417,21 +417,22 @@ impl HomeView {
                 };
 
                 let old_status = self
-                    .instance_map
-                    .get(&update.id)
+                    .get_instance(&update.id)
                     .filter(|inst| !dominated(inst))
                     .map(|inst| inst.status);
 
                 if old_status.is_some() {
+                    let new_status = update.status;
+                    let new_error = update.last_error;
                     self.mutate_instance(&update.id, |inst| {
-                        inst.status = update.status;
-                        inst.last_error = update.last_error.clone();
+                        inst.status = new_status;
+                        inst.last_error = new_error;
                     });
-                }
 
-                if let Some(old) = old_status {
-                    if old != update.status {
-                        crate::sound::play_for_transition(old, update.status, &self.sound_config);
+                    if let Some(old) = old_status {
+                        if old != new_status {
+                            crate::sound::play_for_transition(old, new_status, &self.sound_config);
+                        }
                     }
                 }
             }
@@ -458,7 +459,7 @@ impl HomeView {
                 let error = result.error;
                 self.mutate_instance(&result.session_id, |inst| {
                     inst.status = Status::Error;
-                    inst.last_error = error.clone();
+                    inst.last_error = error;
                 });
             }
             return true;
@@ -739,14 +740,31 @@ impl HomeView {
         self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
     }
 
-    /// Update an instance in both instance_map and instances vec to keep them in sync.
-    pub(super) fn mutate_instance(&mut self, id: &str, f: impl Fn(&mut Instance)) {
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            f(inst);
-        }
+    /// Centralized instance mutation: applies `f` once to the `instances` vec
+    /// entry, then clones the result into `instance_map`. This guarantees both
+    /// collections stay in sync even for non-idempotent closures.
+    pub(super) fn mutate_instance(&mut self, id: &str, f: impl FnOnce(&mut Instance)) {
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
             f(inst);
+            self.instance_map.insert(id.to_string(), inst.clone());
         }
+    }
+
+    /// Like `mutate_instance`, but for fallible operations. Clones the entry,
+    /// applies `f` to the clone, and writes back to both collections only on
+    /// success -- neither collection is modified on error.
+    pub(super) fn try_mutate_instance(
+        &mut self,
+        id: &str,
+        f: impl FnOnce(&mut Instance) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            let mut updated = inst.clone();
+            f(&mut updated)?;
+            *inst = updated.clone();
+            self.instance_map.insert(id.to_string(), updated);
+        }
+        Ok(())
     }
 
     pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
@@ -760,7 +778,7 @@ impl HomeView {
     }
 
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
-        self.mutate_instance(id, |inst| inst.last_error = error.clone());
+        self.mutate_instance(id, |inst| inst.last_error = error);
     }
 
     pub fn start_terminal_for_instance_with_size(
@@ -768,22 +786,9 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        // Start via instance_map (authoritative), then sync to vec
-        let result = self
-            .instance_map
-            .get_mut(id)
-            .ok_or_else(|| anyhow::anyhow!("instance not found: {id}"))
-            .and_then(|inst| inst.start_terminal_with_size(size));
-        if result.is_ok() {
-            if let Some(map_inst) = self.instance_map.get(id) {
-                let terminal_info = map_inst.terminal_info.clone();
-                if let Some(vec_inst) = self.instances.iter_mut().find(|i| i.id == id) {
-                    vec_inst.terminal_info = terminal_info;
-                }
-            }
-            self.save()?;
-        }
-        result
+        self.try_mutate_instance(id, |inst| inst.start_terminal_with_size(size))?;
+        self.save()?;
+        Ok(())
     }
 
     /// Restart in-place in instance_map to preserve poller threads; reload() syncs vec later.
@@ -850,9 +855,6 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        self.instance_map
-            .get_mut(id)
-            .ok_or_else(|| anyhow::anyhow!("instance not found: {id}"))
-            .and_then(|inst| inst.start_container_terminal_with_size(size))
+        self.try_mutate_instance(id, |inst| inst.start_container_terminal_with_size(size))
     }
 }

@@ -403,7 +403,7 @@ impl HomeView {
                 // Toggle container/host terminal mode (only in Terminal view for sandboxed sessions)
                 if self.view_mode == ViewMode::Terminal {
                     if let Some(id) = &self.selected_session {
-                        if let Some(inst) = self.instance_map.get(id) {
+                        if let Some(inst) = self.get_instance(id) {
                             if inst.is_sandboxed() {
                                 let id = id.clone();
                                 self.toggle_terminal_mode(&id);
@@ -464,7 +464,7 @@ impl HomeView {
                 let project_path = self
                     .selected_session
                     .as_ref()
-                    .and_then(|id| self.instance_map.get(id))
+                    .and_then(|id| self.get_instance(id))
                     .map(|inst| inst.project_path.clone());
                 match SettingsView::new(self.storage.profile(), project_path) {
                     Ok(view) => self.settings_view = Some(view),
@@ -487,7 +487,7 @@ impl HomeView {
                     return None;
                 };
 
-                let Some(inst) = self.instance_map.get(session_id) else {
+                let Some(inst) = self.get_instance(session_id) else {
                     self.info_dialog =
                         Some(InfoDialog::new("Error", "Could not find session data."));
                     return None;
@@ -507,7 +507,7 @@ impl HomeView {
             }
             KeyCode::Char('x') => {
                 if let Some(session_id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(session_id) {
+                    if let Some(inst) = self.get_instance(session_id) {
                         if inst.status == Status::Stopped || inst.status == Status::Deleting {
                             return None;
                         }
@@ -528,7 +528,7 @@ impl HomeView {
                     return None;
                 }
                 if let Some(session_id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(session_id) {
+                    if let Some(inst) = self.get_instance(session_id) {
                         if inst.status == Status::Deleting {
                             return None;
                         }
@@ -580,7 +580,7 @@ impl HomeView {
             }
             KeyCode::Char('r') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                 if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         if inst.status == Status::Deleting {
                             return None;
                         }
@@ -633,7 +633,7 @@ impl HomeView {
             }
             KeyCode::Enter => {
                 if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         if inst.status == Status::Deleting {
                             return None;
                         }
@@ -641,7 +641,7 @@ impl HomeView {
                     return match self.view_mode {
                         ViewMode::Agent => Some(Action::AttachSession(id.clone())),
                         ViewMode::Terminal => {
-                            let terminal_mode = if let Some(inst) = self.instance_map.get(id) {
+                            let terminal_mode = if let Some(inst) = self.get_instance(id) {
                                 if inst.is_sandboxed() {
                                     self.get_terminal_mode(id)
                                 } else {
@@ -774,7 +774,7 @@ impl HomeView {
         for (idx, item) in self.flat_items.iter().enumerate() {
             let haystack = match item {
                 Item::Session { id, .. } => {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         format!("{} {}", inst.title, inst.project_path)
                     } else {
                         continue;
@@ -828,7 +828,7 @@ impl HomeView {
         for (idx, item) in self.flat_items.iter().enumerate() {
             let haystack = match item {
                 Item::Session { id, .. } => {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         format!("{} {}", inst.title, inst.project_path)
                     } else {
                         continue;
