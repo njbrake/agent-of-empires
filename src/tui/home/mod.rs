@@ -269,19 +269,15 @@ impl HomeView {
                 continue;
             }
 
-            match inst.tool.as_str() {
-                "claude" | "opencode" => {
-                    if inst.session_id_poller.is_none() {
-                        inst.maybe_start_poller();
-                    }
+            if inst.supports_session_poller() {
+                if inst.session_id_poller.is_none() {
+                    inst.maybe_start_poller();
                 }
-                "codex" | "gemini" | "vibe" if inst.agent_session_id.is_none() => {
-                    if let Some(id) = inst.try_retroactive_capture() {
-                        inst.agent_session_id = Some(id);
-                        recovered_session_id = true;
-                    }
+            } else if inst.supports_deferred_capture() && inst.agent_session_id.is_none() {
+                if let Some(id) = inst.try_retroactive_capture() {
+                    inst.agent_session_id = Some(id);
+                    recovered_session_id = true;
                 }
-                _ => {}
             }
         }
         if recovered_session_id {
@@ -423,43 +419,38 @@ impl HomeView {
     /// completed capture gates.
     /// Returns true if any instance was updated.
     pub fn apply_session_id_updates(&mut self) -> bool {
-        let mut changed = false;
-        for inst in &mut self.instances {
-            // 1. Check the poller channel (Claude, OpenCode)
-            let update = inst
+        let mut updates: Vec<(String, String)> = Vec::new();
+        for inst in &self.instances {
+            // 1. Poller channel (Claude, OpenCode)
+            if let Some((_id, session_id)) = inst
                 .session_id_poller
                 .as_ref()
                 .and_then(|p| p.lock().ok())
-                .and_then(|p| p.try_recv_session_update());
-            if let Some((_instance_id, session_id)) = update {
-                inst.agent_session_id = Some(session_id.clone());
-                if let Some(map_inst) = self.instance_map.get_mut(&inst.id) {
-                    map_inst.agent_session_id = Some(session_id);
-                }
-                changed = true;
+                .and_then(|p| p.try_recv_session_update())
+            {
+                updates.push((inst.id.clone(), session_id));
                 continue;
             }
 
-            // 2. Drain completed capture gates (Codex, Gemini, Vibe, and
-            //    OpenCode before its poller propagates). The deferred capture
-            //    thread signals the gate; we pick up the result here so that
-            //    only the TUI thread writes to sessions.json.
+            // 2. Completed capture gates (all agents with deferred capture)
             if inst.agent_session_id.is_none() {
                 if let Some(session_id) = inst.capture_gate.as_ref().and_then(|g| g.try_take()) {
-                    inst.agent_session_id = Some(session_id.clone());
-                    if let Some(map_inst) = self.instance_map.get_mut(&inst.id) {
-                        map_inst.agent_session_id = Some(session_id);
-                    }
-                    changed = true;
+                    updates.push((inst.id.clone(), session_id));
                 }
             }
         }
-        if changed {
+
+        if !updates.is_empty() {
+            for (id, session_id) in &updates {
+                self.mutate_instance(id, |inst| {
+                    inst.agent_session_id = Some(session_id.clone());
+                });
+            }
             if let Err(e) = self.save() {
                 tracing::error!("Failed to save after session ID update: {}", e);
             }
         }
-        changed
+        !updates.is_empty()
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.

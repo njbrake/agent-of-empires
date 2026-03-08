@@ -1084,6 +1084,33 @@ impl Instance {
         self.yolo_mode
     }
 
+    /// Whether this agent uses a session ID poller for live tracking.
+    ///
+    /// Pollers continuously monitor for session ID changes via agent-specific
+    /// poll functions (e.g. reading Claude's JSONL logs, querying OpenCode's
+    /// session DB). Agents without a poll function use one-shot deferred
+    /// capture instead.
+    pub fn supports_session_poller(&self) -> bool {
+        matches!(self.tool.as_str(), "claude" | "opencode")
+    }
+
+    /// Whether this agent creates its own session on startup, requiring
+    /// post-launch ID capture.
+    ///
+    /// Derived from the agent's `ResumeStrategy`: agents with `Flag` or
+    /// `Subcommand` strategies create their own sessions (OpenCode, Codex,
+    /// Gemini, Vibe). Claude uses `FlagPair` with a pre-launch UUID, and
+    /// Cursor has `Unsupported` -- neither needs deferred capture.
+    pub fn supports_deferred_capture(&self) -> bool {
+        use crate::agents::{get_agent, ResumeStrategy};
+        get_agent(&self.tool).is_some_and(|a| {
+            matches!(
+                a.resume_strategy,
+                ResumeStrategy::Flag(_) | ResumeStrategy::Subcommand(_)
+            )
+        })
+    }
+
     /// Acquire a pre-launch session ID for the agent.
     ///
     /// Returns `(session_id, is_existing)`. If a persisted ID exists, returns it
@@ -1563,7 +1590,7 @@ impl Instance {
         if self.agent_session_id.is_some() {
             return;
         }
-        if !matches!(self.tool.as_str(), "opencode" | "codex" | "gemini" | "vibe") {
+        if !self.supports_deferred_capture() {
             return;
         }
 
@@ -1731,10 +1758,10 @@ impl Instance {
     /// project, which is the correct behaviour when resuming monitoring of an
     /// already-running agent on TUI restart.
     fn maybe_start_poller_with_time(&mut self, launch_time_ms: Option<f64>) {
-        let tool = self.tool.as_str();
-        if !matches!(tool, "claude" | "opencode") {
+        if !self.supports_session_poller() {
             return;
         }
+        let tool = self.tool.as_str();
 
         let effective_launch_time = launch_time_ms.unwrap_or(0.0);
 
