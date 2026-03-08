@@ -80,9 +80,34 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                     let worktree_path = PathBuf::from(&inst.project_path);
                     let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
+                    // Sandbox containers run as root, so files they create
+                    // are root-owned on the host. Delete contents from inside
+                    // the container where root can remove them.
+                    let sandbox_cleaned = if inst.is_sandboxed() {
+                        let container = containers::DockerContainer::from_session_id(&inst.id);
+                        if container.exists().unwrap_or(false) {
+                            if !container.is_running().unwrap_or(false) {
+                                let _ = container.start();
+                            }
+                            container
+                                .exec(&["find", ".", "-mindepth", "1", "-delete"])
+                                .is_ok()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
                     match GitWorktree::new(main_repo) {
                         Ok(git_wt) => {
-                            if let Err(e) = git_wt.remove_worktree(&worktree_path, args.force) {
+                            let result = if sandbox_cleaned {
+                                let _ = std::fs::remove_dir(&worktree_path);
+                                git_wt.prune_worktrees()
+                            } else {
+                                git_wt.remove_worktree(&worktree_path, args.force)
+                            };
+                            if let Err(e) = result {
                                 eprintln!("Warning: failed to remove worktree: {}", e);
                                 eprintln!(
                                     "You may need to remove it manually with: git worktree remove {}",
