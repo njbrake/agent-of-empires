@@ -26,7 +26,7 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
     let status_path = hook_status_dir(instance_id).join("status");
 
     // Check file age first -- ignore stale files from crashed sessions
-    let metadata = std::fs::metadata(&status_path).ok()?;
+    let metadata = std::fs::symlink_metadata(&status_path).ok()?;
     let modified = metadata.modified().ok()?;
     if modified.elapsed().ok()? > STALENESS_THRESHOLD {
         tracing::debug!(
@@ -109,6 +109,16 @@ mod tests {
     #[test]
     fn test_read_missing_file() {
         assert_eq!(read_hook_status("nonexistent_instance_id"), None);
+    }
+
+    #[test]
+    fn test_read_dangling_symlink() {
+        let id = "test_dangling_symlink";
+        let dir = hook_status_dir(id);
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", dir.join("status")).unwrap();
+        assert_eq!(read_hook_status(id), None);
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

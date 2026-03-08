@@ -86,7 +86,10 @@ fn remove_aoe_entries(matchers: &mut Vec<Value>) {
 pub fn install_hooks(settings_path: &Path) -> Result<()> {
     let mut settings: Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        serde_json::from_str(&content).unwrap_or_else(|e| {
+            tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
+            serde_json::json!({})
+        })
     } else {
         serde_json::json!({})
     };
@@ -142,8 +145,10 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     }
 
     let content = std::fs::read_to_string(settings_path)?;
-    let mut settings: Value =
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
+    let mut settings: Value = serde_json::from_str(&content).unwrap_or_else(|e| {
+        tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
+        serde_json::json!({})
+    });
 
     let Some(hooks_obj) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return Ok(false);
@@ -380,7 +385,12 @@ mod tests {
         // Verify they're there
         let content: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-        assert!(content.get("hooks").unwrap().as_object().unwrap().len() > 0);
+        assert!(!content
+            .get("hooks")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty());
 
         // Uninstall
         let modified = uninstall_hooks(&settings_path).unwrap();

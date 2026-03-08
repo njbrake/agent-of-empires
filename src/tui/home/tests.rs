@@ -1455,11 +1455,7 @@ fn test_o_key_flat_items_sorted_az() {
     for item in &env.view.flat_items {
         match item {
             Item::Group { name, .. } => {
-                if name == "work" {
-                    in_work_group = true;
-                } else {
-                    in_work_group = false;
-                }
+                in_work_group = name == "work";
             }
             Item::Session { id, .. } => {
                 if in_work_group {
@@ -1492,11 +1488,7 @@ fn test_o_key_flat_items_sorted_za() {
     for item in &env.view.flat_items {
         match item {
             Item::Group { name, .. } => {
-                if name == "work" {
-                    in_work_group = true;
-                } else {
-                    in_work_group = false;
-                }
+                in_work_group = name == "work";
             }
             Item::Session { id, .. } => {
                 if in_work_group {
@@ -1530,11 +1522,7 @@ fn test_o_key_flat_items_newest_preserves_insertion_order() {
     for item in &env.view.flat_items {
         match item {
             Item::Group { name, .. } => {
-                if name == "work" {
-                    in_work_group = true;
-                } else {
-                    in_work_group = false;
-                }
+                in_work_group = name == "work";
             }
             Item::Session { id, .. } => {
                 if in_work_group {
