@@ -249,8 +249,8 @@ impl HomeView {
                 .unwrap_or(35),
         };
 
-        // Restore tmux env vars so build_exclusion_set() can distinguish instances
-        // and exclude already-claimed session IDs.
+        // Synchronize tmux env with sessions.json so build_exclusion_set()
+        // sees current data instead of stale values from previous runs.
         for inst in &view.instances {
             let tmux_name = match inst.tmux_session() {
                 Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
@@ -265,10 +265,8 @@ impl HomeView {
                 tracing::warn!("Failed to set AOE_INSTANCE_ID for {}: {}", inst.id, e);
             }
 
-            // Synchronize tmux env with sessions.json: set the captured session
-            // ID if known, or clear stale values left by previous (possibly buggy)
-            // builds. Pollers re-publish on discovery, so they get cleared here to
-            // avoid poisoning the exclusion set with stale data.
+            // Set if known, clear if not. Pollers re-publish on discovery,
+            // so clearing is safe and prevents stale exclusion-set entries.
             if let Some(ref sid) = inst.agent_session_id {
                 if let Err(e) = crate::tmux::env::set_hidden_env(
                     &tmux_name,
@@ -310,7 +308,7 @@ impl HomeView {
                 }
             } else if inst.supports_deferred_capture() && inst.agent_session_id.is_none() {
                 if let Some(id) = inst.try_retroactive_capture() {
-                    // Publish to tmux env so build_exclusion_set() can exclude this ID.
+                    // Publish so build_exclusion_set() excludes this ID.
                     let tmux_name = inst
                         .tmux_session()
                         .map(|s| s.name().to_string())
