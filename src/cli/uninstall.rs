@@ -205,6 +205,9 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
     println!("Uninstalling...");
     println!();
 
+    // Remove AoE hooks from agent settings files (e.g. ~/.claude/settings.json)
+    crate::hooks::uninstall_all_hooks();
+
     // Perform uninstall
     for item in &found_items {
         match item.item_type.as_str() {

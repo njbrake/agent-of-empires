@@ -3,7 +3,11 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::{refresh_session_cache, session_exists_from_cache, SESSION_PREFIX};
+use super::{
+    refresh_session_cache, session_exists_from_cache,
+    utils::{append_remain_on_exit_args, is_pane_dead, is_pane_running_shell},
+    SESSION_PREFIX,
+};
 use crate::cli::truncate_id;
 use crate::process;
 use crate::session::Status;
@@ -50,7 +54,9 @@ impl Session {
             return Ok(());
         }
 
-        let args = build_create_args(&self.name, working_dir, command, size);
+        let mut args = build_create_args(&self.name, working_dir, command, size);
+        append_remain_on_exit_args(&mut args, &self.name);
+
         let output = Command::new("tmux").args(&args).output()?;
 
         // Note: With -d flag, tmux new-session returns 0 even if the shell command fails.
@@ -65,6 +71,14 @@ impl Session {
         super::refresh_session_cache();
 
         Ok(())
+    }
+
+    pub fn is_pane_dead(&self) -> bool {
+        is_pane_dead(&self.name)
+    }
+
+    pub fn is_pane_running_shell(&self) -> bool {
+        is_pane_running_shell(&self.name)
     }
 
     pub fn kill(&self) -> Result<()> {
@@ -249,6 +263,127 @@ fn build_create_args(
 mod tests {
     use super::*;
 
+    /// Helper: check if tmux is available for tests that need it
+    fn tmux_available() -> bool {
+        Command::new("tmux")
+            .arg("-V")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_remain_on_exit_and_pane_dead() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_remain_{}", std::process::id());
+        // Chain set-option -p with new-session to avoid race condition
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 1",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        // Wait for the sleep command to finish
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+
+        // Session should still exist (remain-on-exit keeps it)
+        let exists = Command::new("tmux")
+            .args(["has-session", "-t", &session_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(exists, "Session should still exist due to remain-on-exit");
+
+        // Pane should be dead (process exited)
+        let pane_dead = Command::new("tmux")
+            .args(["display-message", "-t", &session_name, "-p", "#{pane_dead}"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim() == "1")
+            .unwrap_or(false);
+        assert!(pane_dead, "Pane should be dead after command exits");
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_is_pane_dead_on_running_session() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_alive_{}", std::process::id());
+
+        // Create a session with a long-running command
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 30",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Pane should NOT be dead (sleep is still running)
+        let pane_dead = Command::new("tmux")
+            .args(["display-message", "-t", &session_name, "-p", "#{pane_dead}"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim() == "1")
+            .unwrap_or(false);
+        assert!(!pane_dead, "Pane should be alive while command is running");
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
     #[test]
     fn test_sanitize_session_name() {
         assert_eq!(sanitize_session_name("my-project"), "my-project");
@@ -308,5 +443,82 @@ mod tests {
 
         // Command should be last
         assert_eq!(args.last().unwrap(), "claude");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_is_pane_running_shell_on_shell_session() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_shell_{}", std::process::id());
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sh",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(
+            is_pane_running_shell(&session_name),
+            "Session running sh should be detected as a shell"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_is_pane_running_shell_on_non_shell_session() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_noshell_{}", std::process::id());
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep",
+                "30",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(
+            !is_pane_running_shell(&session_name),
+            "Session running 'sleep' should not be detected as a shell"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
     }
 }

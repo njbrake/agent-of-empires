@@ -4,7 +4,7 @@ mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
 mod terminal_session;
-mod utils;
+pub(crate) mod utils;
 
 pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};

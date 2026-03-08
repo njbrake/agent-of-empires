@@ -290,6 +290,8 @@ impl SettingsView {
         match self.scope {
             SettingsScope::Global => {
                 save_config(&self.global_config)?;
+                self.resolved_base =
+                    merge_configs(self.global_config.clone(), &self.profile_config);
             }
             SettingsScope::Profile => {
                 save_profile_config(&self.profile, &self.profile_config)?;

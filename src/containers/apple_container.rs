@@ -102,8 +102,29 @@ impl ContainerRuntimeInterface for AppleContainer {
         self.base.remove(name, force)
     }
 
-    fn exec_command(&self, name: &str, options: Option<&str>) -> String {
-        self.base.exec_command(name, options)
+    fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String {
+        // Apple Container has a very limited initial PATH, so we wrap the
+        // command in `sh -c` to get a proper shell environment.
+        // Use single quotes with escaped embedded quotes to avoid issues
+        // with double-quote metacharacters ($, `, \, !) in the command.
+        let escaped = cmd.replace('\'', "'\\''");
+        let cmd_str = format!("'{}'", escaped);
+
+        if let Some(opt_str) = options {
+            [
+                "container",
+                "exec",
+                "-it",
+                opt_str,
+                name,
+                "sh",
+                "-c",
+                &cmd_str,
+            ]
+            .join(" ")
+        } else {
+            ["container", "exec", "-it", name, "sh", "-c", &cmd_str].join(" ")
+        }
     }
 
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output> {

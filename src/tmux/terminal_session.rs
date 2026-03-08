@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::utils::sanitize_session_name;
+use super::utils::{append_remain_on_exit_args, is_pane_dead, sanitize_session_name};
 use super::{
     refresh_session_cache, session_exists_from_cache, CONTAINER_TERMINAL_PREFIX, TERMINAL_PREFIX,
 };
@@ -38,6 +38,10 @@ impl TerminalSession {
             .unwrap_or(false)
     }
 
+    pub fn is_pane_dead(&self) -> bool {
+        is_pane_dead(&self.name)
+    }
+
     pub fn create(&self, working_dir: &str) -> Result<()> {
         self.create_with_size(working_dir, None, None)
     }
@@ -52,7 +56,9 @@ impl TerminalSession {
             return Ok(());
         }
 
-        let args = build_terminal_create_args(&self.name, working_dir, command, size);
+        let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
+        append_remain_on_exit_args(&mut args, &self.name);
+
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
@@ -184,6 +190,10 @@ impl ContainerTerminalSession {
             .unwrap_or(false)
     }
 
+    pub fn is_pane_dead(&self) -> bool {
+        is_pane_dead(&self.name)
+    }
+
     pub fn create_with_size(
         &self,
         working_dir: &str,
@@ -194,7 +204,9 @@ impl ContainerTerminalSession {
             return Ok(());
         }
 
-        let args = build_terminal_create_args(&self.name, working_dir, command, size);
+        let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
+        append_remain_on_exit_args(&mut args, &self.name);
+
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
@@ -422,5 +434,109 @@ mod tests {
 
         // Command should be last
         assert_eq!(args.last().unwrap(), "docker exec -it container /bin/bash");
+    }
+
+    fn tmux_available() -> bool {
+        Command::new("tmux")
+            .arg("-V")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_terminal_session_is_pane_dead_after_command_exits() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_terminal_dead_{}", std::process::id());
+        let session = TerminalSession {
+            name: session_name.clone(),
+        };
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 1",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+
+        assert!(
+            session.is_pane_dead(),
+            "Terminal session pane should be dead after command exits"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_terminal_session_is_pane_dead_on_running_session() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_terminal_alive_{}", std::process::id());
+        let session = TerminalSession {
+            name: session_name.clone(),
+        };
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 30",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(
+            !session.is_pane_dead(),
+            "Terminal session pane should be alive while command running"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
     }
 }

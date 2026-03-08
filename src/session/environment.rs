@@ -31,9 +31,59 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
     if let Some(rest) = val.strip_prefix("$$") {
         Some(format!("${}", rest))
     } else if let Some(var_name) = val.strip_prefix('$') {
-        std::env::var(var_name).ok()
+        match std::env::var(var_name) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                tracing::warn!(
+                    "Environment variable ${} is not set on host, skipping",
+                    var_name
+                );
+                None
+            }
+        }
     } else {
         Some(val.to_string())
+    }
+}
+
+/// Validate an env entry string and return a warning message if it references
+/// a host variable that doesn't exist.
+///
+/// Entry formats:
+/// - `KEY` (bare): pass through from host
+/// - `KEY=$VAR`: resolve `$VAR` from host
+/// - `KEY=literal` (no `$`): always valid
+/// - `KEY=$$...`: escaped literal `$`, always valid
+pub fn validate_env_entry(entry: &str) -> Option<String> {
+    if let Some((_, value)) = entry.split_once('=') {
+        if value.starts_with("$$") {
+            // Escaped literal $, always valid
+            None
+        } else if let Some(var_name) = value.strip_prefix('$') {
+            if var_name.is_empty() {
+                Some("Warning: bare '$' in value has no variable name".to_string())
+            } else if resolve_env_value(value).is_none() {
+                Some(format!(
+                    "Warning: ${} is not set on the host -- it will be empty in the container",
+                    var_name
+                ))
+            } else {
+                None
+            }
+        } else {
+            // Literal value, always valid
+            None
+        }
+    } else {
+        // Bare key -- pass through from host
+        if std::env::var(entry).is_err() {
+            Some(format!(
+                "Warning: {} is not set on the host -- it will be empty in the container",
+                entry
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -51,10 +101,16 @@ pub(crate) fn collect_environment(
     let mut seen_keys = std::collections::HashSet::new();
     let mut result = Vec::new();
 
-    let sources: &[&[String]] = &[&sandbox_config.environment];
-    let extra = sandbox_info.extra_env.as_deref().unwrap_or(&[]);
+    // When per-session extra_env is present, it is the authoritative env list
+    // (the TUI seeds it from config.sandbox.environment and the user may have
+    // added, edited, or removed entries). Fall back to config only when no
+    // per-session overrides exist.
+    let entries: &[String] = sandbox_info
+        .extra_env
+        .as_deref()
+        .unwrap_or(&sandbox_config.environment);
 
-    // Process DEFAULT_TERMINAL_ENV_VARS first (pass-through)
+    // Always ensure the terminal defaults are present (pass-through from host)
     for &key in DEFAULT_TERMINAL_ENV_VARS {
         if seen_keys.insert(key.to_string()) {
             if let Ok(val) = std::env::var(key) {
@@ -63,20 +119,23 @@ pub(crate) fn collect_environment(
         }
     }
 
-    // Process config entries, then per-session extras
-    for entries in sources.iter().chain(std::iter::once(&extra)) {
-        for entry in *entries {
-            if let Some((key, value)) = entry.split_once('=') {
-                if seen_keys.insert(key.to_string()) {
-                    if let Some(resolved) = resolve_env_value(value) {
-                        result.push((key.to_string(), resolved));
-                    }
+    for entry in entries {
+        if let Some((key, value)) = entry.split_once('=') {
+            if seen_keys.insert(key.to_string()) {
+                if let Some(resolved) = resolve_env_value(value) {
+                    result.push((key.to_string(), resolved));
                 }
-            } else {
-                // Bare key -- pass through from host
-                if seen_keys.insert(entry.clone()) {
-                    if let Ok(val) = std::env::var(entry) {
-                        result.push((entry.clone(), val));
+            }
+        } else {
+            // Bare key -- pass through from host
+            if seen_keys.insert(entry.clone()) {
+                match std::env::var(entry) {
+                    Ok(val) => result.push((entry.clone(), val)),
+                    Err(_) => {
+                        tracing::warn!(
+                            "Environment variable {} is not set on host, skipping",
+                            entry
+                        );
                     }
                 }
             }
@@ -86,13 +145,35 @@ pub(crate) fn collect_environment(
     result
 }
 
+/// Resolve the effective sandbox config by merging global + active profile.
+fn resolved_sandbox_config() -> super::config::SandboxConfig {
+    let profile = super::config::resolve_default_profile();
+    super::profile_config::resolve_config(&profile)
+        .map(|c| c.sandbox)
+        .unwrap_or_default()
+}
+
 /// Build docker exec environment flags from config and optional per-session extra entries.
 /// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
 /// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
 pub(crate) fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
-    let config = super::config::Config::load().unwrap_or_default();
+    let sandbox_config = resolved_sandbox_config();
 
-    let env_pairs = collect_environment(&config.sandbox, sandbox);
+    tracing::debug!(
+        "build_docker_env_args: config.sandbox.environment={:?}, extra_env={:?}",
+        sandbox_config.environment,
+        sandbox.extra_env
+    );
+
+    let env_pairs = collect_environment(&sandbox_config, sandbox);
+
+    tracing::debug!(
+        "build_docker_env_args: resolved {} env pairs",
+        env_pairs.len()
+    );
+    for (k, _) in &env_pairs {
+        tracing::debug!("  env: {}=<set>", k);
+    }
 
     let args: Vec<String> = env_pairs
         .iter()
@@ -232,9 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_environment_dedup_first_wins() {
+    fn test_collect_environment_extra_env_is_authoritative() {
         let config = SandboxConfig {
-            environment: vec!["DUP_KEY=first".to_string()],
+            environment: vec!["DUP_KEY=from_config".to_string()],
             ..Default::default()
         };
         let info = SandboxInfo {
@@ -243,14 +324,36 @@ mod tests {
             image: "test".to_string(),
             container_name: "test".to_string(),
             created_at: None,
-            extra_env: Some(vec!["DUP_KEY=second".to_string()]),
+            extra_env: Some(vec!["DUP_KEY=from_session".to_string()]),
             custom_instruction: None,
         };
 
         let result = collect_environment(&config, &info);
         let dup_entries: Vec<_> = result.iter().filter(|(k, _)| k == "DUP_KEY").collect();
         assert_eq!(dup_entries.len(), 1);
-        assert_eq!(dup_entries[0].1, "first");
+        assert_eq!(dup_entries[0].1, "from_session");
+    }
+
+    #[test]
+    fn test_collect_environment_falls_back_to_config_when_no_extra() {
+        let config = SandboxConfig {
+            environment: vec!["CONFIG_KEY=config_val".to_string()],
+            ..Default::default()
+        };
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let result = collect_environment(&config, &info);
+        assert!(result
+            .iter()
+            .any(|(k, v)| k == "CONFIG_KEY" && v == "config_val"));
     }
 
     #[test]
@@ -297,5 +400,97 @@ mod tests {
         assert!(result
             .iter()
             .any(|(k, v)| k == "ESCAPED" && v == "$LITERAL"));
+    }
+
+    #[test]
+    fn test_validate_env_entry_bare_key_present() {
+        std::env::set_var("AOE_TEST_VALIDATE_BARE", "exists");
+        assert_eq!(validate_env_entry("AOE_TEST_VALIDATE_BARE"), None);
+        std::env::remove_var("AOE_TEST_VALIDATE_BARE");
+    }
+
+    #[test]
+    fn test_validate_env_entry_bare_key_missing() {
+        std::env::remove_var("AOE_TEST_VALIDATE_MISSING_BARE");
+        let result = validate_env_entry("AOE_TEST_VALIDATE_MISSING_BARE");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("AOE_TEST_VALIDATE_MISSING_BARE"));
+    }
+
+    #[test]
+    fn test_validate_env_entry_key_dollar_var_present() {
+        std::env::set_var("AOE_TEST_VALIDATE_REF", "value");
+        assert_eq!(validate_env_entry("MY_KEY=$AOE_TEST_VALIDATE_REF"), None);
+        std::env::remove_var("AOE_TEST_VALIDATE_REF");
+    }
+
+    #[test]
+    fn test_validate_env_entry_key_dollar_var_missing() {
+        std::env::remove_var("AOE_TEST_VALIDATE_MISSING_REF");
+        let result = validate_env_entry("MY_KEY=$AOE_TEST_VALIDATE_MISSING_REF");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("AOE_TEST_VALIDATE_MISSING_REF"));
+    }
+
+    #[test]
+    fn test_validate_env_entry_literal_value() {
+        assert_eq!(validate_env_entry("MY_KEY=some_literal"), None);
+    }
+
+    #[test]
+    fn test_validate_env_entry_escaped_dollar() {
+        assert_eq!(validate_env_entry("MY_KEY=$$ESCAPED"), None);
+    }
+
+    #[test]
+    fn test_build_docker_env_args_with_extra_env() {
+        std::env::set_var("AOE_TEST_TOKEN", "secret123");
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: Some(vec!["MY_TOKEN=$AOE_TEST_TOKEN".to_string()]),
+            custom_instruction: None,
+        };
+        let result = build_docker_env_args(&sandbox);
+        assert!(
+            result.contains("MY_TOKEN"),
+            "Expected MY_TOKEN in args: {}",
+            result
+        );
+        assert!(
+            result.contains("secret123"),
+            "Expected secret123 in args: {}",
+            result
+        );
+        std::env::remove_var("AOE_TEST_TOKEN");
+    }
+
+    #[test]
+    fn test_build_docker_env_args_bare_key() {
+        std::env::set_var("AOE_TEST_BARE", "barevalue");
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: Some(vec!["AOE_TEST_BARE".to_string()]),
+            custom_instruction: None,
+        };
+        let result = build_docker_env_args(&sandbox);
+        assert!(
+            result.contains("AOE_TEST_BARE"),
+            "Expected AOE_TEST_BARE in args: {}",
+            result
+        );
+        assert!(
+            result.contains("barevalue"),
+            "Expected barevalue in args: {}",
+            result
+        );
+        std::env::remove_var("AOE_TEST_BARE");
     }
 }

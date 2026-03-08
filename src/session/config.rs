@@ -4,6 +4,7 @@ use super::get_app_dir;
 use super::repo_config::HooksConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -118,6 +119,14 @@ pub struct SessionConfig {
     /// Enable YOLO mode by default for new sessions (skip permission prompts)
     #[serde(default)]
     pub yolo_mode_default: bool,
+
+    /// Per-agent extra arguments appended after the binary (e.g., opencode = "--port 8080")
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_extra_args: HashMap<String, String>,
+
+    /// Per-agent command override replacing the binary entirely (e.g., claude = "happy cli claude")
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_command_override: HashMap<String, String>,
 }
 
 /// Diff view configuration
@@ -323,12 +332,10 @@ fn default_sandbox_image() -> String {
 }
 
 fn default_sandbox_environment() -> Vec<String> {
-    vec![
-        "TERM".to_string(),
-        "COLORTERM".to_string(),
-        "FORCE_COLOR".to_string(),
-        "NO_COLOR".to_string(),
-    ]
+    crate::session::environment::DEFAULT_TERMINAL_ENV_VARS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Default terminal mode for sandboxed sessions
@@ -451,6 +458,13 @@ pub fn save_config(config: &Config) -> Result<()> {
     let content = toml::to_string_pretty(config)?;
     fs::write(&path, content)?;
     Ok(())
+}
+
+/// Load the user's default profile name, falling back to "default" on error.
+pub fn resolve_default_profile() -> String {
+    Config::load()
+        .map(|c| c.default_profile)
+        .unwrap_or_else(|_| "default".to_string())
 }
 
 pub fn get_update_settings() -> UpdatesConfig {

@@ -29,6 +29,10 @@ pub struct InstanceParams {
     /// Additional environment entries for the container.
     /// `KEY` = pass through from host, `KEY=VALUE` = set explicitly.
     pub extra_env: Vec<String>,
+    /// Extra arguments to append after the agent binary
+    pub extra_args: String,
+    /// Command override for the agent binary (replaces the default binary)
+    pub command_override: String,
 }
 
 /// Result of building an instance, tracking what was created for cleanup purposes.
@@ -60,6 +64,8 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         }
     }
 
+    let config = Config::load().unwrap_or_default();
+
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()
         .map(|p| p.to_string_lossy().to_string())
@@ -74,8 +80,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository");
         }
-
-        let config = Config::load()?;
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
@@ -173,6 +177,23 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
     instance.worktree_info = worktree_info;
     instance.yolo_mode = params.yolo_mode;
 
+    // Apply agent_command_override and agent_extra_args from resolved config.
+    // Per-session values from params take priority over config.
+    if !params.command_override.is_empty() {
+        instance.command = params.command_override;
+    } else if let Some(cmd_override) = config.session.agent_command_override.get(&params.tool) {
+        if !cmd_override.is_empty() {
+            instance.command = cmd_override.clone();
+        }
+    }
+    if !params.extra_args.is_empty() {
+        instance.extra_args = params.extra_args;
+    } else if let Some(extra) = config.session.agent_extra_args.get(&params.tool) {
+        if !extra.is_empty() {
+            instance.extra_args = extra.clone();
+        }
+    }
+
     if params.sandbox {
         instance.sandbox_info = Some(SandboxInfo {
             enabled: true,
@@ -185,9 +206,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             } else {
                 Some(params.extra_env.clone())
             },
-            custom_instruction: Config::load()
-                .ok()
-                .and_then(|c| c.sandbox.custom_instruction),
+            custom_instruction: config.sandbox.custom_instruction.clone(),
         });
     }
 

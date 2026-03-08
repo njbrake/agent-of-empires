@@ -1,8 +1,11 @@
 //! Golden tests for status detection
 //!
 //! These tests verify that status detection works correctly against real
-//! terminal captures from Claude Code and OpenCode. When either tool updates
-//! their TUI, these tests will fail if the detection logic no longer works.
+//! terminal captures. When a tool updates their TUI, these tests will fail
+//! if the detection logic no longer works.
+//!
+//! Note: Claude Code and Cursor use hook-based detection (not tmux pane parsing),
+//! so they have no fixture-based tests here.
 //!
 //! Each state is a directory containing one or more fixture files. This allows
 //! users to submit additional screenshots for bug reports, and all examples
@@ -85,47 +88,6 @@ fn test_all_fixtures_in_dir<F>(
 
 fn identity(s: String) -> String {
     s
-}
-
-mod claude_code {
-    use super::*;
-
-    fn detect(content: &str) -> Status {
-        let agent = agents::get_agent("claude").unwrap();
-        (agent.detect_status)(content)
-    }
-
-    #[test]
-    fn test_running_state() {
-        test_all_fixtures_in_dir("claude_code", "running", Status::Running, identity, detect);
-    }
-
-    #[test]
-    fn test_waiting_question_state() {
-        test_all_fixtures_in_dir(
-            "claude_code",
-            "waiting_question",
-            Status::Waiting,
-            identity,
-            detect,
-        );
-    }
-
-    #[test]
-    fn test_waiting_permission_state() {
-        test_all_fixtures_in_dir(
-            "claude_code",
-            "waiting_permission",
-            Status::Waiting,
-            identity,
-            detect,
-        );
-    }
-
-    #[test]
-    fn test_idle_state() {
-        test_all_fixtures_in_dir("claude_code", "idle", Status::Idle, identity, detect);
-    }
 }
 
 mod opencode {

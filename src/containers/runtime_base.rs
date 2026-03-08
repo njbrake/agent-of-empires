@@ -21,6 +21,8 @@ pub(crate) struct RuntimeBase {
     pub remove_subcommand: &'static str,
     /// Whether this runtime supports the `:ro` read-only volume flag
     pub supports_read_only_volumes: bool,
+    /// Whether this runtime supports `-v` on remove to clean up anonymous volumes
+    pub supports_remove_volumes: bool,
 }
 
 impl RuntimeBase {
@@ -31,6 +33,7 @@ impl RuntimeBase {
         pull_prefix: &["pull"],
         remove_subcommand: "rm",
         supports_read_only_volumes: true,
+        supports_remove_volumes: true,
     };
 
     pub const APPLE_CONTAINER: Self = Self {
@@ -40,6 +43,7 @@ impl RuntimeBase {
         pull_prefix: &["image", "pull"],
         remove_subcommand: "delete",
         supports_read_only_volumes: false,
+        supports_remove_volumes: false,
     };
 
     pub fn command(&self) -> Command {
@@ -238,9 +242,11 @@ impl RuntimeBase {
         if force {
             args.push("-f".to_string());
         }
-        // Remove anonymous volumes with the container to prevent orphaned volume buildup.
-        // This does NOT affect named volumes (like auth volumes).
-        args.push("-v".to_string());
+        if self.supports_remove_volumes {
+            // Remove anonymous volumes with the container to prevent orphaned volume buildup.
+            // This does NOT affect named volumes (like auth volumes).
+            args.push("-v".to_string());
+        }
         args.push(name.to_string());
 
         let output = self.command().args(&args).output()?;
@@ -256,11 +262,11 @@ impl RuntimeBase {
         Ok(())
     }
 
-    pub fn exec_command(&self, name: &str, options: Option<&str>) -> String {
+    pub fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String {
         if let Some(opt_str) = options {
-            [self.binary, "exec", "-it", opt_str, name].join(" ")
+            [self.binary, "exec", "-it", opt_str, name, cmd].join(" ")
         } else {
-            [self.binary, "exec", "-it", name].join(" ")
+            [self.binary, "exec", "-it", name, cmd].join(" ")
         }
     }
 
@@ -329,22 +335,22 @@ mod tests {
     #[test]
     fn test_exec_command_with_options() {
         let base = RuntimeBase::DOCKER;
-        let cmd = base.exec_command("my-container", Some("-w /workspace"));
-        assert_eq!(cmd, "docker exec -it -w /workspace my-container");
+        let cmd = base.exec_command("my-container", Some("-w /workspace"), "my-agent");
+        assert_eq!(cmd, "docker exec -it -w /workspace my-container my-agent");
     }
 
     #[test]
     fn test_exec_command_without_options() {
         let base = RuntimeBase::DOCKER;
-        let cmd = base.exec_command("my-container", None);
-        assert_eq!(cmd, "docker exec -it my-container");
+        let cmd = base.exec_command("my-container", None, "my-agent");
+        assert_eq!(cmd, "docker exec -it my-container my-agent");
     }
 
     #[test]
     fn test_exec_command_apple_container() {
         let base = RuntimeBase::APPLE_CONTAINER;
-        let cmd = base.exec_command("my-container", None);
-        assert_eq!(cmd, "container exec -it my-container");
+        let cmd = base.exec_command("my-container", None, "my-agent");
+        assert_eq!(cmd, "container exec -it my-container my-agent");
     }
 
     #[test]

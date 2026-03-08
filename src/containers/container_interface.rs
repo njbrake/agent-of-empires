@@ -58,7 +58,7 @@ pub trait ContainerRuntimeInterface {
 
     fn remove(&self, name: &str, force: bool) -> Result<()>;
 
-    fn exec_command(&self, name: &str, options: Option<&str>) -> String;
+    fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String;
 
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output>;
 

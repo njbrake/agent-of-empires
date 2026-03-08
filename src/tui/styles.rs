@@ -257,6 +257,7 @@ mod tests {
         assert_eq!(theme.title, Color::Rgb(122, 162, 247));
         assert_eq!(theme.background, Color::Rgb(36, 40, 59));
     }
+
     #[test]
     fn test_load_dracula() {
         let theme = load_theme("dracula");

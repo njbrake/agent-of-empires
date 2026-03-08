@@ -7,94 +7,26 @@ use super::utils::strip_ansi;
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
-    crate::agents::get_agent(tool)
+    let status = crate::agents::get_agent(tool)
         .map(|a| (a.detect_status)(content))
-        .unwrap_or_else(|| detect_claude_status(content))
+        .unwrap_or(Status::Idle);
+
+    if status == Status::Idle {
+        let last_lines: Vec<&str> = content.lines().rev().take(5).collect();
+        tracing::debug!(
+            "status detection returned Idle for tool '{}', last 5 lines: {:?}",
+            tool,
+            last_lines
+        );
+    }
+
+    status
 }
 
-pub fn detect_claude_status(content: &str) -> Status {
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    let last_lines: String = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
-    if last_lines_lower.contains("esc to interrupt")
-        || last_lines_lower.contains("ctrl+c to interrupt")
-    {
-        return Status::Running;
-    }
-
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
-    }
-
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
-        return Status::Waiting;
-    }
-
-    let permission_prompts = [
-        "Yes, allow once",
-        "Yes, allow always",
-        "Allow once",
-        "Allow always",
-        "❯ Yes",
-        "❯ No",
-        "Do you trust the files in this folder?",
-    ];
-    for prompt in &permission_prompts {
-        if last_lines.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
-            let rest = &trimmed[3..].trim_start();
-            if rest.starts_with("1.") || rest.starts_with("2.") || rest.starts_with("3.") {
-                return Status::Waiting;
-            }
-        }
-    }
-
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Y/N confirmation prompts
-    // Only check in last lines
-    let question_prompts = ["(Y/n)", "(y/N)", "[Y/n]", "[y/N]"];
-    for prompt in &question_prompts {
-        if last_lines.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
+/// Claude Code status is detected via hooks (file-based), not tmux pane parsing.
+/// This stub exists so the agent registry has a valid function pointer; it only
+/// runs when hooks haven't written a status file yet (e.g. first few seconds).
+pub fn detect_claude_status(_content: &str) -> Status {
     Status::Idle
 }
 
@@ -403,8 +335,9 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
-pub fn detect_cursor_status(content: &str) -> Status {
-    detect_claude_status(content)
+/// Cursor agent status is detected via hooks (file-based), same as Claude Code.
+pub fn detect_cursor_status(_content: &str) -> Status {
+    Status::Idle
 }
 
 pub fn detect_gemini_status(raw_content: &str) -> Status {
@@ -473,47 +406,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_claude_status_running() {
-        assert_eq!(
-            detect_claude_status("Working on your request (esc to interrupt)"),
-            Status::Running
-        );
-        assert_eq!(
-            detect_claude_status("Thinking... · esc to interrupt"),
-            Status::Running
-        );
-        assert_eq!(
-            detect_claude_status("✶ Hashing… (ctrl+c to interrupt)"),
-            Status::Running
-        );
-        assert_eq!(detect_claude_status("Processing ⠋"), Status::Running);
-        assert_eq!(detect_claude_status("Loading ⠹"), Status::Running);
+    fn test_detect_claude_status_is_stub() {
+        // Claude/Cursor use hook-based detection; the stub always returns Idle
+        assert_eq!(detect_claude_status("anything"), Status::Idle);
+        assert_eq!(detect_cursor_status("anything"), Status::Idle);
     }
 
     #[test]
-    fn test_detect_claude_status_waiting() {
-        assert_eq!(detect_claude_status("Yes, allow once"), Status::Waiting);
-        assert_eq!(
-            detect_claude_status("Do you trust the files in this folder?"),
-            Status::Waiting
-        );
-        assert_eq!(detect_claude_status("Task complete.\n>"), Status::Waiting);
-        assert_eq!(detect_claude_status("Done!\n> "), Status::Waiting);
-        assert_eq!(detect_claude_status("Continue? (Y/n)"), Status::Waiting);
-        assert_eq!(
-            detect_claude_status("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"),
-            Status::Waiting
-        );
-        assert_eq!(
-            detect_claude_status("❯ 1. Planned activities\n  2. Spontaneous"),
-            Status::Waiting
-        );
-    }
-
-    #[test]
-    fn test_detect_claude_status_idle() {
-        assert_eq!(detect_claude_status("completed the task"), Status::Idle);
-        assert_eq!(detect_claude_status("some random output"), Status::Idle);
+    fn test_detect_status_from_content_unknown_tool_returns_idle() {
+        let status = detect_status_from_content("Processing ⠋", "unknown_tool", None);
+        assert_eq!(status, Status::Idle);
     }
 
     #[test]
@@ -556,53 +458,6 @@ mod tests {
             detect_opencode_status("file saved successfully"),
             Status::Idle
         );
-    }
-
-    #[test]
-    fn test_detect_status_from_content_falls_back_to_claude() {
-        let content = "Processing ⠋";
-        let status = detect_status_from_content(content, "unknown_tool", None);
-        assert_eq!(status, Status::Running);
-    }
-
-    #[test]
-    fn test_detect_claude_status_numbered_list_selection() {
-        let content = "Choose an option:\n❯ 1. First option\n  2. Second option\n  3. Third option";
-        assert_eq!(detect_claude_status(content), Status::Waiting);
-    }
-
-    #[test]
-    fn test_detect_claude_status_all_spinner_chars() {
-        for spinner in SPINNER_CHARS {
-            let content = format!("Working... {}", spinner);
-            assert_eq!(
-                detect_claude_status(&content),
-                Status::Running,
-                "Failed for spinner: {}",
-                spinner
-            );
-        }
-    }
-
-    #[test]
-    fn test_detect_claude_status_prompt_with_text() {
-        assert_eq!(detect_claude_status("> hello"), Status::Waiting);
-    }
-
-    #[test]
-    fn test_detect_claude_status_yn_variations() {
-        assert_eq!(detect_claude_status("Continue? [Y/n]"), Status::Waiting);
-        assert_eq!(detect_claude_status("Proceed? [y/N]"), Status::Waiting);
-        assert_eq!(detect_claude_status("Confirm (Y/n)"), Status::Waiting);
-        assert_eq!(detect_claude_status("Delete? (y/N)"), Status::Waiting);
-    }
-
-    #[test]
-    fn test_detect_claude_status_allow_prompts() {
-        assert_eq!(detect_claude_status("❯ Yes"), Status::Waiting);
-        assert_eq!(detect_claude_status("❯ No"), Status::Waiting);
-        assert_eq!(detect_claude_status("Allow once"), Status::Waiting);
-        assert_eq!(detect_claude_status("Allow always"), Status::Waiting);
     }
 
     #[test]
@@ -706,44 +561,6 @@ mod tests {
     fn test_detect_codex_status_idle() {
         assert_eq!(detect_codex_status("file saved"), Status::Idle);
         assert_eq!(detect_codex_status("random output text"), Status::Idle);
-    }
-
-    #[test]
-    fn test_detect_cursor_status_running() {
-        assert_eq!(
-            detect_cursor_status("Working on your request (esc to interrupt)"),
-            Status::Running
-        );
-        assert_eq!(detect_cursor_status("Processing ⠋"), Status::Running);
-    }
-
-    #[test]
-    fn test_detect_cursor_status_waiting() {
-        assert_eq!(detect_cursor_status("Yes, allow once"), Status::Waiting);
-        assert_eq!(detect_cursor_status("Task complete.\n>"), Status::Waiting);
-    }
-
-    #[test]
-    fn test_detect_cursor_status_idle() {
-        assert_eq!(detect_cursor_status("some random output"), Status::Idle);
-    }
-
-    #[test]
-    fn test_detect_cursor_status_delegates_to_claude() {
-        // Cursor CLI is built on Claude Code, so all Claude patterns should work
-        let test_cases = vec![
-            ("Thinking... · esc to interrupt", Status::Running),
-            ("Do you trust the files in this folder?", Status::Waiting),
-            ("completed the task", Status::Idle),
-        ];
-        for (content, expected) in test_cases {
-            assert_eq!(
-                detect_cursor_status(content),
-                expected,
-                "Failed for: {}",
-                content
-            );
-        }
     }
 
     #[test]

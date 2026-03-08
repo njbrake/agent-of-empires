@@ -47,7 +47,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Tool",
-        description: "Which AI tool to use",
+        description: "Which AI tool to use (Ctrl+P to configure command and extra args)",
     },
     FieldHelp {
         name: "YOLO Mode",
@@ -97,6 +97,10 @@ pub struct NewSessionData {
     /// Additional environment entries for the container.
     /// `KEY` = pass through from host, `KEY=VALUE` = set explicitly.
     pub extra_env: Vec<String>,
+    /// Extra arguments to append after the agent binary
+    pub extra_args: String,
+    /// Command override for the agent binary (replaces the default binary)
+    pub command_override: String,
 }
 
 /// Spinner frames for loading animation
@@ -134,6 +138,13 @@ pub struct NewSessionDialog {
     pub(super) inherited_settings: Vec<(String, String)>,
     pub(super) sandbox_config_mode: bool,
     pub(super) sandbox_focused_field: usize,
+    /// Tool configuration mode (Ctrl+P on tool field)
+    pub(super) tool_config_mode: bool,
+    pub(super) tool_config_focused_field: usize,
+    /// Extra args for the selected tool (loaded from config)
+    pub(super) extra_args: Input,
+    /// Command override for the selected tool (loaded from config)
+    pub(super) command_override: Input,
     pub(super) existing_groups: Vec<String>,
     pub(super) group_picker: ListPicker,
     pub(super) branch_picker: ListPicker,
@@ -307,6 +318,21 @@ impl NewSessionDialog {
         let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
         let yolo_mode = config.session.yolo_mode_default;
 
+        // Load extra args and command override for the default tool
+        let selected_tool = available_tools.get(tool_index).copied().unwrap_or("claude");
+        let extra_args_value = config
+            .session
+            .agent_extra_args
+            .get(selected_tool)
+            .cloned()
+            .unwrap_or_default();
+        let command_override_value = config
+            .session
+            .agent_command_override
+            .get(selected_tool)
+            .cloned()
+            .unwrap_or_default();
+
         // Initialize env entries and inherited settings from config when sandbox is enabled
         let (extra_env, inherited_settings) = if sandbox_enabled {
             let inherited = build_inherited_settings(&config.sandbox);
@@ -351,6 +377,10 @@ impl NewSessionDialog {
             inherited_settings,
             sandbox_config_mode: false,
             sandbox_focused_field: 0,
+            tool_config_mode: false,
+            tool_config_focused_field: 0,
+            extra_args: Input::new(extra_args_value),
+            command_override: Input::new(command_override_value),
             error_message: None,
             show_help: false,
             loading: false,
@@ -473,6 +503,31 @@ impl NewSessionDialog {
             self.inherited_settings.clear();
         }
 
+        // Reset extra args and command override for new default tool
+        let selected_tool = self
+            .available_tools
+            .get(self.tool_index)
+            .copied()
+            .unwrap_or("claude");
+        self.extra_args = Input::new(
+            config
+                .session
+                .agent_extra_args
+                .get(selected_tool)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        self.command_override = Input::new(
+            config
+                .session
+                .agent_command_override
+                .get(selected_tool)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        self.tool_config_mode = false;
+        self.tool_config_focused_field = 0;
+
         // Reset expanded states
         self.env_list_expanded = false;
         self.env_editing_input = None;
@@ -522,6 +577,10 @@ impl NewSessionDialog {
             inherited_settings: Vec::new(),
             sandbox_config_mode: false,
             sandbox_focused_field: 0,
+            tool_config_mode: false,
+            tool_config_focused_field: 0,
+            extra_args: Input::default(),
+            command_override: Input::default(),
             error_message: None,
             show_help: false,
             loading: false,
@@ -570,6 +629,10 @@ impl NewSessionDialog {
             inherited_settings: Vec::new(),
             sandbox_config_mode: false,
             sandbox_focused_field: 0,
+            tool_config_mode: false,
+            tool_config_focused_field: 0,
+            extra_args: Input::default(),
+            command_override: Input::default(),
             error_message: None,
             show_help: false,
             loading: false,
@@ -611,6 +674,11 @@ impl NewSessionDialog {
             return self.handle_sandbox_config_key(key);
         }
 
+        // Delegate to tool config mode handler when active
+        if self.tool_config_mode {
+            return self.handle_tool_config_key(key);
+        }
+
         if self.confirm_create_dir.is_some() {
             return self.handle_confirm_create_dir_key(key);
         }
@@ -647,6 +715,7 @@ impl NewSessionDialog {
         let has_worktree = !self.worktree_branch.value().is_empty();
         // Field order: [profile], title, path, [tool], yolo, worktree,
         //   [new_branch], [sandbox], group
+        // Tool config (extra_args, command_override) is in a Ctrl+P overlay on tool field.
         // Sandbox sub-options are in a separate sandbox_config_mode overlay.
         let profile_field = if has_profile_selection { 0 } else { usize::MAX };
         let mut fi = if has_profile_selection { 1 } else { 0 }; // next field index
@@ -686,6 +755,11 @@ impl NewSessionDialog {
             if self.focused_field == self.path_field() {
                 let path_value = self.path.value().trim().to_string();
                 self.dir_picker.activate(&path_value);
+                return DialogResult::Continue;
+            }
+            if self.focused_field == tool_field {
+                self.tool_config_mode = true;
+                self.tool_config_focused_field = 0;
                 return DialogResult::Continue;
             }
             if self.focused_field == group_field && !self.existing_groups.is_empty() {
@@ -791,10 +865,12 @@ impl NewSessionDialog {
             }
             KeyCode::Left | KeyCode::Right if self.focused_field == tool_field => {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
+                self.reload_tool_config();
                 DialogResult::Continue
             }
             KeyCode::Char(' ') if self.focused_field == tool_field => {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
+                self.reload_tool_config();
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
@@ -902,11 +978,61 @@ impl NewSessionDialog {
         }
     }
 
+    /// Handle key events when in tool configuration mode.
+    fn handle_tool_config_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        // Tool config fields: 0=command override, 1=extra args
+        const TOOL_CMD: usize = 0;
+        const TOOL_ARGS: usize = 1;
+        const TOOL_MAX: usize = 2;
+
+        match key.code {
+            KeyCode::Esc => {
+                self.tool_config_mode = false;
+                DialogResult::Continue
+            }
+            KeyCode::Char('?') => {
+                self.show_help = true;
+                DialogResult::Continue
+            }
+            KeyCode::Enter => {
+                self.tool_config_mode = false;
+                DialogResult::Continue
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                self.tool_config_focused_field = (self.tool_config_focused_field + 1) % TOOL_MAX;
+                DialogResult::Continue
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.tool_config_focused_field = if self.tool_config_focused_field == 0 {
+                    TOOL_MAX - 1
+                } else {
+                    self.tool_config_focused_field - 1
+                };
+                DialogResult::Continue
+            }
+            _ => {
+                match self.tool_config_focused_field {
+                    TOOL_CMD => {
+                        self.command_override
+                            .handle_event(&crossterm::event::Event::Key(key));
+                    }
+                    TOOL_ARGS => {
+                        self.extra_args
+                            .handle_event(&crossterm::event::Event::Key(key));
+                    }
+                    _ => {}
+                }
+                DialogResult::Continue
+            }
+        }
+    }
+
     /// Handle key events when the env list is expanded
     fn handle_env_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
         let validate =
             |value: &str, list: &[String]| !value.is_empty() && !list.contains(&value.to_string());
-        handle_editable_list_key(
+        let snapshot: Vec<String> = self.extra_env.clone();
+        let result = handle_editable_list_key(
             key,
             &mut self.extra_env,
             &mut self.env_list_expanded,
@@ -914,7 +1040,43 @@ impl NewSessionDialog {
             &mut self.env_editing_input,
             &mut self.env_adding_new,
             validate,
-        )
+        );
+
+        // Validate the current entry if the list changed
+        if self.extra_env != snapshot {
+            self.error_message = self
+                .extra_env
+                .get(self.env_selected_index)
+                .and_then(|entry| crate::session::validate_env_entry(entry));
+        }
+
+        result
+    }
+
+    fn reload_tool_config(&mut self) {
+        let profile = self.selected_profile().to_string();
+        let config = resolve_config(&profile).unwrap_or_default();
+        let tool = self
+            .available_tools
+            .get(self.tool_index)
+            .copied()
+            .unwrap_or("claude");
+        self.extra_args = Input::new(
+            config
+                .session
+                .agent_extra_args
+                .get(tool)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        self.command_override = Input::new(
+            config
+                .session
+                .agent_command_override
+                .get(tool)
+                .cloned()
+                .unwrap_or_default(),
+        );
     }
 
     fn current_input_mut(&mut self) -> &mut Input {
@@ -982,6 +1144,8 @@ impl NewSessionDialog {
             } else {
                 Vec::new()
             },
+            extra_args: self.extra_args.value().trim().to_string(),
+            command_override: self.command_override.value().trim().to_string(),
         })
     }
 

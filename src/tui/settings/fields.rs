@@ -71,6 +71,8 @@ pub enum FieldKey {
     Mouse,
     // Session
     DefaultTool,
+    AgentExtraArgs,
+    AgentCommandOverride,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -143,25 +145,26 @@ fn inherited_if(has_override: bool, global_value: FieldValue) -> Option<String> 
     }
 }
 
-/// Helper to set or clear a profile override based on whether value matches global.
-fn set_or_clear_override<T, S, F>(
-    new_value: T,
-    global_value: &T,
-    section: &mut Option<S>,
-    set_field: F,
-) where
-    T: Clone + PartialEq,
+/// Helper to set a profile override. Always stores the value; use 'r' key to clear overrides.
+fn set_profile_override<T, S, F>(new_value: T, section: &mut Option<S>, set_field: F)
+where
+    T: Clone,
     S: Default,
     F: FnOnce(&mut S, Option<T>),
 {
-    if new_value == *global_value {
-        if let Some(ref mut s) = section {
-            set_field(s, None);
-        }
-    } else {
-        let s = section.get_or_insert_with(S::default);
-        set_field(s, Some(new_value));
-    }
+    let s = section.get_or_insert_with(S::default);
+    set_field(s, Some(new_value));
+}
+
+/// Parse a list of "key=value" strings into a HashMap.
+fn parse_key_value_list(items: &[String]) -> std::collections::HashMap<String, String> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let (k, v) = item.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect()
 }
 
 /// Value types for settings fields
@@ -786,8 +789,59 @@ fn build_session_fields(
         session.and_then(|s| s.yolo_mode_default),
     );
 
+    // Agent extra args: HashMap -> Vec<String> of "key=value" items for List field
+    let (extra_args_map, extra_args_override) = resolve_value(
+        scope,
+        global.session.agent_extra_args.clone(),
+        session.and_then(|s| s.agent_extra_args.clone()),
+    );
+    let extra_args_list: Vec<String> = {
+        let mut items: Vec<_> = extra_args_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    // Agent command override: HashMap -> Vec<String> of "key=value" items
+    let (cmd_override_map, cmd_override_override) = resolve_value(
+        scope,
+        global.session.agent_command_override.clone(),
+        session.and_then(|s| s.agent_command_override.clone()),
+    );
+    let cmd_override_list: Vec<String> = {
+        let mut items: Vec<_> = cmd_override_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
     let global_tool_selected =
         crate::agents::settings_index_from_name(global.session.default_tool.as_deref());
+
+    let global_extra_args_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_extra_args
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_cmd_override_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_command_override
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
 
     vec![
         SettingField {
@@ -818,6 +872,30 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 yolo_override,
                 FieldValue::Bool(global.session.yolo_mode_default),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentExtraArgs,
+            label: "Agent Extra Args",
+            description: "Per-agent extra arguments (agent=args, e.g. opencode=--port 8080)",
+            value: FieldValue::List(extra_args_list),
+            category: SettingsCategory::Session,
+            has_override: extra_args_override,
+            inherited_display: inherited_if(
+                extra_args_override,
+                FieldValue::List(global_extra_args_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentCommandOverride,
+            label: "Agent Command Override",
+            description: "Per-agent command override replacing the binary (agent=command)",
+            value: FieldValue::List(cmd_override_list),
+            category: SettingsCategory::Session,
+            has_override: cmd_override_override,
+            inherited_display: inherited_if(
+                cmd_override_override,
+                FieldValue::List(global_cmd_override_list),
             ),
         },
     ]
@@ -1018,7 +1096,7 @@ fn build_hooks_fields(
 }
 
 /// Apply a field's value back to the appropriate config.
-/// For profile scope, if the value matches global, the override is removed.
+/// For profile scope, the value is always stored as an override.
 pub fn apply_field_to_config(
     field: &SettingField,
     scope: SettingsScope,
@@ -1107,6 +1185,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.session.default_tool =
                 crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
         }
+        (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
+            config.session.agent_extra_args = parse_key_value_list(v);
+        }
+        (FieldKey::AgentCommandOverride, FieldValue::List(v)) => {
+            config.session.agent_command_override = parse_key_value_list(v);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
         (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
@@ -1138,209 +1222,120 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
 }
 
 /// Apply a field to the profile config.
-/// If the value matches the global config, the override is cleared instead of set.
-fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut ProfileConfig) {
+/// Always stores the value as an override; use 'r' key to clear overrides.
+fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut ProfileConfig) {
     match (&field.key, &field.value) {
         // Theme
         (FieldKey::ThemeName, FieldValue::Select { selected, options }) => {
             let name = options.get(*selected).cloned().unwrap_or_default();
-            if name == global.theme.name {
-                if let Some(ref mut t) = config.theme {
-                    t.name = None;
-                }
-            } else {
-                use crate::session::ThemeConfigOverride;
-                let t = config
-                    .theme
-                    .get_or_insert_with(ThemeConfigOverride::default);
-                t.name = Some(name);
-            }
+            use crate::session::ThemeConfigOverride;
+            let t = config
+                .theme
+                .get_or_insert_with(ThemeConfigOverride::default);
+            t.name = Some(name);
         }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.updates.check_enabled,
-                &mut config.updates,
-                |s, val| s.check_enabled = val,
-            );
+            set_profile_override(*v, &mut config.updates, |s, val| s.check_enabled = val);
         }
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.updates.check_interval_hours,
-                &mut config.updates,
-                |s, val| s.check_interval_hours = val,
-            );
+            set_profile_override(*v, &mut config.updates, |s, val| {
+                s.check_interval_hours = val
+            });
         }
         (FieldKey::NotifyInCli, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.updates.notify_in_cli,
-                &mut config.updates,
-                |s, val| s.notify_in_cli = val,
-            );
+            set_profile_override(*v, &mut config.updates, |s, val| s.notify_in_cli = val);
         }
         // Worktree
         (FieldKey::PathTemplate, FieldValue::Text(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.worktree.path_template,
-                &mut config.worktree,
-                |s, val| s.path_template = val,
-            );
+            set_profile_override(v.clone(), &mut config.worktree, |s, val| {
+                s.path_template = val
+            });
         }
         (FieldKey::BareRepoPathTemplate, FieldValue::Text(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.worktree.bare_repo_path_template,
-                &mut config.worktree,
-                |s, val| s.bare_repo_path_template = val,
-            );
+            set_profile_override(v.clone(), &mut config.worktree, |s, val| {
+                s.bare_repo_path_template = val
+            });
         }
         (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.worktree.auto_cleanup,
-                &mut config.worktree,
-                |s, val| s.auto_cleanup = val,
-            );
+            set_profile_override(*v, &mut config.worktree, |s, val| s.auto_cleanup = val);
         }
         (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.worktree.delete_branch_on_cleanup,
-                &mut config.worktree,
-                |s, val| s.delete_branch_on_cleanup = val,
-            );
+            set_profile_override(*v, &mut config.worktree, |s, val| {
+                s.delete_branch_on_cleanup = val
+            });
         }
         // Sandbox
         (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.sandbox.enabled_by_default,
-                &mut config.sandbox,
-                |s, val| s.enabled_by_default = val,
-            );
+            set_profile_override(*v, &mut config.sandbox, |s, val| s.enabled_by_default = val);
         }
         (FieldKey::DefaultImage, FieldValue::Text(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.sandbox.default_image,
-                &mut config.sandbox,
-                |s, val| s.default_image = val,
-            );
+            set_profile_override(v.clone(), &mut config.sandbox, |s, val| {
+                s.default_image = val
+            });
         }
         (FieldKey::Environment, FieldValue::List(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.sandbox.environment,
-                &mut config.sandbox,
-                |s, val| s.environment = val,
-            );
+            set_profile_override(v.clone(), &mut config.sandbox, |s, val| s.environment = val);
         }
         (FieldKey::ExtraVolumes, FieldValue::List(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.sandbox.extra_volumes,
-                &mut config.sandbox,
-                |s, val| s.extra_volumes = val,
-            );
+            set_profile_override(v.clone(), &mut config.sandbox, |s, val| {
+                s.extra_volumes = val
+            });
         }
         (FieldKey::PortMappings, FieldValue::List(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.sandbox.port_mappings,
-                &mut config.sandbox,
-                |s, val| s.port_mappings = val,
-            );
+            set_profile_override(v.clone(), &mut config.sandbox, |s, val| {
+                s.port_mappings = val
+            });
         }
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.sandbox.volume_ignores,
-                &mut config.sandbox,
-                |s, val| s.volume_ignores = val,
-            );
+            set_profile_override(v.clone(), &mut config.sandbox, |s, val| {
+                s.volume_ignores = val
+            });
         }
         (FieldKey::MountSsh, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.sandbox.mount_ssh,
-                &mut config.sandbox,
-                |s, val| s.mount_ssh = val,
-            );
+            set_profile_override(*v, &mut config.sandbox, |s, val| s.mount_ssh = val);
         }
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.sandbox.auto_cleanup,
-                &mut config.sandbox,
-                |s, val| s.auto_cleanup = val,
-            );
+            set_profile_override(*v, &mut config.sandbox, |s, val| s.auto_cleanup = val);
         }
         (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => {
-            if *v == global.sandbox.cpu_limit {
-                if let Some(ref mut s) = config.sandbox {
-                    s.cpu_limit = None;
-                }
-            } else {
-                use crate::session::SandboxConfigOverride;
-                let s = config
-                    .sandbox
-                    .get_or_insert_with(SandboxConfigOverride::default);
-                s.cpu_limit = v.clone();
-            }
+            use crate::session::SandboxConfigOverride;
+            let s = config
+                .sandbox
+                .get_or_insert_with(SandboxConfigOverride::default);
+            s.cpu_limit = v.clone();
         }
         (FieldKey::MemoryLimit, FieldValue::OptionalText(v)) => {
-            if *v == global.sandbox.memory_limit {
-                if let Some(ref mut s) = config.sandbox {
-                    s.memory_limit = None;
-                }
-            } else {
-                use crate::session::SandboxConfigOverride;
-                let s = config
-                    .sandbox
-                    .get_or_insert_with(SandboxConfigOverride::default);
-                s.memory_limit = v.clone();
-            }
+            use crate::session::SandboxConfigOverride;
+            let s = config
+                .sandbox
+                .get_or_insert_with(SandboxConfigOverride::default);
+            s.memory_limit = v.clone();
         }
         (FieldKey::CustomInstruction, FieldValue::OptionalText(v)) => {
-            if *v == global.sandbox.custom_instruction {
-                if let Some(ref mut s) = config.sandbox {
-                    s.custom_instruction = None;
-                }
-            } else {
-                use crate::session::SandboxConfigOverride;
-                let s = config
-                    .sandbox
-                    .get_or_insert_with(SandboxConfigOverride::default);
-                s.custom_instruction = v.clone();
-            }
+            use crate::session::SandboxConfigOverride;
+            let s = config
+                .sandbox
+                .get_or_insert_with(SandboxConfigOverride::default);
+            s.custom_instruction = v.clone();
         }
         (FieldKey::DefaultTerminalMode, FieldValue::Select { selected, .. }) => {
             let mode = match selected {
                 0 => DefaultTerminalMode::Host,
                 _ => DefaultTerminalMode::Container,
             };
-            set_or_clear_override(
-                mode,
-                &global.sandbox.default_terminal_mode,
-                &mut config.sandbox,
-                |s, val| s.default_terminal_mode = val,
-            );
+            set_profile_override(mode, &mut config.sandbox, |s, val| {
+                s.default_terminal_mode = val
+            });
         }
         (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
             let runtime = match selected {
                 0 => ContainerRuntimeName::Docker,
                 _ => ContainerRuntimeName::AppleContainer,
             };
-            set_or_clear_override(
-                runtime,
-                &global.sandbox.container_runtime,
-                &mut config.sandbox,
-                |s, val| s.container_runtime = val,
-            );
+            set_profile_override(runtime, &mut config.sandbox, |s, val| {
+                s.container_runtime = val
+            });
         }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
@@ -1349,9 +1344,7 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 1 => TmuxStatusBarMode::Enabled,
                 _ => TmuxStatusBarMode::Disabled,
             };
-            set_or_clear_override(mode, &global.tmux.status_bar, &mut config.tmux, |s, val| {
-                s.status_bar = val
-            });
+            set_profile_override(mode, &mut config.tmux, |s, val| s.status_bar = val);
         }
         (FieldKey::Mouse, FieldValue::Select { selected, .. }) => {
             let mode = match selected {
@@ -1359,124 +1352,83 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 1 => TmuxMouseMode::Enabled,
                 _ => TmuxMouseMode::Disabled,
             };
-            set_or_clear_override(mode, &global.tmux.mouse, &mut config.tmux, |s, val| {
-                s.mouse = val
-            });
+            set_profile_override(mode, &mut config.tmux, |s, val| s.mouse = val);
         }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             let tool = crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
-            if tool == global.session.default_tool {
-                if let Some(ref mut session) = config.session {
-                    session.default_tool = None;
-                }
-            } else {
-                use crate::session::SessionConfigOverride;
-                let session = config
-                    .session
-                    .get_or_insert_with(SessionConfigOverride::default);
-                session.default_tool = tool;
-            }
+            use crate::session::SessionConfigOverride;
+            let session = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            session.default_tool = tool;
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
-            set_or_clear_override(
-                *v,
-                &global.session.yolo_mode_default,
-                &mut config.session,
-                |s, val| s.yolo_mode_default = val,
-            );
+            set_profile_override(*v, &mut config.session, |s, val| s.yolo_mode_default = val);
+        }
+        (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            use crate::session::SessionConfigOverride;
+            let s = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            s.agent_extra_args = Some(map);
+        }
+        (FieldKey::AgentCommandOverride, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            use crate::session::SessionConfigOverride;
+            let s = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            s.agent_command_override = Some(map);
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {
-            set_or_clear_override(*v, &global.sound.enabled, &mut config.sound, |s, val| {
-                s.enabled = val
-            });
+            set_profile_override(*v, &mut config.sound, |s, val| s.enabled = val);
         }
         (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
             let mode = match selected {
                 1 => SoundMode::Specific(String::new()),
                 _ => SoundMode::Random,
             };
-            set_or_clear_override(mode, &global.sound.mode, &mut config.sound, |s, val| {
-                s.mode = val
-            });
+            set_profile_override(mode, &mut config.sound, |s, val| s.mode = val);
         }
         (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_start {
-                if let Some(ref mut s) = config.sound {
-                    s.on_start = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_start = v.clone();
-            }
+            let s = config
+                .sound
+                .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+            s.on_start = v.clone();
         }
         (FieldKey::SoundOnRunning, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_running {
-                if let Some(ref mut s) = config.sound {
-                    s.on_running = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_running = v.clone();
-            }
+            let s = config
+                .sound
+                .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+            s.on_running = v.clone();
         }
         (FieldKey::SoundOnWaiting, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_waiting {
-                if let Some(ref mut s) = config.sound {
-                    s.on_waiting = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_waiting = v.clone();
-            }
+            let s = config
+                .sound
+                .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+            s.on_waiting = v.clone();
         }
         (FieldKey::SoundOnIdle, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_idle {
-                if let Some(ref mut s) = config.sound {
-                    s.on_idle = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_idle = v.clone();
-            }
+            let s = config
+                .sound
+                .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+            s.on_idle = v.clone();
         }
         (FieldKey::SoundOnError, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_error {
-                if let Some(ref mut s) = config.sound {
-                    s.on_error = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_error = v.clone();
-            }
+            let s = config
+                .sound
+                .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+            s.on_error = v.clone();
         }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.hooks.on_create,
-                &mut config.hooks,
-                |s, val| s.on_create = val,
-            );
+            set_profile_override(v.clone(), &mut config.hooks, |s, val| s.on_create = val);
         }
         (FieldKey::HookOnLaunch, FieldValue::List(v)) => {
-            set_or_clear_override(
-                v.clone(),
-                &global.hooks.on_launch,
-                &mut config.hooks,
-                |s, val| s.on_launch = val,
-            );
+            set_profile_override(v.clone(), &mut config.hooks, |s, val| s.on_launch = val);
         }
         _ => {}
     }
@@ -1613,5 +1565,84 @@ mod tests {
                 option
             );
         }
+    }
+
+    #[test]
+    fn test_profile_override_preserved_when_matching_global() {
+        let global = Config::default();
+        let mut profile = ProfileConfig::default();
+
+        // Set a profile override that matches the global value
+        let global_check_enabled = global.updates.check_enabled;
+        profile.updates = Some(crate::session::UpdatesConfigOverride {
+            check_enabled: Some(global_check_enabled),
+            ..Default::default()
+        });
+
+        // Apply the same value through the field system
+        let fields = build_fields_for_category(
+            SettingsCategory::Updates,
+            SettingsScope::Profile,
+            &global,
+            &profile,
+        );
+        let field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::CheckEnabled)
+            .unwrap();
+
+        // Re-apply the field (simulates user saving without changing the value)
+        apply_field_to_profile(field, &global, &mut profile);
+
+        // The override should still be present
+        assert!(
+            profile
+                .updates
+                .as_ref()
+                .and_then(|u| u.check_enabled)
+                .is_some(),
+            "Profile override should be preserved even when value matches global"
+        );
+    }
+
+    #[test]
+    fn test_bool_toggle_back_to_global_preserves_override() {
+        let global = Config::default();
+        let mut profile = ProfileConfig::default();
+        let original = global.updates.check_enabled;
+
+        // Toggle to non-global value
+        profile.updates = Some(crate::session::UpdatesConfigOverride {
+            check_enabled: Some(!original),
+            ..Default::default()
+        });
+
+        // Now toggle back to match global
+        let field = SettingField {
+            key: FieldKey::CheckEnabled,
+            label: "Check Enabled",
+            description: "",
+            value: FieldValue::Bool(original),
+            category: SettingsCategory::Updates,
+            has_override: true,
+            inherited_display: None,
+        };
+
+        apply_field_to_profile(&field, &global, &mut profile);
+
+        // Override should still be present (not silently cleared)
+        assert!(
+            profile
+                .updates
+                .as_ref()
+                .and_then(|u| u.check_enabled)
+                .is_some(),
+            "Toggling back to match global should preserve the override, not silently clear it"
+        );
+        assert_eq!(
+            profile.updates.as_ref().unwrap().check_enabled,
+            Some(original),
+            "Override value should match what was set"
+        );
     }
 }

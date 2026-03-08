@@ -715,50 +715,48 @@ fn test_select_session_by_id_nonexistent() {
 
 #[test]
 #[serial]
-fn test_get_next_profile_single_profile_returns_none() {
+fn test_uppercase_p_opens_profile_picker() {
     let env = create_test_env_empty();
-    assert!(env.view.get_next_profile().is_none());
+    let mut view = env.view;
+
+    assert!(view.profile_picker_dialog.is_none());
+    let action = view.handle_key(key(KeyCode::Char('P')));
+    assert_eq!(action, None);
+    assert!(view.profile_picker_dialog.is_some());
 }
 
 #[test]
 #[serial]
-fn test_get_next_profile_cycles_through_profiles() {
-    let temp = TempDir::new().unwrap();
-    setup_test_home(&temp);
+fn test_uppercase_p_in_search_mode_does_not_open_picker() {
+    let env = create_test_env_empty();
+    let mut view = env.view;
 
-    crate::session::create_profile("alpha").unwrap();
-    crate::session::create_profile("beta").unwrap();
-    crate::session::create_profile("gamma").unwrap();
+    // Enter search mode
+    view.handle_key(key(KeyCode::Char('/')));
+    assert!(view.search_active);
 
-    let storage = Storage::new("alpha").unwrap();
-    let tools = AvailableTools::with_tools(&["claude"]);
-    let view = HomeView::new(storage, tools).unwrap();
-
-    // From alpha -> beta
-    assert_eq!(view.get_next_profile(), Some("beta".to_string()));
+    // P should be treated as search input, not open picker
+    view.handle_key(key(KeyCode::Char('P')));
+    assert!(view.profile_picker_dialog.is_none());
+    assert_eq!(view.search_query.value(), "P");
 }
 
 #[test]
 #[serial]
-fn test_get_next_profile_wraps_around() {
-    let temp = TempDir::new().unwrap();
-    setup_test_home(&temp);
+fn test_uppercase_p_picker_esc_closes() {
+    let env = create_test_env_empty();
+    let mut view = env.view;
 
-    crate::session::create_profile("alpha").unwrap();
-    crate::session::create_profile("beta").unwrap();
+    view.handle_key(key(KeyCode::Char('P')));
+    assert!(view.profile_picker_dialog.is_some());
 
-    // Start on beta (last alphabetically)
-    let storage = Storage::new("beta").unwrap();
-    let tools = AvailableTools::with_tools(&["claude"]);
-    let view = HomeView::new(storage, tools).unwrap();
-
-    // From beta -> alpha (wraps)
-    assert_eq!(view.get_next_profile(), Some("alpha".to_string()));
+    view.handle_key(key(KeyCode::Esc));
+    assert!(view.profile_picker_dialog.is_none());
 }
 
 #[test]
 #[serial]
-fn test_uppercase_p_returns_switch_profile_action() {
+fn test_uppercase_p_picker_switch_profile() {
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
 
@@ -769,18 +767,14 @@ fn test_uppercase_p_returns_switch_profile_action() {
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(storage, tools).unwrap();
 
-    let action = view.handle_key(key(KeyCode::Char('P')));
+    // Open picker
+    view.handle_key(key(KeyCode::Char('P')));
+    assert!(view.profile_picker_dialog.is_some());
+
+    // Navigate down to "second" and select
+    view.handle_key(key(KeyCode::Down));
+    let action = view.handle_key(key(KeyCode::Enter));
     assert_eq!(action, Some(Action::SwitchProfile("second".to_string())));
-}
-
-#[test]
-#[serial]
-fn test_uppercase_p_does_nothing_with_single_profile() {
-    let env = create_test_env_empty();
-    let mut view = env.view;
-
-    let action = view.handle_key(key(KeyCode::Char('P')));
-    assert_eq!(action, None);
 }
 
 #[test]

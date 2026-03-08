@@ -10,7 +10,8 @@ use crate::session::{flatten_tree, list_profiles, repo_config, resolve_config, I
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    InfoDialog, NewSessionData, NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
+    InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction, RenameDialog,
+    UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -310,6 +311,48 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.profile_picker_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.profile_picker_dialog = None;
+                }
+                DialogResult::Submit(action) => match action {
+                    ProfilePickerAction::Switch(name) => {
+                        self.profile_picker_dialog = None;
+                        return Some(Action::SwitchProfile(name));
+                    }
+                    ProfilePickerAction::Created(name) => {
+                        self.profile_picker_dialog = None;
+                        match crate::session::create_profile(&name) {
+                            Ok(()) => return Some(Action::SwitchProfile(name)),
+                            Err(e) => {
+                                self.info_dialog = Some(InfoDialog::new(
+                                    "Error",
+                                    &format!("Failed to create profile: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                    ProfilePickerAction::Deleted(name) => {
+                        match crate::session::delete_profile(&name) {
+                            Ok(()) => {
+                                self.show_profile_picker();
+                            }
+                            Err(e) => {
+                                self.profile_picker_dialog = None;
+                                self.info_dialog = Some(InfoDialog::new(
+                                    "Error",
+                                    &format!("Failed to delete profile: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                },
+            }
+            return None;
+        }
+
         // Search mode
         if self.search_active {
             match key.code {
@@ -348,9 +391,7 @@ impl HomeView {
                 self.show_help = true;
             }
             KeyCode::Char('P') => {
-                if let Some(next) = self.get_next_profile() {
-                    return Some(Action::SwitchProfile(next));
-                }
+                self.show_profile_picker();
             }
             KeyCode::Char('t') => {
                 self.view_mode = match self.view_mode {

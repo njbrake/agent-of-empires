@@ -387,7 +387,13 @@ impl App {
 
         let tmux_session = instance.tmux_session()?;
 
-        if !tmux_session.exists() {
+        if !tmux_session.exists()
+            || tmux_session.is_pane_dead()
+            || (!instance.expects_shell() && tmux_session.is_pane_running_shell())
+        {
+            if tmux_session.exists() {
+                let _ = tmux_session.kill();
+            }
             // Show warning (once) if custom instruction is configured for an unsupported agent
             if instance.is_sandboxed() {
                 let has_instruction = instance
@@ -475,7 +481,10 @@ impl App {
         let attach_fn: Box<dyn FnOnce() -> Result<()>> = match mode {
             TerminalMode::Container if instance.is_sandboxed() => {
                 let container_session = instance.container_terminal_tmux_session()?;
-                if !container_session.exists() {
+                if !container_session.exists() || container_session.is_pane_dead() {
+                    if container_session.exists() {
+                        let _ = container_session.kill();
+                    }
                     if let Err(e) = self
                         .home
                         .start_container_terminal_for_instance_with_size(session_id, size)
@@ -489,7 +498,10 @@ impl App {
             }
             _ => {
                 let terminal_session = instance.terminal_tmux_session()?;
-                if !terminal_session.exists() {
+                if !terminal_session.exists() || terminal_session.is_pane_dead() {
+                    if terminal_session.exists() {
+                        let _ = terminal_session.kill();
+                    }
                     if let Err(e) = self
                         .home
                         .start_terminal_for_instance_with_size(session_id, size)
