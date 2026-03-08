@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::utils::{is_pane_dead, sanitize_session_name};
+use super::utils::{append_remain_on_exit_args, is_pane_dead, sanitize_session_name};
 use super::{
     refresh_session_cache, session_exists_from_cache, CONTAINER_TERMINAL_PREFIX, TERMINAL_PREFIX,
 };
@@ -56,7 +56,9 @@ impl TerminalSession {
             return Ok(());
         }
 
-        let args = build_terminal_create_args(&self.name, working_dir, command, size);
+        let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
+        append_remain_on_exit_args(&mut args, &self.name);
+
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
@@ -65,11 +67,6 @@ impl TerminalSession {
         }
 
         refresh_session_cache();
-
-        Command::new("tmux")
-            .args(["set-option", "-t", &self.name, "remain-on-exit", "on"])
-            .output()
-            .ok();
 
         Ok(())
     }
@@ -207,7 +204,9 @@ impl ContainerTerminalSession {
             return Ok(());
         }
 
-        let args = build_terminal_create_args(&self.name, working_dir, command, size);
+        let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
+        append_remain_on_exit_args(&mut args, &self.name);
+
         let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
@@ -216,11 +215,6 @@ impl ContainerTerminalSession {
         }
 
         refresh_session_cache();
-
-        Command::new("tmux")
-            .args(["set-option", "-t", &self.name, "remain-on-exit", "on"])
-            .output()
-            .ok();
 
         Ok(())
     }
@@ -474,15 +468,17 @@ mod tests {
                 "-y",
                 "24",
                 "sleep 1",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
             ])
             .output()
             .expect("tmux new-session");
         assert!(output.status.success());
-
-        Command::new("tmux")
-            .args(["set-option", "-t", &session_name, "remain-on-exit", "on"])
-            .output()
-            .ok();
 
         std::thread::sleep(std::time::Duration::from_millis(1500));
 
@@ -520,15 +516,17 @@ mod tests {
                 "-y",
                 "24",
                 "sleep 30",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
             ])
             .output()
             .expect("tmux new-session");
         assert!(output.status.success());
-
-        Command::new("tmux")
-            .args(["set-option", "-t", &session_name, "remain-on-exit", "on"])
-            .output()
-            .ok();
 
         std::thread::sleep(std::time::Duration::from_millis(200));
 
