@@ -9,24 +9,18 @@ use tui_input::Input;
 use super::DialogResult;
 use crate::tui::styles::Theme;
 
-/// Result when profile picker submits
 pub enum ProfilePickerAction {
     Switch(String),
     Created(String),
     Deleted(String),
 }
 
-/// Sub-mode of the profile picker
 enum Mode {
-    /// Browsing the profile list
     List,
-    /// Entering a name for a new profile
     CreateInput,
-    /// Confirming deletion of the selected profile
     ConfirmDelete,
 }
 
-/// Info about a single profile entry
 pub struct ProfileEntry {
     pub name: String,
     pub session_count: usize,
@@ -37,11 +31,8 @@ pub struct ProfilePickerDialog {
     mode: Mode,
     profiles: Vec<ProfileEntry>,
     selected: usize,
-    /// Input for new profile name
     name_input: Input,
-    /// Error/validation message
     error: Option<String>,
-    /// Confirmation selection: true = Yes, false = No
     confirm_selected: bool,
 }
 
@@ -306,7 +297,7 @@ impl ProfilePickerDialog {
     fn render_create(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_error = self.error.is_some();
         let dialog_width: u16 = 40;
-        // inner width = dialog_width - borders(2) - margin(2) = 36
+        // inner width = dialog_width - borders(2) - margin(2) - padding(2) = 34
         let error_lines: u16 = if let Some(err) = &self.error {
             let inner_width = dialog_width.saturating_sub(6) as usize;
             if inner_width == 0 {

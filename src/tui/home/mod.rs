@@ -100,14 +100,12 @@ pub struct HomeView {
     pub(super) group_tree: GroupTree,
     pub(super) flat_items: Vec<Item>,
 
-    // UI state
     pub(super) cursor: usize,
     pub(super) selected_session: Option<String>,
     pub(super) selected_group: Option<String>,
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
 
-    // Dialogs
     pub(super) show_help: bool,
     pub(super) new_dialog: Option<NewSessionDialog>,
     pub(super) confirm_dialog: Option<ConfirmDialog>,
@@ -126,23 +124,18 @@ pub struct HomeView {
     /// Session to stop after the confirmation dialog is accepted
     pub(super) pending_stop_session: Option<String>,
 
-    // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
     pub(super) search_matches: Vec<usize>,
     pub(super) search_match_index: usize,
 
-    // Tool availability
     pub(super) available_tools: AvailableTools,
 
-    // Performance: background status polling
     pub(super) status_poller: StatusPoller,
     pub(super) pending_status_refresh: bool,
 
-    // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
 
-    // Performance: background session creation (for sandbox)
     pub(super) creation_poller: CreationPoller,
     /// Set to true if user cancelled while creation was pending
     pub(super) creation_cancelled: bool,
@@ -256,6 +249,94 @@ impl HomeView {
                 .unwrap_or(35),
         };
 
+        // Synchronize tmux env with sessions.json so build_exclusion_set()
+        // sees current data instead of stale values from previous runs.
+        for inst in &view.instances {
+            let tmux_name = match inst.tmux_session() {
+                Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
+                _ => continue,
+            };
+
+            if let Err(e) = crate::tmux::env::set_hidden_env(
+                &tmux_name,
+                crate::tmux::env::AOE_INSTANCE_ID_KEY,
+                &inst.id,
+            ) {
+                tracing::warn!("Failed to set AOE_INSTANCE_ID for {}: {}", inst.id, e);
+            }
+
+            // Set if known, clear if not. Pollers re-publish on discovery,
+            // so clearing is safe and prevents stale exclusion-set entries.
+            if let Some(ref sid) = inst.agent_session_id {
+                if let Err(e) = crate::tmux::env::set_hidden_env(
+                    &tmux_name,
+                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                    sid,
+                ) {
+                    tracing::warn!(
+                        "Failed to restore AOE_CAPTURED_SESSION_ID for {}: {}",
+                        inst.id,
+                        e
+                    );
+                }
+            } else {
+                let _ = crate::tmux::env::remove_hidden_env(
+                    &tmux_name,
+                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                );
+            }
+        }
+
+        // Recover session IDs for pre-existing sessions: pollers for Claude/OpenCode,
+        // retroactive capture for others.
+        let mut recovered_session_id = false;
+        for inst in &mut view.instances {
+            let has_live_tmux = inst
+                .tmux_session()
+                .map(|s| s.exists() && !s.is_pane_dead())
+                .unwrap_or(false);
+            if !has_live_tmux {
+                continue;
+            }
+
+            if inst.supports_session_poller() {
+                if inst.session_id_poller.is_none() {
+                    // Reset so the poller rediscovers from scratch (stale IDs
+                    // would poison the exclusion set).
+                    inst.agent_session_id = None;
+                    inst.maybe_start_poller();
+                }
+            } else if inst.supports_deferred_capture() && inst.agent_session_id.is_none() {
+                if let Some(id) = inst.try_retroactive_capture() {
+                    // Publish so build_exclusion_set() excludes this ID.
+                    let tmux_name = inst
+                        .tmux_session()
+                        .map(|s| s.name().to_string())
+                        .unwrap_or_default();
+                    if !tmux_name.is_empty() {
+                        let _ = crate::tmux::env::set_hidden_env(
+                            &tmux_name,
+                            crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                            &id,
+                        );
+                    }
+                    inst.agent_session_id = Some(id);
+                    recovered_session_id = true;
+                }
+            }
+        }
+        if recovered_session_id {
+            let group_tree = GroupTree::new_with_groups(&view.instances, &view.groups);
+            if let Err(e) = view.storage.save_with_groups(&view.instances, &group_tree) {
+                tracing::warn!("Failed to save retroactively captured session IDs: {}", e);
+            }
+        }
+        view.instance_map = view
+            .instances
+            .iter()
+            .map(|i| (i.id.clone(), i.clone()))
+            .collect();
+
         view.update_selected();
         Ok(view)
     }
@@ -269,6 +350,14 @@ impl HomeView {
                 inst.last_error = prev.last_error.clone();
                 inst.last_error_check = prev.last_error_check;
                 inst.last_start_time = prev.last_start_time;
+                inst.session_id_poller = prev.session_id_poller.clone();
+                inst.deferred_capture_handle = prev.deferred_capture_handle.clone();
+                inst.capture_gate = prev.capture_gate.clone();
+                // Use in-memory session_id if present; fallback to disk.
+                inst.agent_session_id = prev
+                    .agent_session_id
+                    .clone()
+                    .or(inst.agent_session_id.take());
             }
         }
 
@@ -314,30 +403,28 @@ impl HomeView {
 
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
-                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
-                    if inst.status != Status::Deleting
-                        && inst.status != Status::Stopped
-                        && update.status != Status::Stopped
-                    {
-                        let old_status = inst.status;
+                let dominated = |inst: &Instance| {
+                    inst.status == Status::Deleting
+                        || inst.status == Status::Stopped
+                        || update.status == Status::Stopped
+                };
+
+                let old_status = self
+                    .instance_map
+                    .get(&update.id)
+                    .filter(|inst| !dominated(inst))
+                    .map(|inst| inst.status);
+
+                if old_status.is_some() {
+                    self.mutate_instance(&update.id, |inst| {
                         inst.status = update.status;
                         inst.last_error = update.last_error.clone();
-                        if old_status != update.status {
-                            crate::sound::play_for_transition(
-                                old_status,
-                                update.status,
-                                &self.sound_config,
-                            );
-                        }
-                    }
+                    });
                 }
-                if let Some(inst) = self.instance_map.get_mut(&update.id) {
-                    if inst.status != Status::Deleting
-                        && inst.status != Status::Stopped
-                        && update.status != Status::Stopped
-                    {
-                        inst.status = update.status;
-                        inst.last_error = update.last_error;
+
+                if let Some(old) = old_status {
+                    if old != update.status {
+                        crate::sound::play_for_transition(old, update.status, &self.sound_config);
                     }
                 }
             }
@@ -356,30 +443,58 @@ impl HomeView {
                 self.instance_map.remove(&result.session_id);
                 self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
 
-                if let Err(e) = self
-                    .storage
-                    .save_with_groups(&self.instances, &self.group_tree)
-                {
+                if let Err(e) = self.save() {
                     tracing::error!("Failed to save after deletion: {}", e);
                 }
                 let _ = self.reload();
             } else {
-                if let Some(inst) = self
-                    .instances
-                    .iter_mut()
-                    .find(|i| i.id == result.session_id)
-                {
+                let error = result.error;
+                self.mutate_instance(&result.session_id, |inst| {
                     inst.status = Status::Error;
-                    inst.last_error = result.error.clone();
-                }
-                if let Some(inst) = self.instance_map.get_mut(&result.session_id) {
-                    inst.status = Status::Error;
-                    inst.last_error = result.error;
-                }
+                    inst.last_error = error.clone();
+                });
             }
             return true;
         }
         false
+    }
+
+    /// Apply any pending session ID updates from background pollers and
+    /// completed capture gates.
+    /// Returns true if any instance was updated.
+    pub fn apply_session_id_updates(&mut self) -> bool {
+        let mut updates: Vec<(String, String)> = Vec::new();
+        for inst in &self.instances {
+            // Poller channel (Claude, OpenCode)
+            if let Some((_id, session_id)) = inst
+                .session_id_poller
+                .as_ref()
+                .and_then(|p| p.lock().ok())
+                .and_then(|p| p.try_recv_session_update())
+            {
+                updates.push((inst.id.clone(), session_id));
+                continue;
+            }
+
+            // Completed capture gates (deferred capture agents)
+            if inst.agent_session_id.is_none() {
+                if let Some(session_id) = inst.capture_gate.as_ref().and_then(|g| g.try_take()) {
+                    updates.push((inst.id.clone(), session_id));
+                }
+            }
+        }
+
+        if !updates.is_empty() {
+            for (id, session_id) in &updates {
+                self.mutate_instance(id, |inst| {
+                    inst.agent_session_id = Some(session_id.clone());
+                });
+            }
+            if let Err(e) = self.save() {
+                tracing::error!("Failed to save after session ID update: {}", e);
+            }
+        }
+        !updates.is_empty()
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
@@ -488,10 +603,7 @@ impl HomeView {
                         self.group_tree.create_group(&instance.group_path);
                     }
 
-                    if let Err(e) = self
-                        .storage
-                        .save_with_groups(&self.instances, &self.group_tree)
-                    {
+                    if let Err(e) = self.save() {
                         tracing::error!("Failed to save after creation: {}", e);
                     }
                 }
@@ -620,13 +732,18 @@ impl HomeView {
         self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
     }
 
-    pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
+    /// Update an instance in both instance_map and instances vec to keep them in sync.
+    pub(super) fn mutate_instance(&mut self, id: &str, f: impl Fn(&mut Instance)) {
         if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.status = status;
+            f(inst);
         }
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.status = status;
+            f(inst);
         }
+    }
+
+    pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
+        self.mutate_instance(id, |inst| inst.status = status);
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -636,12 +753,7 @@ impl HomeView {
     }
 
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.last_error = error.clone();
-        }
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.last_error = error;
-        }
+        self.mutate_instance(id, |inst| inst.last_error = error.clone());
     }
 
     pub fn start_terminal_for_instance_with_size(
@@ -649,15 +761,36 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_terminal_with_size(size)?;
+        // Start via instance_map (authoritative), then sync to vec
+        let result = self
+            .instance_map
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("instance not found: {id}"))
+            .and_then(|inst| inst.start_terminal_with_size(size));
+        if result.is_ok() {
+            if let Some(map_inst) = self.instance_map.get(id) {
+                let terminal_info = map_inst.terminal_info.clone();
+                if let Some(vec_inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    vec_inst.terminal_info = terminal_info;
+                }
+            }
+            self.save()?;
         }
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.start_terminal_with_size(size)?;
-        }
-        self.storage
-            .save_with_groups(&self.instances, &self.group_tree)?;
-        Ok(())
+        result
+    }
+
+    /// Restart in-place in instance_map to preserve poller threads; reload() syncs vec later.
+    pub fn restart_instance_with_size_opts(
+        &mut self,
+        id: &str,
+        size: Option<(u16, u16)>,
+        skip_on_launch: bool,
+    ) -> anyhow::Result<()> {
+        let inst = self
+            .instance_map
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("instance not found: {id}"))?;
+        inst.restart_with_size_opts(size, skip_on_launch)
     }
 
     pub fn select_session_by_id(&mut self, session_id: &str) {
@@ -710,13 +843,9 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_container_terminal_with_size(size)?;
-        }
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.start_container_terminal_with_size(size)?;
-        }
-        // Don't save terminal info for container terminals - it's ephemeral
-        Ok(())
+        self.instance_map
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("instance not found: {id}"))
+            .and_then(|inst| inst.start_container_terminal_with_size(size))
     }
 }

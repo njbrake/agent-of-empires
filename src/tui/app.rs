@@ -203,6 +203,10 @@ impl App {
                 refresh_needed = true;
             }
 
+            if self.home.apply_session_id_updates() {
+                refresh_needed = true;
+            }
+
             // Check for and apply creation results (non-blocking)
             if let Some(session_id) = self.home.apply_creation_results() {
                 // Creation succeeded - attach to the new session
@@ -230,6 +234,11 @@ impl App {
             if self.should_quit {
                 break;
             }
+        }
+
+        self.home.apply_session_id_updates();
+        if let Err(e) = self.home.save() {
+            tracing::error!("Failed to save on quit: {}", e);
         }
 
         Ok(())
@@ -382,14 +391,11 @@ impl App {
         };
 
         let tmux_session = instance.tmux_session()?;
-
-        if !tmux_session.exists()
+        let needs_restart = !tmux_session.exists()
             || tmux_session.is_pane_dead()
-            || (!instance.expects_shell() && tmux_session.is_pane_running_shell())
-        {
-            if tmux_session.exists() {
-                let _ = tmux_session.kill();
-            }
+            || (!instance.expects_shell() && tmux_session.is_pane_running_shell());
+
+        if needs_restart {
             // Show warning (once) if custom instruction is configured for an unsupported agent
             if instance.is_sandboxed() {
                 let has_instruction = instance
@@ -415,7 +421,6 @@ impl App {
                         );
                         self.home.pending_attach_after_warning = Some(session_id.to_string());
 
-                        // Persist the "seen" flag so it only shows once
                         let mut config = config;
                         config.app_state.has_seen_custom_instruction_warning = true;
                         save_config(&config)?;
@@ -425,17 +430,15 @@ impl App {
                 }
             }
 
-            // Get terminal size to pass to tmux session creation
-            // This ensures the session starts at the correct size instead of 80x24 default
             let size = crate::terminal::get_size();
-
-            // Skip on_launch hooks if they already ran in the background creation poller
             let skip_on_launch = self.home.take_on_launch_hooks_ran(session_id);
 
             self.home
                 .set_instance_status(session_id, crate::session::Status::Starting);
-            let mut inst = instance.clone();
-            if let Err(e) = inst.start_with_size_opts(size, skip_on_launch) {
+            if let Err(e) =
+                self.home
+                    .restart_instance_with_size_opts(session_id, size, skip_on_launch)
+            {
                 self.home
                     .set_instance_error(session_id, Some(e.to_string()));
                 self.home
@@ -445,6 +448,10 @@ impl App {
             self.home.set_instance_error(session_id, None);
         }
 
+        let tmux_session = match self.home.get_instance(session_id) {
+            Some(inst) => inst.tmux_session()?,
+            None => return Ok(()),
+        };
         let attach_result = with_raw_mode_disabled(terminal, || tmux_session.attach())?;
 
         self.needs_redraw = true;

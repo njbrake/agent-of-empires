@@ -22,6 +22,26 @@ pub enum YoloMode {
     EnvVar(&'static str, &'static str),
 }
 
+/// How an agent resumes an existing session from the CLI.
+pub enum ResumeStrategy {
+    /// Append a flag (e.g. `--session <id>`). For agents where new and existing
+    /// sessions use the same flag.
+    Flag(&'static str),
+    /// Two different flags depending on whether conversation data already exists.
+    /// `existing` is used when there is prior conversation data (e.g. `--resume`),
+    /// `new_session` when creating/attaching unconditionally (e.g. `--session-id`).
+    FlagPair {
+        existing: &'static str,
+        new_session: &'static str,
+    },
+    /// Resume is a subcommand rather than a flag (e.g. `codex resume <id>`).
+    /// The subcommand + id are inserted right after the binary name so that
+    /// other flags land after it.
+    Subcommand(&'static str),
+    /// Agent does not support session resume.
+    Unsupported,
+}
+
 /// Configuration for installing status-detection hooks into an agent's settings file.
 pub struct AgentHookConfig {
     /// Path relative to the project/home dir where the agent's settings live
@@ -56,6 +76,8 @@ pub struct AgentDef {
     /// hooks into the agent's settings file so status is written to a file instead
     /// of being parsed from tmux pane content.
     pub hook_config: Option<AgentHookConfig>,
+    /// How this agent resumes a prior session.
+    pub resume_strategy: ResumeStrategy,
 }
 
 pub const AGENTS: &[AgentDef] = &[
@@ -73,6 +95,10 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".claude/settings.json",
         }),
+        resume_strategy: ResumeStrategy::FlagPair {
+            existing: "--resume",
+            new_session: "--session-id",
+        },
     },
     AgentDef {
         name: "opencode",
@@ -86,6 +112,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Flag("--session"),
     },
     AgentDef {
         name: "vibe",
@@ -99,6 +126,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_vibe_status,
         container_env: &[],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Flag("--resume"),
     },
     AgentDef {
         name: "codex",
@@ -114,6 +142,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Subcommand("resume"),
     },
     AgentDef {
         name: "gemini",
@@ -127,6 +156,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_gemini_status,
         container_env: &[],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Flag("--resume"),
     },
     AgentDef {
         name: "cursor",
@@ -142,6 +172,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".cursor/settings.json",
         }),
+        resume_strategy: ResumeStrategy::Unsupported,
     },
 ];
 

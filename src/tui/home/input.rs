@@ -742,10 +742,7 @@ impl HomeView {
     fn toggle_group_collapsed(&mut self, path: &str) {
         self.group_tree.toggle_collapsed(path);
         self.flat_items = flatten_tree(&self.group_tree, &self.instances, self.sort_order);
-        if let Err(e) = self
-            .storage
-            .save_with_groups(&self.instances, &self.group_tree)
-        {
+        if let Err(e) = self.save() {
             tracing::error!("Failed to save group state: {}", e);
         }
     }

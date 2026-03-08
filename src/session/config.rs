@@ -109,7 +109,7 @@ pub struct AppStateConfig {
 }
 
 /// Session-related configuration defaults
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     /// Default coding tool for new sessions (claude, opencode, vibe, codex)
     /// If not set or tool is unavailable, falls back to first available tool
@@ -127,6 +127,45 @@ pub struct SessionConfig {
     /// Per-agent command override replacing the binary entirely (e.g., claude = "happy cli claude")
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_command_override: HashMap<String, String>,
+
+    #[serde(default = "default_opencode_max_retry_attempts")]
+    pub opencode_max_retry_attempts: u32,
+
+    #[serde(default = "default_opencode_retry_delay_secs")]
+    pub opencode_retry_delay_secs: u64,
+
+    #[serde(default = "default_opencode_command_timeout_secs")]
+    pub opencode_command_timeout_secs: u64,
+
+    #[serde(default = "default_opencode_capture_deadline_secs")]
+    pub opencode_capture_deadline_secs: u64,
+
+    #[serde(default = "default_deferred_capture_initial_delay_secs")]
+    pub deferred_capture_initial_delay_secs: u64,
+
+    #[serde(default = "default_deferred_capture_max_attempts")]
+    pub deferred_capture_max_attempts: u32,
+
+    #[serde(default = "default_deferred_capture_retry_delay_secs")]
+    pub deferred_capture_retry_delay_secs: u64,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            default_tool: None,
+            yolo_mode_default: false,
+            agent_extra_args: HashMap::new(),
+            agent_command_override: HashMap::new(),
+            opencode_max_retry_attempts: default_opencode_max_retry_attempts(),
+            opencode_retry_delay_secs: default_opencode_retry_delay_secs(),
+            opencode_command_timeout_secs: default_opencode_command_timeout_secs(),
+            opencode_capture_deadline_secs: default_opencode_capture_deadline_secs(),
+            deferred_capture_initial_delay_secs: default_deferred_capture_initial_delay_secs(),
+            deferred_capture_max_attempts: default_deferred_capture_max_attempts(),
+            deferred_capture_retry_delay_secs: default_deferred_capture_retry_delay_secs(),
+        }
+    }
 }
 
 /// Diff view configuration
@@ -153,6 +192,28 @@ impl Default for DiffConfig {
 
 fn default_context_lines() -> usize {
     3
+}
+
+fn default_opencode_max_retry_attempts() -> u32 {
+    3
+}
+fn default_opencode_retry_delay_secs() -> u64 {
+    2
+}
+fn default_opencode_command_timeout_secs() -> u64 {
+    5
+}
+fn default_opencode_capture_deadline_secs() -> u64 {
+    15
+}
+fn default_deferred_capture_initial_delay_secs() -> u64 {
+    5
+}
+fn default_deferred_capture_max_attempts() -> u32 {
+    6
+}
+fn default_deferred_capture_retry_delay_secs() -> u64 {
+    5
 }
 
 fn default_profile() -> String {

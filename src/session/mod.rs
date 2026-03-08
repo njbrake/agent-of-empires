@@ -7,6 +7,7 @@ mod container_config;
 mod environment;
 mod groups;
 mod instance;
+pub mod poller;
 pub mod profile_config;
 pub mod repo_config;
 mod storage;
@@ -19,6 +20,7 @@ pub use config::{
 };
 pub use environment::validate_env_entry;
 pub use groups::{flatten_tree, Group, GroupTree, Item};
+pub(crate) use instance::is_valid_session_id;
 pub use instance::{Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo};
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,

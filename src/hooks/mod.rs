@@ -30,8 +30,7 @@ fn hook_command(status: &str) -> String {
 
 /// Build the complete AoE hooks JSON structure.
 fn build_aoe_hooks() -> Value {
-    // Event -> (status, matcher)
-    // "idle" = Claude finished, at prompt. "waiting" = needs user action (approval, question).
+    // Map each event to its status value and optional matcher regex.
     let events: &[(&str, &str, Option<&str>)] = &[
         ("PreToolUse", "running", None),
         ("UserPromptSubmit", "running", None),
@@ -86,14 +85,16 @@ fn remove_aoe_entries(matchers: &mut Vec<Value>) {
 pub fn install_hooks(settings_path: &Path) -> Result<()> {
     let mut settings: Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        serde_json::from_str(&content).unwrap_or_else(|e| {
+            tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
+            serde_json::json!({})
+        })
     } else {
         serde_json::json!({})
     };
 
     let aoe_hooks = build_aoe_hooks();
 
-    // Ensure settings.hooks exists as an object
     if !settings.get("hooks").is_some_and(|h| h.is_object()) {
         settings
             .as_object_mut()
@@ -103,7 +104,6 @@ pub fn install_hooks(settings_path: &Path) -> Result<()> {
 
     let settings_hooks = settings.get_mut("hooks").unwrap().as_object_mut().unwrap();
 
-    // Merge each event
     for (event_name, aoe_matchers) in aoe_hooks.as_object().unwrap() {
         if let Some(existing) = settings_hooks.get_mut(event_name) {
             if let Some(arr) = existing.as_array_mut() {
@@ -118,7 +118,6 @@ pub fn install_hooks(settings_path: &Path) -> Result<()> {
         }
     }
 
-    // Write back, creating parent dirs if needed
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -142,8 +141,10 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     }
 
     let content = std::fs::read_to_string(settings_path)?;
-    let mut settings: Value =
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
+    let mut settings: Value = serde_json::from_str(&content).unwrap_or_else(|e| {
+        tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
+        serde_json::json!({})
+    });
 
     let Some(hooks_obj) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return Ok(false);
@@ -169,7 +170,6 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    // Remove empty event arrays
     let empty_events: Vec<String> = hooks_obj
         .iter()
         .filter(|(_, v)| v.as_array().is_some_and(|a| a.is_empty()))
@@ -179,7 +179,6 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
         hooks_obj.remove(&key);
     }
 
-    // Remove empty hooks object
     if hooks_obj.is_empty() {
         settings.as_object_mut().unwrap().remove("hooks");
     }
@@ -380,7 +379,12 @@ mod tests {
         // Verify they're there
         let content: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-        assert!(content.get("hooks").unwrap().as_object().unwrap().len() > 0);
+        assert!(!content
+            .get("hooks")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty());
 
         // Uninstall
         let modified = uninstall_hooks(&settings_path).unwrap();

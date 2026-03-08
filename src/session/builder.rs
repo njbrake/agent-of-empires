@@ -64,7 +64,10 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         }
     }
 
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load config, using defaults: {}", e);
+        Config::default()
+    });
 
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()

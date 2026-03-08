@@ -59,8 +59,7 @@ impl HomeView {
             if !instance.group_path.is_empty() {
                 self.group_tree.create_group(&instance.group_path);
             }
-            self.storage
-                .save_with_groups(&self.instances, &self.group_tree)?;
+            self.save()?;
         }
 
         self.reload()?;
@@ -71,12 +70,7 @@ impl HomeView {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 
-            if let Some(inst) = self.instance_map.get_mut(&id) {
-                inst.status = Status::Deleting;
-            }
-            if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-                inst.status = Status::Deleting;
-            }
+            self.mutate_instance(&id, |inst| inst.status = Status::Deleting);
 
             if let Some(inst) = self.instance_map.get(&id) {
                 let request = DeletionRequest {
@@ -104,8 +98,7 @@ impl HomeView {
 
             self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
             self.group_tree.delete_group(&group_path);
-            self.storage
-                .save_with_groups(&self.instances, &self.group_tree)?;
+            self.save()?;
 
             self.reload()?;
         }
@@ -129,14 +122,10 @@ impl HomeView {
             for session_id in sessions_to_delete {
                 // Clear group_path when marking for deletion so these instances
                 // won't cause the group to be recreated during tree rebuilds
-                if let Some(inst) = self.instance_map.get_mut(&session_id) {
+                self.mutate_instance(&session_id, |inst| {
                     inst.status = Status::Deleting;
                     inst.group_path = String::new();
-                }
-                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == session_id) {
-                    inst.status = Status::Deleting;
-                    inst.group_path = String::new();
-                }
+                });
 
                 if let Some(inst) = self.instance_map.get(&session_id) {
                     let delete_worktree = options.delete_worktrees
@@ -165,8 +154,7 @@ impl HomeView {
 
             self.group_tree.delete_group(&group_path);
             self.groups = self.group_tree.get_all_groups();
-            self.storage
-                .save_with_groups(&self.instances, &self.group_tree)?;
+            self.save()?;
             self.flat_items = flatten_tree(&self.group_tree, &self.instances, self.sort_order);
         }
         Ok(())
@@ -256,8 +244,7 @@ impl HomeView {
                     // Remove from current profile
                     self.instances.retain(|i| i.id != id);
                     self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
-                    self.storage
-                        .save_with_groups(&self.instances, &self.group_tree)?;
+                    self.save()?;
 
                     // Add to target profile
                     let target_storage = Storage::new(target_profile)?;
@@ -306,8 +293,7 @@ impl HomeView {
             if !effective_group.is_empty() {
                 self.group_tree.create_group(&effective_group);
             }
-            self.storage
-                .save_with_groups(&self.instances, &self.group_tree)?;
+            self.save()?;
 
             self.reload()?;
         }

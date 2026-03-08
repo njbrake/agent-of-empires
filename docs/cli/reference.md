@@ -18,6 +18,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session show`↴](#aoe-session-show)
 * [`aoe session rename`↴](#aoe-session-rename)
 * [`aoe session current`↴](#aoe-session-current)
+* [`aoe session set-session-id`↴](#aoe-session-set-session-id)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
 * [`aoe group create`↴](#aoe-group-create)
@@ -176,6 +177,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `show` — Show session details
 * `rename` — Rename a session
 * `current` — Auto-detect current session
+* `set-session-id` — Set agent session ID for a session
 
 
 
@@ -270,6 +272,19 @@ Auto-detect current session
 
 * `-q`, `--quiet` — Just session name (for scripting)
 * `--json` — Output as JSON
+
+
+
+## `aoe session set-session-id`
+
+Set agent session ID for a session
+
+**Usage:** `aoe session set-session-id <IDENTIFIER> <SESSION_ID>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+* `<SESSION_ID>` — Agent session ID to set (pass empty string to clear)
 
 
 

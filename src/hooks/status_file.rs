@@ -25,8 +25,7 @@ pub fn hook_status_dir(instance_id: &str) -> PathBuf {
 pub fn read_hook_status(instance_id: &str) -> Option<Status> {
     let status_path = hook_status_dir(instance_id).join("status");
 
-    // Check file age first -- ignore stale files from crashed sessions
-    let metadata = std::fs::metadata(&status_path).ok()?;
+    let metadata = std::fs::symlink_metadata(&status_path).ok()?;
     let modified = metadata.modified().ok()?;
     if modified.elapsed().ok()? > STALENESS_THRESHOLD {
         tracing::debug!(
