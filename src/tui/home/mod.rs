@@ -314,11 +314,7 @@ impl HomeView {
 
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
-                let old_status = self
-                    .instances
-                    .iter()
-                    .find(|i| i.id == update.id)
-                    .map(|i| i.status);
+                let old_status = self.get_instance(&update.id).map(|i| i.status);
 
                 let should_update = old_status.is_some_and(|s| {
                     s != Status::Deleting
@@ -331,7 +327,7 @@ impl HomeView {
                     let new_error = update.last_error;
                     self.mutate_instance(&update.id, |inst| {
                         inst.status = new_status;
-                        inst.last_error = new_error.clone();
+                        inst.last_error = new_error;
                     });
 
                     if let Some(old) = old_status {
@@ -364,7 +360,7 @@ impl HomeView {
                 let error = result.error;
                 self.mutate_instance(&result.session_id, |inst| {
                     inst.status = Status::Error;
-                    inst.last_error = error.clone();
+                    inst.last_error = error;
                 });
             }
             return true;
@@ -617,36 +613,35 @@ impl HomeView {
         Ok(())
     }
 
-    /// Centralized instance mutation: applies `f` to both `instance_map` and
-    /// `instances` vec so the two copies stay in sync.
-    pub(super) fn mutate_instance(&mut self, id: &str, f: impl Fn(&mut Instance)) {
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            f(inst);
-        }
+    /// Centralized instance mutation: applies `f` once to the `instances` vec
+    /// entry, then clones the result into `instance_map`. This guarantees both
+    /// collections stay in sync even for non-idempotent closures.
+    pub(super) fn mutate_instance(&mut self, id: &str, f: impl FnOnce(&mut Instance)) {
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
             f(inst);
+            self.instance_map.insert(id.to_string(), inst.clone());
         }
     }
 
-    /// Like `mutate_instance`, but for fallible operations. Applies `f` to
-    /// both `instance_map` and `instances` vec. If the first call returns an
-    /// error, the second copy is left untouched and the error is propagated.
+    /// Like `mutate_instance`, but for fallible operations. Clones the entry,
+    /// applies `f` to the clone, and writes back to both collections only on
+    /// success -- neither collection is modified on error.
     pub(super) fn try_mutate_instance(
         &mut self,
         id: &str,
-        f: impl Fn(&mut Instance) -> anyhow::Result<()>,
+        f: impl FnOnce(&mut Instance) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            f(inst)?;
-        }
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            f(inst)?;
+            let mut updated = inst.clone();
+            f(&mut updated)?;
+            *inst = updated.clone();
+            self.instance_map.insert(id.to_string(), updated);
         }
         Ok(())
     }
 
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
-        self.mutate_instance(id, |inst| inst.last_error = error.clone());
+        self.mutate_instance(id, |inst| inst.last_error = error);
     }
 
     pub fn start_terminal_for_instance_with_size(
