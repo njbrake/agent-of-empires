@@ -5,7 +5,7 @@ use std::process::Command;
 
 use super::{
     refresh_session_cache, session_exists_from_cache,
-    utils::{is_pane_dead, is_pane_running_shell},
+    utils::{append_remain_on_exit_args, is_pane_dead, is_pane_running_shell},
     SESSION_PREFIX,
 };
 use crate::cli::truncate_id;
@@ -55,18 +55,7 @@ impl Session {
         }
 
         let mut args = build_create_args(&self.name, working_dir, command, size);
-
-        // Chain set-option -p so remain-on-exit is set atomically with session creation.
-        // Using pane-level (-p) avoids bleeding into user-created panes in the same session.
-        args.extend([
-            ";".to_string(),
-            "set-option".to_string(),
-            "-p".to_string(),
-            "-t".to_string(),
-            self.name.clone(),
-            "remain-on-exit".to_string(),
-            "on".to_string(),
-        ]);
+        append_remain_on_exit_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 

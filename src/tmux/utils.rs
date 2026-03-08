@@ -38,6 +38,24 @@ pub fn sanitize_session_name(name: &str) -> String {
         .collect()
 }
 
+/// Append `; set-option -p -t <target> remain-on-exit on` to an in-flight
+/// tmux argument list so that remain-on-exit is set atomically with session
+/// creation. Using pane-level (`-p`) avoids bleeding into user-created panes
+/// in the same session.
+///
+/// Note: the `-p` (pane-level) flag requires tmux >= 3.0.
+pub fn append_remain_on_exit_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-p".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "remain-on-exit".to_string(),
+        "on".to_string(),
+    ]);
+}
+
 pub fn is_pane_dead(session_name: &str) -> bool {
     Command::new("tmux")
         .args(["display-message", "-t", session_name, "-p", "#{pane_dead}"])
