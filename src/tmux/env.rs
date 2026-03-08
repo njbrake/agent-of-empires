@@ -45,11 +45,8 @@ pub fn set_hidden_env(session_name: &str, key: &str, value: &str) -> anyhow::Res
 
 /// Get a hidden environment variable from a tmux session
 ///
-/// Results are cached for [`ENV_CACHE_TTL`] to reduce subprocess spawns during
-/// polling. Only positive hits (variable exists with a value) are cached; misses
-/// always go through tmux so newly-set variables are picked up immediately.
-///
-/// Returns `None` if the variable is unset or if the command fails.
+/// Cached for [`ENV_CACHE_TTL`] to reduce subprocess spawns. Positive hits
+/// cached; misses always go through tmux for freshness.
 pub fn get_hidden_env(session_name: &str, key: &str) -> Option<String> {
     let cache_key = (session_name.to_string(), key.to_string());
 
@@ -79,7 +76,6 @@ pub fn get_hidden_env(session_name: &str, key: &str) -> Option<String> {
     Some(value)
 }
 
-/// Raw tmux call to read a hidden env var (bypasses cache).
 fn fetch_hidden_env(session_name: &str, key: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["show-environment", "-h", "-t", session_name, key])
@@ -98,7 +94,6 @@ fn fetch_hidden_env(session_name: &str, key: &str) -> Option<String> {
         return None;
     }
 
-    // Parse "KEY=VALUE" format
     if let Some((_, value)) = line.split_once('=') {
         Some(value.to_string())
     } else {
