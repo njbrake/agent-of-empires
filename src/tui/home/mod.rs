@@ -790,18 +790,13 @@ impl HomeView {
         Ok(())
     }
 
-    /// Restart in-place in instance_map to preserve poller threads; reload() syncs vec later.
     pub fn restart_instance_with_size_opts(
         &mut self,
         id: &str,
         size: Option<(u16, u16)>,
         skip_on_launch: bool,
     ) -> anyhow::Result<()> {
-        let inst = self
-            .instance_map
-            .get_mut(id)
-            .ok_or_else(|| anyhow::anyhow!("instance not found: {id}"))?;
-        inst.restart_with_size_opts(size, skip_on_launch)
+        self.try_mutate_instance(id, |inst| inst.restart_with_size_opts(size, skip_on_launch))
     }
 
     pub fn select_session_by_id(&mut self, session_id: &str) {

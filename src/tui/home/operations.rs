@@ -89,10 +89,14 @@ impl HomeView {
     pub(super) fn delete_selected_group(&mut self) -> anyhow::Result<()> {
         if let Some(group_path) = self.selected_group.take() {
             let prefix = format!("{}/", group_path);
-            for inst in &mut self.instances {
-                if inst.group_path == group_path || inst.group_path.starts_with(&prefix) {
-                    inst.group_path = String::new();
-                }
+            let ids_to_clear: Vec<String> = self
+                .instances
+                .iter()
+                .filter(|i| i.group_path == group_path || i.group_path.starts_with(&prefix))
+                .map(|i| i.id.clone())
+                .collect();
+            for id in &ids_to_clear {
+                self.mutate_instance(id, |inst| inst.group_path = String::new());
             }
 
             self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
@@ -265,14 +269,14 @@ impl HomeView {
             }
 
             // No profile change - update in place
-            if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            self.mutate_instance(&id, |inst| {
                 inst.title = effective_title.clone();
                 inst.group_path = effective_group.clone();
-            }
+            });
 
             // Handle tmux rename if title changed
-            if let Some(inst) = self.get_instance(&id) {
-                if inst.title != effective_title {
+            if current_title != effective_title {
+                if let Some(inst) = self.get_instance(&id) {
                     let tmux_session = inst.tmux_session()?;
                     if tmux_session.exists() {
                         let new_tmux_name =

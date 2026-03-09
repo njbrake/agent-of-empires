@@ -938,7 +938,11 @@ fn capture_from_container(
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let session_entries: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+            let trimmed = stdout.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let session_entries: Vec<serde_json::Value> = serde_json::from_str(trimmed)
                 .map_err(|e| tracing::debug!("Deferred container JSON parse: {}", e))
                 .ok()?;
 
@@ -1379,7 +1383,6 @@ impl Instance {
             self.build_host_command(agent, &on_launch_hooks)
         };
 
-        tracing::debug!("container cmd: {}", cmd.as_ref().map_or("none", |v| v));
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         self.finalize_launch(session.name(), &profile);

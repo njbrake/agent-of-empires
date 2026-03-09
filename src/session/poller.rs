@@ -400,12 +400,6 @@ impl Default for SessionPoller {
     }
 }
 
-impl Drop for SessionPoller {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
