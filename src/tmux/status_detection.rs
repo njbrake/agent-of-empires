@@ -6,6 +6,20 @@ use super::utils::strip_ansi;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Claude Code's active spinner characters (· ✢ ✳ ✶ ✻ ✽ ●).
+const ACTIVE_SPINNER_CHARS: &[char] = &['·', '✢', '✳', '✶', '✻', '✽', '●'];
+
+/// Check if a line is an active Claude Code spinner line.
+/// Active spinners start with a spinner char and contain `…` (e.g. `✳ Twisting… (10m 6s)`).
+/// Completion lines start with a spinner char but lack `…` (e.g. `✻ Worked for 1m 52s`).
+fn is_active_spinner_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(first) = trimmed.chars().next() else {
+        return false;
+    };
+    ACTIVE_SPINNER_CHARS.contains(&first) && trimmed.contains('…')
+}
+
 pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
     let status = crate::agents::get_agent(tool)
         .map(|a| (a.detect_status)(content))
@@ -23,10 +37,69 @@ pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32
     status
 }
 
-/// Claude Code status is detected via hooks (file-based), not tmux pane parsing.
-/// This stub exists so the agent registry has a valid function pointer; it only
-/// runs when hooks haven't written a status file yet (e.g. first few seconds).
-pub fn detect_claude_status(_content: &str) -> Status {
+/// Fallback status detection for Claude Code via tmux pane content parsing.
+///
+/// Primary detection uses hooks (file-based). This fallback runs when the hook
+/// status file is missing or stale (e.g. long-running MCP calls exceeding the
+/// staleness threshold, first seconds of a session, or crashed hooks).
+pub fn detect_claude_status(raw_content: &str) -> Status {
+    let non_empty_lines: Vec<&str> = raw_content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+
+    // Only scan the last ~10 non-empty lines to avoid false positives from
+    // spinner chars lingering in scroll history.
+    let recent_lines: Vec<&str> = non_empty_lines.iter().rev().take(10).copied().collect();
+
+    // RUNNING: Active spinner line (spinner char + ellipsis)
+    // e.g. "✳ Catapulting… (12m 33s · ↓ 118 tokens)"
+    for line in &recent_lines {
+        if is_active_spinner_line(line) {
+            return Status::Running;
+        }
+    }
+
+    // RUNNING: Braille spinners (older Claude Code versions)
+    for line in &recent_lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    // WAITING: Permission/approval prompts
+    let last_lines: String = recent_lines
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    let approval_prompts = [
+        "(y/n)",
+        "[y/n]",
+        "approve",
+        "allow",
+        "continue?",
+        "proceed?",
+    ];
+    for prompt in &approval_prompts {
+        if last_lines_lower.contains(prompt) {
+            return Status::Waiting;
+        }
+    }
+
+    // WAITING: Input prompt ready
+    for line in &recent_lines {
+        let clean = strip_ansi(line).trim().to_string();
+        if clean == ">" || clean == "> " {
+            return Status::Waiting;
+        }
+    }
+
     Status::Idle
 }
 
@@ -406,9 +479,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_claude_status_is_stub() {
-        // Claude/Cursor use hook-based detection; the stub always returns Idle
-        assert_eq!(detect_claude_status("anything"), Status::Idle);
+    fn test_detect_claude_status_running_active_spinner() {
+        assert_eq!(
+            detect_claude_status("✳ Catapulting… (12m 33s · ↓ 118 tokens)"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_claude_status("● Working… (3s · thinking)"),
+            Status::Running
+        );
+        assert_eq!(detect_claude_status("✶ Reading files…"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_claude_status_idle_completion() {
+        // Completion lines have spinner char but no ellipsis
+        assert_eq!(detect_claude_status("✻ Worked for 1m 52s"), Status::Idle);
+        assert_eq!(detect_claude_status("✶ Completed in 30s"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_claude_status_running_braille_spinner() {
+        assert_eq!(detect_claude_status("Processing ⠋"), Status::Running);
+        assert_eq!(detect_claude_status("Loading ⠹"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_claude_status_waiting() {
+        assert_eq!(
+            detect_claude_status("Allow this action? (y/n)"),
+            Status::Waiting
+        );
+        assert_eq!(detect_claude_status("ready\n>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_claude_status_idle() {
+        assert_eq!(detect_claude_status("some random output"), Status::Idle);
+        assert_eq!(detect_claude_status("file saved"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_is_stub() {
         assert_eq!(detect_cursor_status("anything"), Status::Idle);
     }
 
