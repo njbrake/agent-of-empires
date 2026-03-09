@@ -414,7 +414,6 @@ impl HomeView {
         if let Some(result) = self.deletion_poller.try_recv_result() {
             if result.success {
                 self.instances.retain(|i| i.id != result.session_id);
-                self.instance_map.remove(&result.session_id);
                 self.rebuild_group_trees();
 
                 if let Err(e) = self.save() {
