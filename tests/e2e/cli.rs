@@ -215,3 +215,185 @@ agent_command_override = {{ claude = "config-claude" }}
         "CLI --cmd-override should override config"
     );
 }
+
+#[test]
+#[serial]
+fn test_cli_add_respects_default_tool() {
+    let h = TuiTestHarness::new("cli_add_default_tool");
+    let project = h.project_path();
+
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+default_tool = "opencode"
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "DefaultTool"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["tool"].as_str().unwrap_or(""),
+        "opencode",
+        "tool should be 'opencode' from default_tool config"
+    );
+    assert_eq!(
+        session["command"].as_str().unwrap_or(""),
+        "opencode",
+        "command should be 'opencode' via set_default_command"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_cmd_overrides_default_tool() {
+    let h = TuiTestHarness::new("cli_add_cmd_overrides");
+    let project = h.project_path();
+
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+default_tool = "opencode"
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "-t",
+        "CmdOverride",
+        "--cmd",
+        "claude",
+    ]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["tool"].as_str().unwrap_or(""),
+        "claude",
+        "explicit --cmd should override default_tool config"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_respects_yolo_mode_default() {
+    let h = TuiTestHarness::new("cli_add_yolo_default");
+    let project = h.project_path();
+
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+yolo_mode_default = true
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "YoloDefault"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["yolo_mode"].as_bool(),
+        Some(true),
+        "yolo_mode should be true from yolo_mode_default config"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_yolo_flag_without_config() {
+    let h = TuiTestHarness::new("cli_add_yolo_flag");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "YoloFlag", "--yolo"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["yolo_mode"].as_bool(),
+        Some(true),
+        "--yolo flag should set yolo_mode to true"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_default_tool_no_config() {
+    let h = TuiTestHarness::new("cli_add_no_config");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "NoConfig"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["tool"].as_str().unwrap_or(""),
+        "claude",
+        "tool should default to 'claude' when no default_tool config"
+    );
+}
