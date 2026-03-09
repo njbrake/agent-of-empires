@@ -84,16 +84,19 @@ impl HomeView {
         if let Some(group_path) = self.selected_group.take() {
             let owning_profile = self.selected_group_profile.take();
             let prefix = format!("{}/", group_path);
-
-            // Only ungroup instances belonging to the owning profile
-            for inst in &mut self.instances {
-                if (inst.group_path == group_path || inst.group_path.starts_with(&prefix))
-                    && owning_profile
-                        .as_ref()
-                        .map_or(true, |p| p == &inst.source_profile)
-                {
-                    inst.group_path = String::new();
-                }
+            let ids_to_clear: Vec<String> = self
+                .instances
+                .iter()
+                .filter(|i| {
+                    (i.group_path == group_path || i.group_path.starts_with(&prefix))
+                        && owning_profile
+                            .as_ref()
+                            .map_or(true, |p| p == &i.source_profile)
+                })
+                .map(|i| i.id.clone())
+                .collect();
+            for id in &ids_to_clear {
+                self.mutate_instance(id, |inst| inst.group_path = String::new());
             }
 
             self.rebuild_group_trees();
