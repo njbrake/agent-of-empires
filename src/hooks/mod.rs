@@ -23,7 +23,7 @@ const AOE_HOOK_MARKER: &str = "aoe-hooks";
 /// Build the shell command for a hook that writes a status value.
 fn hook_command(status: &str) -> String {
     format!(
-        "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] && mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID && printf {} > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'",
+        "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] || exit 0; mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID && printf {} > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'",
         status
     )
 }
@@ -336,6 +336,28 @@ mod tests {
         assert!(cmd.contains("aoe-hooks"));
         assert!(cmd.contains("AOE_INSTANCE_ID"));
         assert!(cmd.contains("running"));
+    }
+
+    #[test]
+    fn test_hook_command_exits_cleanly_without_aoe_instance_id() {
+        let cmd = hook_command("idle");
+        // Run the hook command without AOE_INSTANCE_ID set; it should exit 0
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(
+                cmd.strip_prefix("sh -c '")
+                    .unwrap()
+                    .strip_suffix('\'')
+                    .unwrap(),
+            )
+            .env_remove("AOE_INSTANCE_ID")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Hook should exit 0 when AOE_INSTANCE_ID is unset, got: {:?}",
+            output.status
+        );
     }
 
     #[test]
