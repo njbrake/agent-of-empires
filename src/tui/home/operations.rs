@@ -39,7 +39,7 @@ impl HomeView {
             command_override: data.command_override,
         };
 
-        let build_result = builder::build_instance(params, &existing_titles)?;
+        let build_result = builder::build_instance(params, &existing_titles, &target_profile)?;
         let instance = build_result.instance;
         let session_id = instance.id.clone();
 

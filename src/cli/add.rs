@@ -184,12 +184,14 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             instance.command = cmd.clone();
         }
     } else {
-        // Use default_tool from resolved config, fall back to "claude"
+        // Use default_tool from resolved config, then first available tool, then "claude"
+        let available_tools = crate::tmux::AvailableTools::detect();
         instance.tool = config
             .session
             .default_tool
             .as_deref()
             .and_then(crate::agents::resolve_tool_name)
+            .or_else(|| available_tools.available_list().first().copied())
             .unwrap_or("claude")
             .to_string();
     }

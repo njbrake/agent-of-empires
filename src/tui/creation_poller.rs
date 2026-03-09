@@ -92,6 +92,7 @@ impl CreationPoller {
     ) -> CreationResult {
         let data = request.data;
         let hooks = request.hooks;
+        let profile = data.profile.clone();
 
         let existing_titles: Vec<&str> = request
             .existing_instances
@@ -114,7 +115,7 @@ impl CreationPoller {
             command_override: data.command_override,
         };
 
-        let build_result = match builder::build_instance(params, &existing_titles) {
+        let build_result = match builder::build_instance(params, &existing_titles, &profile) {
             Ok(r) => r,
             Err(e) => return CreationResult::Error(format!("{:#}", e)),
         };
