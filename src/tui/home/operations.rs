@@ -123,8 +123,6 @@ impl HomeView {
                 .collect();
 
             for session_id in sessions_to_delete {
-                // Clear group_path when marking for deletion so these instances
-                // won't cause the group to be recreated during tree rebuilds
                 self.mutate_instance(&session_id, |inst| {
                     inst.status = Status::Deleting;
                     inst.group_path = String::new();

@@ -409,18 +409,15 @@ impl HomeView {
 
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
-                let dominated = |inst: &Instance| {
-                    inst.status == Status::Deleting
-                        || inst.status == Status::Stopped
-                        || update.status == Status::Stopped
-                };
+                let old_status = self.get_instance(&update.id).map(|i| i.status);
 
-                let old_status = self
-                    .get_instance(&update.id)
-                    .filter(|inst| !dominated(inst))
-                    .map(|inst| inst.status);
+                let should_update = old_status.is_some_and(|s| {
+                    s != Status::Deleting
+                        && s != Status::Stopped
+                        && update.status != Status::Stopped
+                });
 
-                if old_status.is_some() {
+                if should_update {
                     let new_status = update.status;
                     let new_error = update.last_error;
                     self.mutate_instance(&update.id, |inst| {
