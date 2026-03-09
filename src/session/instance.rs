@@ -183,41 +183,6 @@ fn generate_claude_session_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-// // Claude poll -- disabled, see supports_session_poller().
-// pub fn claude_poll_fn() -> impl Fn() -> Option<String> + Send + 'static {
-//     move || {
-//         let home = dirs::home_dir()?;
-//         let path = home.join(".claude/debug/latest");
-//         extract_uuid_from_symlink_target(&path)
-//     }
-// }
-//
-// fn is_uuid_format(s: &str) -> bool {
-//     s.len() == 36
-//         && s.chars().filter(|&c| c == '-').count() == 4
-//         && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-// }
-//
-// fn extract_uuid_from_symlink_target(symlink_path: &std::path::Path) -> Option<String> {
-//     let target = std::fs::read_link(symlink_path).ok()?;
-//     let mut path = target.as_path();
-//     loop {
-//         let name = path.file_name()?.to_str()?;
-//         if is_uuid_format(name) {
-//             return Some(name.to_string());
-//         }
-//         if let Some(stem) = std::path::Path::new(name)
-//             .file_stem()
-//             .and_then(|s| s.to_str())
-//         {
-//             if stem != name && is_uuid_format(stem) {
-//                 return Some(stem.to_string());
-//             }
-//         }
-//         path = path.parent()?;
-//     }
-// }
-
 /// Create a polling closure for OpenCode that re-runs `try_capture_opencode_session_id`.
 ///
 /// Each invocation rebuilds the exclusion set from other AoE instances and invokes

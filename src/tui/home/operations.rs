@@ -266,7 +266,6 @@ impl HomeView {
                 }
             }
 
-            // No profile change - update in place
             self.mutate_instance(&id, |inst| {
                 inst.title = effective_title.clone();
                 inst.group_path = effective_group.clone();
