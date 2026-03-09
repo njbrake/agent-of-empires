@@ -297,7 +297,7 @@ impl ProfilePickerDialog {
     fn render_create(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_error = self.error.is_some();
         let dialog_width: u16 = 40;
-        // inner width = dialog_width - borders(2) - margin(2) - padding(2) = 34
+        // inner width = dialog_width - borders(2) - margin(2) = 36
         let error_lines: u16 = if let Some(err) = &self.error {
             let inner_width = dialog_width.saturating_sub(6) as usize;
             if inner_width == 0 {

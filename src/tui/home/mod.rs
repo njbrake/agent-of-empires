@@ -736,6 +736,16 @@ impl HomeView {
         self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
     }
 
+    pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
+        self.mutate_instance(id, |inst| inst.status = status);
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        self.storage
+            .save_with_groups(&self.instances, &self.group_tree)?;
+        Ok(())
+    }
+
     /// Centralized instance mutation: applies `f` once to the `instances` vec
     /// entry, then clones the result into `instance_map`. This guarantees both
     /// collections stay in sync even for non-idempotent closures.
@@ -760,16 +770,6 @@ impl HomeView {
             *inst = updated.clone();
             self.instance_map.insert(id.to_string(), updated);
         }
-        Ok(())
-    }
-
-    pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
-        self.mutate_instance(id, |inst| inst.status = status);
-    }
-
-    pub fn save(&self) -> anyhow::Result<()> {
-        self.storage
-            .save_with_groups(&self.instances, &self.group_tree)?;
         Ok(())
     }
 
