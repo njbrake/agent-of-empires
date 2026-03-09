@@ -299,7 +299,7 @@ impl ProfilePickerDialog {
         let dialog_width: u16 = 40;
         // inner width = dialog_width - borders(2) - margin(2) = 36
         let error_lines: u16 = if let Some(err) = &self.error {
-            let inner_width = dialog_width.saturating_sub(6) as usize;
+            let inner_width = dialog_width.saturating_sub(4) as usize;
             if inner_width == 0 {
                 1
             } else {
