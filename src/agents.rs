@@ -20,6 +20,8 @@ pub enum YoloMode {
     CliFlag(&'static str),
     /// Set an environment variable (name, value).
     EnvVar(&'static str, &'static str),
+    /// Agent always runs in YOLO mode with no opt-in needed (e.g. pi).
+    AlwaysYolo,
 }
 
 /// Configuration for installing status-detection hooks into an agent's settings file.
@@ -143,6 +145,20 @@ pub const AGENTS: &[AgentDef] = &[
             settings_rel_path: ".cursor/settings.json",
         }),
     },
+    AgentDef {
+        name: "pi",
+        binary: "pi",
+        aliases: &[],
+        detection: DetectionMethod::Which("pi"),
+        // Pi runs in full YOLO mode by default (no approval gates), so no flag needed.
+        yolo: Some(YoloMode::AlwaysYolo),
+        instruction_flag: None,
+        set_default_command: false,
+        supports_host_launch: true,
+        detect_status: status_detection::detect_pi_status,
+        container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
+        hook_config: None,
+    },
 ];
 
 /// Look up an agent by canonical name.
@@ -208,6 +224,7 @@ mod tests {
         assert_eq!(get_agent("codex").unwrap().binary, "codex");
         assert_eq!(get_agent("gemini").unwrap().binary, "gemini");
         assert_eq!(get_agent("cursor").unwrap().binary, "agent");
+        assert_eq!(get_agent("pi").unwrap().binary, "pi");
     }
 
     #[test]
@@ -220,7 +237,7 @@ mod tests {
         let names = agent_names();
         assert_eq!(
             names,
-            vec!["claude", "opencode", "vibe", "codex", "gemini", "cursor"]
+            vec!["claude", "opencode", "vibe", "codex", "gemini", "cursor", "pi"]
         );
     }
 
@@ -232,6 +249,7 @@ mod tests {
         assert_eq!(resolve_tool_name("codex"), Some("codex"));
         assert_eq!(resolve_tool_name("gemini"), Some("gemini"));
         assert_eq!(resolve_tool_name("cursor"), Some("cursor"));
+        assert_eq!(resolve_tool_name("pi"), Some("pi"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -243,11 +261,13 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("claude")), 1);
         assert_eq!(settings_index_from_name(Some("gemini")), 5);
         assert_eq!(settings_index_from_name(Some("cursor")), 6);
+        assert_eq!(settings_index_from_name(Some("pi")), 7);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
         assert_eq!(name_from_settings_index(5), Some("gemini"));
         assert_eq!(name_from_settings_index(6), Some("cursor"));
+        assert_eq!(name_from_settings_index(7), Some("pi"));
         assert_eq!(name_from_settings_index(99), None);
     }
 

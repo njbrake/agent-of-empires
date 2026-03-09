@@ -31,6 +31,7 @@ impl NewSessionDialog {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
         let has_worktree = !self.worktree_branch.value().is_empty();
+        let has_yolo = !self.selected_tool_always_yolo();
         let dialog_width = 80;
 
         // Build constraints dynamically based on visible fields only
@@ -42,9 +43,11 @@ impl NewSessionDialog {
             Constraint::Length(2), // Title
             Constraint::Length(2), // Path
             Constraint::Length(2), // Tool (always shown, interactive or not)
-            Constraint::Length(2), // YOLO mode checkbox (always visible)
-            Constraint::Length(2), // Worktree Branch
         ]);
+        if has_yolo {
+            constraints.push(Constraint::Length(2)); // YOLO mode checkbox
+        }
+        constraints.push(Constraint::Length(2)); // Worktree Branch
         if has_worktree {
             constraints.push(Constraint::Length(2)); // New Branch checkbox
         }
@@ -101,8 +104,15 @@ impl NewSessionDialog {
         // Field index calculations (must match handle_key)
         let base = if has_profile_selection { 1 } else { 0 };
         let title_field = base;
-        let yolo_mode_field = base + 2 + if has_tool_selection { 1 } else { 0 };
-        let worktree_field = yolo_mode_field + 1;
+        let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
+        let yolo_mode_field = if has_yolo {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        let worktree_field = fi;
         let new_branch_field = worktree_field + 1;
         let mut next_field_idx = if has_worktree {
             new_branch_field + 1
@@ -214,8 +224,8 @@ impl NewSessionDialog {
         }
         ci += 1;
 
-        // YOLO Mode checkbox
-        {
+        // YOLO Mode checkbox (hidden for AlwaysYolo agents like pi)
+        if has_yolo {
             let is_yolo_focused = self.focused_field == yolo_mode_field;
             let yolo_label_style = if is_yolo_focused {
                 Style::default().fg(theme.accent).underlined()
@@ -912,7 +922,10 @@ impl NewSessionDialog {
             if idx == 3 && !has_tool_selection {
                 continue; // Tool
             }
-            // idx 4 (YOLO), 5 (Worktree), 6 (New Branch) always shown
+            if idx == 4 && self.selected_tool_always_yolo() {
+                continue; // YOLO (hidden for AlwaysYolo agents)
+            }
+            // idx 5 (Worktree), 6 (New Branch) always shown
             if idx == 7 && !has_sandbox {
                 continue; // Sandbox
             }

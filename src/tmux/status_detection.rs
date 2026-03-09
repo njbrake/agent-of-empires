@@ -340,6 +340,68 @@ pub fn detect_cursor_status(_content: &str) -> Status {
     Status::Idle
 }
 
+/// Pi coding agent status detection via tmux pane parsing.
+/// Pi always auto-approves tool use (no approval gates), so we only detect
+/// Running vs Idle/Waiting-for-input states.
+pub fn detect_pi_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: Pi shows spinners and activity indicators
+    for line in &lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+    {
+        return Status::Running;
+    }
+
+    // RUNNING: Token/cost counter updating indicates active generation
+    let activity_indicators = ["thinking", "working", "reading", "writing", "executing"];
+    for indicator in &activity_indicators {
+        if last_lines_lower.contains(indicator) {
+            return Status::Running;
+        }
+    }
+
+    // WAITING: Pi shows an input prompt when ready for user input
+    for line in non_empty_lines.iter().rev().take(10) {
+        let clean_line = strip_ansi(line).trim().to_string();
+        if clean_line == ">" || clean_line == "> " || clean_line == "pi>" {
+            return Status::Waiting;
+        }
+        if clean_line.starts_with("> ")
+            && !clean_line.to_lowercase().contains("esc")
+            && clean_line.len() < 100
+        {
+            return Status::Waiting;
+        }
+    }
+
+    Status::Idle
+}
+
 pub fn detect_gemini_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -591,5 +653,30 @@ mod tests {
     fn test_detect_gemini_status_idle() {
         assert_eq!(detect_gemini_status("file saved"), Status::Idle);
         assert_eq!(detect_gemini_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_pi_status_running() {
+        assert_eq!(detect_pi_status("generating ⠋"), Status::Running);
+        assert_eq!(detect_pi_status("loading ⠹"), Status::Running);
+        assert_eq!(
+            detect_pi_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(detect_pi_status("thinking about code"), Status::Running);
+        assert_eq!(detect_pi_status("reading file.ts"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_pi_status_waiting() {
+        assert_eq!(detect_pi_status("done\n>"), Status::Waiting);
+        assert_eq!(detect_pi_status("ready\n> "), Status::Waiting);
+        assert_eq!(detect_pi_status("complete\npi>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_pi_status_idle() {
+        assert_eq!(detect_pi_status("file saved"), Status::Idle);
+        assert_eq!(detect_pi_status("random output text"), Status::Idle);
     }
 }

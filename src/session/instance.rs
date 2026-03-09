@@ -394,7 +394,8 @@ impl Instance {
                         crate::agents::YoloMode::CliFlag(flag) => {
                             format!("{} {}", base_cmd, flag)
                         }
-                        crate::agents::YoloMode::EnvVar(..) => base_cmd,
+                        crate::agents::YoloMode::EnvVar(..)
+                        | crate::agents::YoloMode::AlwaysYolo => base_cmd,
                     }
                 } else {
                     base_cmd
@@ -453,6 +454,7 @@ impl Instance {
                                     crate::agents::YoloMode::EnvVar(key, value) => {
                                         cmd = format!("{}={} {}", key, value, cmd);
                                     }
+                                    crate::agents::YoloMode::AlwaysYolo => {}
                                 }
                             }
                         }
@@ -472,6 +474,7 @@ impl Instance {
                             crate::agents::YoloMode::EnvVar(key, value) => {
                                 cmd = format!("{}={} {}", key, value, cmd);
                             }
+                            crate::agents::YoloMode::AlwaysYolo => {}
                         }
                     }
                 }
@@ -704,7 +707,8 @@ fn generate_id() -> String {
 /// breaking out of the outer `bash -c '...'` wrapper.
 fn wrap_command_ignore_suspend(cmd: &str) -> String {
     let escaped = cmd.replace('\'', "'\\''");
-    format!("bash -c 'stty susp undef; exec env {}'", escaped)
+    // Use login shell (-l) so version-manager PATHs (NVM, etc.) are available.
+    format!("bash -lc 'stty susp undef; exec env {}'", escaped)
 }
 
 #[cfg(test)]

@@ -97,12 +97,34 @@ pub fn is_tmux_available() -> bool {
 fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
     use crate::agents::DetectionMethod;
     match &agent.detection {
-        DetectionMethod::Which(binary) => Command::new("which")
-            .arg(binary)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false),
-        DetectionMethod::RunWithArg(binary, arg) => Command::new(binary).arg(arg).output().is_ok(),
+        DetectionMethod::Which(binary) => {
+            // First try direct `which` (fast path).
+            let direct = Command::new("which")
+                .arg(binary)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if direct {
+                return true;
+            }
+            // Fall back to a login shell so version-manager PATHs (NVM, etc.) are loaded.
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+            Command::new(&shell)
+                .args(["-lc", &format!("which {}", binary)])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+        DetectionMethod::RunWithArg(binary, arg) => {
+            if Command::new(binary).arg(arg).output().is_ok() {
+                return true;
+            }
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+            Command::new(&shell)
+                .args(["-lc", &format!("{} {}", binary, arg)])
+                .output()
+                .is_ok()
+        }
     }
 }
 
