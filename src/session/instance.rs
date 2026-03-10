@@ -639,7 +639,8 @@ impl Instance {
         // Check hook-based status first (more reliable than tmux pane parsing)
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
             tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
-            self.status = if session.is_pane_dead() {
+            let crashed_to_shell = !self.expects_shell() && session.is_pane_running_shell();
+            self.status = if session.is_pane_dead() || crashed_to_shell {
                 Status::Error
             } else {
                 hook_status
