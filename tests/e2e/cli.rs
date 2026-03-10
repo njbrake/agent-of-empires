@@ -1,6 +1,7 @@
 use serial_test::serial;
+use std::process::Command;
 
-use crate::harness::TuiTestHarness;
+use crate::harness::{require_tmux, TuiTestHarness};
 
 /// Helper to read a session field from the sessions.json in the harness's isolated home.
 fn read_sessions_json(h: &TuiTestHarness) -> serde_json::Value {
@@ -410,4 +411,91 @@ fn test_cli_add_default_tool_no_config() {
         "tool should default to first available tool ('{}') when no default_tool config",
         expected
     );
+}
+
+/// Renaming a session via CLI should rename the tmux session, not kill it.
+/// Regression test for https://github.com/njbrake/agent-of-empires/issues/431
+#[test]
+#[serial]
+fn test_cli_rename_preserves_tmux_session() {
+    require_tmux!();
+
+    let h = TuiTestHarness::new("cli_rename_tmux");
+    let project = h.project_path();
+
+    // 1. Add a session
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "OldName"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    // 2. Read the session ID from storage
+    let sessions = read_sessions_json(&h);
+    let session_id = sessions[0]["id"].as_str().expect("session should have id");
+    let truncated_id = &session_id[..8.min(session_id.len())];
+
+    // 3. Compute the tmux session name that aoe would use
+    let old_tmux_name = format!("aoe_OldName_{}", truncated_id);
+
+    // Create a real tmux session with that name (simulates a running session)
+    let create = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            &old_tmux_name,
+            "-x",
+            "80",
+            "-y",
+            "24",
+            "sleep",
+            "60",
+        ])
+        .output()
+        .expect("tmux new-session");
+    assert!(
+        create.status.success(),
+        "failed to create tmux session: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    // 4. Rename the session via CLI
+    let rename_output = h.run_cli(&["session", "rename", session_id, "-t", "NewName"]);
+    assert!(
+        rename_output.status.success(),
+        "aoe session rename failed: {}",
+        String::from_utf8_lossy(&rename_output.stderr)
+    );
+
+    // 5. The old tmux session name should be gone
+    let old_exists = Command::new("tmux")
+        .args(["has-session", "-t", &old_tmux_name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    assert!(
+        !old_exists,
+        "Old tmux session '{}' should no longer exist after rename",
+        old_tmux_name
+    );
+
+    // 6. The new tmux session name should exist
+    let new_tmux_name = format!("aoe_NewName_{}", truncated_id);
+    let new_exists = Command::new("tmux")
+        .args(["has-session", "-t", &new_tmux_name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    assert!(
+        new_exists,
+        "New tmux session '{}' should exist after rename",
+        new_tmux_name
+    );
+
+    // Cleanup
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &new_tmux_name])
+        .output();
 }

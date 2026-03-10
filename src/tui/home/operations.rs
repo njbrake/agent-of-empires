@@ -264,22 +264,16 @@ impl HomeView {
             }
 
             // No profile change - update in place
-            // Read old title before mutation so we can detect renames
+            // Rename tmux session BEFORE mutating the instance, so we can
+            // look up the session by its current (old) name.
             let old_title = self.get_instance(&id).map(|i| i.title.clone());
-
-            self.mutate_instance(&id, |inst| {
-                inst.title = effective_title.clone();
-                inst.group_path = effective_group.clone();
-            });
-
-            // Handle tmux rename if title changed
-            if old_title.is_some_and(|t| t != effective_title) {
-                if let Some(inst) = self.get_instance(&id) {
-                    let tmux_session = inst.tmux_session()?;
-                    if tmux_session.exists() {
+            if let Some(ref old_t) = old_title {
+                if *old_t != effective_title {
+                    let old_tmux_session = crate::tmux::Session::new(&id, old_t)?;
+                    if old_tmux_session.exists() {
                         let new_tmux_name =
                             crate::tmux::Session::generate_name(&id, &effective_title);
-                        if let Err(e) = tmux_session.rename(&new_tmux_name) {
+                        if let Err(e) = old_tmux_session.rename(&new_tmux_name) {
                             tracing::warn!("Failed to rename tmux session: {}", e);
                         } else {
                             crate::tmux::refresh_session_cache();
@@ -287,6 +281,11 @@ impl HomeView {
                     }
                 }
             }
+
+            self.mutate_instance(&id, |inst| {
+                inst.title = effective_title.clone();
+                inst.group_path = effective_group.clone();
+            });
 
             // Rebuild group tree and create group if needed
             self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
