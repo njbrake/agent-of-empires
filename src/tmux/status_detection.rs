@@ -6,7 +6,8 @@ use super::utils::strip_ansi;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Claude Code's active spinner characters (· ✢ ✳ ✶ ✻ ✽ ●).
+/// Claude Code's active spinner characters, observed as of Claude Code 1.0.33 (2025-06).
+/// See also PR #381 for history of spinner changes.
 const ACTIVE_SPINNER_CHARS: &[char] = &['·', '✢', '✳', '✶', '✻', '✽', '●'];
 
 /// Check if a line is an active Claude Code spinner line.
@@ -48,9 +49,26 @@ pub fn detect_claude_status(raw_content: &str) -> Status {
         .filter(|l| !l.trim().is_empty())
         .collect();
 
-    // Only scan the last ~10 non-empty lines to avoid false positives from
-    // spinner chars lingering in scroll history.
+    // Keyword scan window (30 lines) -- matches other detectors
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // Spinner/prompt scan window (10 lines) -- tighter to avoid false positives
+    // from spinner chars lingering in scroll history.
     let recent_lines: Vec<&str> = non_empty_lines.iter().rev().take(10).copied().collect();
+
+    // RUNNING: "esc to interrupt" shown during active processing (same signal
+    // as OpenCode, Codex, and Gemini -- see L52 comment)
+    if last_lines_lower.contains("esc to interrupt") {
+        return Status::Running;
+    }
 
     // RUNNING: Active spinner line (spinner char + ellipsis)
     // e.g. "✳ Catapulting… (12m 33s · ↓ 118 tokens)"
@@ -70,14 +88,6 @@ pub fn detect_claude_status(raw_content: &str) -> Status {
     }
 
     // WAITING: Permission/approval prompts
-    let last_lines: String = recent_lines
-        .iter()
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
     let approval_prompts = [
         "(y/n)",
         "[y/n]",
@@ -93,9 +103,12 @@ pub fn detect_claude_status(raw_content: &str) -> Status {
     }
 
     // WAITING: Input prompt ready
-    for line in &recent_lines {
+    for line in non_empty_lines.iter().rev().take(10) {
         let clean = strip_ansi(line).trim().to_string();
         if clean == ">" || clean == "> " {
+            return Status::Waiting;
+        }
+        if clean.starts_with("> ") && !clean.to_lowercase().contains("esc") && clean.len() < 100 {
             return Status::Waiting;
         }
     }
@@ -479,6 +492,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_detect_claude_status_running_esc_to_interrupt() {
+        assert_eq!(
+            detect_claude_status("Processing your request\nesc to interrupt"),
+            Status::Running
+        );
+    }
+
+    #[test]
     fn test_detect_claude_status_running_active_spinner() {
         assert_eq!(
             detect_claude_status("✳ Catapulting… (12m 33s · ↓ 118 tokens)"),
@@ -511,12 +532,25 @@ mod tests {
             Status::Waiting
         );
         assert_eq!(detect_claude_status("ready\n>"), Status::Waiting);
+        // Partial input prompt
+        assert_eq!(detect_claude_status("done\n> fix the bu"), Status::Waiting);
     }
 
     #[test]
     fn test_detect_claude_status_idle() {
         assert_eq!(detect_claude_status("some random output"), Status::Idle);
         assert_eq!(detect_claude_status("file saved"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_claude_status_ignores_old_spinner_in_history() {
+        // Active spinner buried under >10 non-empty lines should not trigger Running
+        let mut lines = vec!["✳ Old task…".to_string()];
+        for _ in 0..11 {
+            lines.push("some output line".to_string());
+        }
+        let content = lines.join("\n");
+        assert_eq!(detect_claude_status(&content), Status::Idle);
     }
 
     #[test]
