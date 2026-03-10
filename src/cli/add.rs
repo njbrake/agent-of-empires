@@ -22,7 +22,7 @@ pub struct AddArgs {
     #[arg(short = 'g', long)]
     group: Option<String>,
 
-    /// Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex', 'gemini', 'cursor')
+    /// Command to run (e.g., 'claude' or any other supported agent)
     #[arg(short = 'c', long = "cmd")]
     command: Option<String>,
 
