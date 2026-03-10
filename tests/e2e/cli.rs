@@ -16,6 +16,15 @@ fn read_sessions_json(h: &TuiTestHarness) -> serde_json::Value {
     serde_json::from_str(&content).expect("invalid sessions JSON")
 }
 
+/// Return the first available tool on this system, or "claude" as final fallback.
+fn first_available_tool() -> &'static str {
+    agent_of_empires::tmux::AvailableTools::detect()
+        .available_list()
+        .first()
+        .copied()
+        .unwrap_or("claude")
+}
+
 #[test]
 #[serial]
 fn test_cli_add_and_list() {
@@ -92,6 +101,7 @@ has_seen_welcome = true
 last_seen_version = "{}"
 
 [session]
+default_tool = "claude"
 agent_extra_args = {{ claude = "--verbose --debug" }}
 "#,
         env!("CARGO_PKG_VERSION")
@@ -135,6 +145,7 @@ has_seen_welcome = true
 last_seen_version = "{}"
 
 [session]
+default_tool = "claude"
 agent_command_override = {{ claude = "my-custom-claude" }}
 "#,
         env!("CARGO_PKG_VERSION")
@@ -178,6 +189,7 @@ has_seen_welcome = true
 last_seen_version = "{}"
 
 [session]
+default_tool = "claude"
 agent_extra_args = {{ claude = "--from-config" }}
 agent_command_override = {{ claude = "config-claude" }}
 "#,
@@ -391,9 +403,11 @@ fn test_cli_add_default_tool_no_config() {
 
     let sessions = read_sessions_json(&h);
     let session = &sessions[0];
+    let expected = first_available_tool();
     assert_eq!(
         session["tool"].as_str().unwrap_or(""),
-        "claude",
-        "tool should default to 'claude' when no default_tool config"
+        expected,
+        "tool should default to first available tool ('{}') when no default_tool config",
+        expected
     );
 }
