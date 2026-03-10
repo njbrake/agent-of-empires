@@ -412,7 +412,8 @@ fn build_hook_command(cmd: &str, target: &HookTarget, merge_stderr: bool) -> std
 
     match target {
         HookTarget::Local { project_path } => {
-            let mut command = std::process::Command::new("bash");
+            let shell = super::environment::user_shell();
+            let mut command = std::process::Command::new(shell);
             command.arg("-c").arg(shell_cmd).current_dir(project_path);
             command
         }

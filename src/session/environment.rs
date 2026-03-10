@@ -10,9 +10,19 @@ use super::instance::SandboxInfo;
 pub(crate) const DEFAULT_TERMINAL_ENV_VARS: &[&str] =
     &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
+/// Returns the user's login shell from `$SHELL`, falling back to `bash`.
+///
+/// Used for host-side command wrappers (agent launch, local hook execution)
+/// so that the user's PATH and rc-file sourcing work correctly. Container
+/// contexts should keep using a fixed shell since the user shell may not be
+/// installed inside the image.
+pub(crate) fn user_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string())
+}
+
 /// Shell-escape a value for safe interpolation into a shell command string.
-/// Uses double-quote escaping so values can be nested inside `bash -c '...'`
-/// (single quotes in the outer wrapper are literal, double quotes work inside).
+/// Uses double-quote escaping so values can be nested inside a `shell -c '...'`
+/// wrapper (single quotes in the outer wrapper are literal, double quotes work inside).
 pub(crate) fn shell_escape(val: &str) -> String {
     let escaped = val
         .replace('\\', "\\\\")
@@ -492,5 +502,26 @@ mod tests {
             result
         );
         std::env::remove_var("AOE_TEST_BARE");
+    }
+
+    #[test]
+    fn test_user_shell_reads_env() {
+        let original = std::env::var("SHELL").ok();
+        std::env::set_var("SHELL", "/bin/zsh");
+        assert_eq!(user_shell(), "/bin/zsh");
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    fn test_user_shell_fallback() {
+        let original = std::env::var("SHELL").ok();
+        std::env::remove_var("SHELL");
+        assert_eq!(user_shell(), "bash");
+        if let Some(v) = original {
+            std::env::set_var("SHELL", v);
+        }
     }
 }
