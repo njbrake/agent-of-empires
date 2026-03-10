@@ -26,4 +26,4 @@ AoE lets you run multiple AI agents in parallel -- each in its own tmux session,
 
 ## Supported Agents
 
-Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, and Cursor CLI. AoE auto-detects which are installed.
+Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, and Pi. AoE auto-detects which are installed.

@@ -40,7 +40,7 @@ For sandboxed sessions, hooks run inside the Docker container.
 default_tool = "opencode"   # Override the default agent for this repo
 ```
 
-Available tools: `claude`, `opencode`, `vibe`, `codex`, `gemini`, `cursor`.
+Any supported agent name (run `aoe add --help` to see the list).
 
 ### Sandbox
 
