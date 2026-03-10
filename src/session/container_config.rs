@@ -124,6 +124,17 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         home_seed_files: &[],
         preserve_files: &[],
     },
+    AgentConfigMount {
+        tool_name: "pi",
+        host_rel: ".pi",
+        container_suffix: ".pi",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
 ];
 
 /// Sync host agent config into the shared sandbox directory. Copies top-level files

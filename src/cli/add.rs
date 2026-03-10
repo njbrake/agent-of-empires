@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::repo_config;
-use crate::session::{civilizations, Config, GroupTree, Instance, SandboxInfo, Storage};
+use crate::session::{civilizations, resolve_config, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -22,7 +22,7 @@ pub struct AddArgs {
     #[arg(short = 'g', long)]
     group: Option<String>,
 
-    /// Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex', 'gemini', 'cursor')
+    /// Command to run (e.g., 'claude' or any other supported agent)
     #[arg(short = 'c', long = "cmd")]
     command: Option<String>,
 
@@ -78,6 +78,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("Path is not a directory: {}", path.display());
     }
 
+    let config = resolve_config(profile).unwrap_or_default();
+
     let mut worktree_info_opt = None;
 
     if let Some(branch_raw) = &args.worktree_branch {
@@ -90,8 +92,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
         }
-
-        let config = Config::load()?;
 
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
@@ -182,15 +182,32 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         if cmd.trim().contains(' ') {
             instance.command = cmd.clone();
         }
+    } else {
+        // Use default_tool from resolved config, then first available tool, then "claude"
+        let available_tools = crate::tmux::AvailableTools::detect();
+        instance.tool = config
+            .session
+            .default_tool
+            .as_deref()
+            .and_then(crate::agents::resolve_tool_name)
+            .or_else(|| available_tools.available_list().first().copied())
+            .unwrap_or("claude")
+            .to_string();
+    }
+
+    // Apply set_default_command for agents that need it (e.g., opencode, codex)
+    if instance.command.is_empty() {
+        instance.command = crate::agents::get_agent(&instance.tool)
+            .filter(|a| a.set_default_command)
+            .map(|a| a.binary.to_string())
+            .unwrap_or_default();
     }
 
     if let Some(worktree_info) = worktree_info_opt {
         instance.worktree_info = Some(worktree_info);
     }
 
-    instance.yolo_mode = args.yolo;
-
-    let config = Config::load()?;
+    instance.yolo_mode = args.yolo || config.session.yolo_mode_default;
 
     // Apply extra_args and command override: CLI flags take priority, then config defaults
     if let Some(ref extra) = args.extra_args {
@@ -237,9 +254,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 container_name,
                 created_at: None,
                 extra_env: None,
-                custom_instruction: Config::load()
-                    .ok()
-                    .and_then(|c| c.sandbox.custom_instruction),
+                custom_instruction: config.sandbox.custom_instruction.clone(),
             });
         }
     }

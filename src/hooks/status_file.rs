@@ -4,14 +4,10 @@
 //! file path so AoE can detect agent status without parsing tmux pane content.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::session::Status;
 
 use super::HOOK_STATUS_BASE;
-
-/// Status files older than this are considered stale (safety net for crashed sessions).
-const STALENESS_THRESHOLD: Duration = Duration::from_secs(5 * 60);
 
 /// Return the directory for a given instance's hook status file.
 pub fn hook_status_dir(instance_id: &str) -> PathBuf {
@@ -20,21 +16,11 @@ pub fn hook_status_dir(instance_id: &str) -> PathBuf {
 
 /// Read the hook-written status file for the given instance.
 ///
-/// Returns `None` if the file doesn't exist or is older than the staleness
-/// threshold (indicating a crashed/abandoned session).
+/// Returns `None` if the file doesn't exist. Callers are responsible for
+/// detecting crashed/abandoned sessions via process liveness checks
+/// (e.g. `is_pane_dead()`, `is_pane_running_shell()`).
 pub fn read_hook_status(instance_id: &str) -> Option<Status> {
     let status_path = hook_status_dir(instance_id).join("status");
-
-    let metadata = std::fs::symlink_metadata(&status_path).ok()?;
-    let modified = metadata.modified().ok()?;
-    if modified.elapsed().ok()? > STALENESS_THRESHOLD {
-        tracing::debug!(
-            "Hook status file for {} is stale (>{:?}), ignoring",
-            instance_id,
-            STALENESS_THRESHOLD
-        );
-        return None;
-    }
 
     let content = std::fs::read_to_string(&status_path).ok()?;
     match content.trim() {

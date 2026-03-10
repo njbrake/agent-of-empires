@@ -53,7 +53,11 @@ pub struct CreatedWorktree {
 /// This does NOT start the instance or create Docker containers - that happens
 /// separately via `instance.start()`. This separation allows for proper cleanup
 /// if starting fails.
-pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Result<BuildResult> {
+pub fn build_instance(
+    params: InstanceParams,
+    existing_titles: &[&str],
+    profile: &str,
+) -> Result<BuildResult> {
     if params.sandbox {
         let runtime = containers::get_container_runtime();
         if !runtime.is_available() {
@@ -64,7 +68,7 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         }
     }
 
-    let config = Config::load().unwrap_or_else(|e| {
+    let config = super::profile_config::resolve_config(profile).unwrap_or_else(|e| {
         tracing::warn!("Failed to load config, using defaults: {}", e);
         Config::default()
     });
