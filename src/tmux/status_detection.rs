@@ -341,75 +341,9 @@ pub fn detect_cursor_status(_content: &str) -> Status {
 }
 
 pub fn detect_copilot_status(raw_content: &str) -> Status {
-    let content = raw_content.to_lowercase();
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    let last_lines: String = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
-    // RUNNING: Copilot CLI shows interrupt hints and spinner chars while active.
-    if last_lines_lower.contains("esc to interrupt")
-        || last_lines_lower.contains("ctrl+c to interrupt")
-        || last_lines_lower.contains("running")
-        || last_lines_lower.contains("thinking")
-    {
-        return Status::Running;
-    }
-
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
-    }
-
-    // WAITING: Approval prompts and selection menus.
-    let approval_prompts = [
-        "approve",
-        "allow",
-        "(y/n)",
-        "[y/n]",
-        "continue?",
-        "proceed?",
-        "execute?",
-        "run command?",
-        "enter to select",
-        "esc to cancel",
-    ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Input prompt ready for next command.
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "copilot>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
-    }
-
-    Status::Idle
+    // Copilot CLI interaction patterns are currently closest to Codex in AoE.
+    // Reuse Codex detection logic to keep behavior consistent and low-maintenance.
+    detect_codex_status(raw_content)
 }
 
 /// Pi coding agent status detection via tmux pane parsing.
@@ -749,7 +683,6 @@ mod tests {
             detect_copilot_status("pick an option\nenter to select"),
             Status::Waiting
         );
-        assert_eq!(detect_copilot_status("ready\ncopilot>"), Status::Waiting);
         assert_eq!(detect_copilot_status("done\n>"), Status::Waiting);
     }
 
