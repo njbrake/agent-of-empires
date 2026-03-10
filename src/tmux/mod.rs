@@ -108,7 +108,7 @@ fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
                 return true;
             }
             // Fall back to a login shell so version-manager PATHs (NVM, etc.) are loaded.
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+            let shell = crate::session::user_shell();
             Command::new(&shell)
                 .args(["-lc", &format!("which {}", binary)])
                 .output()
@@ -124,7 +124,7 @@ fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
             {
                 return true;
             }
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+            let shell = crate::session::user_shell();
             Command::new(&shell)
                 .args(["-lc", &format!("{} {}", binary, arg)])
                 .output()

@@ -23,6 +23,25 @@ pub(crate) fn user_shell() -> String {
         .unwrap_or_else(|| "bash".to_string())
 }
 
+/// Shells whose quoting rules are incompatible with POSIX `'\''` escaping.
+const NON_POSIX_SHELLS: &[&str] = &["fish", "nu", "nushell", "pwsh", "powershell"];
+
+/// Like [`user_shell`], but falls back to `bash` when the user's shell is
+/// non-POSIX (e.g. fish, nushell, pwsh). Use this for command wrappers that
+/// rely on POSIX single-quote escaping (`'\''`).
+pub(crate) fn user_posix_shell() -> String {
+    let shell = user_shell();
+    let basename = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&shell);
+    if NON_POSIX_SHELLS.contains(&basename) {
+        "bash".to_string()
+    } else {
+        shell
+    }
+}
+
 /// Shell-escape a value for safe interpolation into a shell command string.
 /// Uses double-quote escaping so values can be nested inside a `shell -c '...'`
 /// wrapper (single quotes in the outer wrapper are literal, double quotes work inside).
@@ -536,6 +555,42 @@ mod tests {
         let original = std::env::var("SHELL").ok();
         std::env::set_var("SHELL", "  ");
         assert_eq!(user_shell(), "bash");
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_user_posix_shell_returns_posix() {
+        let original = std::env::var("SHELL").ok();
+        std::env::set_var("SHELL", "/bin/zsh");
+        assert_eq!(user_posix_shell(), "/bin/zsh");
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_user_posix_shell_falls_back_for_fish() {
+        let original = std::env::var("SHELL").ok();
+        std::env::set_var("SHELL", "/usr/bin/fish");
+        assert_eq!(user_posix_shell(), "bash");
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_user_posix_shell_falls_back_for_nu() {
+        let original = std::env::var("SHELL").ok();
+        std::env::set_var("SHELL", "/usr/bin/nu");
+        assert_eq!(user_posix_shell(), "bash");
         match original {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
