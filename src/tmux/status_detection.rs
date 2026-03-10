@@ -340,6 +340,78 @@ pub fn detect_cursor_status(_content: &str) -> Status {
     Status::Idle
 }
 
+pub fn detect_copilot_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: Copilot CLI shows interrupt hints and spinner chars while active.
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+        || last_lines_lower.contains("running")
+        || last_lines_lower.contains("thinking")
+    {
+        return Status::Running;
+    }
+
+    for line in &lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    // WAITING: Approval prompts and selection menus.
+    let approval_prompts = [
+        "approve",
+        "allow",
+        "(y/n)",
+        "[y/n]",
+        "continue?",
+        "proceed?",
+        "execute?",
+        "run command?",
+        "enter to select",
+        "esc to cancel",
+    ];
+    for prompt in &approval_prompts {
+        if last_lines_lower.contains(prompt) {
+            return Status::Waiting;
+        }
+    }
+
+    // WAITING: Input prompt ready for next command.
+    for line in non_empty_lines.iter().rev().take(10) {
+        let clean_line = strip_ansi(line).trim().to_string();
+        if clean_line == ">" || clean_line == "> " || clean_line == "copilot>" {
+            return Status::Waiting;
+        }
+        if clean_line.starts_with("> ")
+            && !clean_line.to_lowercase().contains("esc")
+            && clean_line.len() < 100
+        {
+            return Status::Waiting;
+        }
+    }
+
+    Status::Idle
+}
+
 /// Pi coding agent status detection via tmux pane parsing.
 /// Pi always auto-approves tool use (no approval gates), so we only detect
 /// Running vs Idle/Waiting-for-input states.
@@ -655,6 +727,36 @@ mod tests {
     fn test_detect_gemini_status_idle() {
         assert_eq!(detect_gemini_status("file saved"), Status::Idle);
         assert_eq!(detect_gemini_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_copilot_status_running() {
+        assert_eq!(
+            detect_copilot_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_copilot_status("thinking about task"),
+            Status::Running
+        );
+        assert_eq!(detect_copilot_status("working ⠋"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_copilot_status_waiting() {
+        assert_eq!(detect_copilot_status("run command? (y/n)"), Status::Waiting);
+        assert_eq!(
+            detect_copilot_status("pick an option\nenter to select"),
+            Status::Waiting
+        );
+        assert_eq!(detect_copilot_status("ready\ncopilot>"), Status::Waiting);
+        assert_eq!(detect_copilot_status("done\n>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_copilot_status_idle() {
+        assert_eq!(detect_copilot_status("file saved"), Status::Idle);
+        assert_eq!(detect_copilot_status("random output text"), Status::Idle);
     }
 
     #[test]

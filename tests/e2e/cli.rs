@@ -17,15 +17,6 @@ fn read_sessions_json(h: &TuiTestHarness) -> serde_json::Value {
     serde_json::from_str(&content).expect("invalid sessions JSON")
 }
 
-/// Return the first available tool on this system, or "claude" as final fallback.
-fn first_available_tool() -> &'static str {
-    agent_of_empires::tmux::AvailableTools::detect()
-        .available_list()
-        .first()
-        .copied()
-        .unwrap_or("claude")
-}
-
 #[test]
 #[serial]
 fn test_cli_add_and_list() {
@@ -404,7 +395,9 @@ fn test_cli_add_default_tool_no_config() {
 
     let sessions = read_sessions_json(&h);
     let session = &sessions[0];
-    let expected = first_available_tool();
+    // Harness prepends a fake `claude` binary to PATH, so no-config tool
+    // selection should deterministically choose `claude`.
+    let expected = "claude";
     assert_eq!(
         session["tool"].as_str().unwrap_or(""),
         expected,

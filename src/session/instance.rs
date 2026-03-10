@@ -736,13 +736,17 @@ mod tests {
     }
 
     #[test]
-    fn test_all_agents_have_yolo_support() {
+    fn test_only_copilot_lacks_yolo_support() {
         for agent in crate::agents::AGENTS {
-            assert!(
-                agent.yolo.is_some(),
-                "Agent '{}' should have YOLO mode configured",
-                agent.name
-            );
+            if agent.name == "copilot" {
+                assert!(agent.yolo.is_none());
+            } else {
+                assert!(
+                    agent.yolo.is_some(),
+                    "Agent '{}' should have YOLO mode configured",
+                    agent.name
+                );
+            }
         }
     }
 
