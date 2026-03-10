@@ -377,16 +377,10 @@ pub fn detect_pi_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // RUNNING: Token/cost counter updating indicates active generation
-    let activity_indicators = ["thinking", "working", "reading", "writing", "executing"];
-    for indicator in &activity_indicators {
-        if last_lines_lower.contains(indicator) {
-            return Status::Running;
-        }
-    }
-
-    // WAITING: Pi shows an input prompt when ready for user input
-    for line in non_empty_lines.iter().rev().take(10) {
+    // WAITING: Check for input prompt before activity indicators, since words
+    // like "reading" or "writing" can linger in scrollback after the agent
+    // finishes and shows a prompt.
+    for line in non_empty_lines.iter().rev().take(5) {
         let clean_line = strip_ansi(line).trim().to_string();
         if clean_line == ">" || clean_line == "> " || clean_line == "pi>" {
             return Status::Waiting;
@@ -396,6 +390,14 @@ pub fn detect_pi_status(raw_content: &str) -> Status {
             && clean_line.len() < 100
         {
             return Status::Waiting;
+        }
+    }
+
+    // RUNNING: Activity indicators in the last few lines
+    let activity_indicators = ["thinking", "working", "reading", "writing", "executing"];
+    for indicator in &activity_indicators {
+        if last_lines_lower.contains(indicator) {
+            return Status::Running;
         }
     }
 
@@ -672,6 +674,11 @@ mod tests {
         assert_eq!(detect_pi_status("done\n>"), Status::Waiting);
         assert_eq!(detect_pi_status("ready\n> "), Status::Waiting);
         assert_eq!(detect_pi_status("complete\npi>"), Status::Waiting);
+        // Prompt takes priority over activity words lingering in scrollback
+        assert_eq!(
+            detect_pi_status("reading config.toml\nDone.\n>"),
+            Status::Waiting
+        );
     }
 
     #[test]

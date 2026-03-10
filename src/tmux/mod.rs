@@ -116,14 +116,20 @@ fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
                 .unwrap_or(false)
         }
         DetectionMethod::RunWithArg(binary, arg) => {
-            if Command::new(binary).arg(arg).output().is_ok() {
+            if Command::new(binary)
+                .arg(arg)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
                 return true;
             }
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
             Command::new(&shell)
                 .args(["-lc", &format!("{} {}", binary, arg)])
                 .output()
-                .is_ok()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
         }
     }
 }
