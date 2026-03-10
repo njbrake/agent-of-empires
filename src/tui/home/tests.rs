@@ -1720,3 +1720,52 @@ fn test_profile_header_collapse_hides_sessions() {
     });
     assert_eq!(alpha_header, Some(true));
 }
+
+#[test]
+#[serial]
+fn test_create_session_in_all_mode_is_findable() {
+    use crate::tui::dialogs::NewSessionData;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    // Create a profile so "all" mode has something
+    let storage = Storage::new("alpha").unwrap();
+    storage
+        .save(&[Instance::new("Existing", "/tmp/a")])
+        .unwrap();
+
+    let project_dir = temp.path().join("project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    let data = NewSessionData {
+        profile: "alpha".to_string(),
+        title: "New Session".to_string(),
+        path: project_dir.to_str().unwrap().to_string(),
+        group: String::new(),
+        tool: "claude".to_string(),
+        worktree_branch: None,
+        create_new_branch: false,
+        sandbox: false,
+        sandbox_image: String::new(),
+        yolo_mode: false,
+        extra_env: Vec::new(),
+        extra_args: String::new(),
+        command_override: String::new(),
+    };
+
+    let session_id = view.create_session(data).unwrap();
+
+    // In unified view, the session IS findable (fixes #419)
+    assert!(
+        view.get_instance(&session_id).is_some(),
+        "session created in all-mode should be findable by get_instance"
+    );
+    assert_eq!(
+        view.get_instance(&session_id).unwrap().source_profile,
+        "alpha"
+    );
+}
