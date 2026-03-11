@@ -4,8 +4,8 @@
 //! terminal captures. When a tool updates their TUI, these tests will fail
 //! if the detection logic no longer works.
 //!
-//! Note: Claude Code and Cursor use hook-based detection (not tmux pane parsing),
-//! so they have no fixture-based tests here.
+//! Note: Claude Code, Cursor, and OpenCode use hook-based detection (not tmux
+//! pane parsing), so they have no fixture-based tests here.
 //!
 //! Each state is a directory containing one or more fixture files. This allows
 //! users to submit additional screenshots for bug reports, and all examples
@@ -17,7 +17,11 @@
 //! 3. Update detection logic if needed
 //! 4. Re-run tests
 
-use agent_of_empires::agents;
+// Suppress unused warnings: these helpers are infrastructure for fixture-based
+// tests. Agents using tmux pane parsing should add test modules below that
+// call test_all_fixtures_in_dir().
+#![allow(dead_code)]
+
 use agent_of_empires::session::Status;
 use std::fs;
 use std::path::PathBuf;
@@ -86,36 +90,15 @@ fn test_all_fixtures_in_dir<F>(
     }
 }
 
-fn identity(s: String) -> String {
+fn _identity(s: String) -> String {
     s
 }
 
-mod opencode {
-    use super::*;
-
-    fn detect(content: &str) -> Status {
-        let agent = agents::get_agent("opencode").unwrap();
-        (agent.detect_status)(content)
-    }
-
-    #[test]
-    fn test_running_state() {
-        test_all_fixtures_in_dir("opencode", "running", Status::Running, identity, detect);
-    }
-
-    #[test]
-    fn test_waiting_permission_state() {
-        test_all_fixtures_in_dir(
-            "opencode",
-            "waiting_permission",
-            Status::Waiting,
-            identity,
-            detect,
-        );
-    }
-
-    #[test]
-    fn test_idle_state() {
-        test_all_fixtures_in_dir("opencode", "idle", Status::Idle, identity, detect);
-    }
-}
+// Hook-based agents (Claude, Cursor, OpenCode) have no fixture tests.
+// Agents that use tmux pane parsing should add fixture-based test modules here.
+// Example:
+//   mod some_agent {
+//       use super::*;
+//       fn detect(content: &str) -> Status { ... }
+//       #[test] fn test_running() { test_all_fixtures_in_dir(...) }
+//   }

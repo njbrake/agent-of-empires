@@ -657,22 +657,37 @@ pub(crate) fn build_container_config(
                 read_only: false,
             });
 
-            // Install hooks into the sandbox settings.json
-            // The sandbox dir for the agent config is already prepared above.
-            // We write hooks into it so the containerized agent picks them up.
             let home = dirs::home_dir().unwrap_or_default();
-            let config_dir_name = std::path::Path::new(hook_cfg.settings_rel_path)
-                .parent()
-                .unwrap_or(std::path::Path::new("."));
-            // Find the matching agent config mount to locate the sandbox dir
-            for mount in AGENT_CONFIG_MOUNTS {
-                if mount.host_rel == config_dir_name.to_string_lossy() {
-                    let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
-                    let settings_file = sandbox_dir.join("settings.json");
-                    if let Err(e) = crate::hooks::install_hooks(&settings_file) {
-                        tracing::warn!("Failed to install hooks in sandbox settings: {}", e);
+            match hook_cfg.method {
+                crate::agents::HookInstallMethod::SettingsJson => {
+                    // Install hooks into the sandbox settings.json
+                    // The sandbox dir for the agent config is already prepared above.
+                    // We write hooks into it so the containerized agent picks them up.
+                    let config_dir_name = std::path::Path::new(hook_cfg.rel_path)
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."));
+                    for mount in AGENT_CONFIG_MOUNTS {
+                        if mount.host_rel == config_dir_name.to_string_lossy() {
+                            let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
+                            let settings_file = sandbox_dir.join("settings.json");
+                            if let Err(e) = crate::hooks::install_hooks(&settings_file) {
+                                tracing::warn!(
+                                    "Failed to install hooks in sandbox settings: {}",
+                                    e
+                                );
+                            }
+                            break;
+                        }
                     }
-                    break;
+                }
+                crate::agents::HookInstallMethod::PluginFile => {
+                    // Install the plugin file on the host. The agent's config directory
+                    // is already mounted into the container (e.g. ~/.config/opencode),
+                    // so the plugin will be visible inside.
+                    let plugins_dir = home.join(hook_cfg.rel_path);
+                    if let Err(e) = crate::hooks::install_plugin_hooks(&plugins_dir) {
+                        tracing::warn!("Failed to install plugin hooks: {}", e);
+                    }
                 }
             }
         }

@@ -1,8 +1,12 @@
-//! Claude Code hooks management for status detection.
+//! Agent hooks management for status detection.
 //!
-//! AoE installs hooks into Claude Code's `settings.json` that write session
-//! status (`running`/`waiting`/`idle`) to a file. This provides reliable
+//! AoE installs hooks into agent config files that write session status
+//! (`running`/`waiting`/`idle`) to a well-known file. This provides reliable
 //! status detection without parsing tmux pane content.
+//!
+//! Two installation methods are supported:
+//! - **SettingsJson** (Claude Code, Cursor): merge JSON hooks into `settings.json`
+//! - **PluginFile** (OpenCode): write a JavaScript plugin to the plugins directory
 
 mod status_file;
 
@@ -196,22 +200,111 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
+// ---------------------------------------------------------------------------
+// Plugin-file hooks (OpenCode)
+// ---------------------------------------------------------------------------
+
+/// Name of the AoE status plugin file installed into OpenCode's plugins dir.
+const PLUGIN_FILENAME: &str = "aoe-status.js";
+
+/// JavaScript plugin content for OpenCode status detection.
+/// Uses Node.js-compatible `fs` APIs (supported by Bun, which OpenCode uses).
+/// The plugin reads `AOE_INSTANCE_ID` from the environment and writes status
+/// to `/tmp/aoe-hooks/{id}/status`, mirroring the Claude Code hook approach.
+fn opencode_plugin_content() -> &'static str {
+    r#"import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+export const AoeStatus = async () => {
+  const id = process.env.AOE_INSTANCE_ID;
+  if (!id) return {};
+
+  const dir = `/tmp/aoe-hooks/${id}`;
+  const file = join(dir, "status");
+
+  const write = (s) => {
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, s);
+    } catch (_) {}
+  };
+
+  return {
+    "tool.execute.before": async () => write("running"),
+    "tool.execute.after": async () => write("running"),
+    "permission.asked": async () => write("waiting"),
+    "session.idle": async () => write("idle"),
+  };
+};
+"#
+}
+
+/// Install the AoE status plugin into an OpenCode plugins directory.
+///
+/// Creates the directory if it doesn't exist. The plugin file is always
+/// overwritten (idempotent).
+pub fn install_plugin_hooks(plugins_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(plugins_dir)?;
+    let plugin_path = plugins_dir.join(PLUGIN_FILENAME);
+    std::fs::write(&plugin_path, opencode_plugin_content())?;
+    tracing::info!("Installed AoE plugin in {}", plugin_path.display());
+    Ok(())
+}
+
+/// Remove the AoE status plugin from an OpenCode plugins directory.
+///
+/// Returns `Ok(true)` if the file was removed, `Ok(false)` if it didn't exist.
+pub fn uninstall_plugin_hooks(plugins_dir: &Path) -> Result<bool> {
+    let plugin_path = plugins_dir.join(PLUGIN_FILENAME);
+    if plugin_path.exists() {
+        std::fs::remove_file(&plugin_path)?;
+        tracing::info!("Removed AoE plugin from {}", plugin_path.display());
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatchers
+// ---------------------------------------------------------------------------
+
+/// Install hooks for an agent, dispatching based on the hook installation method.
+pub fn install_agent_hooks(home: &Path, hook_cfg: &crate::agents::AgentHookConfig) -> Result<()> {
+    let full_path = home.join(hook_cfg.rel_path);
+    match hook_cfg.method {
+        crate::agents::HookInstallMethod::SettingsJson => install_hooks(&full_path),
+        crate::agents::HookInstallMethod::PluginFile => install_plugin_hooks(&full_path),
+    }
+}
+
+/// Uninstall hooks for an agent, dispatching based on the hook installation method.
+pub fn uninstall_agent_hooks(
+    home: &Path,
+    hook_cfg: &crate::agents::AgentHookConfig,
+) -> Result<bool> {
+    let full_path = home.join(hook_cfg.rel_path);
+    match hook_cfg.method {
+        crate::agents::HookInstallMethod::SettingsJson => uninstall_hooks(&full_path),
+        crate::agents::HookInstallMethod::PluginFile => uninstall_plugin_hooks(&full_path),
+    }
+}
+
 /// Remove all AoE hooks from all known agent settings files and clean up
 /// the hook status base directory. Called during `aoe uninstall`.
 pub fn uninstall_all_hooks() {
     if let Some(home) = dirs::home_dir() {
         for agent in crate::agents::AGENTS {
             if let Some(hook_cfg) = &agent.hook_config {
-                let settings_path = home.join(hook_cfg.settings_rel_path);
-                match uninstall_hooks(&settings_path) {
-                    Ok(true) => println!("Removed AoE hooks from {}", settings_path.display()),
+                match uninstall_agent_hooks(&home, hook_cfg) {
+                    Ok(true) => {
+                        let path = home.join(hook_cfg.rel_path);
+                        println!("Removed AoE hooks from {}", path.display());
+                    }
                     Ok(false) => {}
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to remove hooks from {}: {}",
-                            settings_path.display(),
-                            e
-                        );
+                        let path = home.join(hook_cfg.rel_path);
+                        tracing::warn!("Failed to remove hooks from {}: {}", path.display(), e);
                     }
                 }
             }
@@ -508,5 +601,103 @@ mod tests {
         remove_aoe_entries(&mut matchers);
         assert_eq!(matchers.len(), 1);
         assert_eq!(matchers[0]["matcher"], "Bash");
+    }
+
+    // Plugin-file hook tests (OpenCode)
+
+    #[test]
+    fn test_install_plugin_hooks_creates_file() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+
+        install_plugin_hooks(&plugins_dir).unwrap();
+
+        let plugin_path = plugins_dir.join(PLUGIN_FILENAME);
+        assert!(plugin_path.exists());
+        let content = std::fs::read_to_string(&plugin_path).unwrap();
+        assert!(content.contains("AoeStatus"));
+        assert!(content.contains("aoe-hooks"));
+        assert!(content.contains("tool.execute.before"));
+        assert!(content.contains("session.idle"));
+        assert!(content.contains("permission.asked"));
+    }
+
+    #[test]
+    fn test_install_plugin_hooks_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+
+        install_plugin_hooks(&plugins_dir).unwrap();
+        let first = std::fs::read_to_string(plugins_dir.join(PLUGIN_FILENAME)).unwrap();
+
+        install_plugin_hooks(&plugins_dir).unwrap();
+        let second = std::fs::read_to_string(plugins_dir.join(PLUGIN_FILENAME)).unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_install_plugin_hooks_creates_parent_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("config").join("opencode").join("plugins");
+
+        install_plugin_hooks(&plugins_dir).unwrap();
+        assert!(plugins_dir.join(PLUGIN_FILENAME).exists());
+    }
+
+    #[test]
+    fn test_uninstall_plugin_hooks_removes_file() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+
+        install_plugin_hooks(&plugins_dir).unwrap();
+        assert!(plugins_dir.join(PLUGIN_FILENAME).exists());
+
+        let removed = uninstall_plugin_hooks(&plugins_dir).unwrap();
+        assert!(removed);
+        assert!(!plugins_dir.join(PLUGIN_FILENAME).exists());
+    }
+
+    #[test]
+    fn test_uninstall_plugin_hooks_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+
+        let removed = uninstall_plugin_hooks(&plugins_dir).unwrap();
+        assert!(!removed);
+    }
+
+    #[test]
+    fn test_uninstall_plugin_hooks_preserves_other_files() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+
+        // Write a user plugin
+        std::fs::write(plugins_dir.join("my-plugin.js"), "// user plugin").unwrap();
+
+        install_plugin_hooks(&plugins_dir).unwrap();
+        uninstall_plugin_hooks(&plugins_dir).unwrap();
+
+        // User plugin should still be there
+        assert!(plugins_dir.join("my-plugin.js").exists());
+        assert!(!plugins_dir.join(PLUGIN_FILENAME).exists());
+    }
+
+    #[test]
+    fn test_plugin_content_has_status_mappings() {
+        let content = opencode_plugin_content();
+        // Verify the plugin writes the correct status values
+        assert!(content.contains(r#"write("running")"#));
+        assert!(content.contains(r#"write("waiting")"#));
+        assert!(content.contains(r#"write("idle")"#));
+    }
+
+    #[test]
+    fn test_plugin_exits_cleanly_without_instance_id() {
+        let content = opencode_plugin_content();
+        // The plugin should check for AOE_INSTANCE_ID and return empty if not set
+        assert!(content.contains("AOE_INSTANCE_ID"));
+        assert!(content.contains("if (!id) return {}"));
     }
 }

@@ -24,11 +24,22 @@ pub enum YoloMode {
     AlwaysYolo,
 }
 
-/// Configuration for installing status-detection hooks into an agent's settings file.
+/// How AoE installs status-detection hooks for a given agent.
+pub enum HookInstallMethod {
+    /// Merge JSON hooks into the agent's `settings.json` (Claude Code, Cursor).
+    SettingsJson,
+    /// Write a JavaScript plugin file into the agent's plugins directory (OpenCode).
+    PluginFile,
+}
+
+/// Configuration for installing status-detection hooks into an agent's config.
 pub struct AgentHookConfig {
-    /// Path relative to the project/home dir where the agent's settings live
-    /// (e.g. `.claude/settings.json`).
-    pub settings_rel_path: &'static str,
+    /// Path relative to the home dir.
+    /// For `SettingsJson`: path to settings.json (e.g. `.claude/settings.json`).
+    /// For `PluginFile`: path to plugins directory (e.g. `.config/opencode/plugins`).
+    pub rel_path: &'static str,
+    /// How hooks are installed for this agent.
+    pub method: HookInstallMethod,
 }
 
 /// Everything we know about a single agent CLI.
@@ -73,7 +84,8 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_claude_status,
         container_env: &[("CLAUDE_CONFIG_DIR", "/root/.claude")],
         hook_config: Some(AgentHookConfig {
-            settings_rel_path: ".claude/settings.json",
+            rel_path: ".claude/settings.json",
+            method: HookInstallMethod::SettingsJson,
         }),
     },
     AgentDef {
@@ -87,7 +99,10 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: false,
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
-        hook_config: None,
+        hook_config: Some(AgentHookConfig {
+            rel_path: ".config/opencode/plugins",
+            method: HookInstallMethod::PluginFile,
+        }),
     },
     AgentDef {
         name: "vibe",
@@ -142,7 +157,8 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_cursor_status,
         container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
         hook_config: Some(AgentHookConfig {
-            settings_rel_path: ".cursor/settings.json",
+            rel_path: ".cursor/settings.json",
+            method: HookInstallMethod::SettingsJson,
         }),
     },
     AgentDef {
