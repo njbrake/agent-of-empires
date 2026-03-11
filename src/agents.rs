@@ -150,7 +150,7 @@ pub const AGENTS: &[AgentDef] = &[
         binary: "copilot",
         aliases: &["ghcs", "github-copilot"],
         detection: DetectionMethod::Which("copilot"),
-        yolo: None,
+        yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
         supports_host_launch: true,
@@ -290,17 +290,13 @@ mod tests {
     }
 
     #[test]
-    fn test_only_copilot_lacks_yolo_support() {
+    fn test_all_agents_have_yolo_support() {
         for agent in AGENTS {
-            if agent.name == "copilot" {
-                assert!(agent.yolo.is_none());
-            } else {
-                assert!(
-                    agent.yolo.is_some(),
-                    "Agent '{}' should have YOLO mode configured",
-                    agent.name
-                );
-            }
+            assert!(
+                agent.yolo.is_some(),
+                "Agent '{}' should have YOLO mode configured",
+                agent.name
+            );
         }
     }
 }
