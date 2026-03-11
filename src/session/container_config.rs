@@ -585,6 +585,23 @@ pub(crate) fn build_container_config(
     }
 
     if tool == "opencode" {
+        // Install plugin hooks first so the config directory exists for the mount
+        // check below. install_plugin_hooks creates ~/.config/opencode/plugins/
+        // which also creates the parent ~/.config/opencode/ directory.
+        if let Some(agent) = crate::agents::get_agent(tool) {
+            if let Some(hook_cfg) = &agent.hook_config {
+                if matches!(
+                    hook_cfg.method,
+                    crate::agents::HookInstallMethod::PluginFile
+                ) {
+                    let plugins_dir = home.join(hook_cfg.rel_path);
+                    if let Err(e) = crate::hooks::install_plugin_hooks(&plugins_dir) {
+                        tracing::warn!("Failed to install plugin hooks: {}", e);
+                    }
+                }
+            }
+        }
+
         let opencode_config = home.join(".config").join("opencode");
         if opencode_config.exists() {
             volumes.push(VolumeMount {
@@ -681,13 +698,8 @@ pub(crate) fn build_container_config(
                     }
                 }
                 crate::agents::HookInstallMethod::PluginFile => {
-                    // Install the plugin file on the host. The agent's config directory
-                    // is already mounted into the container (e.g. ~/.config/opencode),
-                    // so the plugin will be visible inside.
-                    let plugins_dir = home.join(hook_cfg.rel_path);
-                    if let Err(e) = crate::hooks::install_plugin_hooks(&plugins_dir) {
-                        tracing::warn!("Failed to install plugin hooks: {}", e);
-                    }
+                    // Already installed above (before the config dir mount check)
+                    // so the config directory exists and gets mounted into the container.
                 }
             }
         }
