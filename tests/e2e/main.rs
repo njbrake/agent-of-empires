@@ -23,3 +23,4 @@ mod new_session;
 mod profile_picker;
 mod sandbox;
 mod tui_launch;
+mod unified_view;

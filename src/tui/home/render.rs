@@ -97,6 +97,10 @@ impl HomeView {
             dialog.render(frame, area, theme);
         }
 
+        if let Some(dialog) = &self.hooks_install_dialog {
+            dialog.render(frame, area, theme);
+        }
+
         if let Some(dialog) = &self.hook_trust_dialog {
             dialog.render(frame, area, theme);
         }
@@ -120,8 +124,8 @@ impl HomeView {
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let title = match self.view_mode {
-            ViewMode::Agent => format!(" Agent of Empires [{}] ", self.storage.profile()),
-            ViewMode::Terminal => format!(" Terminals [{}] ", self.storage.profile()),
+            ViewMode::Agent => format!(" Agent of Empires [{}] ", self.active_profile_display()),
+            ViewMode::Terminal => format!(" Terminals [{}] ", self.active_profile_display()),
         };
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
@@ -136,7 +140,7 @@ impl HomeView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        if self.instances.is_empty() && self.groups.is_empty() {
+        if self.instances.is_empty() && !self.has_any_groups() {
             let empty_text = vec![
                 Line::from(""),
                 Line::from("No sessions yet").style(Style::default().fg(theme.dimmed)),
@@ -226,6 +230,21 @@ impl HomeView {
 
         let (icon, text, style): (&str, Cow<str>, Style) = match item {
             Item::Group {
+                name,
+                collapsed,
+                session_count,
+                ..
+            } => {
+                let icon = if *collapsed {
+                    ICON_COLLAPSED
+                } else {
+                    ICON_EXPANDED
+                };
+                let text = Cow::Owned(format!("{} ({})", name, session_count));
+                let style = Style::default().fg(theme.group).bold();
+                (icon, text, style)
+            }
+            Item::ProfileHeader {
                 name,
                 collapsed,
                 session_count,
@@ -580,6 +599,12 @@ impl HomeView {
                 collapsed: true, ..
             }) => Some(" Expand "),
             Some(Item::Group {
+                collapsed: false, ..
+            }) => Some(" Collapse "),
+            Some(Item::ProfileHeader {
+                collapsed: true, ..
+            }) => Some(" Expand "),
+            Some(Item::ProfileHeader {
                 collapsed: false, ..
             }) => Some(" Collapse "),
             Some(Item::Session { .. }) => Some(" Attach "),

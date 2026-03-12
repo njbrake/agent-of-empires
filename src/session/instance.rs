@@ -102,6 +102,10 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_info: Option<TerminalInfo>,
 
+    /// Runtime-only: which profile this instance was loaded from. Not persisted to disk.
+    #[serde(default, skip_serializing)]
+    pub source_profile: String,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -129,6 +133,7 @@ impl Instance {
             worktree_info: None,
             sandbox_info: None,
             terminal_info: None,
+            source_profile: String::new(),
             last_error_check: None,
             last_start_time: None,
             last_error: None,

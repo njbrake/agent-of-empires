@@ -21,11 +21,11 @@ fn test_profile_picker_opens_and_closes() {
     let mut h = TuiTestHarness::new("picker_open");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    // Default launch is now all-profiles mode
+    h.wait_for("[all]");
     h.send_keys("P");
     h.wait_for("Profiles");
     h.assert_screen_contains("default");
-    h.assert_screen_contains("(active)");
 
     // Esc closes
     h.send_keys("Escape");
@@ -43,7 +43,7 @@ fn test_profile_picker_shows_multiple_profiles() {
     create_profile(&h, "personal");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("[all]");
     h.send_keys("P");
     h.wait_for("Profiles");
     h.assert_screen_contains("default");
@@ -59,7 +59,7 @@ fn test_profile_picker_create_new_profile() {
     let mut h = TuiTestHarness::new("picker_create");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("[all]");
     h.send_keys("P");
     h.wait_for("Profiles");
 
@@ -84,7 +84,7 @@ fn test_profile_picker_create_esc_returns_to_list() {
     let mut h = TuiTestHarness::new("picker_create_esc");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("[all]");
     h.send_keys("P");
     h.wait_for("Profiles");
 
@@ -106,7 +106,7 @@ fn test_profile_picker_delete_flow() {
     create_profile(&h, "deleteme");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("[all]");
     h.send_keys("P");
     h.wait_for("Profiles");
     h.assert_screen_contains("deleteme");
@@ -139,7 +139,7 @@ fn test_profile_picker_delete_cancel() {
     create_profile(&h, "keepme");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("[all]");
     h.send_keys("P");
     h.wait_for("Profiles");
 
@@ -167,7 +167,7 @@ fn test_profile_picker_switch_profile() {
     create_profile(&h, "other");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("[all]");
     h.send_keys("P");
     h.wait_for("Profiles");
 

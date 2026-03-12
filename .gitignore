@@ -54,3 +54,4 @@ sdd-*/
 
 debug.log
 website/.next/
+.worktrees/

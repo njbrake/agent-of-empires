@@ -9,7 +9,7 @@ use std::time::Duration;
 use super::home::{HomeView, TerminalMode};
 use super::styles::load_theme;
 use super::styles::Theme;
-use crate::session::{get_update_settings, load_config, save_config, Storage};
+use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
@@ -77,8 +77,12 @@ pub fn check_version_change() -> Result<Option<String>> {
 
 impl App {
     pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
-        let storage = Storage::new(profile)?;
-        let mut home = HomeView::new(storage, available_tools)?;
+        let active_profile = if profile.is_empty() {
+            None // all-profiles mode
+        } else {
+            Some(profile.to_string())
+        };
+        let mut home = HomeView::new(active_profile, available_tools)?;
 
         // Check if we need to show welcome or changelog dialogs
         let mut config = load_config()?.unwrap_or_default();
@@ -334,11 +338,6 @@ impl App {
             Action::AttachTerminal(id, mode) => {
                 self.attach_terminal(&id, mode, terminal)?;
             }
-            Action::SwitchProfile(profile) => {
-                let storage = Storage::new(&profile)?;
-                let tools = self.home.available_tools();
-                self.home = HomeView::new(storage, tools)?;
-            }
             Action::EditFile(path) => {
                 self.edit_file(&path, terminal)?;
             }
@@ -592,7 +591,6 @@ pub enum Action {
     Quit,
     AttachSession(String),
     AttachTerminal(String, TerminalMode),
-    SwitchProfile(String),
     EditFile(PathBuf),
     StopSession(String),
     SetTheme(String),
