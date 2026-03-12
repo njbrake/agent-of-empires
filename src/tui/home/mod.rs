@@ -231,30 +231,14 @@ impl HomeView {
             .and_then(|c| c.app_state.sort_order)
             .unwrap_or_default();
 
-        let collapsed_profiles = HashSet::new();
-        let flat_items = if active_profile.is_none() {
-            flatten_tree_all_profiles(
-                &all_instances,
-                &group_trees,
-                sort_order,
-                &collapsed_profiles,
-            )
-        } else {
-            let tree = active_profile.as_ref().and_then(|p| group_trees.get(p));
-            match tree {
-                Some(t) => flatten_tree(t, &all_instances, sort_order),
-                None => Vec::new(),
-            }
-        };
-
         let mut view = Self {
             storages,
             active_profile,
-            collapsed_profiles,
+            collapsed_profiles: HashSet::new(),
             instances: all_instances,
             instance_map,
             group_trees,
-            flat_items,
+            flat_items: Vec::new(),
             cursor: 0,
             selected_session: None,
             selected_group: None,
@@ -300,6 +284,7 @@ impl HomeView {
                 .unwrap_or(35),
         };
 
+        view.flat_items = view.build_flat_items();
         view.update_selected();
         Ok(view)
     }
