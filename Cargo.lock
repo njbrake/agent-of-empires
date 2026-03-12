@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "agent-of-empires"
-version = "0.15.2"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "cargo-husky",
@@ -3254,6 +3254,7 @@ dependencies = [
  "agent-of-empires",
  "clap",
  "clap-markdown",
+ "regex",
 ]
 
 [[package]]

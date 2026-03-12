@@ -26,6 +26,9 @@ pub enum SessionCommands {
     /// Rename a session
     Rename(RenameArgs),
 
+    /// Capture tmux pane output
+    Capture(CaptureArgs),
+
     /// Auto-detect current session
     Current(CurrentArgs),
 }
@@ -61,6 +64,24 @@ pub struct ShowArgs {
 }
 
 #[derive(Args)]
+pub struct CaptureArgs {
+    /// Session ID or title (auto-detects in tmux if omitted)
+    identifier: Option<String>,
+
+    /// Number of lines to capture
+    #[arg(short = 'n', long, default_value = "50")]
+    lines: usize,
+
+    /// Strip ANSI escape codes
+    #[arg(long)]
+    strip_ansi: bool,
+
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
 pub struct CurrentArgs {
     /// Just session name (for scripting)
     #[arg(short = 'q', long)]
@@ -69,6 +90,16 @@ pub struct CurrentArgs {
     /// Output as JSON
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Serialize)]
+struct CaptureOutput {
+    id: String,
+    title: String,
+    status: String,
+    tool: String,
+    content: String,
+    lines: usize,
 }
 
 #[derive(Serialize)]
@@ -92,6 +123,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Restart(args) => restart_session(profile, args).await,
         SessionCommands::Attach(args) => attach_session(profile, args).await,
         SessionCommands::Show(args) => show_session(profile, args).await,
+        SessionCommands::Capture(args) => capture_session(profile, args).await,
         SessionCommands::Rename(args) => rename_session(profile, args).await,
         SessionCommands::Current(args) => current_session(args).await,
     }
@@ -250,6 +282,65 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
         if let Some(parent_id) = &inst.parent_session_id {
             println!("  Parent:  {}", parent_id);
         }
+    }
+
+    Ok(())
+}
+
+async fn capture_session(profile: &str, args: CaptureArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (instances, _) = storage.load_with_groups()?;
+
+    let inst = if let Some(id) = &args.identifier {
+        super::resolve_session(id, &instances)?
+    } else {
+        let current_session = std::env::var("TMUX_PANE")
+            .ok()
+            .and_then(|_| crate::tmux::get_current_session_name());
+
+        if let Some(session_name) = current_session {
+            instances
+                .iter()
+                .find(|i| {
+                    let tmux_name = crate::tmux::Session::generate_name(&i.id, &i.title);
+                    tmux_name == session_name
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Current tmux session is not an Agent of Empires session")
+                })?
+        } else {
+            bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
+        }
+    };
+
+    let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
+
+    let (content, status) = if !tmux_session.exists() {
+        (String::new(), "stopped".to_string())
+    } else {
+        let raw = tmux_session.capture_pane(args.lines)?;
+        let content = if args.strip_ansi {
+            crate::tmux::utils::strip_ansi(&raw)
+        } else {
+            raw
+        };
+        let status = crate::hooks::read_hook_status(&inst.id)
+            .unwrap_or_else(|| tmux_session.detect_status(&inst.tool).unwrap_or_default());
+        (content, format!("{:?}", status).to_lowercase())
+    };
+
+    if args.json {
+        let output = CaptureOutput {
+            id: inst.id.clone(),
+            title: inst.title.clone(),
+            status,
+            tool: inst.tool.clone(),
+            content,
+            lines: args.lines,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print!("{}", content);
     }
 
     Ok(())

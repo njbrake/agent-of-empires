@@ -406,6 +406,64 @@ fn test_cli_add_default_tool_no_config() {
     );
 }
 
+/// `aoe session capture` should return pane content or empty output for a stopped session.
+#[test]
+#[serial]
+fn test_cli_session_capture_stopped() {
+    let h = TuiTestHarness::new("cli_capture_stopped");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "CaptureTest"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session_id = sessions[0]["id"].as_str().expect("session should have id");
+
+    // Capture a session that is not running -- should succeed with empty content
+    let capture_output = h.run_cli(&["session", "capture", session_id, "--json"]);
+    assert!(
+        capture_output.status.success(),
+        "aoe session capture failed: {}",
+        String::from_utf8_lossy(&capture_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&capture_output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(json["status"], "stopped");
+    assert_eq!(json["content"], "");
+    assert_eq!(json["title"], "CaptureTest");
+}
+
+/// `aoe session capture` plain text mode should output raw content.
+#[test]
+#[serial]
+fn test_cli_session_capture_plain() {
+    let h = TuiTestHarness::new("cli_capture_plain");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "CapturePlain"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session_id = sessions[0]["id"].as_str().expect("session should have id");
+
+    // Plain text capture of stopped session -- empty output, no error
+    let capture_output = h.run_cli(&["session", "capture", session_id]);
+    assert!(
+        capture_output.status.success(),
+        "aoe session capture (plain) failed: {}",
+        String::from_utf8_lossy(&capture_output.stderr)
+    );
+}
+
 /// Renaming a session via CLI should rename the tmux session, not kill it.
 /// Regression test for https://github.com/njbrake/agent-of-empires/issues/431
 #[test]

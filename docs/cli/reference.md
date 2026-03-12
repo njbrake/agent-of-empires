@@ -17,6 +17,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session attach`↴](#aoe-session-attach)
 * [`aoe session show`↴](#aoe-session-show)
 * [`aoe session rename`↴](#aoe-session-rename)
+* [`aoe session capture`↴](#aoe-session-capture)
 * [`aoe session current`↴](#aoe-session-current)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
@@ -175,6 +176,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `attach` — Attach to session interactively
 * `show` — Show session details
 * `rename` — Rename a session
+* `capture` — Capture tmux pane output
 * `current` — Auto-detect current session
 
 
@@ -257,6 +259,26 @@ Rename a session
 
 * `-t`, `--title <TITLE>` — New title for the session
 * `-g`, `--group <GROUP>` — New group for the session (empty string to ungroup)
+
+
+
+## `aoe session capture`
+
+Capture tmux pane output
+
+**Usage:** `aoe session capture [OPTIONS] [IDENTIFIER]`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title (auto-detects in tmux if omitted)
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — Number of lines to capture
+
+  Default value: `50`
+* `--strip-ansi` — Strip ANSI escape codes
+* `--json` — Output as JSON
 
 
 

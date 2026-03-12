@@ -21,6 +21,8 @@
 - `scripts/`: installation and utility scripts.
 - `xtask/`: build automation workspace.
 
+- `contrib/`: community-maintained integration files (e.g., OpenClaw skill). Checked by `cargo xtask check-skill` in CI.
+
 ## Build, Test, and Development Commands
 
 - `cargo build` / `cargo build --release`: compile (release binary at `target/release/aoe`).
