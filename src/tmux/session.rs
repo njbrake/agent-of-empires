@@ -183,11 +183,13 @@ impl Session {
             return Ok(String::new());
         }
 
+        // Target window 0, pane 0 explicitly.  See #435.
+        let target = format!("{}:0.0", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
                 "-t",
-                &self.name,
+                &target,
                 "-p",
                 "-S",
                 &format!("-{}", lines),
@@ -381,6 +383,70 @@ mod tests {
             .map(|s| s.trim() == "1")
             .unwrap_or(false);
         assert!(!pane_dead, "Pane should be alive while command is running");
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    /// Regression test for #435: with multiple tmux windows, pane health
+    /// checks must target window 0 pane 0 explicitly so that a dead pane in
+    /// a second window does not cause the agent pane to be killed.
+    #[test]
+    #[serial_test::serial]
+    fn test_is_pane_dead_targets_window_zero_with_multiple_windows() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_multiwin_{}", std::process::id());
+
+        // Create session with a long-running command in window 0
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 30",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        // Create a second window with a command that exits immediately
+        let output = Command::new("tmux")
+            .args([
+                "new-window",
+                "-t",
+                &session_name,
+                "true", // exits immediately
+            ])
+            .output()
+            .expect("tmux new-window");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // The agent pane (window 0) is still alive, so is_pane_dead should
+        // return false even though the second window's pane has exited.
+        assert!(
+            !is_pane_dead(&session_name),
+            "is_pane_dead should check window 0 pane 0, not the active window"
+        );
 
         // Clean up
         let _ = Command::new("tmux")
