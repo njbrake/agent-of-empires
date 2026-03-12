@@ -183,8 +183,8 @@ impl Session {
             return Ok(String::new());
         }
 
-        // Target window 0, pane 0 explicitly.  See #435.
-        let target = format!("{}:0.0", self.name);
+        // Use `^` to target the first window's first pane regardless of base-index.
+        let target = format!("{}:^", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
@@ -427,6 +427,15 @@ mod tests {
             .expect("tmux new-session");
         assert!(output.status.success());
 
+        // Force base-index 1 for this session to simulate users who have
+        // set base-index 1 in their tmux.conf. With base-index 1, window 0
+        // does not exist, so any target using :0.0 silently fails.
+        let output = Command::new("tmux")
+            .args(["set-option", "-t", &session_name, "base-index", "1"])
+            .output()
+            .expect("tmux set-option base-index");
+        assert!(output.status.success());
+
         // Create a second window with a command that exits immediately
         let output = Command::new("tmux")
             .args([
@@ -441,11 +450,147 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // The agent pane (window 0) is still alive, so is_pane_dead should
+        // The agent pane (first window) is still alive, so is_pane_dead should
         // return false even though the second window's pane has exited.
         assert!(
             !is_pane_dead(&session_name),
-            "is_pane_dead should check window 0 pane 0, not the active window"
+            "is_pane_dead should check the first window's pane, not the active window"
+        );
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    /// Regression test: capture_pane must target the first window's pane
+    /// regardless of which window is currently active, and regardless of
+    /// the user's tmux base-index setting.
+    #[test]
+    #[serial_test::serial]
+    fn test_capture_pane_targets_first_window_with_multiple_windows() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_capture_multiwin_{}", std::process::id());
+
+        // Create session running sleep in the first window
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 30",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        // Force base-index 1 to simulate users who have set base-index 1 in
+        // their tmux.conf. With base-index 1, window 0 does not exist, so any
+        // target using :0.0 silently fails.
+        let output = Command::new("tmux")
+            .args(["set-option", "-t", &session_name, "base-index", "1"])
+            .output()
+            .expect("tmux set-option base-index");
+        assert!(output.status.success());
+
+        // Open a second window running a shell, and make it the active window
+        let output = Command::new("tmux")
+            .args(["new-window", "-t", &session_name, "sh"])
+            .output()
+            .expect("tmux new-window");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let session = Session {
+            name: session_name.clone(),
+        };
+
+        // capture_pane must succeed -- with base-index 1, a :0.0 target does
+        // not exist and the tmux command fails silently returning empty content.
+        let _content = session
+            .capture_pane(10)
+            .expect("capture_pane should not return an error for a valid session");
+
+        // The command in the first window is 'sleep', not a shell.
+        // is_pane_running_shell must return false even though the active
+        // window is running sh. With a :0.0 target and base-index 1 this
+        // would return false for the wrong reason (silent failure), but with
+        // ^ it correctly reads the first window's pane_current_command.
+        assert!(
+            !session.is_pane_running_shell(),
+            "is_pane_running_shell should check first window (sleep), not active window (sh)"
+        );
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    /// Regression test: is_pane_running_shell must target the first window's
+    /// pane even when the active window is a shell, and even with base-index 1.
+    #[test]
+    #[serial_test::serial]
+    fn test_is_pane_running_shell_targets_first_window_with_multiple_windows() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_shell_multiwin_{}", std::process::id());
+
+        // Create session running sleep (not a shell) in the first window
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 30",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        // Force base-index 1 to simulate users who have set base-index 1 in
+        // their tmux.conf. With base-index 1, window 0 does not exist, so any
+        // target using :0.0 silently fails.
+        let output = Command::new("tmux")
+            .args(["set-option", "-t", &session_name, "base-index", "1"])
+            .output()
+            .expect("tmux set-option base-index");
+        assert!(output.status.success());
+
+        // Open a second window running a shell and make it active
+        let output = Command::new("tmux")
+            .args(["new-window", "-t", &session_name, "sh"])
+            .output()
+            .expect("tmux new-window");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Should be false: first window runs 'sleep', not a shell.
+        // Would incorrectly return true if the active second window (sh) were checked.
+        // With base-index 1 and a :0.0 target the call silently fails and
+        // returns false for the wrong reason; ^ correctly reads the first pane.
+        assert!(
+            !is_pane_running_shell(&session_name),
+            "is_pane_running_shell should target first window (sleep), not active window (sh)"
         );
 
         // Clean up

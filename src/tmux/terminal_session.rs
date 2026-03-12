@@ -136,7 +136,7 @@ impl TerminalSession {
             return Ok(String::new());
         }
 
-        let target = format!("{}:0.0", self.name);
+        let target = format!("{}:^", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
@@ -285,7 +285,7 @@ impl ContainerTerminalSession {
             return Ok(String::new());
         }
 
-        let target = format!("{}:0.0", self.name);
+        let target = format!("{}:^", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
