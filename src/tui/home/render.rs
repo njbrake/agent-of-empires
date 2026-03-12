@@ -97,6 +97,10 @@ impl HomeView {
             dialog.render(frame, area, theme);
         }
 
+        if let Some(dialog) = &self.hooks_install_dialog {
+            dialog.render(frame, area, theme);
+        }
+
         if let Some(dialog) = &self.hook_trust_dialog {
             dialog.render(frame, area, theme);
         }

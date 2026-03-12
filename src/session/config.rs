@@ -104,6 +104,9 @@ pub struct AppStateConfig {
     #[serde(default)]
     pub has_seen_custom_instruction_warning: bool,
 
+    #[serde(default)]
+    pub has_acknowledged_agent_hooks: bool,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<SortOrder>,
 }

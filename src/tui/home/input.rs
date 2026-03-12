@@ -10,8 +10,8 @@ use crate::session::{flatten_tree, list_profiles, repo_config, resolve_config, I
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction, RenameDialog,
-    UnifiedDeleteDialog,
+    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction,
+    RenameDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -149,6 +149,31 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.hooks_install_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.hooks_install_dialog = None;
+                    self.pending_hooks_install_data = None;
+                }
+                DialogResult::Submit(_) => {
+                    self.hooks_install_dialog = None;
+                    // Persist the acknowledgment
+                    if let Ok(mut config) =
+                        crate::session::config::load_config().map(|c| c.unwrap_or_default())
+                    {
+                        config.app_state.has_acknowledged_agent_hooks = true;
+                        let _ = crate::session::config::save_config(&config);
+                    }
+                    // Resume session creation
+                    if let Some(data) = self.pending_hooks_install_data.take() {
+                        return self.continue_session_creation(data);
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.hook_trust_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -203,29 +228,31 @@ impl HomeView {
                     }
                 }
                 DialogResult::Submit(data) => {
-                    // Check for hooks before creating the session
-                    match repo_config::check_hook_trust(std::path::Path::new(&data.path)) {
-                        Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
-                            use crate::tui::dialogs::HookTrustDialog;
-                            self.hook_trust_dialog =
-                                Some(HookTrustDialog::new(hooks, hooks_hash, data.path.clone()));
-                            self.pending_hook_trust_data = Some(data);
-                        }
-                        Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
-                            let merged =
-                                self.merge_repo_hooks_onto_config_for(&data.profile, repo_hooks);
-                            return self.create_session_with_hooks(data, merged);
-                        }
-                        Ok(repo_config::HookTrustStatus::NoHooks) => {
-                            let fallback = self.resolve_global_profile_hooks_for(&data.profile);
-                            return self.create_session_with_hooks(data, fallback);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to check repo hooks: {}", e);
-                            let fallback = self.resolve_global_profile_hooks_for(&data.profile);
-                            return self.create_session_with_hooks(data, fallback);
+                    // Check if the tool uses hooks and user hasn't acknowledged yet
+                    let tool_name = if data.tool.is_empty() {
+                        "claude".to_string()
+                    } else {
+                        data.tool.clone()
+                    };
+                    let has_hooks = crate::agents::get_agent(&tool_name)
+                        .and_then(|a| a.hook_config.as_ref())
+                        .is_some();
+
+                    if has_hooks {
+                        let acknowledged = crate::session::config::load_config()
+                            .ok()
+                            .flatten()
+                            .map(|c| c.app_state.has_acknowledged_agent_hooks)
+                            .unwrap_or(false);
+
+                        if !acknowledged {
+                            self.hooks_install_dialog = Some(HooksInstallDialog::new(&tool_name));
+                            self.pending_hooks_install_data = Some(data);
+                            return None;
                         }
                     }
+
+                    return self.continue_session_creation(data);
                 }
             }
             return None;
@@ -851,6 +878,33 @@ impl HomeView {
         if let Some(&best) = self.search_matches.first() {
             self.cursor = best;
             self.update_selected();
+        }
+    }
+
+    /// Continue session creation after agent hooks acknowledgment.
+    /// Runs the repo hook trust check and then creates the session.
+    fn continue_session_creation(&mut self, data: NewSessionData) -> Option<Action> {
+        match repo_config::check_hook_trust(std::path::Path::new(&data.path)) {
+            Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
+                use crate::tui::dialogs::HookTrustDialog;
+                self.hook_trust_dialog =
+                    Some(HookTrustDialog::new(hooks, hooks_hash, data.path.clone()));
+                self.pending_hook_trust_data = Some(data);
+                None
+            }
+            Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
+                let merged = self.merge_repo_hooks_onto_config_for(&data.profile, repo_hooks);
+                self.create_session_with_hooks(data, merged)
+            }
+            Ok(repo_config::HookTrustStatus::NoHooks) => {
+                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
+                self.create_session_with_hooks(data, fallback)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check repo hooks: {}", e);
+                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
+                self.create_session_with_hooks(data, fallback)
+            }
         }
     }
 
