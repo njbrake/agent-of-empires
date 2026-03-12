@@ -148,14 +148,14 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "copilot",
         binary: "copilot",
-        aliases: &["ghcs", "github-copilot"],
+        aliases: &["github-copilot"],
         detection: DetectionMethod::Which("copilot"),
         yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
         supports_host_launch: true,
         detect_status: status_detection::detect_copilot_status,
-        container_env: &[],
+        container_env: &[("COPILOT_CONFIG_DIR", "/root/.copilot")],
         hook_config: None,
     },
     AgentDef {
@@ -263,8 +263,8 @@ mod tests {
         assert_eq!(resolve_tool_name("codex"), Some("codex"));
         assert_eq!(resolve_tool_name("gemini"), Some("gemini"));
         assert_eq!(resolve_tool_name("cursor"), Some("cursor"));
-        assert_eq!(resolve_tool_name("ghcs"), Some("copilot"));
         assert_eq!(resolve_tool_name("github-copilot"), Some("copilot"));
+        assert_eq!(resolve_tool_name("copilot"), Some("copilot"));
         assert_eq!(resolve_tool_name("pi"), Some("pi"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));

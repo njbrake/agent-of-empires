@@ -1,5 +1,5 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
-# This image provides Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, and Pi in an isolated environment
+# This image provides Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi in an isolated environment
 
 FROM ubuntu:24.04
 
@@ -46,6 +46,9 @@ ENV PATH="/root/.vibe/bin:${PATH}"
 # Install Cursor CLI
 RUN curl -fsSL https://cursor.com/install | bash
 
+# Install Copilot CLI (GitHub)
+RUN npm install -g @github/copilot
+
 # Install Pi (pi.dev)
 RUN npm install -g @mariozechner/pi-coding-agent
 
@@ -57,6 +60,7 @@ RUN mkdir -p /root/.claude \
     /root/.codex \
     /root/.gemini \
     /root/.cursor \
+    /root/.copilot \
     /root/.pi \
     /root/.ssh
 

@@ -125,6 +125,17 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "copilot",
+        host_rel: ".copilot",
+        container_suffix: ".copilot",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
+    AgentConfigMount {
         tool_name: "pi",
         host_rel: ".pi",
         container_suffix: ".pi",
