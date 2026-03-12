@@ -653,6 +653,10 @@ impl HomeView {
     /// Pass `None` for all-profiles mode, or `Some(name)` to filter to one profile.
     pub fn switch_profile(&mut self, new_profile: Option<String>) -> anyhow::Result<()> {
         self.active_profile = new_profile;
+        // Clear selection before reload so stale session/group refs don't linger
+        self.selected_session = None;
+        self.selected_group = None;
+        self.selected_group_profile = None;
         self.reload()?;
         self.refresh_from_config();
         // Invalidate preview caches since the visible sessions changed
