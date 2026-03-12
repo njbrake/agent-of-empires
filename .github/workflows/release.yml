@@ -252,7 +252,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: oven-sh/setup-bun@735343b667d3e6656e3338e15e2e8dae48a3b65e # v2
+      - uses: oven-sh/setup-bun@ecf28ddc73e819eb6fa29df6b34ef8921c743461 # v2
         if: env.CLAWHUB_TOKEN != ''
 
       - name: Install clawhub CLI
