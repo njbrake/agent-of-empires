@@ -57,10 +57,10 @@ pub fn append_remain_on_exit_args(args: &mut Vec<String>, target: &str) {
 }
 
 pub fn is_pane_dead(session_name: &str) -> bool {
-    // Target window 0, pane 0 explicitly so the check always hits the agent's
-    // pane, even when the user has created additional tmux windows and the
-    // active window is not the first one.  See #435.
-    let target = format!("{session_name}:0.0");
+    // Use `^` to target the first window's first pane regardless of
+    // base-index, so the check always hits the agent's pane even when the
+    // user has created additional tmux windows.  See #435.
+    let target = format!("{session_name}:^");
     Command::new("tmux")
         .args(["display-message", "-t", &target, "-p", "#{pane_dead}"])
         .output()
@@ -71,7 +71,8 @@ pub fn is_pane_dead(session_name: &str) -> bool {
 }
 
 fn pane_current_command(session_name: &str) -> Option<String> {
-    let target = format!("{session_name}:0.0");
+    // Use `^` to target the first window's first pane regardless of base-index.
+    let target = format!("{session_name}:^");
     Command::new("tmux")
         .args([
             "display-message",
