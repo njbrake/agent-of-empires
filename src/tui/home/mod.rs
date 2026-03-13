@@ -551,6 +551,20 @@ impl HomeView {
                     updates.push((inst.id.clone(), session_id));
                 }
             }
+
+            // Hook sidecar file (Claude Code hook-handler writes session_id here)
+            if inst.tool == "claude" {
+                if let Some(hook_session_id) = crate::hooks::read_hook_session_id(&inst.id) {
+                    if inst.agent_session_id.as_deref() != Some(hook_session_id.as_str()) {
+                        tracing::info!(
+                            instance_id = %inst.id,
+                            session_id = %hook_session_id,
+                            "Updating Claude session_id from hook sidecar"
+                        );
+                        updates.push((inst.id.clone(), hook_session_id));
+                    }
+                }
+            }
         }
 
         if !updates.is_empty() {

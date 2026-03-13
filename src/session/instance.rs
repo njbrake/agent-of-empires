@@ -344,7 +344,6 @@ impl Instance {
     /// Claude is excluded: `~/.claude/debug/latest` is a global symlink shared
     /// across all instances, so it cannot reliably identify which project owns
     /// the session. Its pre-launch UUID via `--session-id` is authoritative.
-    // TODO: hook-based approach for Claude post-launch verification.
     pub fn supports_session_poller(&self) -> bool {
         matches!(self.tool.as_str(), "opencode")
     }
