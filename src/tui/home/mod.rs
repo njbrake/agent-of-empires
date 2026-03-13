@@ -289,38 +289,40 @@ impl HomeView {
 
         // Synchronize tmux env with sessions.json so build_exclusion_set()
         // sees current data instead of stale values from previous runs.
+        let mut env_batch: Vec<(String, String, String)> = Vec::new();
         for inst in &view.instances {
             let tmux_name = match inst.tmux_session() {
                 Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
                 _ => continue,
             };
 
-            if let Err(e) = crate::tmux::env::set_hidden_env(
-                &tmux_name,
-                crate::tmux::env::AOE_INSTANCE_ID_KEY,
-                &inst.id,
-            ) {
-                tracing::warn!("Failed to set AOE_INSTANCE_ID for {}: {}", inst.id, e);
-            }
+            env_batch.push((
+                tmux_name.clone(),
+                crate::tmux::env::AOE_INSTANCE_ID_KEY.to_string(),
+                inst.id.clone(),
+            ));
             // Set if known, clear if not. Pollers re-publish on discovery,
             // so clearing is safe and prevents stale exclusion-set entries.
             if let Some(ref sid) = inst.agent_session_id {
-                if let Err(e) = crate::tmux::env::set_hidden_env(
-                    &tmux_name,
-                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
-                    sid,
-                ) {
-                    tracing::warn!(
-                        "Failed to restore AOE_CAPTURED_SESSION_ID for {}: {}",
-                        inst.id,
-                        e
-                    );
-                }
+                env_batch.push((
+                    tmux_name,
+                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY.to_string(),
+                    sid.clone(),
+                ));
             } else {
                 let _ = crate::tmux::env::remove_hidden_env(
                     &tmux_name,
                     crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
                 );
+            }
+        }
+        if !env_batch.is_empty() {
+            let batch_refs: Vec<(&str, &str, &str)> = env_batch
+                .iter()
+                .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
+                .collect();
+            if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
+                tracing::warn!("Batch env sync failed: {}", e);
             }
         }
 
@@ -407,6 +409,8 @@ impl HomeView {
                     inst.deferred_capture_handle = prev.deferred_capture_handle.clone();
                     inst.capture_gate = prev.capture_gate.clone();
                     // Use in-memory session_id if present; fallback to disk.
+                    // In-memory state takes priority over disk: the poller or
+                    // deferred capture may have updated the ID since last save.
                     inst.agent_session_id = prev
                         .agent_session_id
                         .clone()

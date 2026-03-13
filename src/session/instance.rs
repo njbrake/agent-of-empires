@@ -610,7 +610,7 @@ impl Instance {
         }
 
         let profile = super::config::resolve_default_profile();
-        let on_launch_hooks = self.resolve_on_launch_hooks(skip_on_launch);
+        let on_launch_hooks = self.resolve_on_launch_hooks(skip_on_launch, &profile);
 
         let agent = crate::agents::get_agent(&self.tool);
         self.install_agent_status_hooks(agent);
@@ -632,15 +632,13 @@ impl Instance {
     ///
     /// Repo hooks go through trust verification; global/profile hooks are
     /// implicitly trusted. Returns `None` when skipped or no hooks are configured.
-    fn resolve_on_launch_hooks(&self, skip_on_launch: bool) -> Option<Vec<String>> {
+    fn resolve_on_launch_hooks(&self, skip_on_launch: bool, profile: &str) -> Option<Vec<String>> {
         if skip_on_launch {
             return None;
         }
 
-        let profile = super::config::resolve_default_profile();
-
         // Start with global+profile hooks as the base
-        let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
+        let mut resolved_on_launch = super::profile_config::resolve_config(profile)
             .map(|c| c.hooks.on_launch)
             .unwrap_or_default();
 
@@ -1927,5 +1925,40 @@ mod tests {
         assert_eq!(json, "\"unknown\"");
         let deserialized: Status = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, Status::Unknown);
+    }
+
+    #[test]
+    fn test_build_host_command_basic() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "codex".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("codex"), &None);
+        assert!(cmd.is_some());
+        assert!(cmd.as_ref().unwrap().contains("codex"));
+    }
+
+    #[test]
+    fn test_build_host_command_with_yolo() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "codex".to_string();
+        inst.yolo_mode = true;
+        let cmd = inst.build_host_command(crate::agents::get_agent("codex"), &None);
+        let cmd_str = cmd.unwrap();
+        let agent = crate::agents::get_agent("codex").unwrap();
+        match agent.yolo.as_ref().unwrap() {
+            crate::agents::YoloMode::CliFlag(flag) => assert!(cmd_str.contains(flag)),
+            crate::agents::YoloMode::EnvVar(key, _) => assert!(cmd_str.contains(key)),
+            crate::agents::YoloMode::AlwaysYolo => {}
+        }
+    }
+
+    #[test]
+    fn test_build_host_command_with_resume() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.agent_session_id = Some("ses_abc123def456".to_string());
+        let cmd = inst.build_host_command(crate::agents::get_agent("claude"), &None);
+        let cmd_str = cmd.unwrap();
+        assert!(cmd_str.contains("ses_abc123def456"));
+        assert!(cmd_str.contains("--session-id") || cmd_str.contains("--resume"));
     }
 }

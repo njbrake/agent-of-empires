@@ -116,6 +116,62 @@ pub fn remove_hidden_env(session_name: &str, key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Set hidden environment variables in multiple sessions with a single tmux command.
+///
+/// Each tuple is `(session_name, key, value)`. Falls back to individual
+/// `set_hidden_env` calls if the batch command fails (same pattern as
+/// `get_hidden_env_batch`).
+pub fn set_hidden_env_batch(entries: &[(&str, &str, &str)]) -> anyhow::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut args: Vec<String> = Vec::new();
+    for (i, (session_name, key, value)) in entries.iter().enumerate() {
+        if i > 0 {
+            args.push(";".to_string());
+        }
+        args.push("set-environment".to_string());
+        args.push("-h".to_string());
+        args.push("-t".to_string());
+        args.push(session_name.to_string());
+        args.push(key.to_string());
+        args.push(value.to_string());
+    }
+
+    let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = Command::new("tmux").args(&str_args).output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            for (session_name, key, _) in entries {
+                invalidate_cache_entry(session_name, key);
+            }
+            Ok(())
+        }
+        Ok(out) => {
+            tracing::debug!(
+                "Batch tmux set-environment failed (exit {}), falling back to sequential writes",
+                out.status
+            );
+            for (session_name, key, value) in entries {
+                set_hidden_env(session_name, key, value)?;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tracing::debug!(
+                "Batch tmux set-environment error: {}, falling back to sequential writes",
+                e
+            );
+            for (session_name, key, value) in entries {
+                set_hidden_env(session_name, key, value)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 fn invalidate_cache_entry(session_name: &str, key: &str) {
     if let Ok(mut cache) = ENV_CACHE.write() {
         if let Some(entries) = &mut cache.entries {

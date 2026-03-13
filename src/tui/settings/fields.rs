@@ -1332,25 +1332,25 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.session.agent_command_override = parse_key_value_list(v);
         }
         (FieldKey::OpencodeMaxRetryAttempts, FieldValue::Number(v)) => {
-            config.session.opencode_max_retry_attempts = *v as u32;
+            config.session.opencode_max_retry_attempts = (*v).clamp(1, 100) as u32;
         }
         (FieldKey::OpencodeRetryDelaySecs, FieldValue::Number(v)) => {
-            config.session.opencode_retry_delay_secs = *v;
+            config.session.opencode_retry_delay_secs = (*v).clamp(1, 60);
         }
         (FieldKey::OpencodeCommandTimeoutSecs, FieldValue::Number(v)) => {
-            config.session.opencode_command_timeout_secs = *v;
+            config.session.opencode_command_timeout_secs = (*v).clamp(1, 120);
         }
         (FieldKey::OpencodeCaptureDeadlineSecs, FieldValue::Number(v)) => {
-            config.session.opencode_capture_deadline_secs = *v;
+            config.session.opencode_capture_deadline_secs = (*v).clamp(1, 300);
         }
         (FieldKey::DeferredCaptureInitialDelaySecs, FieldValue::Number(v)) => {
-            config.session.deferred_capture_initial_delay_secs = *v;
+            config.session.deferred_capture_initial_delay_secs = (*v).clamp(1, 60);
         }
         (FieldKey::DeferredCaptureMaxAttempts, FieldValue::Number(v)) => {
-            config.session.deferred_capture_max_attempts = *v as u32;
+            config.session.deferred_capture_max_attempts = (*v).clamp(1, 100) as u32;
         }
         (FieldKey::DeferredCaptureRetryDelaySecs, FieldValue::Number(v)) => {
-            config.session.deferred_capture_retry_delay_secs = *v;
+            config.session.deferred_capture_retry_delay_secs = (*v).clamp(1, 60);
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
@@ -1544,39 +1544,39 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             s.agent_command_override = Some(map);
         }
         (FieldKey::OpencodeMaxRetryAttempts, FieldValue::Number(v)) => {
-            let val = *v as u32;
+            let val = (*v).clamp(1, 100) as u32;
             set_profile_override(val, &mut config.session, |s, val| {
                 s.opencode_max_retry_attempts = val
             });
         }
         (FieldKey::OpencodeRetryDelaySecs, FieldValue::Number(v)) => {
-            set_profile_override(*v, &mut config.session, |s, val| {
+            set_profile_override((*v).clamp(1, 60), &mut config.session, |s, val| {
                 s.opencode_retry_delay_secs = val
             });
         }
         (FieldKey::OpencodeCommandTimeoutSecs, FieldValue::Number(v)) => {
-            set_profile_override(*v, &mut config.session, |s, val| {
+            set_profile_override((*v).clamp(1, 120), &mut config.session, |s, val| {
                 s.opencode_command_timeout_secs = val
             });
         }
         (FieldKey::OpencodeCaptureDeadlineSecs, FieldValue::Number(v)) => {
-            set_profile_override(*v, &mut config.session, |s, val| {
+            set_profile_override((*v).clamp(1, 300), &mut config.session, |s, val| {
                 s.opencode_capture_deadline_secs = val
             });
         }
         (FieldKey::DeferredCaptureInitialDelaySecs, FieldValue::Number(v)) => {
-            set_profile_override(*v, &mut config.session, |s, val| {
+            set_profile_override((*v).clamp(1, 60), &mut config.session, |s, val| {
                 s.deferred_capture_initial_delay_secs = val
             });
         }
         (FieldKey::DeferredCaptureMaxAttempts, FieldValue::Number(v)) => {
-            let val = *v as u32;
+            let val = (*v).clamp(1, 100) as u32;
             set_profile_override(val, &mut config.session, |s, val| {
                 s.deferred_capture_max_attempts = val
             });
         }
         (FieldKey::DeferredCaptureRetryDelaySecs, FieldValue::Number(v)) => {
-            set_profile_override(*v, &mut config.session, |s, val| {
+            set_profile_override((*v).clamp(1, 60), &mut config.session, |s, val| {
                 s.deferred_capture_retry_delay_secs = val
             });
         }

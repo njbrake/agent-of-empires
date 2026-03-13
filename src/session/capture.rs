@@ -149,8 +149,7 @@ pub(crate) fn filter_agent_sessions<'a>(
     launch_time_ms: Option<f64>,
 ) -> Vec<&'a serde_json::Value> {
     let mut matching: Vec<&serde_json::Value> = if let Some(path) = project_path {
-        let canonical_path =
-            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let canonical_path = canonicalize_or_raw(path);
         let canonical_str = canonical_path.to_string_lossy();
 
         session_entries
@@ -159,8 +158,9 @@ pub(crate) fn filter_agent_sessions<'a>(
                 s.get("directory")
                     .and_then(|v| v.as_str())
                     .map(|dir| {
-                        let session_path = std::fs::canonicalize(dir)
-                            .unwrap_or_else(|_| std::path::PathBuf::from(dir));
+                        // Per-entry canonicalize is intentional: each session may
+                        // reference a different directory that could be a symlink.
+                        let session_path = canonicalize_or_raw(dir);
                         session_path.to_string_lossy() == canonical_str
                     })
                     .unwrap_or(false)
@@ -277,6 +277,7 @@ pub(crate) fn try_capture_opencode_session_id(
         Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to execute opencode: {}", e)),
         Err(_) => {
             tracing::debug!("OpenCode session list timed out");
+            // Safety: PIDs fit in i32 on all supported platforms (Linux/macOS).
             let _ = nix::sys::signal::kill(Pid::from_raw(child_id as i32), Signal::SIGKILL);
             return Err(anyhow::anyhow!("OpenCode session list timed out"));
         }
@@ -459,7 +460,8 @@ pub(crate) fn capture_gemini_session_id(
         }
     };
 
-    let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime, Option<String>)> =
+        Vec::new();
 
     for project_dir in &project_dirs {
         let chats_dir = project_dir.join("chats");
@@ -483,19 +485,26 @@ pub(crate) fn capture_gemini_session_id(
                 continue;
             }
 
+            let fields = extract_gemini_fields(&path);
+
             // For slug-named dirs, verify projectHash inside the file.
             if !is_exact_match {
-                let file_hash = extract_gemini_project_hash_from_file(&path).unwrap_or_default();
+                let file_hash = fields
+                    .as_ref()
+                    .and_then(|(_, h)| h.as_deref())
+                    .unwrap_or_default();
                 if file_hash != expected_hash {
                     continue;
                 }
             }
 
+            let session_id = fields.and_then(|(sid, _)| sid);
+
             let modified = chat_entry
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            candidates.push((path, modified));
+            candidates.push((path, modified, session_id));
         }
     }
 
@@ -505,26 +514,21 @@ pub(crate) fn capture_gemini_session_id(
 
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
-    candidates.retain(|(path, _)| {
-        let id = extract_gemini_session_id_from_file(path).unwrap_or_default();
-        !exclusion.contains(&id)
+    candidates.retain(|(_, _, sid)| {
+        let id = sid.as_deref().unwrap_or_default();
+        !exclusion.contains(id)
     });
 
     candidates
         .first()
-        .and_then(|(path, _)| extract_gemini_session_id_from_file(path))
+        .and_then(|(_, _, sid)| sid.clone())
         .ok_or_else(|| anyhow::anyhow!("No Gemini session found matching project path"))
 }
 
 /// Extract session ID from a Gemini session JSON file, falling back to filename stem.
+#[cfg(test)]
 pub(crate) fn extract_gemini_session_id_from_file(path: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from))
+    extract_gemini_fields(path).and_then(|(sid, _)| sid)
 }
 
 fn extract_cwd_from_json(parsed: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -538,13 +542,25 @@ fn extract_cwd_from_json(parsed: &serde_json::Value, keys: &[&str]) -> Option<St
 /// Gemini stores a SHA-256 hash of the project root in `projectHash` rather than
 /// a literal path. Returns the hash string so callers can compare against a
 /// locally computed hash.
+#[cfg(test)]
 pub(crate) fn extract_gemini_project_hash_from_file(path: &std::path::Path) -> Option<String> {
+    extract_gemini_fields(path).and_then(|(_, hash)| hash)
+}
+
+/// Read a Gemini session JSON file once and return both sessionId and projectHash.
+fn extract_gemini_fields(path: &std::path::Path) -> Option<(Option<String>, Option<String>)> {
     let content = std::fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed
-        .get("projectHash")
+    let session_id = parsed
+        .get("sessionId")
         .and_then(|v| v.as_str())
         .map(String::from)
+        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from));
+    let project_hash = parsed
+        .get("projectHash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Some((session_id, project_hash))
 }
 
 /// Capture Vibe session ID from `meta.json` files in the session log directory.
@@ -720,7 +736,7 @@ pub(crate) fn capture_from_container(
                 .exec(&[
                     "sh",
                     "-c",
-                    "SESS_DIR=\"${CODEX_HOME:-$HOME/.codex}/sessions\"; find \"$SESS_DIR\" -name '*.jsonl' 2>/dev/null | xargs ls -1t 2>/dev/null | head -1",
+                    "SESS_DIR=\"${CODEX_HOME:-$HOME/.codex}/sessions\"; find \"$SESS_DIR\" -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
                 ])
                 .map_err(|e| tracing::debug!("Deferred container exec (codex): {}", e))
                 .ok()?;

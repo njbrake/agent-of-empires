@@ -514,8 +514,8 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
     storage.save_with_groups(&instances, &group_tree)?;
 
     match new_id {
-        Some(id) => println!("Set session ID for '{}': {}", title, id),
-        None => println!("Cleared session ID for '{}'", title),
+        Some(id) => println!("✓ Set session ID for '{}': {}", title, id),
+        None => println!("✓ Cleared session ID for '{}'", title),
     }
     Ok(())
 }
