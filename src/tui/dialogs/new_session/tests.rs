@@ -123,7 +123,10 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
     assert_eq!(dialog.focused_field, 4); // new branch checkbox (now visible)
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 5); // group
+    assert_eq!(dialog.focused_field, 5); // extra repos
+
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.focused_field, 6); // group
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 0); // wrap to start

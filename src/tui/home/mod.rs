@@ -483,7 +483,7 @@ impl HomeView {
                     path: PathBuf::from(&wt.path),
                     main_repo_path: PathBuf::from(&wt.main_repo_path),
                 });
-                builder::cleanup_instance(instance, worktree.as_ref());
+                builder::cleanup_instance(instance, worktree.as_ref(), &[]);
             }
             return None;
         }

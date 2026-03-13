@@ -322,7 +322,12 @@ impl HomeView {
 
         if let Item::Session { id, .. } = item {
             if let Some(inst) = self.get_instance(id) {
-                if let Some(wt_info) = &inst.worktree_info {
+                if let Some(ws_info) = &inst.workspace_info {
+                    line_spans.push(Span::styled(
+                        format!("  {} [{} repos]", ws_info.branch, ws_info.repos.len()),
+                        Style::default().fg(theme.branch),
+                    ));
+                } else if let Some(wt_info) = &inst.worktree_info {
                     line_spans.push(Span::styled(
                         format!("  {}", wt_info.branch),
                         Style::default().fg(theme.branch),

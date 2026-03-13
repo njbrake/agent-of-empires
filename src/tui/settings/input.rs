@@ -549,6 +549,11 @@ impl SettingsView {
                     w.delete_branch_on_cleanup = None;
                 }
             }
+            FieldKey::WorkspacePathTemplate => {
+                if let Some(ref mut w) = config.worktree {
+                    w.workspace_path_template = None;
+                }
+            }
             // Sandbox
             FieldKey::DefaultImage => {
                 if let Some(ref mut s) = config.sandbox {

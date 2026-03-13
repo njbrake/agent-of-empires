@@ -584,7 +584,8 @@ impl HomeView {
                                 .worktree_info
                                 .as_ref()
                                 .filter(|wt| wt.managed_by_aoe)
-                                .map(|wt| wt.branch.clone()),
+                                .map(|wt| wt.branch.clone())
+                                .or_else(|| inst.workspace_info.as_ref().map(|w| w.branch.clone())),
                             has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
                         };
 

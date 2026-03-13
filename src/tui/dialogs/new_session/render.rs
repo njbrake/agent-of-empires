@@ -51,6 +51,14 @@ impl NewSessionDialog {
         if has_worktree {
             constraints.push(Constraint::Length(2)); // New Branch checkbox
         }
+        if has_worktree {
+            let repos_height: u16 = if self.workspace_repos_expanded {
+                (2 + self.workspace_repos.len() as u16).clamp(4, 8)
+            } else {
+                2
+            };
+            constraints.push(Constraint::Length(repos_height)); // Extra Repos
+        }
         if has_sandbox {
             constraints.push(Constraint::Length(2)); // Sandbox checkbox (summary only)
         }
@@ -118,6 +126,13 @@ impl NewSessionDialog {
             new_branch_field + 1
         } else {
             worktree_field + 1
+        };
+        let extra_repos_field = if has_worktree {
+            let f = next_field_idx;
+            next_field_idx += 1;
+            f
+        } else {
+            usize::MAX
         };
         let sandbox_field = if has_sandbox {
             let f = next_field_idx;
@@ -307,6 +322,17 @@ impl NewSessionDialog {
                 ),
             ]);
             frame.render_widget(Paragraph::new(nb_line), chunks[ci]);
+            ci += 1;
+        }
+
+        // Extra Repos (only when worktree is set)
+        if has_worktree {
+            self.render_extra_repos_field(
+                frame,
+                chunks[ci],
+                self.focused_field == extra_repos_field,
+                theme,
+            );
             ci += 1;
         }
 
@@ -859,6 +885,120 @@ impl NewSessionDialog {
         }
     }
 
+    fn render_extra_repos_field(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        is_focused: bool,
+        theme: &Theme,
+    ) {
+        let label_style = if is_focused {
+            Style::default().fg(theme.accent).underlined()
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        if !self.workspace_repos_expanded {
+            // Collapsed view
+            let count = self.workspace_repos.len();
+            let summary = if count == 0 {
+                "(empty - press Enter to add)".to_string()
+            } else {
+                format!("[{} repos]", count)
+            };
+            let summary_style = if count > 0 {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+
+            let line = Line::from(vec![
+                Span::styled("Extra Repos:", label_style),
+                Span::raw(" "),
+                Span::styled(summary, summary_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+        } else {
+            // Expanded view with list
+            let mut lines: Vec<Line> = Vec::new();
+
+            let header = Line::from(vec![
+                Span::styled("Extra Repos:", label_style),
+                Span::styled(
+                    " (a)dd (d)el (Enter)edit (Esc)close",
+                    Style::default().fg(theme.dimmed),
+                ),
+            ]);
+            lines.push(header);
+
+            if let Some(ref input) = self.workspace_repo_editing_input {
+                if self.workspace_repo_adding_new {
+                    for (i, entry) in self.workspace_repos.iter().enumerate() {
+                        let prefix = if i == self.workspace_repo_selected_index {
+                            "  > "
+                        } else {
+                            "    "
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, entry),
+                            Style::default().fg(theme.text),
+                        )));
+                    }
+                    let input_line = Line::from(vec![
+                        Span::styled("  + ", Style::default().fg(theme.accent)),
+                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
+                        Span::styled("_", Style::default().fg(theme.accent)),
+                    ]);
+                    lines.push(input_line);
+                } else {
+                    for (i, entry) in self.workspace_repos.iter().enumerate() {
+                        if i == self.workspace_repo_selected_index {
+                            let input_line = Line::from(vec![
+                                Span::styled("  > ", Style::default().fg(theme.accent)),
+                                Span::styled(
+                                    input.value(),
+                                    Style::default().fg(theme.accent).bold(),
+                                ),
+                                Span::styled("_", Style::default().fg(theme.accent)),
+                            ]);
+                            lines.push(input_line);
+                        } else {
+                            let prefix = "    ";
+                            lines.push(Line::from(Span::styled(
+                                format!("{}{}", prefix, entry),
+                                Style::default().fg(theme.text),
+                            )));
+                        }
+                    }
+                }
+            } else {
+                // Normal list display
+                if self.workspace_repos.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "    (press 'a' to add repo path)",
+                        Style::default().fg(theme.dimmed),
+                    )));
+                } else {
+                    for (i, entry) in self.workspace_repos.iter().enumerate() {
+                        let is_selected = i == self.workspace_repo_selected_index;
+                        let prefix = if is_selected { "  > " } else { "    " };
+                        let style = if is_selected {
+                            Style::default().fg(theme.accent).bold()
+                        } else {
+                            Style::default().fg(theme.text)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, entry),
+                            style,
+                        )));
+                    }
+                }
+            }
+
+            frame.render_widget(Paragraph::new(lines), area);
+        }
+    }
+
     fn render_inherited_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let label_style = Style::default().fg(theme.dimmed);
         let mut lines: Vec<Line> = Vec::new();
@@ -888,6 +1028,7 @@ impl NewSessionDialog {
     fn render_help_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
+        let has_worktree = !self.worktree_branch.value().is_empty();
         let show_sandbox_options_help = has_sandbox && self.sandbox_enabled;
 
         let dialog_width: u16 = HELP_DIALOG_WIDTH;
@@ -897,6 +1038,7 @@ impl NewSessionDialog {
         let dialog_height: u16 = base_height
             + if has_profile_selection { 3 } else { 0 }
             + if has_tool_selection { 3 } else { 0 }
+            + if has_worktree { 3 } else { 0 } // Extra Repos
             + if has_sandbox { 3 } else { 0 }
             + if show_sandbox_options_help { 12 } else { 0 };
 
@@ -927,13 +1069,16 @@ impl NewSessionDialog {
                 continue; // YOLO (hidden for AlwaysYolo agents)
             }
             // idx 5 (Worktree), 6 (New Branch) always shown
-            if idx == 7 && !has_sandbox {
+            if idx == 7 && !has_worktree {
+                continue; // Extra Repos (only shown when worktree is set)
+            }
+            if idx == 8 && !has_sandbox {
                 continue; // Sandbox
             }
-            if (8..=9).contains(&idx) && !show_sandbox_options_help {
+            if (9..=10).contains(&idx) && !show_sandbox_options_help {
                 continue; // Image, Env
             }
-            // idx 10 (Group) always shown
+            // idx 11 (Group) always shown
 
             lines.push(Line::from(Span::styled(
                 help.name,
