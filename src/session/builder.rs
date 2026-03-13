@@ -33,6 +33,8 @@ pub struct InstanceParams {
     pub extra_args: String,
     /// Command override for the agent binary (replaces the default binary)
     pub command_override: String,
+    /// Additional repository paths for multi-repo workspace mode
+    pub extra_repo_paths: Vec<String>,
 }
 
 /// Result of building an instance, tracking what was created for cleanup purposes.
@@ -40,6 +42,8 @@ pub struct BuildResult {
     pub instance: Instance,
     /// Path to worktree if one was created and managed by aoe
     pub created_worktree: Option<CreatedWorktree>,
+    /// Workspace worktrees created during build (for cleanup)
+    pub created_workspace_worktrees: Vec<CreatedWorktree>,
 }
 
 /// Info about a worktree created during instance building.
@@ -77,44 +81,156 @@ pub fn build_instance(
 
     let mut worktree_info = None;
     let mut created_worktree = None;
+    let mut workspace_info = None;
+    let mut created_workspace_worktrees: Vec<CreatedWorktree> = Vec::new();
 
     if let Some(branch) = &params.worktree_branch {
-        let path = PathBuf::from(&params.path);
+        if !params.extra_repo_paths.is_empty() {
+            // Workspace mode: multiple repos get worktrees in a shared directory
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let session_id_short = &session_id[..8];
 
-        if !GitWorktree::is_git_repo(&path) {
-            bail!("Path is not in a git repository");
-        }
-        let main_repo_path = GitWorktree::find_main_repo(&path)?;
-        let git_wt = GitWorktree::new(main_repo_path.clone())?;
+            // Resolve workspace directory from template, relative to primary repo
+            let primary_path = PathBuf::from(&params.path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&params.path));
+            let primary_main_repo = GitWorktree::find_main_repo(&primary_path)?;
+            let primary_git_wt = GitWorktree::new(primary_main_repo)?;
+            let workspace_path = primary_git_wt.compute_path(
+                branch,
+                &config.worktree.workspace_path_template,
+                session_id_short,
+            )?;
+            let workspace_dir = workspace_path.to_string_lossy().to_string();
+            std::fs::create_dir_all(&workspace_path)?;
 
-        // Choose appropriate template based on repo type (bare vs regular)
-        // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
-        let is_bare = GitWorktree::is_bare_repo(&main_repo_path);
-        let template = if is_bare {
-            &config.worktree.bare_repo_path_template
-        } else {
-            &config.worktree.path_template
-        };
+            let mut repos = Vec::new();
+            let all_repo_paths: Vec<String> = std::iter::once(params.path.clone())
+                .chain(params.extra_repo_paths.iter().cloned())
+                .collect();
 
-        if !params.create_new_branch {
-            let existing_worktrees = git_wt.list_worktrees()?;
-            if let Some(existing) = existing_worktrees
-                .iter()
-                .find(|wt| wt.branch.as_deref() == Some(branch))
-            {
-                final_path = existing.path.to_string_lossy().to_string();
-                worktree_info = Some(WorktreeInfo {
-                    branch: branch.clone(),
-                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                    managed_by_aoe: false,
-                    created_at: Utc::now(),
-                    cleanup_on_delete: false,
+            for repo_path_str in &all_repo_paths {
+                let repo_path = PathBuf::from(repo_path_str)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(repo_path_str));
+
+                if !GitWorktree::is_git_repo(&repo_path) {
+                    // Clean up any worktrees we already created
+                    for wt in &created_workspace_worktrees {
+                        if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
+                            let _ = git_wt.remove_worktree(&wt.path, false);
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&workspace_path);
+                    bail!("Path is not in a git repository: {}", repo_path.display());
+                }
+
+                let main_repo_path = GitWorktree::find_main_repo(&repo_path)?;
+                let git_wt = GitWorktree::new(main_repo_path.clone())?;
+
+                let repo_name = repo_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "repo".to_string());
+
+                let worktree_subdir = workspace_path.join(&repo_name);
+
+                if let Err(e) =
+                    git_wt.create_worktree(branch, &worktree_subdir, params.create_new_branch)
+                {
+                    // Clean up any worktrees we already created
+                    for wt in &created_workspace_worktrees {
+                        if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
+                            let _ = git_wt.remove_worktree(&wt.path, false);
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&workspace_path);
+                    bail!("Failed to create worktree for {}: {}", repo_name, e);
+                }
+
+                created_workspace_worktrees.push(CreatedWorktree {
+                    path: worktree_subdir.clone(),
+                    main_repo_path: main_repo_path.clone(),
                 });
+
+                repos.push(super::WorkspaceRepo {
+                    name: repo_name,
+                    source_path: repo_path.to_string_lossy().to_string(),
+                    branch: branch.clone(),
+                    worktree_path: worktree_subdir.to_string_lossy().to_string(),
+                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                    managed_by_aoe: true,
+                });
+            }
+
+            final_path = workspace_dir.clone();
+            workspace_info = Some(super::WorkspaceInfo {
+                branch: branch.clone(),
+                workspace_dir,
+                repos,
+                created_at: Utc::now(),
+                cleanup_on_delete: true,
+            });
+        } else {
+            // Single worktree mode (existing logic)
+            let path = PathBuf::from(&params.path);
+            if !GitWorktree::is_git_repo(&path) {
+                bail!("Path is not in a git repository");
+            }
+            let main_repo_path = GitWorktree::find_main_repo(&path)?;
+            let git_wt = GitWorktree::new(main_repo_path.clone())?;
+
+            // Choose appropriate template based on repo type (bare vs regular)
+            // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
+            let is_bare = GitWorktree::is_bare_repo(&main_repo_path);
+            let template = if is_bare {
+                &config.worktree.bare_repo_path_template
+            } else {
+                &config.worktree.path_template
+            };
+
+            if !params.create_new_branch {
+                let existing_worktrees = git_wt.list_worktrees()?;
+                if let Some(existing) = existing_worktrees
+                    .iter()
+                    .find(|wt| wt.branch.as_deref() == Some(branch))
+                {
+                    final_path = existing.path.to_string_lossy().to_string();
+                    worktree_info = Some(WorktreeInfo {
+                        branch: branch.clone(),
+                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                        managed_by_aoe: false,
+                        created_at: Utc::now(),
+                        cleanup_on_delete: false,
+                    });
+                } else {
+                    let session_id = uuid::Uuid::new_v4().to_string();
+                    let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
+
+                    git_wt.create_worktree(branch, &worktree_path, false)?;
+
+                    final_path = worktree_path.to_string_lossy().to_string();
+                    created_worktree = Some(CreatedWorktree {
+                        path: worktree_path,
+                        main_repo_path: main_repo_path.clone(),
+                    });
+                    worktree_info = Some(WorktreeInfo {
+                        branch: branch.clone(),
+                        main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                        managed_by_aoe: true,
+                        created_at: Utc::now(),
+                        cleanup_on_delete: true,
+                    });
+                }
             } else {
                 let session_id = uuid::Uuid::new_v4().to_string();
                 let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
 
-                git_wt.create_worktree(branch, &worktree_path, false)?;
+                if worktree_path.exists() {
+                    bail!("Worktree already exists at {}", worktree_path.display());
+                }
+
+                git_wt.create_worktree(branch, &worktree_path, true)?;
 
                 final_path = worktree_path.to_string_lossy().to_string();
                 created_worktree = Some(CreatedWorktree {
@@ -129,28 +245,6 @@ pub fn build_instance(
                     cleanup_on_delete: true,
                 });
             }
-        } else {
-            let session_id = uuid::Uuid::new_v4().to_string();
-            let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
-
-            if worktree_path.exists() {
-                bail!("Worktree already exists at {}", worktree_path.display());
-            }
-
-            git_wt.create_worktree(branch, &worktree_path, true)?;
-
-            final_path = worktree_path.to_string_lossy().to_string();
-            created_worktree = Some(CreatedWorktree {
-                path: worktree_path,
-                main_repo_path: main_repo_path.clone(),
-            });
-            worktree_info = Some(WorktreeInfo {
-                branch: branch.clone(),
-                main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                managed_by_aoe: true,
-                created_at: Utc::now(),
-                cleanup_on_delete: true,
-            });
         }
     }
 
@@ -179,6 +273,7 @@ pub fn build_instance(
         .map(|a| a.binary.to_string())
         .unwrap_or_default();
     instance.worktree_info = worktree_info;
+    instance.workspace_info = workspace_info;
     instance.yolo_mode = params.yolo_mode;
 
     // Apply agent_command_override and agent_extra_args from resolved config.
@@ -217,6 +312,7 @@ pub fn build_instance(
     Ok(BuildResult {
         instance,
         created_worktree,
+        created_workspace_worktrees,
     })
 }
 
@@ -226,13 +322,30 @@ pub fn build_instance(
 /// - Removing worktrees created by aoe
 /// - Removing Docker containers
 /// - Killing tmux sessions
-pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWorktree>) {
+pub fn cleanup_instance(
+    instance: &Instance,
+    created_worktree: Option<&CreatedWorktree>,
+    created_workspace_worktrees: &[CreatedWorktree],
+) {
     if let Some(wt) = created_worktree {
         if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
             if let Err(e) = git_wt.remove_worktree(&wt.path, false) {
                 tracing::warn!("Failed to clean up worktree: {}", e);
             }
         }
+    }
+
+    // Workspace worktree cleanup
+    for wt in created_workspace_worktrees {
+        if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
+            if let Err(e) = git_wt.remove_worktree(&wt.path, false) {
+                tracing::warn!("Failed to clean up workspace worktree: {}", e);
+            }
+        }
+    }
+    // Clean up workspace directory if workspace was created
+    if let Some(ws_info) = &instance.workspace_info {
+        let _ = std::fs::remove_dir_all(&ws_info.workspace_dir);
     }
 
     if let Some(sandbox) = &instance.sandbox_info {

@@ -20,7 +20,9 @@ pub use config::{
 pub(crate) use environment::user_shell;
 pub use environment::validate_env_entry;
 pub use groups::{flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item};
-pub use instance::{Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo};
+pub use instance::{
+    Instance, SandboxInfo, Status, TerminalInfo, WorkspaceInfo, WorkspaceRepo, WorktreeInfo,
+};
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,
     validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,

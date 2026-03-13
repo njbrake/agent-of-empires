@@ -108,6 +108,48 @@ impl DeletionPoller {
             }
         }
 
+        // Workspace cleanup (if user opted to delete worktrees and instance has workspace_info)
+        if request.delete_worktree {
+            if let Some(ws_info) = &request.instance.workspace_info {
+                if ws_info.cleanup_on_delete {
+                    for repo in &ws_info.repos {
+                        if repo.managed_by_aoe {
+                            let worktree_path = PathBuf::from(&repo.worktree_path);
+                            let main_repo = PathBuf::from(&repo.main_repo_path);
+
+                            // Sandbox container cleanup for workspace worktrees
+                            let sandbox_cleaned = if request.instance.is_sandboxed() {
+                                cleanup_sandbox_worktree(&request.instance)
+                            } else {
+                                false
+                            };
+
+                            if let Ok(git_wt) = GitWorktree::new(main_repo) {
+                                if sandbox_cleaned {
+                                    let _ = std::fs::remove_dir(&worktree_path);
+                                    if let Err(e) = git_wt.prune_worktrees() {
+                                        errors.push(format!("Workspace worktree: {}", e));
+                                    }
+                                } else if let Err(e) =
+                                    git_wt.remove_worktree(&worktree_path, request.force_delete)
+                                {
+                                    errors
+                                        .push(format!("Workspace worktree ({}): {}", repo.name, e));
+                                }
+                            }
+                        }
+                    }
+                    // Remove workspace parent directory
+                    let ws_path = PathBuf::from(&ws_info.workspace_dir);
+                    if ws_path.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&ws_path) {
+                            errors.push(format!("Workspace dir: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+
         // Branch cleanup (if user opted to delete it and worktree was successfully removed)
         if let Some((branch, main_repo)) = branch_to_delete {
             // Only delete branch if worktree deletion succeeded (or wasn't requested)
@@ -117,6 +159,26 @@ impl DeletionPoller {
                 if let Ok(git_wt) = GitWorktree::new(main_repo) {
                     if let Err(e) = git_wt.delete_branch(&branch) {
                         errors.push(format!("Branch: {}", e));
+                    }
+                }
+            }
+        }
+
+        // Branch cleanup for workspace repos
+        if request.delete_branch {
+            if let Some(ws_info) = &request.instance.workspace_info {
+                let worktree_ok = !request.delete_worktree
+                    || !errors.iter().any(|e| e.starts_with("Workspace worktree"));
+                if worktree_ok {
+                    for repo in &ws_info.repos {
+                        if repo.managed_by_aoe {
+                            let main_repo = PathBuf::from(&repo.main_repo_path);
+                            if let Ok(git_wt) = GitWorktree::new(main_repo) {
+                                if let Err(e) = git_wt.delete_branch(&repo.branch) {
+                                    errors.push(format!("Branch ({}): {}", repo.name, e));
+                                }
+                            }
+                        }
                     }
                 }
             }

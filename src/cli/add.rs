@@ -42,6 +42,10 @@ pub struct AddArgs {
     #[arg(short = 'b', long = "new-branch")]
     create_branch: bool,
 
+    /// Additional repositories for multi-repo workspace (use with --worktree)
+    #[arg(long = "repo", short = 'r')]
+    extra_repos: Vec<PathBuf>,
+
     /// Run session in Docker sandbox
     #[arg(short = 's', long)]
     sandbox: bool,
@@ -78,58 +82,158 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("Path is not a directory: {}", path.display());
     }
 
+    if !args.extra_repos.is_empty() && args.worktree_branch.is_none() {
+        bail!("--repo requires --worktree to specify a branch\nTip: aoe add /path --repo /other -w branch-name");
+    }
+
     let config = resolve_config(profile).unwrap_or_default();
 
     let mut worktree_info_opt = None;
+    let mut workspace_info_opt = None;
 
     if let Some(branch_raw) = &args.worktree_branch {
         use crate::git::GitWorktree;
-        use crate::session::WorktreeInfo;
+        use crate::session::{WorkspaceInfo, WorkspaceRepo, WorktreeInfo};
         use chrono::Utc;
 
         let branch = branch_raw.trim();
 
-        if !GitWorktree::is_git_repo(&path) {
-            bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
-        }
+        if !args.extra_repos.is_empty() {
+            // Workspace mode: multiple repos get worktrees in a shared directory
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let session_id_short = &session_id[..8];
 
-        let main_repo_path = GitWorktree::find_main_repo(&path)?;
-        let git_wt = GitWorktree::new(main_repo_path.clone())?;
+            // Resolve workspace directory from template, relative to primary repo
+            let primary_main_repo = GitWorktree::find_main_repo(&path)?;
+            let primary_git_wt = GitWorktree::new(primary_main_repo)?;
+            let workspace_path = primary_git_wt.compute_path(
+                branch,
+                &config.worktree.workspace_path_template,
+                session_id_short,
+            )?;
+            let workspace_dir = workspace_path.to_string_lossy().to_string();
+            std::fs::create_dir_all(&workspace_path)?;
 
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let session_id_short = &session_id[..8];
+            let all_repo_paths: Vec<PathBuf> = std::iter::once(path.clone())
+                .chain(
+                    args.extra_repos
+                        .iter()
+                        .map(|r| r.canonicalize().unwrap_or_else(|_| r.clone())),
+                )
+                .collect();
 
-        // Choose appropriate template based on repo type (bare vs regular)
-        // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
-        let template = if GitWorktree::is_bare_repo(&main_repo_path) {
-            &config.worktree.bare_repo_path_template
+            let mut repos = Vec::new();
+            let mut created_worktrees: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+            for repo_path in &all_repo_paths {
+                if !GitWorktree::is_git_repo(repo_path) {
+                    // Clean up any worktrees we already created
+                    for (wt_path, main_repo) in &created_worktrees {
+                        if let Ok(git_wt) = GitWorktree::new(main_repo.clone()) {
+                            let _ = git_wt.remove_worktree(wt_path, false);
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&workspace_path);
+                    bail!(
+                        "Path is not in a git repository: {}\nTip: All --repo paths must be git repositories",
+                        repo_path.display()
+                    );
+                }
+
+                let main_repo_path = GitWorktree::find_main_repo(repo_path)?;
+                let git_wt = GitWorktree::new(main_repo_path.clone())?;
+
+                let repo_name = repo_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "repo".to_string());
+
+                let worktree_subdir = workspace_path.join(&repo_name);
+
+                println!(
+                    "Creating worktree for {} at: {}",
+                    repo_name,
+                    worktree_subdir.display()
+                );
+                if let Err(e) = git_wt.create_worktree(branch, &worktree_subdir, args.create_branch)
+                {
+                    // Clean up any worktrees we already created
+                    for (wt_path, main_repo) in &created_worktrees {
+                        if let Ok(git_wt) = GitWorktree::new(main_repo.clone()) {
+                            let _ = git_wt.remove_worktree(wt_path, false);
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&workspace_path);
+                    bail!("Failed to create worktree for {}: {}", repo_name, e);
+                }
+
+                created_worktrees.push((worktree_subdir.clone(), main_repo_path.clone()));
+
+                repos.push(WorkspaceRepo {
+                    name: repo_name,
+                    source_path: repo_path.to_string_lossy().to_string(),
+                    branch: branch.to_string(),
+                    worktree_path: worktree_subdir.to_string_lossy().to_string(),
+                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                    managed_by_aoe: true,
+                });
+            }
+
+            path = workspace_path;
+
+            workspace_info_opt = Some(WorkspaceInfo {
+                branch: branch.to_string(),
+                workspace_dir,
+                repos,
+                created_at: Utc::now(),
+                cleanup_on_delete: true,
+            });
+
+            println!("✓ Workspace created successfully");
         } else {
-            &config.worktree.path_template
-        };
-        let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+            // Single worktree mode (existing logic)
+            if !GitWorktree::is_git_repo(&path) {
+                bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
+            }
 
-        if worktree_path.exists() {
-            bail!(
-                "Worktree already exists at {}\nTip: Use 'aoe add {}' to add the existing worktree",
-                worktree_path.display(),
-                worktree_path.display()
-            );
+            let main_repo_path = GitWorktree::find_main_repo(&path)?;
+            let git_wt = GitWorktree::new(main_repo_path.clone())?;
+
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let session_id_short = &session_id[..8];
+
+            // Choose appropriate template based on repo type (bare vs regular)
+            // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
+            let template = if GitWorktree::is_bare_repo(&main_repo_path) {
+                &config.worktree.bare_repo_path_template
+            } else {
+                &config.worktree.path_template
+            };
+            let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
+
+            if worktree_path.exists() {
+                bail!(
+                    "Worktree already exists at {}\nTip: Use 'aoe add {}' to add the existing worktree",
+                    worktree_path.display(),
+                    worktree_path.display()
+                );
+            }
+
+            println!("Creating worktree at: {}", worktree_path.display());
+            git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
+
+            path = worktree_path;
+
+            worktree_info_opt = Some(WorktreeInfo {
+                branch: branch.to_string(),
+                main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                managed_by_aoe: true,
+                created_at: Utc::now(),
+                cleanup_on_delete: true,
+            });
+
+            println!("✓ Worktree created successfully");
         }
-
-        println!("Creating worktree at: {}", worktree_path.display());
-        git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
-
-        path = worktree_path;
-
-        worktree_info_opt = Some(WorktreeInfo {
-            branch: branch.to_string(),
-            main_repo_path: main_repo_path.to_string_lossy().to_string(),
-            managed_by_aoe: true,
-            created_at: Utc::now(),
-            cleanup_on_delete: true,
-        });
-
-        println!("✓ Worktree created successfully");
     }
 
     let storage = Storage::new(profile)?;
@@ -206,6 +310,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(worktree_info) = worktree_info_opt {
         instance.worktree_info = Some(worktree_info);
+    }
+
+    if let Some(workspace_info) = workspace_info_opt {
+        instance.workspace_info = Some(workspace_info);
     }
 
     instance.yolo_mode = args.yolo || config.session.yolo_mode_default;
@@ -349,6 +457,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
     if instance.yolo_mode {
         println!("  YOLO:    enabled");
+    }
+    if let Some(ws) = &instance.workspace_info {
+        println!("  Workspace: {} repos", ws.repos.len());
+        for repo in &ws.repos {
+            println!("    - {} ({})", repo.name, repo.worktree_path);
+        }
     }
 
     if args.launch {

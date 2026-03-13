@@ -50,6 +50,26 @@ pub struct WorktreeInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceRepo {
+    pub name: String,
+    pub source_path: String,
+    pub branch: String,
+    pub worktree_path: String,
+    pub main_repo_path: String,
+    pub managed_by_aoe: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceInfo {
+    pub branch: String,
+    pub workspace_dir: String,
+    pub repos: Vec<WorkspaceRepo>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default = "default_true")]
+    pub cleanup_on_delete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxInfo {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +114,10 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_info: Option<WorktreeInfo>,
 
+    // Multi-repo workspace integration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_info: Option<WorkspaceInfo>,
+
     // Docker sandbox integration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_info: Option<SandboxInfo>,
@@ -131,6 +155,7 @@ impl Instance {
             created_at: Utc::now(),
             last_accessed_at: None,
             worktree_info: None,
+            workspace_info: None,
             sandbox_info: None,
             terminal_info: None,
             source_profile: String::new(),
@@ -142,6 +167,10 @@ impl Instance {
 
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
+    }
+
+    pub fn is_workspace(&self) -> bool {
+        self.workspace_info.is_some()
     }
 
     pub fn is_sandboxed(&self) -> bool {
@@ -291,7 +320,11 @@ impl Instance {
 
     /// Apply all configured tmux options to a session with the given name and title.
     fn apply_session_tmux_options(&self, session_name: &str, display_title: &str) {
-        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let branch = self
+            .worktree_info
+            .as_ref()
+            .map(|w| w.branch.as_str())
+            .or_else(|| self.workspace_info.as_ref().map(|w| w.branch.as_str()));
         let sandbox = self.sandbox_display();
         crate::tmux::status_bar::apply_all_tmux_options(
             session_name,

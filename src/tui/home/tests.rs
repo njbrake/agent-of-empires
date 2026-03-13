@@ -1748,6 +1748,7 @@ fn test_create_session_in_all_mode_is_findable() {
         tool: "claude".to_string(),
         worktree_branch: None,
         create_new_branch: false,
+        extra_repo_paths: Vec::new(),
         sandbox: false,
         sandbox_image: String::new(),
         yolo_mode: false,

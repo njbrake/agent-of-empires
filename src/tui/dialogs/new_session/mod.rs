@@ -64,6 +64,10 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
             "Checked: create new branch. Unchecked: use existing (creates worktree if needed)",
     },
     FieldHelp {
+        name: "Extra Repos",
+        description: "Additional repository paths for multi-repo workspace (use with worktree)",
+    },
+    FieldHelp {
         name: "Sandbox",
         description: "Run session in Docker container for isolation (Ctrl+P to configure)",
     },
@@ -90,6 +94,7 @@ pub struct NewSessionData {
     pub tool: String,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
+    pub extra_repo_paths: Vec<String>,
     pub sandbox: bool,
     /// The sandbox image to use (always populated from the input field).
     pub sandbox_image: String,
@@ -124,6 +129,16 @@ pub struct NewSessionDialog {
     pub(super) docker_available: bool,
     pub(super) yolo_mode: bool,
     pub(super) yolo_mode_default: bool,
+    /// Additional repo paths for multi-repo workspace
+    pub(super) workspace_repos: Vec<String>,
+    /// Whether the workspace repos list is expanded (editing mode)
+    pub(super) workspace_repos_expanded: bool,
+    /// Currently selected index in the workspace repos list
+    pub(super) workspace_repo_selected_index: usize,
+    /// Input for editing/adding workspace repo entries
+    pub(super) workspace_repo_editing_input: Option<Input>,
+    /// Whether we are adding a new repo entry (vs editing existing)
+    pub(super) workspace_repo_adding_new: bool,
     /// Extra environment entries (session-specific).
     /// `KEY` = pass through, `KEY=VALUE` = set explicitly.
     pub(super) extra_env: Vec<String>,
@@ -366,6 +381,11 @@ impl NewSessionDialog {
             dir_picker: DirPicker::new(),
             worktree_branch: Input::default(),
             create_new_branch: true,
+            workspace_repos: Vec::new(),
+            workspace_repos_expanded: false,
+            workspace_repo_selected_index: 0,
+            workspace_repo_editing_input: None,
+            workspace_repo_adding_new: false,
             sandbox_enabled,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -570,6 +590,11 @@ impl NewSessionDialog {
             dir_picker: DirPicker::new(),
             worktree_branch: Input::default(),
             create_new_branch: true,
+            workspace_repos: Vec::new(),
+            workspace_repos_expanded: false,
+            workspace_repo_selected_index: 0,
+            workspace_repo_editing_input: None,
+            workspace_repo_adding_new: false,
             sandbox_enabled: false,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -622,6 +647,11 @@ impl NewSessionDialog {
             dir_picker: DirPicker::new(),
             worktree_branch: Input::default(),
             create_new_branch: true,
+            workspace_repos: Vec::new(),
+            workspace_repos_expanded: false,
+            workspace_repo_selected_index: 0,
+            workspace_repo_editing_input: None,
+            workspace_repo_adding_new: false,
             sandbox_enabled: false,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -753,6 +783,13 @@ impl NewSessionDialog {
         } else {
             worktree_field + 1
         };
+        let extra_repos_field = if has_worktree {
+            let f = next;
+            next += 1;
+            f
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if has_sandbox {
             let f = next;
             next += 1;
@@ -796,6 +833,11 @@ impl NewSessionDialog {
             }
         }
 
+        // Handle workspace repos list editing when expanded
+        if self.workspace_repos_expanded && self.focused_field == extra_repos_field {
+            return self.handle_workspace_repos_list_key(key);
+        }
+
         if self.handle_path_shortcuts(key) {
             return DialogResult::Continue;
         }
@@ -812,6 +854,11 @@ impl NewSessionDialog {
             KeyCode::Esc => {
                 self.error_message = None;
                 DialogResult::Cancel
+            }
+            KeyCode::Enter if self.focused_field == extra_repos_field => {
+                self.workspace_repos_expanded = true;
+                self.workspace_repo_selected_index = 0;
+                DialogResult::Continue
             }
             KeyCode::Enter => {
                 self.error_message = None;
@@ -932,6 +979,7 @@ impl NewSessionDialog {
                     && self.focused_field != new_branch_field
                     && self.focused_field != sandbox_field
                     && self.focused_field != yolo_mode_field
+                    && self.focused_field != extra_repos_field
                 {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
@@ -1077,6 +1125,21 @@ impl NewSessionDialog {
         result
     }
 
+    /// Handle key events when the workspace repos list is expanded
+    fn handle_workspace_repos_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        let validate =
+            |value: &str, list: &[String]| !value.is_empty() && !list.contains(&value.to_string());
+        handle_editable_list_key(
+            key,
+            &mut self.workspace_repos,
+            &mut self.workspace_repos_expanded,
+            &mut self.workspace_repo_selected_index,
+            &mut self.workspace_repo_editing_input,
+            &mut self.workspace_repo_adding_new,
+            validate,
+        )
+    }
+
     fn reload_tool_config(&mut self) {
         let profile = self.selected_profile().to_string();
         let config = resolve_config(&profile).unwrap_or_default();
@@ -1111,7 +1174,7 @@ impl NewSessionDialog {
         let base = if self.has_profile_selection() { 1 } else { 0 };
 
         // Field layout: [profile], title, path, [tool], [yolo], worktree,
-        //   [new_branch], [sandbox], group
+        //   [new_branch], [extra_repos], [sandbox], group
         let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
         if has_yolo {
             fi += 1;
@@ -1127,6 +1190,9 @@ impl NewSessionDialog {
         } else {
             worktree_field + 1
         };
+        if has_worktree {
+            next += 1; // extra_repos field
+        }
         if self.docker_available {
             next += 1; // sandbox checkbox
         }
@@ -1152,10 +1218,11 @@ impl NewSessionDialog {
             title_value.to_string()
         };
         let worktree_value = self.worktree_branch.value().trim();
-        let worktree_branch = if worktree_value.is_empty() {
-            None
-        } else {
+        let has_worktree_branch = !worktree_value.is_empty();
+        let worktree_branch = if has_worktree_branch {
             Some(worktree_value.to_string())
+        } else {
+            None
         };
         DialogResult::Submit(NewSessionData {
             profile: self.selected_profile().to_string(),
@@ -1165,6 +1232,11 @@ impl NewSessionDialog {
             tool: self.available_tools[self.tool_index].to_string(),
             worktree_branch,
             create_new_branch: self.create_new_branch,
+            extra_repo_paths: if has_worktree_branch {
+                self.workspace_repos.clone()
+            } else {
+                Vec::new()
+            },
             sandbox: self.sandbox_enabled,
             sandbox_image: self.sandbox_image.value().trim().to_string(),
             yolo_mode: self.yolo_mode || self.selected_tool_always_yolo(),

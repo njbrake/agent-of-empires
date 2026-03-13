@@ -231,6 +231,11 @@ pub struct WorktreeConfig {
     /// Default: false (unchecked in delete dialog)
     #[serde(default)]
     pub delete_branch_on_cleanup: bool,
+
+    /// Path template for multi-repo workspace directories.
+    /// Supports {branch} and {session-id} placeholders.
+    #[serde(default = "default_workspace_template")]
+    pub workspace_path_template: String,
 }
 
 impl Default for WorktreeConfig {
@@ -242,6 +247,7 @@ impl Default for WorktreeConfig {
             auto_cleanup: true,
             show_branch_in_tui: true,
             delete_branch_on_cleanup: false,
+            workspace_path_template: default_workspace_template(),
         }
     }
 }
@@ -252,6 +258,10 @@ fn default_worktree_template() -> String {
 
 fn default_bare_repo_template() -> String {
     "./{branch}".to_string()
+}
+
+fn default_workspace_template() -> String {
+    "../{branch}-workspace-{session-id}".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

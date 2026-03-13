@@ -90,6 +90,9 @@ pub struct WorktreeConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_branch_on_cleanup: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_path_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -282,6 +285,9 @@ pub fn apply_worktree_overrides(
     }
     if let Some(delete_branch_on_cleanup) = source.delete_branch_on_cleanup {
         target.delete_branch_on_cleanup = delete_branch_on_cleanup;
+    }
+    if let Some(ref workspace_path_template) = source.workspace_path_template {
+        target.workspace_path_template = workspace_path_template.clone();
     }
 }
 

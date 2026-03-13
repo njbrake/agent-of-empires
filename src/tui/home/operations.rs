@@ -33,6 +33,7 @@ impl HomeView {
             extra_env: data.extra_env,
             extra_args: data.extra_args,
             command_override: data.command_override,
+            extra_repo_paths: data.extra_repo_paths,
         };
 
         let build_result = builder::build_instance(params, &existing_titles, &target_profile)?;
@@ -145,15 +146,23 @@ impl HomeView {
 
                 if let Some(inst) = self.get_instance(&session_id) {
                     let delete_worktree = options.delete_worktrees
-                        && inst
+                        && (inst
                             .worktree_info
                             .as_ref()
-                            .is_some_and(|wt| wt.managed_by_aoe);
+                            .is_some_and(|wt| wt.managed_by_aoe)
+                            || inst
+                                .workspace_info
+                                .as_ref()
+                                .is_some_and(|ws| ws.cleanup_on_delete));
                     let delete_branch = options.delete_branches
-                        && inst
+                        && (inst
                             .worktree_info
                             .as_ref()
-                            .is_some_and(|wt| wt.managed_by_aoe);
+                            .is_some_and(|wt| wt.managed_by_aoe)
+                            || inst
+                                .workspace_info
+                                .as_ref()
+                                .is_some_and(|ws| ws.cleanup_on_delete));
                     let delete_sandbox = options.delete_containers
                         && inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
                     let request = DeletionRequest {
@@ -186,7 +195,10 @@ impl HomeView {
     pub(super) fn group_has_managed_worktrees(&self, group_path: &str, prefix: &str) -> bool {
         self.instances().iter().any(|i| {
             (i.group_path == group_path || i.group_path.starts_with(prefix))
-                && i.worktree_info.as_ref().is_some_and(|wt| wt.managed_by_aoe)
+                && (i.worktree_info.as_ref().is_some_and(|wt| wt.managed_by_aoe)
+                    || i.workspace_info
+                        .as_ref()
+                        .is_some_and(|ws| ws.cleanup_on_delete))
         })
     }
 
