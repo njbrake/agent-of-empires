@@ -96,7 +96,6 @@ pub(super) const ICON_EXPANDED: &str = "▼";
 pub struct HomeView {
     pub(super) storages: HashMap<String, Storage>,
     pub(super) active_profile: Option<String>,
-    pub(super) collapsed_profiles: HashSet<String>,
     instances: Vec<Instance>,
     instance_map: HashMap<String, Instance>,
     pub(super) group_trees: HashMap<String, GroupTree>,
@@ -237,7 +236,6 @@ impl HomeView {
         let mut view = Self {
             storages,
             active_profile,
-            collapsed_profiles: HashSet::new(),
             instances: all_instances,
             instance_map,
             group_trees,
@@ -645,12 +643,7 @@ impl HomeView {
                 None => Vec::new(),
             }
         } else {
-            flatten_tree_all_profiles(
-                &self.instances,
-                &self.group_trees,
-                self.sort_order,
-                &self.collapsed_profiles,
-            )
+            flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order)
         }
     }
 
@@ -766,9 +759,23 @@ impl HomeView {
         if let Some(profile) = &self.active_profile {
             return Some(profile.clone());
         }
-        for i in (0..=cursor).rev() {
-            if let Some(Item::ProfileHeader { name, .. }) = self.flat_items.get(i) {
-                return Some(name.clone());
+        if let Some(item) = self.flat_items.get(cursor) {
+            match item {
+                crate::session::Item::Session { id, .. } => {
+                    return self
+                        .get_instance(id.as_str())
+                        .map(|i| i.source_profile.clone());
+                }
+                crate::session::Item::Group { path, .. } => {
+                    // Find any instance in this group to determine its profile
+                    return self
+                        .instances
+                        .iter()
+                        .find(|i| {
+                            i.group_path == *path || i.group_path.starts_with(&format!("{}/", path))
+                        })
+                        .map(|i| i.source_profile.clone());
+                }
             }
         }
         None

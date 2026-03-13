@@ -1510,7 +1510,7 @@ fn test_o_key_flat_items_sorted_az() {
     let mut in_work_group = false;
     for item in &env.view.flat_items {
         match item {
-            Item::Group { name, .. } | Item::ProfileHeader { name, .. } => {
+            Item::Group { name, .. } => {
                 in_work_group = name == "work";
             }
             Item::Session { id, .. } => {
@@ -1543,7 +1543,7 @@ fn test_o_key_flat_items_sorted_za() {
     let mut in_work_group = false;
     for item in &env.view.flat_items {
         match item {
-            Item::Group { name, .. } | Item::ProfileHeader { name, .. } => {
+            Item::Group { name, .. } => {
                 in_work_group = name == "work";
             }
             Item::Session { id, .. } => {
@@ -1577,7 +1577,7 @@ fn test_o_key_flat_items_newest_preserves_insertion_order() {
     let mut in_work_group = false;
     for item in &env.view.flat_items {
         match item {
-            Item::Group { name, .. } | Item::ProfileHeader { name, .. } => {
+            Item::Group { name, .. } => {
                 in_work_group = name == "work";
             }
             Item::Session { id, .. } => {
@@ -1674,7 +1674,7 @@ fn test_filtered_view_loads_single_profile() {
 
 #[test]
 #[serial]
-fn test_all_profiles_view_has_profile_headers() {
+fn test_all_profiles_view_has_no_profile_headers() {
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
 
@@ -1687,44 +1687,19 @@ fn test_all_profiles_view_has_profile_headers() {
     let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(None, tools).unwrap();
 
-    let profile_headers: Vec<&str> = view
+    // All items should be sessions (no profile headers)
+    let session_count = view
         .flat_items
         .iter()
-        .filter_map(|item| match item {
-            Item::ProfileHeader { name, .. } => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
-
-    assert!(profile_headers.contains(&"alpha"));
-    assert!(profile_headers.contains(&"beta"));
+        .filter(|i| matches!(i, Item::Session { .. }))
+        .count();
+    assert_eq!(session_count, 2);
+    assert_eq!(view.flat_items.len(), 2);
 }
 
 #[test]
 #[serial]
-fn test_filtered_view_has_no_profile_headers() {
-    let temp = TempDir::new().unwrap();
-    setup_test_home(&temp);
-
-    let storage_a = Storage::new("alpha").unwrap();
-    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
-
-    let tools = AvailableTools::with_tools(&["claude"]);
-    let view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
-
-    let has_headers = view
-        .flat_items
-        .iter()
-        .any(|item| matches!(item, Item::ProfileHeader { .. }));
-    assert!(
-        !has_headers,
-        "filtered view should not have profile headers"
-    );
-}
-
-#[test]
-#[serial]
-fn test_profile_header_collapse_hides_sessions() {
+fn test_all_profiles_view_shows_all_sessions_flat() {
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
 
@@ -1735,37 +1710,14 @@ fn test_profile_header_collapse_hides_sessions() {
     storage_b.save(&[Instance::new("B1", "/tmp/b")]).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools).unwrap();
+    let view = HomeView::new(None, tools).unwrap();
 
-    // Initially both profiles have sessions visible
-    let session_count = view
-        .flat_items
-        .iter()
-        .filter(|i| matches!(i, Item::Session { .. }))
-        .count();
-    assert_eq!(session_count, 2);
-
-    // Collapse "alpha" profile
-    view.cursor = 0; // alpha header
-    view.update_selected();
-    view.handle_key(key(KeyCode::Enter));
-
-    // Now only beta's session should be visible
-    let session_count_after = view
-        .flat_items
-        .iter()
-        .filter(|i| matches!(i, Item::Session { .. }))
-        .count();
-    assert_eq!(session_count_after, 1);
-
-    // Alpha header should still be visible but collapsed
-    let alpha_header = view.flat_items.iter().find_map(|item| match item {
-        Item::ProfileHeader {
-            name, collapsed, ..
-        } if name == "alpha" => Some(*collapsed),
-        _ => None,
-    });
-    assert_eq!(alpha_header, Some(true));
+    // All sessions from all profiles should be visible at depth 0
+    for item in &view.flat_items {
+        if let Item::Session { depth, .. } = item {
+            assert_eq!(*depth, 0, "sessions in all view should be at depth 0");
+        }
+    }
 }
 
 #[test]
@@ -1913,54 +1865,6 @@ fn test_create_profile_rejects_reserved_name_all() {
 
 #[test]
 #[serial]
-fn test_profile_header_does_not_trigger_group_delete() {
-    let temp = TempDir::new().unwrap();
-    setup_test_home(&temp);
-
-    let storage_a = Storage::new("alpha").unwrap();
-    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
-
-    let storage_b = Storage::new("beta").unwrap();
-    storage_b.save(&[Instance::new("B1", "/tmp/b")]).unwrap();
-
-    let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools).unwrap();
-
-    // Move cursor to a ProfileHeader
-    let header_idx = view
-        .flat_items
-        .iter()
-        .position(|item| matches!(item, Item::ProfileHeader { .. }))
-        .expect("should have a profile header");
-    view.cursor = header_idx;
-    view.update_selected();
-
-    // selected_group should be None for profile headers
-    assert!(
-        view.selected_group.is_none(),
-        "profile header should not set selected_group"
-    );
-    // selected_session should also be None
-    assert!(view.selected_session.is_none());
-
-    // Pressing 'd' on a profile header should not open any delete dialog
-    view.handle_key(key(KeyCode::Char('d')));
-    assert!(
-        view.unified_delete_dialog.is_none(),
-        "no delete dialog should open on profile header"
-    );
-    assert!(
-        view.group_delete_options_dialog.is_none(),
-        "no group delete dialog should open on profile header"
-    );
-    assert!(
-        view.confirm_dialog.is_none(),
-        "no confirm dialog should open on profile header"
-    );
-}
-
-#[test]
-#[serial]
 fn test_delete_group_scoped_to_owning_profile() {
     use crate::session::GroupTree;
 
@@ -1988,22 +1892,23 @@ fn test_delete_group_scoped_to_owning_profile() {
     assert!(view.group_trees.get("alpha").unwrap().group_exists("work"));
     assert!(view.group_trees.get("beta").unwrap().group_exists("work"));
 
-    // Find the "work" group under "alpha" profile header and select it
-    let mut alpha_found = false;
-    for (idx, item) in view.flat_items.iter().enumerate() {
-        match item {
-            Item::ProfileHeader { name, .. } if name == "alpha" => {
-                alpha_found = true;
-            }
-            Item::ProfileHeader { .. } => {
-                alpha_found = false;
-            }
-            Item::Group { path, .. } if alpha_found && path == "work" => {
-                view.cursor = idx;
-                view.update_selected();
-                break;
-            }
-            _ => {}
+    // Find a "work" group item that belongs to alpha and select it.
+    // Collect candidate indices first to avoid borrow conflicts.
+    let work_indices: Vec<usize> = view
+        .flat_items
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, item)| match item {
+            Item::Group { path, .. } if path == "work" => Some(idx),
+            _ => None,
+        })
+        .collect();
+
+    for idx in work_indices {
+        view.cursor = idx;
+        view.update_selected();
+        if view.selected_group_profile.as_deref() == Some("alpha") {
+            break;
         }
     }
 
