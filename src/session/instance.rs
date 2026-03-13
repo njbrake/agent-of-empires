@@ -1732,9 +1732,13 @@ impl Instance {
     }
 
     fn build_container_config(&self) -> Result<crate::containers::ContainerConfig> {
+        let sandbox = self
+            .sandbox_info
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("sandbox_info missing for sandboxed session"))?;
         container_config::build_container_config(
             &self.project_path,
-            self.sandbox_info.as_ref().unwrap(),
+            sandbox,
             &self.tool,
             self.is_yolo_mode(),
             &self.id,
