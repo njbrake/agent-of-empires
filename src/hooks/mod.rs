@@ -22,37 +22,48 @@ pub(crate) const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
 /// Any hook command containing ANY of these strings is considered ours.
 /// The first entry is the legacy shell one-liner marker (path-based).
 /// The second entry matches the binary hook-handler command format.
-const AOE_HOOK_MARKERS: &[&str] = &["aoe-hooks", "aoe hook-handler"];
+const AOE_HOOK_MARKERS: &[&str] = &["aoe-hooks", "hook-handler"];
+
+/// Resolve the absolute canonicalized path to the running `aoe` binary.
+///
+/// Uses `std::env::current_exe()` to get the binary path and `std::fs::canonicalize()`
+/// to resolve symlinks and relative components. Returns `None` if resolution fails.
+pub(crate) fn resolve_aoe_binary_path() -> Option<String> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::canonicalize(&path).ok())
+        .and_then(|path| path.to_str().map(|s| s.to_string()))
+}
 
 /// Check if a command string is an AoE-managed hook.
 fn is_aoe_hook_command(cmd: &str) -> bool {
     AOE_HOOK_MARKERS.iter().any(|marker| cmd.contains(marker))
 }
 
-/// Build the shell command for a hook that writes a status value.
-fn hook_command(status: &str) -> String {
-    format!(
-        "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] || exit 0; mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID && printf {} > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'",
-        status
-    )
+/// Build the command string that invokes the `aoe hook-handler` binary.
+///
+/// Resolves the absolute path to the running binary so hooks work regardless
+/// of `$PATH`. Falls back to bare `"aoe"` if resolution fails.
+fn aoe_hook_command() -> String {
+    let binary = resolve_aoe_binary_path().unwrap_or_else(|| "aoe".to_string());
+    format!("{binary} hook-handler")
 }
 
 /// Build the complete AoE hooks JSON structure.
 fn build_aoe_hooks() -> Value {
-    // Map each event to its status value and optional matcher regex.
-    let events: &[(&str, &str, Option<&str>)] = &[
-        ("PreToolUse", "running", None),
-        ("UserPromptSubmit", "running", None),
-        ("Stop", "idle", None),
-        (
-            "Notification",
-            "waiting",
-            Some("permission_prompt|elicitation_dialog"),
-        ),
+    let command = aoe_hook_command();
+
+    let events: &[(&str, Option<&str>)] = &[
+        ("PreToolUse", None),
+        ("UserPromptSubmit", None),
+        ("Stop", None),
+        ("Notification", Some("permission_prompt|elicitation_dialog")),
+        ("SessionStart", None),
+        ("SessionEnd", None),
     ];
 
     let mut hooks_obj = serde_json::Map::new();
-    for &(event, status, matcher) in events {
+    for &(event, matcher) in events {
         let mut entry = serde_json::Map::new();
         if let Some(m) = matcher {
             entry.insert("matcher".to_string(), Value::String(m.to_string()));
@@ -61,7 +72,7 @@ fn build_aoe_hooks() -> Value {
             "hooks".to_string(),
             Value::Array(vec![serde_json::json!({
                 "type": "command",
-                "command": hook_command(status)
+                "command": command
             })]),
         );
         hooks_obj.insert(event.to_string(), Value::Array(vec![Value::Object(entry)]));
@@ -250,6 +261,8 @@ mod tests {
         assert!(hooks.contains_key("UserPromptSubmit"));
         assert!(hooks.contains_key("Stop"));
         assert!(hooks.contains_key("Notification"));
+        assert!(hooks.contains_key("SessionStart"));
+        assert!(hooks.contains_key("SessionEnd"));
     }
 
     #[test]
@@ -335,31 +348,29 @@ mod tests {
 
     #[test]
     fn test_hook_command_format() {
-        let cmd = hook_command("running");
-        assert!(cmd.contains("aoe-hooks"));
-        assert!(cmd.contains("AOE_INSTANCE_ID"));
-        assert!(cmd.contains("running"));
+        let cmd = aoe_hook_command();
+        assert!(
+            cmd.contains("hook-handler"),
+            "Command should reference hook-handler: {}",
+            cmd
+        );
+        assert!(
+            cmd.ends_with("hook-handler"),
+            "Command should end with hook-handler: {}",
+            cmd
+        );
     }
 
     #[test]
-    fn test_hook_command_exits_cleanly_without_aoe_instance_id() {
-        let cmd = hook_command("idle");
-        // Run the hook command without AOE_INSTANCE_ID set; it should exit 0
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(
-                cmd.strip_prefix("sh -c '")
-                    .unwrap()
-                    .strip_suffix('\'')
-                    .unwrap(),
-            )
-            .env_remove("AOE_INSTANCE_ID")
-            .output()
-            .unwrap();
+    fn test_hook_command_uses_absolute_path_or_fallback() {
+        let cmd = aoe_hook_command();
+        let binary_part = cmd.strip_suffix(" hook-handler").unwrap();
+        let is_absolute = std::path::Path::new(binary_part).is_absolute();
+        let is_fallback = binary_part == "aoe";
         assert!(
-            output.status.success(),
-            "Hook should exit 0 when AOE_INSTANCE_ID is unset, got: {:?}",
-            output.status
+            is_absolute || is_fallback,
+            "Binary path should be absolute or fallback 'aoe', got: {}",
+            binary_part
         );
     }
 
@@ -375,12 +386,15 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_hook_writes_idle() {
+    fn test_stop_hook_uses_binary_handler() {
         let hooks = build_aoe_hooks();
         let stop = hooks["Stop"].as_array().unwrap();
         let cmd = stop[0]["hooks"][0]["command"].as_str().unwrap();
-        assert!(cmd.contains("idle"));
-        assert!(!cmd.contains("waiting"));
+        assert!(
+            cmd.contains("hook-handler"),
+            "Stop hook should use binary handler: {}",
+            cmd
+        );
     }
 
     #[test]
@@ -648,6 +662,27 @@ mod tests {
             vec!["echo user_hook"],
             "Expected only user hook to remain, got: {:?}",
             cmds
+        );
+    }
+
+    #[test]
+    fn test_resolve_aoe_binary_path() {
+        let path = resolve_aoe_binary_path();
+
+        assert!(path.is_some(), "resolve_aoe_binary_path should return Some");
+
+        let path_str = path.unwrap();
+
+        assert!(
+            std::path::Path::new(&path_str).is_absolute(),
+            "Path should be absolute: {}",
+            path_str
+        );
+
+        assert!(
+            std::path::Path::new(&path_str).exists(),
+            "Binary path should exist: {}",
+            path_str
         );
     }
 }

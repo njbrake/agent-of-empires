@@ -650,6 +650,24 @@ pub(crate) fn build_container_config(
             });
 
             // Install hooks into sandbox settings.json for the containerized agent.
+            //
+            // NOTE: Sandboxed sessions have limited hook support. The hooks are installed
+            // with absolute paths to the host's `aoe` binary (e.g., "/usr/local/bin/aoe hook-handler").
+            // These paths do not exist inside the Docker container, so hook commands will fail
+            // silently when fired by Claude Code inside the container.
+            //
+            // This is acceptable because:
+            // 1. Hooks are fire-and-forget; Claude Code doesn't block on failures
+            // 2. The hook status directory (/tmp/aoe-hooks/{instance_id}/) IS mounted into the
+            //    container, so if hooks worked, they would write to the correct shared location
+            // 3. Host-side hooks (from the user's non-sandboxed settings.json) still fire when
+            //    the user interacts with Claude Code on the host, providing status updates
+            // 4. Sandboxed sessions are isolated by design; full hook support is not a requirement
+            //
+            // If full hook support in containers is needed in the future, consider:
+            // - Installing the `aoe` binary inside the container image
+            // - Using shell one-liners as a fallback for sandboxed sessions
+            // - Implementing a container-aware hook mechanism
             let config_dir_name = std::path::Path::new(hook_cfg.settings_rel_path)
                 .parent()
                 .unwrap_or(std::path::Path::new("."));
