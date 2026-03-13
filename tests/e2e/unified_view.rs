@@ -30,8 +30,6 @@ fn test_default_view_shows_all_profiles() {
     h.spawn_tui();
 
     h.wait_for("[all]");
-    h.assert_screen_contains("alpha");
-    h.assert_screen_contains("beta");
     h.assert_screen_contains("Alpha Session");
     h.assert_screen_contains("Beta Session");
 }
@@ -95,33 +93,21 @@ fn test_return_to_all_view_via_picker() {
     h.assert_screen_contains("Beta Session");
 }
 
+/// Profile headers no longer exist -- verify sessions from all profiles
+/// are shown flat in the list without any collapsible headers.
 #[test]
 #[serial]
-fn test_profile_header_collapse() {
+fn test_all_profiles_flat_view() {
     require_tmux!();
 
-    let mut h = TuiTestHarness::new("unified_collapse");
+    let mut h = TuiTestHarness::new("unified_flat");
     create_profile_with_session(&h, "alpha", "Alpha Session");
     create_profile_with_session(&h, "beta", "Beta Session");
     h.spawn_tui();
 
     h.wait_for("[all]");
+
+    // Both sessions visible simultaneously with no headers to collapse
     h.assert_screen_contains("Alpha Session");
-
-    // Cursor should be on "alpha" header (first item). Press Enter to collapse.
-    h.send_keys("Enter");
-    std::thread::sleep(Duration::from_millis(200));
-
-    // Alpha's session should be hidden, beta's still visible
-    h.assert_screen_not_contains("Alpha Session");
     h.assert_screen_contains("Beta Session");
-
-    // Expand again
-    // Navigate back to alpha header (might have moved)
-    h.send_keys("g"); // go to top
-    std::thread::sleep(Duration::from_millis(50));
-    h.send_keys("Enter");
-    std::thread::sleep(Duration::from_millis(200));
-
-    h.assert_screen_contains("Alpha Session");
 }
