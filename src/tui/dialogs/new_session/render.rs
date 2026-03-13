@@ -958,7 +958,7 @@ impl NewSessionDialog {
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let needs_extra_line = self.sandbox_enabled && self.needs_image_pull;
+        let needs_extra_line = self.sandbox_enabled;
         let show_hook_output = self.has_hooks;
         let max_output_lines: usize = 6;
 
@@ -1054,11 +1054,7 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(lines), inner);
         } else {
             let loading_text = if self.sandbox_enabled {
-                if self.needs_image_pull {
-                    "Pulling sandbox image..."
-                } else {
-                    "Setting up sandbox container..."
-                }
+                "Setting up sandbox..."
             } else {
                 "Creating session..."
             };
