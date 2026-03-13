@@ -170,12 +170,15 @@ impl AdaptiveInterval {
         self.current
     }
 
-    /// Record that no changes were detected; increases backoff if threshold is reached
+    /// Record that no changes were detected; increases backoff if threshold is reached.
+    ///
+    /// Uses `Duration::from_secs_f64` for sub-second precision in the backoff calculation
+    /// (e.g., 2.0s * 1.5 = 3.0s, 3.0s * 1.5 = 4.5s).
     pub fn record_no_change(&mut self) {
         self.stable_count += 1;
         if self.stable_count >= self.stable_threshold {
-            let next = (self.current.as_secs_f64() * self.backoff_factor) as u64;
-            let next_duration = Duration::from_secs(next);
+            let next_secs = self.current.as_secs_f64() * self.backoff_factor;
+            let next_duration = Duration::from_secs_f64(next_secs);
             self.current = next_duration.min(self.max);
             self.stable_count = 0;
         }
@@ -445,12 +448,12 @@ mod tests {
         }
         assert_eq!(interval.current(), Duration::from_secs(3));
 
-        // Second backoff: 3 -> 4 (actually 4.5, but let's check)
+        // Second backoff: 3 -> 4.5 (with sub-second precision)
         for _ in 0..3 {
             interval.record_no_change();
         }
-        let expected = (3.0 * 1.5) as u64;
-        assert_eq!(interval.current(), Duration::from_secs(expected));
+        let expected_secs = 3.0 * 1.5;
+        assert_eq!(interval.current(), Duration::from_secs_f64(expected_secs));
     }
 
     #[test]
@@ -461,15 +464,15 @@ mod tests {
             1.5,
             1, // threshold of 1 for faster test
         );
-        interval.record_no_change(); // 2 * 1.5 = 3
-        interval.record_no_change(); // 3 * 1.5 = 4.5
-        interval.record_no_change(); // 4 * 1.5 = 6
-        interval.record_no_change(); // 6 * 1.5 = 9
-        interval.record_no_change(); // 9 * 1.5 = 13.5
-        interval.record_no_change(); // 13 * 1.5 = 19.5
-        interval.record_no_change(); // 19 * 1.5 = 28.5
-        interval.record_no_change(); // 28 * 1.5 = 42
-        interval.record_no_change(); // 42 * 1.5 = 63 > 60, capped at 60
+        interval.record_no_change(); // 2 * 1.5 = 3.0
+        interval.record_no_change(); // 3.0 * 1.5 = 4.5
+        interval.record_no_change(); // 4.5 * 1.5 = 6.75
+        interval.record_no_change(); // 6.75 * 1.5 = 10.125
+        interval.record_no_change(); // 10.125 * 1.5 = 15.1875
+        interval.record_no_change(); // 15.1875 * 1.5 = 22.78125
+        interval.record_no_change(); // 22.78125 * 1.5 = 34.171875
+        interval.record_no_change(); // 34.171875 * 1.5 = 51.2578125
+        interval.record_no_change(); // 51.2578125 * 1.5 = 76.88671875 > 60, capped at 60
         assert!(interval.current() <= Duration::from_secs(60));
     }
 
