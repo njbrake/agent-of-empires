@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_without_hooks_shows_nothing() {
+    fn test_cursor_agent_shows_cursor_path() {
         let dialog = HooksInstallDialog::new("cursor");
         let lines = dialog.build_content_lines();
         let text: String = lines
@@ -286,7 +286,6 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!text.contains(".cursor/"));
-        assert!(!text.contains("PreToolUse"));
+        assert!(text.contains(".cursor/settings.json"));
     }
 }

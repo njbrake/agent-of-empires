@@ -216,8 +216,41 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: true,
         detect_status: status_detection::detect_cursor_status,
         container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
-        // Cursor CLI doesn't support hooks (IDE-only, different format in hooks.json)
-        hook_config: None,
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".cursor/settings.json",
+            events: &[
+                HookEvent {
+                    name: "PreToolUse",
+                    matcher: None,
+                    status: "running",
+                },
+                HookEvent {
+                    name: "UserPromptSubmit",
+                    matcher: None,
+                    status: "running",
+                },
+                HookEvent {
+                    name: "Stop",
+                    matcher: None,
+                    status: "idle",
+                },
+                HookEvent {
+                    name: "Notification",
+                    matcher: Some("permission_prompt|elicitation_dialog"),
+                    status: "waiting",
+                },
+                HookEvent {
+                    name: "SessionStart",
+                    matcher: None,
+                    status: "running",
+                },
+                HookEvent {
+                    name: "SessionEnd",
+                    matcher: None,
+                    status: "idle",
+                },
+            ],
+        }),
         resume_strategy: ResumeStrategy::Unsupported,
     },
     AgentDef {
