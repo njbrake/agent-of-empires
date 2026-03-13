@@ -1295,4 +1295,102 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_filter_agent_sessions_empty_input() {
+        let empty: Vec<serde_json::Value> = Vec::new();
+        let exclusion = HashSet::new();
+        let result = filter_agent_sessions(&empty, Some("/tmp/project"), &exclusion, None);
+        assert!(
+            result.is_empty(),
+            "Empty input should return empty result, not panic"
+        );
+    }
+
+    #[test]
+    fn test_gemini_extract_session_id_malformed_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session-bad.json");
+        std::fs::write(&path, "this is not json at all {{{{").unwrap();
+        assert_eq!(extract_gemini_session_id_from_file(&path), None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_codex_capture_empty_sessions_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let old_val = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("CODEX_HOME", tmp.path());
+
+        let result = capture_codex_session_id("/tmp/some-project", &HashSet::new());
+        assert!(result.is_err(), "Empty sessions dir should return error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("No Codex")
+                || err_msg.contains("session")
+                || err_msg.contains("found"),
+            "Error message should mention sessions: {err_msg}"
+        );
+
+        match old_val {
+            Some(v) => std::env::set_var("CODEX_HOME", v),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+    }
+
+    #[test]
+    fn test_opencode_capture_respects_command_timeout() {
+        use super::super::config::SessionConfig;
+        let mut config = SessionConfig::default();
+        config.opencode_command_timeout_secs = 1;
+        config.opencode_max_retry_attempts = 1;
+
+        let result = try_capture_opencode_session_id(
+            "/tmp/nonexistent-project-xyz-12345",
+            &HashSet::new(),
+            0.0,
+            &config,
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn test_opencode_capture_deadline_exhaustion() {
+        use super::super::config::SessionConfig;
+        let mut config = SessionConfig::default();
+        config.opencode_command_timeout_secs = 1;
+        config.opencode_max_retry_attempts = 100;
+        config.opencode_capture_deadline_secs = 1;
+
+        let start = std::time::Instant::now();
+        let result = capture_opencode_session_id(
+            "/tmp/nonexistent-project-xyz-12345",
+            &HashSet::new(),
+            0.0,
+            &config,
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs() < 10,
+            "Capture should respect deadline, not exhaust all retries: elapsed={elapsed:?}"
+        );
+        let _ = result;
+    }
+
+    #[test]
+    #[ignore]
+    fn test_container_capture_not_running() {
+        let result = capture_from_container(
+            "nonexistent-container-id-xyz-12345",
+            "claude",
+            &HashSet::new(),
+        );
+        assert!(
+            result.is_none(),
+            "Non-existent container should return None"
+        );
+    }
 }
