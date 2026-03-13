@@ -90,13 +90,18 @@ pub fn build_instance(
             let session_id = uuid::Uuid::new_v4().to_string();
             let session_id_short = &session_id[..8];
 
-            // Resolve workspace directory from template
-            let workspace_dir = config
-                .worktree
-                .workspace_path_template
-                .replace("{branch}", branch)
-                .replace("{session-id}", session_id_short);
-            let workspace_path = PathBuf::from(&workspace_dir);
+            // Resolve workspace directory from template, relative to primary repo
+            let primary_path = PathBuf::from(&params.path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&params.path));
+            let primary_main_repo = GitWorktree::find_main_repo(&primary_path)?;
+            let primary_git_wt = GitWorktree::new(primary_main_repo)?;
+            let workspace_path = primary_git_wt.compute_path(
+                branch,
+                &config.worktree.workspace_path_template,
+                session_id_short,
+            )?;
+            let workspace_dir = workspace_path.to_string_lossy().to_string();
             std::fs::create_dir_all(&workspace_path)?;
 
             let mut repos = Vec::new();

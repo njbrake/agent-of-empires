@@ -103,12 +103,15 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             let session_id = uuid::Uuid::new_v4().to_string();
             let session_id_short = &session_id[..8];
 
-            let workspace_dir = config
-                .worktree
-                .workspace_path_template
-                .replace("{branch}", branch)
-                .replace("{session-id}", session_id_short);
-            let workspace_path = PathBuf::from(&workspace_dir);
+            // Resolve workspace directory from template, relative to primary repo
+            let primary_main_repo = GitWorktree::find_main_repo(&path)?;
+            let primary_git_wt = GitWorktree::new(primary_main_repo)?;
+            let workspace_path = primary_git_wt.compute_path(
+                branch,
+                &config.worktree.workspace_path_template,
+                session_id_short,
+            )?;
+            let workspace_dir = workspace_path.to_string_lossy().to_string();
             std::fs::create_dir_all(&workspace_path)?;
 
             let all_repo_paths: Vec<PathBuf> = std::iter::once(path.clone())

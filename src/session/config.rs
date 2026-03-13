@@ -261,7 +261,7 @@ fn default_bare_repo_template() -> String {
 }
 
 fn default_workspace_template() -> String {
-    "/tmp/aoe-workspaces/{branch}-{session-id}".to_string()
+    "../{branch}-workspace-{session-id}".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
