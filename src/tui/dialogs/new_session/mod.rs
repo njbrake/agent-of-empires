@@ -156,8 +156,6 @@ pub struct NewSessionDialog {
     pub(super) loading: bool,
     /// Spinner animation frame counter
     pub(super) spinner_frame: usize,
-    /// Whether a Docker image pull will be needed (image not present locally)
-    pub(super) needs_image_pull: bool,
     /// Whether hooks are being executed during loading
     pub(super) has_hooks: bool,
     /// The currently running hook command
@@ -391,7 +389,7 @@ impl NewSessionDialog {
             show_help: false,
             loading: false,
             spinner_frame: 0,
-            needs_image_pull: false,
+
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
@@ -424,12 +422,6 @@ impl NewSessionDialog {
         self.loading = loading;
         if loading {
             self.error_message = None;
-            // Check if image pull will be needed (only relevant for sandbox sessions)
-            if self.sandbox_enabled {
-                let image = self.sandbox_image.value().trim();
-                self.needs_image_pull =
-                    !containers::get_container_runtime().image_exists_locally(image);
-            }
         }
     }
 
@@ -602,7 +594,7 @@ impl NewSessionDialog {
             show_help: false,
             loading: false,
             spinner_frame: 0,
-            needs_image_pull: false,
+
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
@@ -655,7 +647,7 @@ impl NewSessionDialog {
             show_help: false,
             loading: false,
             spinner_frame: 0,
-            needs_image_pull: false,
+
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),

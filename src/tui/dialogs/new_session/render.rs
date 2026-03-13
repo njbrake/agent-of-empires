@@ -958,20 +958,19 @@ impl NewSessionDialog {
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let needs_extra_line = self.sandbox_enabled && self.needs_image_pull;
         let show_hook_output = self.has_hooks;
         let max_output_lines: usize = 6;
 
         let dialog_width: u16 = if show_hook_output {
             70
-        } else if needs_extra_line {
+        } else if self.sandbox_enabled {
             55
         } else {
             50
         };
         let dialog_height: u16 = if show_hook_output {
             (6 + max_output_lines as u16).min(area.height)
-        } else if needs_extra_line {
+        } else if self.sandbox_enabled {
             9
         } else {
             7
@@ -1054,11 +1053,7 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(lines), inner);
         } else {
             let loading_text = if self.sandbox_enabled {
-                if self.needs_image_pull {
-                    "Pulling sandbox image..."
-                } else {
-                    "Setting up sandbox container..."
-                }
+                "Setting up sandbox..."
             } else {
                 "Creating session..."
             };
@@ -1074,7 +1069,7 @@ impl NewSessionDialog {
                 ]),
             ];
 
-            if needs_extra_line {
+            if self.sandbox_enabled {
                 lines.push(Line::from(Span::styled(
                     "    (first time may take a few minutes)",
                     Style::default().fg(theme.dimmed),
