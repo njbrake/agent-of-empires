@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Uninstall(args)) => return cli::uninstall::run(args).await,
+        Some(Commands::HookHandler) => return cli::hook_handler::run(),
         _ => {}
     }
 
