@@ -1,10 +1,10 @@
-//! Hook handler for Claude Code hook events.
+//! Hook handler for agent hook events.
 //!
-//! This command is called by Claude Code for every hook event. It reads the
-//! event JSON from stdin, extracts the session_id and status, and writes
-//! them to sidecar files in /tmp/aoe-hooks/{instance_id}/.
+//! This command is called by agents (e.g. Claude Code) for every hook event.
+//! It reads the event JSON from stdin, extracts the session_id and status,
+//! and writes them to sidecar files in /tmp/aoe-hooks/{instance_id}/.
 //!
-//! PERFORMANCE CRITICAL: This runs on every Claude tool call. No Storage,
+//! PERFORMANCE CRITICAL: This runs on every agent tool call. No Storage,
 //! no migrations, no profile resolution. Just stdin -> parse -> write files.
 
 use std::io::Read;
@@ -14,14 +14,14 @@ use anyhow::Result;
 use crate::hooks::hook_status_dir;
 use crate::session::capture::validated_session_id;
 
-/// Map a Claude Code hook event name to an AoE status string.
+/// Look up the AoE status for a hook event name across all agents' registered events.
 fn event_to_status(event: &str) -> Option<&'static str> {
-    match event {
-        "PreToolUse" | "UserPromptSubmit" | "SessionStart" => Some("running"),
-        "Stop" | "SessionEnd" => Some("idle"),
-        "Notification" => Some("waiting"),
-        _ => None,
-    }
+    crate::agents::AGENTS
+        .iter()
+        .filter_map(|a| a.hook_config.as_ref())
+        .flat_map(|cfg| cfg.events.iter())
+        .find(|e| e.name == event)
+        .map(|e| e.status)
 }
 
 pub fn run() -> Result<()> {

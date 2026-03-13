@@ -44,11 +44,24 @@ pub enum ResumeStrategy {
     Unsupported,
 }
 
+/// A single hook event that AoE registers in an agent's settings file.
+pub struct HookEvent {
+    /// Event name as the agent expects it (e.g. `"PreToolUse"` for Claude Code).
+    pub name: &'static str,
+    /// Optional matcher pattern (e.g. `"permission_prompt|elicitation_dialog"`).
+    pub matcher: Option<&'static str>,
+    /// AoE status string written to the sidecar file when this event fires
+    /// (e.g. `"running"`, `"idle"`, `"waiting"`).
+    pub status: &'static str,
+}
+
 /// Configuration for installing status-detection hooks into an agent's settings file.
 pub struct AgentHookConfig {
-    /// Path relative to the project/home dir where the agent's settings live
+    /// Path relative to the home dir where the agent's settings live
     /// (e.g. `.claude/settings.json`).
     pub settings_rel_path: &'static str,
+    /// Hook events to register. Each event maps to an AoE status.
+    pub events: &'static [HookEvent],
 }
 
 /// Everything we know about a single agent CLI.
@@ -96,6 +109,38 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[("CLAUDE_CONFIG_DIR", "/root/.claude")],
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".claude/settings.json",
+            events: &[
+                HookEvent {
+                    name: "PreToolUse",
+                    matcher: None,
+                    status: "running",
+                },
+                HookEvent {
+                    name: "UserPromptSubmit",
+                    matcher: None,
+                    status: "running",
+                },
+                HookEvent {
+                    name: "Stop",
+                    matcher: None,
+                    status: "idle",
+                },
+                HookEvent {
+                    name: "Notification",
+                    matcher: Some("permission_prompt|elicitation_dialog"),
+                    status: "waiting",
+                },
+                HookEvent {
+                    name: "SessionStart",
+                    matcher: None,
+                    status: "running",
+                },
+                HookEvent {
+                    name: "SessionEnd",
+                    matcher: None,
+                    status: "idle",
+                },
+            ],
         }),
         resume_strategy: ResumeStrategy::FlagPair {
             existing: "--resume",
@@ -171,9 +216,8 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: true,
         detect_status: status_detection::detect_cursor_status,
         container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
-        hook_config: Some(AgentHookConfig {
-            settings_rel_path: ".cursor/settings.json",
-        }),
+        // Cursor CLI doesn't support hooks (IDE-only, different format in hooks.json)
+        hook_config: None,
         resume_strategy: ResumeStrategy::Unsupported,
     },
     AgentDef {

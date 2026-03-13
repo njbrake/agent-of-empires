@@ -22,14 +22,11 @@ impl HooksInstallDialog {
         if let Some(agent) = crate::agents::get_agent(tool_name) {
             if let Some(hook_cfg) = &agent.hook_config {
                 settings_paths.push(format!("~/{}", hook_cfg.settings_rel_path));
+                for event in hook_cfg.events {
+                    hook_commands.push((event.name.to_string(), event.status.to_string()));
+                }
             }
         }
-
-        // Show the hook events and what they do
-        hook_commands.push(("PreToolUse".to_string(), "running".to_string()));
-        hook_commands.push(("UserPromptSubmit".to_string(), "running".to_string()));
-        hook_commands.push(("Stop".to_string(), "idle".to_string()));
-        hook_commands.push(("Notification".to_string(), "waiting".to_string()));
 
         Self {
             settings_paths,
@@ -276,10 +273,12 @@ mod tests {
         assert!(text.contains("PreToolUse"));
         assert!(text.contains("Stop"));
         assert!(text.contains("Notification"));
+        assert!(text.contains("SessionStart"));
+        assert!(text.contains("SessionEnd"));
     }
 
     #[test]
-    fn test_cursor_agent_shows_cursor_path() {
+    fn test_agent_without_hooks_shows_nothing() {
         let dialog = HooksInstallDialog::new("cursor");
         let lines = dialog.build_content_lines();
         let text: String = lines
@@ -287,6 +286,7 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains(".cursor/settings.json"));
+        assert!(!text.contains(".cursor/"));
+        assert!(!text.contains("PreToolUse"));
     }
 }

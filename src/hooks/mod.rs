@@ -1,8 +1,10 @@
-//! Claude Code hooks management for status detection.
+//! Agent hook management for status detection.
 //!
-//! AoE installs hooks into Claude Code's `settings.json` that write session
-//! status (`running`/`waiting`/`idle`) to a file. This provides reliable
-//! status detection without parsing tmux pane content.
+//! AoE installs hooks into an agent's settings file that write session
+//! status (`running`/`waiting`/`idle`) to a sidecar file. This provides
+//! reliable status detection without parsing tmux pane content.
+//!
+//! Hook events are agent-specific and defined in `AgentHookConfig::events`.
 
 mod status_file;
 
@@ -49,23 +51,14 @@ fn aoe_hook_command() -> String {
     format!("{binary} hook-handler")
 }
 
-/// Build the complete AoE hooks JSON structure.
-fn build_aoe_hooks() -> Value {
+/// Build the AoE hooks JSON structure from agent-defined events.
+fn build_aoe_hooks(events: &[crate::agents::HookEvent]) -> Value {
     let command = aoe_hook_command();
 
-    let events: &[(&str, Option<&str>)] = &[
-        ("PreToolUse", None),
-        ("UserPromptSubmit", None),
-        ("Stop", None),
-        ("Notification", Some("permission_prompt|elicitation_dialog")),
-        ("SessionStart", None),
-        ("SessionEnd", None),
-    ];
-
     let mut hooks_obj = serde_json::Map::new();
-    for &(event, matcher) in events {
+    for event in events {
         let mut entry = serde_json::Map::new();
-        if let Some(m) = matcher {
+        if let Some(m) = event.matcher {
             entry.insert("matcher".to_string(), Value::String(m.to_string()));
         }
         entry.insert(
@@ -75,7 +68,10 @@ fn build_aoe_hooks() -> Value {
                 "command": command
             })]),
         );
-        hooks_obj.insert(event.to_string(), Value::Array(vec![Value::Object(entry)]));
+        hooks_obj.insert(
+            event.name.to_string(),
+            Value::Array(vec![Value::Object(entry)]),
+        );
     }
 
     Value::Object(hooks_obj)
@@ -102,7 +98,7 @@ fn remove_aoe_entries(matchers: &mut Vec<Value>) {
 /// any user-defined hooks. Existing AoE hooks are replaced (idempotent).
 ///
 /// If the file doesn't exist, it will be created with just the hooks.
-pub fn install_hooks(settings_path: &Path) -> Result<()> {
+pub fn install_hooks(settings_path: &Path, events: &[crate::agents::HookEvent]) -> Result<()> {
     let mut settings: Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)?;
         serde_json::from_str(&content).unwrap_or_else(|e| {
@@ -113,7 +109,7 @@ pub fn install_hooks(settings_path: &Path) -> Result<()> {
         serde_json::json!({})
     };
 
-    let aoe_hooks = build_aoe_hooks();
+    let aoe_hooks = build_aoe_hooks(events);
 
     if !settings.get("hooks").is_some_and(|h| h.is_object()) {
         settings
@@ -246,12 +242,21 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn claude_events() -> &'static [crate::agents::HookEvent] {
+        crate::agents::get_agent("claude")
+            .unwrap()
+            .hook_config
+            .as_ref()
+            .unwrap()
+            .events
+    }
+
     #[test]
     fn test_install_hooks_creates_new_file() {
         let tmp = TempDir::new().unwrap();
         let settings_path = tmp.path().join(".claude").join("settings.json");
 
-        install_hooks(&settings_path).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
 
         let content: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
@@ -287,7 +292,7 @@ mod tests {
         )
         .unwrap();
 
-        install_hooks(&settings_path).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
 
         let content: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
@@ -311,8 +316,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let settings_path = tmp.path().join("settings.json");
 
-        install_hooks(&settings_path).unwrap();
-        install_hooks(&settings_path).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
 
         let content: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
@@ -338,7 +343,7 @@ mod tests {
         )
         .unwrap();
 
-        install_hooks(&settings_path).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
 
         let content: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
@@ -376,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_notification_hook_has_matcher() {
-        let hooks = build_aoe_hooks();
+        let hooks = build_aoe_hooks(claude_events());
         let notification = hooks["Notification"].as_array().unwrap();
         assert_eq!(notification.len(), 1);
         let matcher = notification[0]["matcher"].as_str().unwrap();
@@ -387,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_stop_hook_uses_binary_handler() {
-        let hooks = build_aoe_hooks();
+        let hooks = build_aoe_hooks(claude_events());
         let stop = hooks["Stop"].as_array().unwrap();
         let cmd = stop[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(
@@ -399,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_hooks_are_synchronous() {
-        let hooks = build_aoe_hooks();
+        let hooks = build_aoe_hooks(claude_events());
         for (_, matchers) in hooks.as_object().unwrap() {
             for matcher in matchers.as_array().unwrap() {
                 for hook in matcher["hooks"].as_array().unwrap() {
@@ -419,7 +424,7 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
 
         // Install hooks first
-        install_hooks(&settings_path).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
 
         // Verify they're there
         let content: Value =
@@ -463,7 +468,7 @@ mod tests {
         )
         .unwrap();
 
-        install_hooks(&settings_path).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
         let modified = uninstall_hooks(&settings_path).unwrap();
         assert!(modified);
 
@@ -548,7 +553,7 @@ mod tests {
         )
         .unwrap();
 
-        install_hooks(&settings_path).unwrap();
+        install_hooks(&settings_path, claude_events()).unwrap();
 
         let content: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
