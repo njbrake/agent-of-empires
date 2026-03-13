@@ -646,9 +646,10 @@ pub(crate) fn is_valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-/// Apply yolo mode to a command string. For `CliFlag`, appends the flag. For `EnvVar`,
-/// prepends `KEY=VALUE` as an inline shell variable (only applicable on the host;
-/// sandboxed sessions pass env vars via Docker `-e` flags instead).
+/// Dispatch agent-specific session ID capture from the host filesystem.
+///
+/// Tries each supported agent's capture strategy in order, returning the first
+/// successfully captured session ID, or `None` if no agent produced a result.
 pub(crate) fn capture_from_host(
     tool: &str,
     project_path: &str,
@@ -756,6 +757,7 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    #[test]
     fn test_generate_claude_session_id() {
         let id = generate_claude_session_id();
 
@@ -771,7 +773,7 @@ mod tests {
         assert_eq!(ids.len(), unique_ids.len());
     }
 
-    // Test that instance with agent_session_id can be serialized and deserialized
+    #[test]
     fn test_is_valid_session_id() {
         assert!(is_valid_session_id("abc-123"));
         assert!(is_valid_session_id("session_id.v2"));
@@ -787,6 +789,7 @@ mod tests {
         assert!(!is_valid_session_id(&"x".repeat(257)));
     }
 
+    #[test]
     fn test_opencode_directory_matching() {
         let sessions_json = serde_json::json!([
             {"id": "wrong-session", "directory": "/home/user/other-project", "updated": 1735689600000_u64},
