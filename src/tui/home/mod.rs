@@ -766,8 +766,11 @@ impl HomeView {
                         .get_instance(id.as_str())
                         .map(|i| i.source_profile.clone());
                 }
-                crate::session::Item::Group { path, .. } => {
-                    // Find any instance in this group to determine its profile
+                crate::session::Item::Group { profile, path, .. } => {
+                    if let Some(p) = profile {
+                        return Some(p.clone());
+                    }
+                    // Fallback for single-profile mode: find any instance in this group
                     return self
                         .instances
                         .iter()

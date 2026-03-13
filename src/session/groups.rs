@@ -203,6 +203,8 @@ pub enum Item {
         depth: usize,
         collapsed: bool,
         session_count: usize,
+        /// Which profile this group belongs to (set in all-profiles mode)
+        profile: Option<String>,
     },
     Session {
         id: String,
@@ -284,7 +286,7 @@ pub fn flatten_tree_all_profiles(
     }
 
     // Collect and flatten groups from all profiles at depth 0
-    let mut all_roots: Vec<(&Group, Vec<Instance>)> = Vec::new();
+    let mut all_roots: Vec<(&str, &Group, Vec<Instance>)> = Vec::new();
     for (profile_name, tree) in group_trees {
         let profile_instances: Vec<Instance> = instances
             .iter()
@@ -292,25 +294,32 @@ pub fn flatten_tree_all_profiles(
             .cloned()
             .collect();
         for root in tree.get_roots() {
-            all_roots.push((root, profile_instances.clone()));
+            all_roots.push((profile_name, root, profile_instances.clone()));
         }
     }
 
     match sort_order {
         SortOrder::Oldest => {
-            all_roots.sort_by_key(|(g, insts)| min_created_at_in_group(&g.path, insts));
+            all_roots.sort_by_key(|(_, g, insts)| min_created_at_in_group(&g.path, insts));
         }
         SortOrder::Newest => {
-            all_roots.sort_by_key(|(g, insts)| Reverse(max_created_at_in_group(&g.path, insts)));
+            all_roots.sort_by_key(|(_, g, insts)| Reverse(max_created_at_in_group(&g.path, insts)));
         }
-        _ => all_roots.sort_by_key(|(g, _)| g.name.to_lowercase()),
+        _ => all_roots.sort_by_key(|(_, g, _)| g.name.to_lowercase()),
     }
     if matches!(sort_order, SortOrder::ZA) {
         all_roots.reverse();
     }
 
-    for (root, profile_instances) in &all_roots {
-        flatten_group(root, profile_instances, &mut items, 0, sort_order);
+    for (profile_name, root, profile_instances) in &all_roots {
+        flatten_group(
+            root,
+            profile_instances,
+            &mut items,
+            0,
+            sort_order,
+            Some(profile_name),
+        );
     }
 
     items
@@ -356,7 +365,7 @@ pub fn flatten_tree(
     }
 
     for root in roots_to_iterate {
-        flatten_group(root, instances, &mut items, 0, sort_order);
+        flatten_group(root, instances, &mut items, 0, sort_order, None);
     }
 
     items
@@ -368,6 +377,7 @@ fn flatten_group(
     items: &mut Vec<Item>,
     depth: usize,
     sort_order: SortOrder,
+    profile: Option<&str>,
 ) {
     let session_count = count_sessions_in_group(&group.path, instances);
 
@@ -377,6 +387,7 @@ fn flatten_group(
         depth,
         collapsed: group.collapsed,
         session_count,
+        profile: profile.map(|s| s.to_string()),
     });
 
     if group.collapsed {
@@ -416,7 +427,7 @@ fn flatten_group(
     }
 
     for child in children_to_iterate {
-        flatten_group(child, instances, items, depth + 1, sort_order);
+        flatten_group(child, instances, items, depth + 1, sort_order, profile);
     }
 }
 
