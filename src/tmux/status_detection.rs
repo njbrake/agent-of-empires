@@ -30,6 +30,10 @@ pub fn detect_claude_status(_content: &str) -> Status {
     Status::Idle
 }
 
+/// OpenCode status detection via tmux pane parsing.
+/// This serves as a fallback when the plugin-based hook hasn't written a status
+/// file yet (e.g. first few seconds after launch, or if the plugin fails to load).
+/// When hooks are working, `update_status()` reads the hook file first and skips this.
 pub fn detect_opencode_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -50,7 +54,6 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
     let last_lines_lower = last_lines.to_lowercase();
 
     // RUNNING: OpenCode shows "esc to interrupt" when busy (same as Claude Code)
-    // Only check in last lines to avoid matching comments/code in terminal output
     if last_lines_lower.contains("esc to interrupt") || last_lines_lower.contains("esc interrupt") {
         return Status::Running;
     }
@@ -64,13 +67,11 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
     }
 
     // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
-    // Only check in last lines to avoid matching comments/code
     if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
         return Status::Waiting;
     }
 
     // WAITING: Permission/confirmation prompts
-    // Only check in last lines
     let permission_prompts = [
         "(y/n)",
         "[y/n]",
@@ -117,8 +118,7 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         }
     }
 
-    // WAITING - Completion indicators + input prompt nearby
-    // Only check in last lines
+    // WAITING: Completion indicators + input prompt nearby
     let completion_indicators = [
         "complete",
         "done",
@@ -548,16 +548,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_claude_status_is_stub() {
-        // Claude/Cursor use hook-based detection; the stub always returns Idle
+    fn test_hook_based_stubs_return_idle() {
+        // Claude/Cursor use hook-based detection; the stubs always return Idle
         assert_eq!(detect_claude_status("anything"), Status::Idle);
         assert_eq!(detect_cursor_status("anything"), Status::Idle);
-    }
-
-    #[test]
-    fn test_detect_status_from_content_unknown_tool_returns_idle() {
-        let status = detect_status_from_content("Processing ⠋", "unknown_tool", None);
-        assert_eq!(status, Status::Idle);
     }
 
     #[test]
@@ -617,6 +611,12 @@ mod tests {
     #[test]
     fn test_detect_opencode_status_double_prompt() {
         assert_eq!(detect_opencode_status("Ready\n>>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_status_from_content_unknown_tool_returns_idle() {
+        let status = detect_status_from_content("Processing ⠋", "unknown_tool", None);
+        assert_eq!(status, Status::Idle);
     }
 
     #[test]

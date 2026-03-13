@@ -5,7 +5,8 @@
 //! if the detection logic no longer works.
 //!
 //! Note: Claude Code and Cursor use hook-based detection (not tmux pane parsing),
-//! so they have no fixture-based tests here.
+//! so they have no fixture-based tests here. OpenCode uses hooks with tmux pane
+//! parsing as a fallback, so it still has fixture tests.
 //!
 //! Each state is a directory containing one or more fixture files. This allows
 //! users to submit additional screenshots for bug reports, and all examples
