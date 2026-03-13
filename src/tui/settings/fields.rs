@@ -80,6 +80,7 @@ pub enum FieldKey {
     MountSsh,
     CustomInstruction,
     ContainerRuntime,
+    CommandWrapper,
     // Tmux
     StatusBar,
     Mouse,
@@ -462,6 +463,12 @@ fn build_sandbox_fields(
         global.sandbox.container_runtime,
         sb.and_then(|s| s.container_runtime),
     );
+    let (command_wrapper, o_cw) = resolve_optional(
+        scope,
+        global.sandbox.command_wrapper.clone(),
+        sb.and_then(|s| s.command_wrapper.clone()),
+        sb.map(|s| s.command_wrapper.is_some()).unwrap_or(false),
+    );
 
     let terminal_mode_selected = match default_terminal_mode {
         DefaultTerminalMode::Host => 0,
@@ -583,6 +590,14 @@ fn build_sandbox_fields(
             },
             category: SettingsCategory::Sandbox,
             has_override: o_cr,
+        },
+        SettingField {
+            key: FieldKey::CommandWrapper,
+            label: "Command Wrapper",
+            description: "Command prefix for non-sandboxed sessions (e.g. safehouse --env --enable=docker --)",
+            value: FieldValue::OptionalText(command_wrapper),
+            category: SettingsCategory::Sandbox,
+            has_override: o_cw,
         },
     ]
 }
@@ -1010,6 +1025,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => ContainerRuntimeName::AppleContainer,
             };
         }
+        (FieldKey::CommandWrapper, FieldValue::OptionalText(v)) => {
+            config.sandbox.command_wrapper = v.clone();
+        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             config.tmux.status_bar = match selected {
@@ -1290,6 +1308,19 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &mut config.sandbox,
                 |s, val| s.container_runtime = val,
             );
+        }
+        (FieldKey::CommandWrapper, FieldValue::OptionalText(v)) => {
+            if *v == global.sandbox.command_wrapper {
+                if let Some(ref mut s) = config.sandbox {
+                    s.command_wrapper = None;
+                }
+            } else {
+                use crate::session::SandboxConfigOverride;
+                let s = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                s.command_wrapper = v.clone();
+            }
         }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {

@@ -422,6 +422,8 @@ impl Instance {
                 }
             }
 
+            let wrapper = resolved_config.sandbox.command_wrapper.as_deref();
+
             if self.command.is_empty() {
                 crate::agents::get_agent(&self.tool)
                     .filter(|a| a.supports_host_launch)
@@ -439,6 +441,9 @@ impl Instance {
                                 }
                             }
                         }
+                        if let Some(w) = wrapper {
+                            cmd = format!("{} {}", w, cmd);
+                        }
                         wrap_command_ignore_suspend(&cmd, Some(&self.id))
                     })
             } else {
@@ -455,6 +460,9 @@ impl Instance {
                             }
                         }
                     }
+                }
+                if let Some(w) = wrapper {
+                    cmd = format!("{} {}", w, cmd);
                 }
                 Some(wrap_command_ignore_suspend(&cmd, Some(&self.id)))
             }

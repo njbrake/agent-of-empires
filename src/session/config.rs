@@ -255,6 +255,12 @@ pub struct SandboxConfig {
     /// Container runtime to use for sandboxing (docker or apple_container)
     #[serde(default)]
     pub container_runtime: ContainerRuntimeName,
+
+    /// Command wrapper prepended to agent commands for non-sandboxed sessions.
+    /// Useful for tools like safehouse that provide OS-level sandboxing without containers.
+    /// Example: "safehouse --env --enable=docker,shell-init --"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_wrapper: Option<String>,
 }
 
 /// Container runtime options for sandboxing
@@ -282,6 +288,7 @@ impl Default for SandboxConfig {
             mount_ssh: false,
             custom_instruction: None,
             container_runtime: ContainerRuntimeName::default(),
+            command_wrapper: None,
         }
     }
 }
