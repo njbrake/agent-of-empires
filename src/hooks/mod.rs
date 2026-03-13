@@ -11,14 +11,23 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::Value;
 
-pub use status_file::{cleanup_hook_status_dir, hook_status_dir, read_hook_status};
+pub use status_file::{
+    cleanup_hook_status_dir, hook_status_dir, read_hook_session_id, read_hook_status,
+};
 
 /// Base directory for all AoE hook status files.
 pub(crate) const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
 
-/// Marker substring used to identify AoE-managed hooks in settings.json.
-/// Any hook command containing this string is considered ours.
-const AOE_HOOK_MARKER: &str = "aoe-hooks";
+/// Marker substrings that identify AoE-managed hooks in settings.json.
+/// Any hook command containing ANY of these strings is considered ours.
+/// The first entry is the legacy shell one-liner marker (path-based).
+/// The second entry matches the binary hook-handler command format.
+const AOE_HOOK_MARKERS: &[&str] = &["aoe-hooks", "aoe hook-handler"];
+
+/// Check if a command string is an AoE-managed hook.
+fn is_aoe_hook_command(cmd: &str) -> bool {
+    AOE_HOOK_MARKERS.iter().any(|marker| cmd.contains(marker))
+}
 
 /// Build the shell command for a hook that writes a status value.
 fn hook_command(status: &str) -> String {
@@ -71,7 +80,7 @@ fn remove_aoe_entries(matchers: &mut Vec<Value>) {
         !hooks_arr.iter().all(|hook| {
             hook.get("command")
                 .and_then(|c| c.as_str())
-                .is_some_and(|cmd| cmd.contains(AOE_HOOK_MARKER))
+                .is_some_and(is_aoe_hook_command)
         })
     });
 }
@@ -281,7 +290,7 @@ mod tests {
         // AoE hook added
         let aoe_hook = &pre_tool[1];
         let cmd = aoe_hook["hooks"][0]["command"].as_str().unwrap();
-        assert!(cmd.contains(AOE_HOOK_MARKER));
+        assert!(is_aoe_hook_command(cmd));
     }
 
     #[test]
@@ -502,5 +511,143 @@ mod tests {
         remove_aoe_entries(&mut matchers);
         assert_eq!(matchers.len(), 1);
         assert_eq!(matchers[0]["matcher"], "Bash");
+    }
+
+    #[test]
+    fn test_install_replaces_old_format_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+
+        let old_hooks = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] || exit 0; mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID && printf running > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'"
+                    }]
+                }]
+            }
+        });
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&old_hooks).unwrap(),
+        )
+        .unwrap();
+
+        install_hooks(&settings_path).unwrap();
+
+        let content: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let pre_tool = &content["hooks"]["PreToolUse"];
+        let all_cmds: Vec<String> = pre_tool
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|m| m["hooks"].as_array().unwrap())
+            .filter_map(|h| h["command"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert_eq!(
+            all_cmds.len(),
+            1,
+            "Expected exactly 1 hook after reinstall, got: {:?}",
+            all_cmds
+        );
+    }
+
+    #[test]
+    fn test_remove_new_format_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+
+        let new_hooks = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/local/bin/aoe hook-handler"
+                    }]
+                }]
+            }
+        });
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&new_hooks).unwrap(),
+        )
+        .unwrap();
+
+        uninstall_hooks(&settings_path).unwrap();
+
+        let content: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let hooks_obj = content.get("hooks").and_then(|h| h.as_object());
+        let pre_tool = hooks_obj.and_then(|o| o.get("PreToolUse"));
+        assert!(
+            pre_tool
+                .map(|v| v.as_array().map(|a| a.is_empty()).unwrap_or(true))
+                .unwrap_or(true),
+            "New-format hook was not removed by uninstall"
+        );
+    }
+
+    #[test]
+    fn test_remove_mixed_format_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+
+        let mixed_hooks = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "sh -c 'mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID && printf running > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'"
+                        }]
+                    },
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/usr/local/bin/aoe hook-handler"
+                        }]
+                    },
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "echo user_hook"
+                        }]
+                    }
+                ]
+            }
+        });
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&mixed_hooks).unwrap(),
+        )
+        .unwrap();
+
+        uninstall_hooks(&settings_path).unwrap();
+
+        let content: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let pre_tool = &content["hooks"]["PreToolUse"];
+        let cmds: Vec<String> = pre_tool
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .flat_map(|m| {
+                m["hooks"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .filter_map(|h| h["command"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert_eq!(
+            cmds,
+            vec!["echo user_hook"],
+            "Expected only user hook to remain, got: {:?}",
+            cmds
+        );
     }
 }

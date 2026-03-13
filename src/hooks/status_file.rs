@@ -34,6 +34,20 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
     }
 }
 
+/// Read the hook-written session_id sidecar file for the given instance.
+///
+/// Returns `None` if the file doesn't exist or contains an invalid session ID.
+/// The file is written by `aoe hook-handler` from the Claude Code hook payload.
+pub fn read_hook_session_id(instance_id: &str) -> Option<String> {
+    let session_id_path = hook_status_dir(instance_id).join("session_id");
+    let content = std::fs::read_to_string(&session_id_path).ok()?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    crate::session::capture::validated_session_id(trimmed)
+}
+
 /// Remove the hook status directory for a given instance (cleanup on stop/delete).
 pub fn cleanup_hook_status_dir(instance_id: &str) {
     let dir = hook_status_dir(instance_id);
@@ -54,6 +68,15 @@ mod tests {
         let dir = hook_status_dir(instance_id);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("status");
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        dir
+    }
+
+    fn setup_session_id_file(instance_id: &str, content: &str) -> PathBuf {
+        let dir = hook_status_dir(instance_id);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session_id");
         let mut f = fs::File::create(&path).unwrap();
         f.write_all(content.as_bytes()).unwrap();
         dir
@@ -133,5 +156,56 @@ mod tests {
     fn test_hook_status_dir_path() {
         let dir = hook_status_dir("abc123");
         assert_eq!(dir, PathBuf::from("/tmp/aoe-hooks/abc123"));
+    }
+
+    #[test]
+    fn test_read_valid_session_id() {
+        let id = "test_read_valid_session_id";
+        let dir = setup_session_id_file(id, "test-session-id-123");
+        let result = read_hook_session_id(id);
+        assert!(result.is_some(), "Expected Some for valid session ID");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_missing_session_id_file() {
+        let result = read_hook_session_id("nonexistent_session_id_instance");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_read_empty_session_id_file() {
+        let id = "test_read_empty_session_id";
+        let dir = setup_session_id_file(id, "");
+        assert_eq!(read_hook_session_id(id), None);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_whitespace_session_id_file() {
+        let id = "test_read_whitespace_session_id";
+        let dir = setup_session_id_file(id, "   \n  ");
+        assert_eq!(read_hook_session_id(id), None);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_session_id_with_newline() {
+        let id = "test_read_session_id_newline";
+        let dir = setup_session_id_file(id, "test-session-id-456\n");
+        let result = read_hook_session_id(id);
+        assert!(
+            result.is_some(),
+            "Expected Some for session ID with newline"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_invalid_session_id() {
+        let id = "test_read_invalid_session_id";
+        let dir = setup_session_id_file(id, "invalid@session#id");
+        assert_eq!(read_hook_session_id(id), None);
+        fs::remove_dir_all(dir).ok();
     }
 }
