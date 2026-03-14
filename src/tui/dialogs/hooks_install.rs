@@ -104,7 +104,9 @@ impl HooksInstallDialog {
             "Each hook runs:",
             Style::default().bold(),
         )));
-        lines.push(Line::from("  printf {status} > /tmp/aoe-hooks/$ID/status"));
+        lines.push(Line::from(
+            "  aoe hook-handler (reads event JSON from stdin)",
+        ));
 
         lines.push(Line::from(""));
         lines.push(Line::from(
