@@ -201,6 +201,13 @@ impl Instance {
             self.apply_terminal_tmux_options();
         }
 
+        // Set the tmux window name to "Agent(agent_name)"
+        if is_new {
+            if let Err(e) = session.set_window_name(&self.tool) {
+                tracing::warn!("Failed to set tmux window name: {}", e);
+            }
+        }
+
         self.terminal_info = Some(TerminalInfo {
             created: true,
             created_at: Some(Utc::now()),
@@ -255,6 +262,13 @@ impl Instance {
         if is_new {
             session.create_with_size(&self.project_path, Some(&cmd), size)?;
             self.apply_container_terminal_tmux_options();
+        }
+
+        // Set the tmux window name to "Agent(agent_name)"
+        if is_new {
+            if let Err(e) = session.set_window_name(&self.tool) {
+                tracing::warn!("Failed to set tmux window name: {}", e);
+            }
         }
 
         Ok(())
@@ -463,6 +477,11 @@ impl Instance {
 
         // Apply all configured tmux options (status bar, mouse, etc.)
         self.apply_tmux_options();
+
+        // Set the tmux window name to "Agent(agent_name)"
+        if let Err(e) = session.set_window_name(&self.tool) {
+            tracing::warn!("Failed to set tmux window name: {}", e);
+        }
 
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
