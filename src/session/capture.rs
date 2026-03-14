@@ -1585,7 +1585,11 @@ mod tests {
         std::fs::write(&old_file, "old data\n").unwrap();
         // Set old file's mtime to 10 minutes ago
         let ten_min_ago = std::time::SystemTime::now() - Duration::from_secs(600);
-        filetime::set_file_mtime(&old_file, filetime::FileTime::from_system_time(ten_min_ago))
+        std::fs::File::options()
+            .write(true)
+            .open(&old_file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(ten_min_ago))
             .unwrap();
         std::fs::write(&new_file, "new data\n").unwrap();
 
@@ -1663,7 +1667,12 @@ mod tests {
 
         // Set mtime to 10 minutes ago (beyond 5-minute threshold)
         let stale_time = std::time::SystemTime::now() - Duration::from_secs(600);
-        filetime::set_file_mtime(&file, filetime::FileTime::from_system_time(stale_time)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale_time))
+            .unwrap();
 
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
