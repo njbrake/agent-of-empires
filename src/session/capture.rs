@@ -87,7 +87,7 @@ fn encode_claude_project_path(project_path: &str) -> String {
         .collect()
 }
 
-/// Scan Claude Code's project directory for the most recently active session.
+/// Capture Claude Code session ID from the most recently active project directory.
 ///
 /// Claude stores conversation files as `{uuid}.jsonl` under
 /// `~/.claude/projects/{encoded-path}/`. This function finds the most recently
@@ -154,12 +154,7 @@ pub(crate) fn capture_claude_session_id(
     Ok(session_id)
 }
 
-/// Create a polling closure for Claude Code that scans project session files.
-///
-/// Each invocation rebuilds the exclusion set from other AoE instances and
-/// scans `~/.claude/projects/{encoded-path}/` for the most recently modified
-/// UUID-named `.jsonl` file. The poller's adaptive interval handles rate
-/// limiting: under stable conditions it backs off to 60s.
+/// Polling closure for Claude Code session tracking.
 pub(crate) fn claude_poll_fn(
     project_path: String,
     instance_id: String,
@@ -172,7 +167,7 @@ pub(crate) fn claude_poll_fn(
     }
 }
 
-/// Polling closure for Codex CLI that re-runs filesystem capture.
+/// Polling closure for Codex CLI session tracking.
 pub(crate) fn codex_poll_fn(
     project_path: String,
     instance_id: String,
@@ -185,7 +180,7 @@ pub(crate) fn codex_poll_fn(
     }
 }
 
-/// Polling closure for Gemini CLI that re-runs filesystem capture.
+/// Polling closure for Gemini CLI session tracking.
 pub(crate) fn gemini_poll_fn(
     project_path: String,
     instance_id: String,
@@ -198,7 +193,7 @@ pub(crate) fn gemini_poll_fn(
     }
 }
 
-/// Polling closure for Vibe (Mistral) that re-runs filesystem capture.
+/// Polling closure for Vibe (Mistral) session tracking.
 pub(crate) fn vibe_poll_fn(
     project_path: String,
     instance_id: String,
@@ -211,11 +206,7 @@ pub(crate) fn vibe_poll_fn(
     }
 }
 
-/// Create a polling closure for OpenCode that re-runs `try_capture_opencode_session_id`.
-///
-/// Each invocation rebuilds the exclusion set from other AoE instances and invokes
-/// the single-attempt capture. The poller's adaptive interval prevents hammering;
-/// under stable conditions polls back off to 60s.
+/// Polling closure for OpenCode session tracking.
 pub(crate) fn opencode_poll_fn(
     project_path: String,
     instance_id: String,
