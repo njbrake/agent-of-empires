@@ -39,7 +39,7 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 | Variable | Description |
 |----------|-------------|
 | `AGENT_OF_EMPIRES_PROFILE` | Default profile to use |
-| `AGENT_OF_EMPIRES_DEBUG` | Enable debug logging (`1` to enable) |
+| `AGENT_OF_EMPIRES_DEBUG` | Enable debug logging to `debug.log` in app data dir (`1` to enable) |
 
 ## Session
 
