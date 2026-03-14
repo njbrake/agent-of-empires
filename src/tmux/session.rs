@@ -129,6 +129,14 @@ impl Session {
         Ok(())
     }
 
+    /// Set the tmux window name to "Agent(agent_name)".
+    pub fn set_window_name(&self, agent_name: &str) -> Result<()> {
+        if !self.exists() {
+            return Ok(());
+        }
+        super::set_window_name(&self.name, agent_name)
+    }
+
     pub fn attach(&self) -> Result<()> {
         if !self.exists() {
             bail!("Session does not exist: {}", self.name);

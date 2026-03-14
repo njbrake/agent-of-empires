@@ -154,6 +154,14 @@ impl TerminalSession {
             Ok(String::new())
         }
     }
+
+    /// Set the tmux window name to "Agent(agent_name)".
+    pub fn set_window_name(&self, agent_name: &str) -> Result<()> {
+        if !self.exists() {
+            return Ok(());
+        }
+        super::set_window_name(&self.name, agent_name)
+    }
 }
 
 /// Container terminal session for sandboxed sessions.
@@ -302,6 +310,14 @@ impl ContainerTerminalSession {
         } else {
             Ok(String::new())
         }
+    }
+
+    /// Set the tmux window name to "Agent(agent_name)".
+    pub fn set_window_name(&self, agent_name: &str) -> Result<()> {
+        if !self.exists() {
+            return Ok(());
+        }
+        super::set_window_name(&self.name, agent_name)
     }
 }
 

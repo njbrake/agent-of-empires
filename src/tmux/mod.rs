@@ -20,6 +20,20 @@ pub const SESSION_PREFIX: &str = "aoe_";
 pub const TERMINAL_PREFIX: &str = "aoe_term_";
 pub const CONTAINER_TERMINAL_PREFIX: &str = "aoe_cterm_";
 
+/// Set the tmux window name to "Agent(agent_name)".
+pub fn set_window_name(session_name: &str, agent_name: &str) -> anyhow::Result<()> {
+    let window_name = format!("Agent({})", agent_name);
+    let output = Command::new("tmux")
+        .args(["rename-window", "-t", session_name, &window_name])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to rename tmux window: {}", stderr);
+    }
+    Ok(())
+}
+
 static SESSION_CACHE: RwLock<SessionCache> = RwLock::new(SessionCache {
     data: None,
     time: None,
