@@ -11,7 +11,7 @@ use chrono::Utc;
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::git::GitWorktree;
 
-use super::{civilizations, Instance, SandboxInfo, WorktreeInfo};
+use super::{civilizations, Config, Instance, SandboxInfo, WorktreeInfo};
 
 /// Parameters for creating a new session instance.
 #[derive(Debug, Clone)]
@@ -68,7 +68,10 @@ pub fn build_instance(
         }
     }
 
-    let config = super::profile_config::resolve_config(profile).unwrap_or_default();
+    let config = super::profile_config::resolve_config(profile).unwrap_or_else(|e| {
+        tracing::warn!("Failed to load config, using defaults: {}", e);
+        Config::default()
+    });
 
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()
