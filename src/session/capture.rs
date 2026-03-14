@@ -595,7 +595,7 @@ pub(crate) fn capture_gemini_session_id(
 ) -> Result<String> {
     use sha2::{Digest, Sha256};
 
-    let gemini_home = resolve_agent_home(None, ".gemini")?;
+    let gemini_home = resolve_agent_home(Some("GEMINI_CLI_HOME"), ".gemini")?;
     let tmp_dir = gemini_home.join("tmp");
 
     if !tmp_dir.exists() {
