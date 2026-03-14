@@ -130,7 +130,7 @@ cargo fmt            # Format
 cargo clippy         # Lint
 cargo build --release  # Release build
 
-# Debug logging
+# Debug logging (writes to debug.log in app data dir)
 AGENT_OF_EMPIRES_DEBUG=1 cargo run
 ```
 
