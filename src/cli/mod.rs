@@ -3,6 +3,7 @@
 pub mod add;
 pub mod definition;
 pub mod group;
+pub mod hook_handler;
 pub mod init;
 pub mod list;
 pub mod profile;

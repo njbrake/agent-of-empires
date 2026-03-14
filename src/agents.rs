@@ -24,11 +24,23 @@ pub enum YoloMode {
     AlwaysYolo,
 }
 
+/// A single hook event that AoE registers in an agent's settings file.
+pub struct HookEvent {
+    /// Event name as the agent expects it (e.g. `"PreToolUse"` for Claude Code).
+    pub name: &'static str,
+    /// Optional matcher pattern (e.g. `"permission_prompt|elicitation_dialog"`).
+    pub matcher: Option<&'static str>,
+    /// AoE status to write when this event fires (`"running"`, `"idle"`, `"waiting"`).
+    pub status: Option<&'static str>,
+}
+
 /// Configuration for installing status-detection hooks into an agent's settings file.
 pub struct AgentHookConfig {
-    /// Path relative to the project/home dir where the agent's settings live
+    /// Path relative to the home dir where the agent's settings live
     /// (e.g. `.claude/settings.json`).
     pub settings_rel_path: &'static str,
+    /// Hook events to register (status transitions).
+    pub events: &'static [HookEvent],
 }
 
 /// Everything we know about a single agent CLI.
@@ -60,6 +72,30 @@ pub struct AgentDef {
     pub hook_config: Option<AgentHookConfig>,
 }
 
+/// Hook events shared by Claude Code and Cursor CLI.
+const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
+    HookEvent {
+        name: "PreToolUse",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "UserPromptSubmit",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "Stop",
+        matcher: None,
+        status: Some("idle"),
+    },
+    HookEvent {
+        name: "Notification",
+        matcher: Some("permission_prompt|elicitation_dialog"),
+        status: Some("waiting"),
+    },
+];
+
 pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
@@ -74,6 +110,7 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[("CLAUDE_CONFIG_DIR", "/root/.claude")],
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".claude/settings.json",
+            events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
     },
     AgentDef {
@@ -128,7 +165,31 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: true,
         detect_status: status_detection::detect_gemini_status,
         container_env: &[],
-        hook_config: None,
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".gemini/settings.json",
+            events: &[
+                HookEvent {
+                    name: "BeforeTool",
+                    matcher: None,
+                    status: Some("running"),
+                },
+                HookEvent {
+                    name: "BeforeAgent",
+                    matcher: None,
+                    status: Some("running"),
+                },
+                HookEvent {
+                    name: "AfterAgent",
+                    matcher: None,
+                    status: Some("idle"),
+                },
+                HookEvent {
+                    name: "Notification",
+                    matcher: Some("ToolPermission"),
+                    status: Some("waiting"),
+                },
+            ],
+        }),
     },
     AgentDef {
         name: "cursor",
@@ -143,6 +204,7 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".cursor/settings.json",
+            events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
     },
     AgentDef {

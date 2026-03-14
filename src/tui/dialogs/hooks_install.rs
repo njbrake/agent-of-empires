@@ -22,14 +22,15 @@ impl HooksInstallDialog {
         if let Some(agent) = crate::agents::get_agent(tool_name) {
             if let Some(hook_cfg) = &agent.hook_config {
                 settings_paths.push(format!("~/{}", hook_cfg.settings_rel_path));
+                for event in hook_cfg.events {
+                    let label = match event.status {
+                        Some(s) => format!("writes \"{}\"", s),
+                        None => "session lifecycle".to_string(),
+                    };
+                    hook_commands.push((event.name.to_string(), label));
+                }
             }
         }
-
-        // Show the hook events and what they do
-        hook_commands.push(("PreToolUse".to_string(), "running".to_string()));
-        hook_commands.push(("UserPromptSubmit".to_string(), "running".to_string()));
-        hook_commands.push(("Stop".to_string(), "idle".to_string()));
-        hook_commands.push(("Notification".to_string(), "waiting".to_string()));
 
         Self {
             settings_paths,
@@ -95,7 +96,7 @@ impl HooksInstallDialog {
             Style::default().bold(),
         )));
         for (event, status) in &self.hook_commands {
-            lines.push(Line::from(format!("  {} -> writes \"{}\"", event, status)));
+            lines.push(Line::from(format!("  {} -> {}", event, status)));
         }
 
         lines.push(Line::from(""));
@@ -103,7 +104,9 @@ impl HooksInstallDialog {
             "Each hook runs:",
             Style::default().bold(),
         )));
-        lines.push(Line::from("  printf {status} > /tmp/aoe-hooks/$ID/status"));
+        lines.push(Line::from(
+            "  aoe hook-handler (reads event JSON from stdin)",
+        ));
 
         lines.push(Line::from(""));
         lines.push(Line::from(

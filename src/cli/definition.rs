@@ -94,6 +94,10 @@ pub enum Commands {
         command: SoundsCommands,
     },
 
+    /// Handle agent hook events (reads JSON from stdin)
+    #[command(hide = true)]
+    HookHandler,
+
     /// Uninstall Agent of Empires
     Uninstall(UninstallArgs),
 
