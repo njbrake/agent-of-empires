@@ -1,4 +1,4 @@
-//! tmux utility functions
+//! Tmux utilities: ANSI stripping, session naming, pane state checks.
 
 use std::process::Command;
 

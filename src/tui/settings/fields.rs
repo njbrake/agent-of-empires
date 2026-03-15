@@ -73,6 +73,13 @@ pub enum FieldKey {
     DefaultTool,
     AgentExtraArgs,
     AgentCommandOverride,
+    OpencodeMaxRetryAttempts,
+    OpencodeRetryDelaySecs,
+    OpencodeCommandTimeoutSecs,
+    OpencodeCaptureDeadlineSecs,
+    DeferredCaptureInitialDelaySecs,
+    DeferredCaptureMaxAttempts,
+    DeferredCaptureRetryDelaySecs,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -898,6 +905,139 @@ fn build_session_fields(
                 FieldValue::List(global_cmd_override_list),
             ),
         },
+        {
+            let (oc_max_retry, oc_max_retry_override) = resolve_value(
+                scope,
+                global.session.opencode_max_retry_attempts as u64,
+                session.and_then(|s| s.opencode_max_retry_attempts.map(|v| v as u64)),
+            );
+            SettingField {
+                key: FieldKey::OpencodeMaxRetryAttempts,
+                label: "OpenCode Max Retry Attempts",
+                description: "Max retry attempts for OpenCode session capture",
+                value: FieldValue::Number(oc_max_retry),
+                category: SettingsCategory::Session,
+                has_override: oc_max_retry_override,
+                inherited_display: inherited_if(
+                    oc_max_retry_override,
+                    FieldValue::Number(global.session.opencode_max_retry_attempts as u64),
+                ),
+            }
+        },
+        {
+            let (oc_retry_delay, oc_retry_delay_override) = resolve_value(
+                scope,
+                global.session.opencode_retry_delay_secs,
+                session.and_then(|s| s.opencode_retry_delay_secs),
+            );
+            SettingField {
+                key: FieldKey::OpencodeRetryDelaySecs,
+                label: "OpenCode Retry Delay (secs)",
+                description: "Delay between OpenCode session capture retries",
+                value: FieldValue::Number(oc_retry_delay),
+                category: SettingsCategory::Session,
+                has_override: oc_retry_delay_override,
+                inherited_display: inherited_if(
+                    oc_retry_delay_override,
+                    FieldValue::Number(global.session.opencode_retry_delay_secs),
+                ),
+            }
+        },
+        {
+            let (oc_cmd_timeout, oc_cmd_timeout_override) = resolve_value(
+                scope,
+                global.session.opencode_command_timeout_secs,
+                session.and_then(|s| s.opencode_command_timeout_secs),
+            );
+            SettingField {
+                key: FieldKey::OpencodeCommandTimeoutSecs,
+                label: "OpenCode Command Timeout (secs)",
+                description: "Timeout for OpenCode session list command",
+                value: FieldValue::Number(oc_cmd_timeout),
+                category: SettingsCategory::Session,
+                has_override: oc_cmd_timeout_override,
+                inherited_display: inherited_if(
+                    oc_cmd_timeout_override,
+                    FieldValue::Number(global.session.opencode_command_timeout_secs),
+                ),
+            }
+        },
+        {
+            let (oc_capture_deadline, oc_capture_deadline_override) = resolve_value(
+                scope,
+                global.session.opencode_capture_deadline_secs,
+                session.and_then(|s| s.opencode_capture_deadline_secs),
+            );
+            SettingField {
+                key: FieldKey::OpencodeCaptureDeadlineSecs,
+                label: "OpenCode Capture Deadline (secs)",
+                description: "Overall deadline for OpenCode session capture",
+                value: FieldValue::Number(oc_capture_deadline),
+                category: SettingsCategory::Session,
+                has_override: oc_capture_deadline_override,
+                inherited_display: inherited_if(
+                    oc_capture_deadline_override,
+                    FieldValue::Number(global.session.opencode_capture_deadline_secs),
+                ),
+            }
+        },
+        {
+            let (def_capture_initial, def_capture_initial_override) = resolve_value(
+                scope,
+                global.session.deferred_capture_initial_delay_secs,
+                session.and_then(|s| s.deferred_capture_initial_delay_secs),
+            );
+            SettingField {
+                key: FieldKey::DeferredCaptureInitialDelaySecs,
+                label: "Deferred Capture Initial Delay (secs)",
+                description: "Initial delay before deferred session capture starts",
+                value: FieldValue::Number(def_capture_initial),
+                category: SettingsCategory::Session,
+                has_override: def_capture_initial_override,
+                inherited_display: inherited_if(
+                    def_capture_initial_override,
+                    FieldValue::Number(global.session.deferred_capture_initial_delay_secs),
+                ),
+            }
+        },
+        {
+            let (def_capture_max, def_capture_max_override) = resolve_value(
+                scope,
+                global.session.deferred_capture_max_attempts as u64,
+                session.and_then(|s| s.deferred_capture_max_attempts.map(|v| v as u64)),
+            );
+            SettingField {
+                key: FieldKey::DeferredCaptureMaxAttempts,
+                label: "Deferred Capture Max Attempts",
+                description: "Max attempts for deferred session capture",
+                value: FieldValue::Number(def_capture_max),
+                category: SettingsCategory::Session,
+                has_override: def_capture_max_override,
+                inherited_display: inherited_if(
+                    def_capture_max_override,
+                    FieldValue::Number(global.session.deferred_capture_max_attempts as u64),
+                ),
+            }
+        },
+        {
+            let (def_capture_retry, def_capture_retry_override) = resolve_value(
+                scope,
+                global.session.deferred_capture_retry_delay_secs,
+                session.and_then(|s| s.deferred_capture_retry_delay_secs),
+            );
+            SettingField {
+                key: FieldKey::DeferredCaptureRetryDelaySecs,
+                label: "Deferred Capture Retry Delay (secs)",
+                description: "Delay between deferred session capture retries",
+                value: FieldValue::Number(def_capture_retry),
+                category: SettingsCategory::Session,
+                has_override: def_capture_retry_override,
+                inherited_display: inherited_if(
+                    def_capture_retry_override,
+                    FieldValue::Number(global.session.deferred_capture_retry_delay_secs),
+                ),
+            }
+        },
     ]
 }
 
@@ -1191,6 +1331,27 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::AgentCommandOverride, FieldValue::List(v)) => {
             config.session.agent_command_override = parse_key_value_list(v);
         }
+        (FieldKey::OpencodeMaxRetryAttempts, FieldValue::Number(v)) => {
+            config.session.opencode_max_retry_attempts = (*v).clamp(1, 100) as u32;
+        }
+        (FieldKey::OpencodeRetryDelaySecs, FieldValue::Number(v)) => {
+            config.session.opencode_retry_delay_secs = (*v).clamp(1, 60);
+        }
+        (FieldKey::OpencodeCommandTimeoutSecs, FieldValue::Number(v)) => {
+            config.session.opencode_command_timeout_secs = (*v).clamp(1, 120);
+        }
+        (FieldKey::OpencodeCaptureDeadlineSecs, FieldValue::Number(v)) => {
+            config.session.opencode_capture_deadline_secs = (*v).clamp(1, 300);
+        }
+        (FieldKey::DeferredCaptureInitialDelaySecs, FieldValue::Number(v)) => {
+            config.session.deferred_capture_initial_delay_secs = (*v).clamp(1, 60);
+        }
+        (FieldKey::DeferredCaptureMaxAttempts, FieldValue::Number(v)) => {
+            config.session.deferred_capture_max_attempts = (*v).clamp(1, 100) as u32;
+        }
+        (FieldKey::DeferredCaptureRetryDelaySecs, FieldValue::Number(v)) => {
+            config.session.deferred_capture_retry_delay_secs = (*v).clamp(1, 60);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
         (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
@@ -1381,6 +1542,43 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .session
                 .get_or_insert_with(SessionConfigOverride::default);
             s.agent_command_override = Some(map);
+        }
+        (FieldKey::OpencodeMaxRetryAttempts, FieldValue::Number(v)) => {
+            let val = (*v).clamp(1, 100) as u32;
+            set_profile_override(val, &mut config.session, |s, val| {
+                s.opencode_max_retry_attempts = val
+            });
+        }
+        (FieldKey::OpencodeRetryDelaySecs, FieldValue::Number(v)) => {
+            set_profile_override((*v).clamp(1, 60), &mut config.session, |s, val| {
+                s.opencode_retry_delay_secs = val
+            });
+        }
+        (FieldKey::OpencodeCommandTimeoutSecs, FieldValue::Number(v)) => {
+            set_profile_override((*v).clamp(1, 120), &mut config.session, |s, val| {
+                s.opencode_command_timeout_secs = val
+            });
+        }
+        (FieldKey::OpencodeCaptureDeadlineSecs, FieldValue::Number(v)) => {
+            set_profile_override((*v).clamp(1, 300), &mut config.session, |s, val| {
+                s.opencode_capture_deadline_secs = val
+            });
+        }
+        (FieldKey::DeferredCaptureInitialDelaySecs, FieldValue::Number(v)) => {
+            set_profile_override((*v).clamp(1, 60), &mut config.session, |s, val| {
+                s.deferred_capture_initial_delay_secs = val
+            });
+        }
+        (FieldKey::DeferredCaptureMaxAttempts, FieldValue::Number(v)) => {
+            let val = (*v).clamp(1, 100) as u32;
+            set_profile_override(val, &mut config.session, |s, val| {
+                s.deferred_capture_max_attempts = val
+            });
+        }
+        (FieldKey::DeferredCaptureRetryDelaySecs, FieldValue::Number(v)) => {
+            set_profile_override((*v).clamp(1, 60), &mut config.session, |s, val| {
+                s.deferred_capture_retry_delay_secs = val
+            });
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {

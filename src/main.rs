@@ -10,9 +10,24 @@ use clap_complete::generate;
 #[tokio::main]
 async fn main() -> Result<()> {
     if std::env::var("AGENT_OF_EMPIRES_DEBUG").is_ok() {
-        tracing_subscriber::fmt()
-            .with_env_filter("agent_of_empires=debug")
-            .init();
+        // Log to file to avoid corrupting the TUI on stderr.
+        let log_path = agent_of_empires::session::get_app_dir().map(|d| d.join("debug.log"));
+        let log_file = log_path
+            .as_ref()
+            .ok()
+            .and_then(|p| std::fs::File::create(p).ok());
+        if let Some(file) = log_file {
+            tracing_subscriber::fmt()
+                .with_env_filter("agent_of_empires=debug")
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false)
+                .init();
+            tracing::info!("Debug logging to {}", log_path.unwrap().display());
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter("agent_of_empires=debug")
+                .init();
+        }
     }
 
     let cli = Cli::parse();
@@ -33,6 +48,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Uninstall(args)) => return cli::uninstall::run(args).await,
+        Some(Commands::HookHandler) => return cli::hook_handler::run(),
         _ => {}
     }
 

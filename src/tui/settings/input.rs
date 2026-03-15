@@ -602,6 +602,41 @@ impl SettingsView {
                     s.agent_command_override = None;
                 }
             }
+            FieldKey::OpencodeMaxRetryAttempts => {
+                if let Some(ref mut s) = config.session {
+                    s.opencode_max_retry_attempts = None;
+                }
+            }
+            FieldKey::OpencodeRetryDelaySecs => {
+                if let Some(ref mut s) = config.session {
+                    s.opencode_retry_delay_secs = None;
+                }
+            }
+            FieldKey::OpencodeCommandTimeoutSecs => {
+                if let Some(ref mut s) = config.session {
+                    s.opencode_command_timeout_secs = None;
+                }
+            }
+            FieldKey::OpencodeCaptureDeadlineSecs => {
+                if let Some(ref mut s) = config.session {
+                    s.opencode_capture_deadline_secs = None;
+                }
+            }
+            FieldKey::DeferredCaptureInitialDelaySecs => {
+                if let Some(ref mut s) = config.session {
+                    s.deferred_capture_initial_delay_secs = None;
+                }
+            }
+            FieldKey::DeferredCaptureMaxAttempts => {
+                if let Some(ref mut s) = config.session {
+                    s.deferred_capture_max_attempts = None;
+                }
+            }
+            FieldKey::DeferredCaptureRetryDelaySecs => {
+                if let Some(ref mut s) = config.session {
+                    s.deferred_capture_retry_delay_secs = None;
+                }
+            }
             FieldKey::DefaultTerminalMode => {
                 if let Some(ref mut s) = config.sandbox {
                     s.default_terminal_mode = None;

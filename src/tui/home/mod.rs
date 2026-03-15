@@ -287,6 +287,94 @@ impl HomeView {
                 .unwrap_or(35),
         };
 
+        // Synchronize tmux env with sessions.json so build_exclusion_set()
+        // sees current data instead of stale values from previous runs.
+        let mut env_batch: Vec<(String, String, String)> = Vec::new();
+        for inst in &view.instances {
+            let tmux_name = match inst.tmux_session() {
+                Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
+                _ => continue,
+            };
+
+            env_batch.push((
+                tmux_name.clone(),
+                crate::tmux::env::AOE_INSTANCE_ID_KEY.to_string(),
+                inst.id.clone(),
+            ));
+            // Set if known, clear if not. Pollers re-publish on discovery,
+            // so clearing is safe and prevents stale exclusion-set entries.
+            if let Some(ref sid) = inst.agent_session_id {
+                env_batch.push((
+                    tmux_name,
+                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY.to_string(),
+                    sid.clone(),
+                ));
+            } else {
+                let _ = crate::tmux::env::remove_hidden_env(
+                    &tmux_name,
+                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                );
+            }
+        }
+        if !env_batch.is_empty() {
+            let batch_refs: Vec<(&str, &str, &str)> = env_batch
+                .iter()
+                .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
+                .collect();
+            if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
+                tracing::warn!("Batch env sync failed: {}", e);
+            }
+        }
+
+        // Recover session IDs for pre-existing sessions: pollers for Claude/OpenCode,
+        // retroactive capture for others.
+        let mut recovered_session_id = false;
+        for inst in &mut view.instances {
+            let has_live_tmux = inst
+                .tmux_session()
+                .map(|s| s.exists() && !s.is_pane_dead())
+                .unwrap_or(false);
+            if !has_live_tmux {
+                continue;
+            }
+
+            if inst.supports_session_poller() {
+                if inst.session_id_poller.is_none() {
+                    // Reset so the poller rediscovers from scratch (stale IDs
+                    // would poison the exclusion set).
+                    inst.agent_session_id = None;
+                    inst.maybe_start_poller();
+                }
+            } else if inst.supports_deferred_capture() && inst.agent_session_id.is_none() {
+                if let Some(id) = inst.try_retroactive_capture() {
+                    // Publish so build_exclusion_set() excludes this ID.
+                    let tmux_name = inst
+                        .tmux_session()
+                        .map(|s| s.name().to_string())
+                        .unwrap_or_default();
+                    if !tmux_name.is_empty() {
+                        let _ = crate::tmux::env::set_hidden_env(
+                            &tmux_name,
+                            crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                            &id,
+                        );
+                    }
+                    inst.agent_session_id = Some(id);
+                    recovered_session_id = true;
+                }
+            }
+        }
+        if recovered_session_id {
+            if let Err(e) = view.save() {
+                tracing::warn!("Failed to save retroactively captured session IDs: {}", e);
+            }
+        }
+        view.instance_map = view
+            .instances
+            .iter()
+            .map(|i| (i.id.clone(), i.clone()))
+            .collect();
+
         view.flat_items = view.build_flat_items();
         view.update_selected();
         Ok(view)
@@ -317,6 +405,16 @@ impl HomeView {
                     inst.last_error = prev.last_error.clone();
                     inst.last_error_check = prev.last_error_check;
                     inst.last_start_time = prev.last_start_time;
+                    inst.session_id_poller = prev.session_id_poller.clone();
+                    inst.deferred_capture_handle = prev.deferred_capture_handle.clone();
+                    inst.capture_gate = prev.capture_gate.clone();
+                    // Use in-memory session_id if present; fallback to disk.
+                    // In-memory state takes priority over disk: the poller or
+                    // deferred capture may have updated the ID since last save.
+                    inst.agent_session_id = prev
+                        .agent_session_id
+                        .clone()
+                        .or(inst.agent_session_id.take());
                 }
             }
             // Rebuild this profile's tree from disk, preserving any collapsed
@@ -428,6 +526,65 @@ impl HomeView {
             return true;
         }
         false
+    }
+
+    /// Apply any pending session ID updates from background pollers,
+    /// completed capture gates, and hook sidecars.
+    /// Returns true if any instance was updated.
+    pub fn apply_session_id_updates(&mut self) -> bool {
+        let mut updates: Vec<(String, String)> = Vec::new();
+
+        for inst in &self.instances {
+            // Poller channel (Claude, OpenCode, Codex, Gemini, Vibe)
+            if let Some((_id, session_id)) = inst
+                .session_id_poller
+                .as_ref()
+                .and_then(|p| p.lock().ok())
+                .and_then(|p| p.try_recv_session_update())
+            {
+                if inst.agent_session_id.as_deref() != Some(session_id.as_str()) {
+                    updates.push((inst.id.clone(), session_id));
+                }
+                continue;
+            }
+
+            // Completed capture gates (deferred capture agents)
+            if inst.agent_session_id.is_none() {
+                if let Some(session_id) = inst.capture_gate.as_ref().and_then(|g| g.try_take()) {
+                    if inst.agent_session_id.as_deref() != Some(session_id.as_str()) {
+                        updates.push((inst.id.clone(), session_id));
+                    }
+                    continue;
+                }
+            }
+
+            // Hook sidecar file (hook-handler writes session_id here)
+            if crate::agents::get_agent(&inst.tool).is_some_and(|a| a.hook_config.is_some()) {
+                if let Some(hook_session_id) = crate::hooks::read_hook_session_id(&inst.id) {
+                    if inst.agent_session_id.as_deref() != Some(hook_session_id.as_str()) {
+                        tracing::info!(
+                            instance_id = %inst.id,
+                            session_id = %hook_session_id,
+                            "Updating session_id from hook sidecar"
+                        );
+                        updates.push((inst.id.clone(), hook_session_id));
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if !updates.is_empty() {
+            for (id, session_id) in &updates {
+                self.mutate_instance(id, |inst| {
+                    inst.agent_session_id = Some(session_id.clone());
+                });
+            }
+            if let Err(e) = self.save() {
+                tracing::error!("Failed to save after session ID update: {}", e);
+            }
+        }
+        !updates.is_empty()
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
@@ -853,6 +1010,15 @@ impl HomeView {
         self.try_mutate_instance(id, |inst| inst.start_terminal_with_size(size))?;
         self.save()?;
         Ok(())
+    }
+
+    pub fn restart_instance_with_size_opts(
+        &mut self,
+        id: &str,
+        size: Option<(u16, u16)>,
+        skip_on_launch: bool,
+    ) -> anyhow::Result<()> {
+        self.try_mutate_instance(id, |inst| inst.restart_with_size_opts(size, skip_on_launch))
     }
 
     pub fn select_session_by_id(&mut self, session_id: &str) {
