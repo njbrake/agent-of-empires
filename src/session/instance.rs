@@ -180,6 +180,29 @@ impl Instance {
         crate::tmux::utils::is_shell_command(self.get_tool_command())
     }
 
+    /// Whether the resolved config for this instance has a non-empty
+    /// `command_wrapper`. When true, the tmux pane intentionally runs inside a
+    /// shell, so the `is_pane_running_shell()` heuristic should be skipped.
+    pub fn has_command_wrapper(&self) -> bool {
+        match super::repo_config::resolve_config_with_repo(
+            &self.profile,
+            Path::new(&self.project_path),
+        ) {
+            Ok(c) => c
+                .sandbox
+                .command_wrapper
+                .is_some_and(|w| !w.trim().is_empty()),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to resolve config for '{}' in has_command_wrapper: {}",
+                    self.profile,
+                    e
+                );
+                false
+            }
+        }
+    }
+
     pub fn get_tool_command(&self) -> &str {
         if self.command.is_empty() {
             crate::agents::get_agent(&self.tool)
@@ -454,12 +477,15 @@ impl Instance {
                 String::new()
             };
 
-            // Resolve command_wrapper from profile config (e.g. safehouse/scd)
-            let wrapper = match super::profile_config::resolve_config(&self.profile) {
+            // Resolve command_wrapper from config (global -> profile -> repo)
+            let wrapper = match super::repo_config::resolve_config_with_repo(
+                &self.profile,
+                Path::new(&self.project_path),
+            ) {
                 Ok(c) => c.sandbox.command_wrapper,
                 Err(e) => {
                     tracing::warn!(
-                        "Failed to resolve profile config for '{}': {}. \
+                        "Failed to resolve config for '{}': {}. \
                          command_wrapper will not be applied.",
                         self.profile,
                         e
@@ -743,7 +769,9 @@ impl Instance {
         // Check hook-based status first (more reliable than tmux pane parsing)
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
             tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
-            let crashed_to_shell = !self.expects_shell() && session.is_pane_running_shell();
+            let crashed_to_shell = !self.expects_shell()
+                && !self.has_command_wrapper()
+                && session.is_pane_running_shell();
             self.status = if session.is_pane_dead() || crashed_to_shell {
                 Status::Error
             } else {
@@ -765,7 +793,9 @@ impl Instance {
             self.has_custom_command(),
             detected
         );
-        let is_shell_stale = || !self.expects_shell() && session.is_pane_running_shell();
+        let is_shell_stale = || {
+            !self.expects_shell() && !self.has_command_wrapper() && session.is_pane_running_shell()
+        };
         self.status = match detected {
             Status::Idle if self.has_custom_command() => {
                 if session.is_pane_dead() || is_shell_stale() {
