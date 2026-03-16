@@ -8,7 +8,7 @@
     },
     "checkpoint_remote": {
       "provider": "github",
-      "repo": "entire-kokorro-snyper"
+      "repo": "rublev/entire-kokorro-snyper"
     }
   },
   "telemetry": false
