@@ -347,8 +347,7 @@ impl Instance {
             None
         } else {
             // Start with global+profile hooks as the base
-            let profile = super::config::resolve_default_profile();
-            let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
+            let mut resolved_on_launch = super::profile_config::resolve_config(&self.profile)
                 .map(|c| c.hooks.on_launch)
                 .unwrap_or_default();
 
@@ -436,6 +435,7 @@ impl Instance {
             let env_part = format!("{} ", env_args);
             Some(wrap_command_ignore_suspend(
                 &container.exec_command(Some(&env_part), &tool_cmd),
+                false,
             ))
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
@@ -454,7 +454,30 @@ impl Instance {
                 String::new()
             };
 
-            if self.command.is_empty() {
+            // Resolve command_wrapper from profile config (e.g. safehouse/scd)
+            let wrapper = match super::profile_config::resolve_config(&self.profile) {
+                Ok(c) => c.sandbox.command_wrapper,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to resolve profile config for '{}': {}. \
+                         command_wrapper will not be applied.",
+                        self.profile,
+                        e
+                    );
+                    None
+                }
+            }
+            .filter(|w| !w.trim().is_empty());
+
+            // When a command_wrapper is set, it IS the complete launch command
+            // (e.g. `scd` already runs claude internally). Don't append the
+            // agent binary or yolo flags -- the wrapper handles all of that.
+            if let Some(ref w) = wrapper {
+                Some(wrap_command_ignore_suspend(
+                    &format!("{}{}", env_prefix, w),
+                    true,
+                ))
+            } else if self.command.is_empty() {
                 crate::agents::get_agent(&self.tool)
                     .filter(|a| a.supports_host_launch)
                     .map(|a| {
@@ -475,7 +498,7 @@ impl Instance {
                                 }
                             }
                         }
-                        wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
+                        wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd), false)
                     })
             } else {
                 let mut cmd = self.command.clone();
@@ -495,10 +518,10 @@ impl Instance {
                         }
                     }
                 }
-                Some(wrap_command_ignore_suspend(&format!(
-                    "{}{}",
-                    env_prefix, cmd
-                )))
+                Some(wrap_command_ignore_suspend(
+                    &format!("{}{}", env_prefix, cmd),
+                    false,
+                ))
             }
         };
 
@@ -778,20 +801,28 @@ fn generate_id() -> String {
 ///
 /// When running agents directly as tmux session commands (without a parent shell),
 /// pressing Ctrl-Z suspends the process with no way to recover via job control.
-/// This wrapper disables the suspend character at the terminal level before exec'ing
+/// This wrapper disables the suspend character at the terminal level before running
 /// the actual command.
 ///
-/// If `instance_id` is provided, exports `AOE_INSTANCE_ID` so that Claude Code hooks
-/// can write status files keyed to this session.
+/// When `uses_wrapper` is true (command_wrapper path), uses an interactive login
+/// shell (`-lic`) so shell functions from rc files (e.g. `scd` in `.zshrc`) are
+/// available. When false, uses `exec env` for direct binary execution.
 ///
 /// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
 /// Single quotes in `cmd` are escaped with the `'\''` technique to prevent
 /// breaking out of the outer single-quoted wrapper.
-fn wrap_command_ignore_suspend(cmd: &str) -> String {
+fn wrap_command_ignore_suspend(cmd: &str, uses_wrapper: bool) -> String {
     let shell = super::environment::user_posix_shell();
     let escaped = cmd.replace('\'', "'\\''");
-    // Use login shell (-l) so version-manager PATHs (NVM, etc.) are available.
-    format!("{} -lc 'stty susp undef; exec env {}'", shell, escaped)
+    if uses_wrapper {
+        // Interactive login shell (-lic) so shell functions from rc files (e.g. scd)
+        // are available. Skip `exec env` because the wrapper manages process lifecycle
+        // and `env` can only execute binaries, not shell functions.
+        format!("{} -lic 'stty susp undef; {}'", shell, escaped)
+    } else {
+        // Use login shell (-l) so version-manager PATHs (NVM, etc.) are available.
+        format!("{} -lc 'stty susp undef; exec env {}'", shell, escaped)
+    }
 }
 
 #[cfg(test)]
