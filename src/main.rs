@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     // These work in read-only/sandboxed environments (e.g. Nix builds).
     match cli.command {
         Some(Commands::Completion { shell }) => {
-            generate(shell, &mut Cli::command(), "aoe", &mut std::io::stdout());
+            generate(shell, &mut Cli::command(), "koko", &mut std::io::stdout());
             return Ok(());
         }
         Some(Commands::Init(args)) => return cli::init::run(args).await,
