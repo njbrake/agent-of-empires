@@ -12,27 +12,31 @@ use super::SettingsScope;
 /// Categories of settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsCategory {
-    Theme,
-    Updates,
-    Worktree,
-    Sandbox,
-    Tmux,
     Session,
-    Sound,
     Hooks,
+    Sandbox,
+    Worktree,
+    Diff,
+    Updates,
+    Tmux,
+    Sound,
+    Theme,
+    Claude,
 }
 
 impl SettingsCategory {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Theme => "Theme",
-            Self::Updates => "Updates",
-            Self::Worktree => "Worktree",
-            Self::Sandbox => "Sandbox",
-            Self::Tmux => "Tmux",
             Self::Session => "Session",
-            Self::Sound => "Sound",
             Self::Hooks => "Hooks",
+            Self::Sandbox => "Sandbox",
+            Self::Worktree => "Worktree",
+            Self::Diff => "Diff",
+            Self::Updates => "Updates",
+            Self::Tmux => "Tmux",
+            Self::Sound => "Sound",
+            Self::Theme => "Theme",
+            Self::Claude => "Claude",
         }
     }
 }
@@ -40,20 +44,29 @@ impl SettingsCategory {
 /// Type-safe field identifiers (prevents typos in string matching)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKey {
-    // Theme
-    ThemeName,
+    // Session
+    DefaultTool,
+    YoloModeDefault,
+    // Hooks
+    HookOnCreate,
+    HookOnLaunch,
     // Updates
     CheckEnabled,
+    AutoUpdate,
     CheckIntervalHours,
     NotifyInCli,
     // Worktree
+    WorktreeEnabled,
     PathTemplate,
     BareRepoPathTemplate,
     WorktreeAutoCleanup,
+    ShowBranchInTui,
     DeleteBranchOnCleanup,
+    // Diff
+    DefaultBranch,
+    ContextLines,
     // Sandbox
     SandboxEnabledByDefault,
-    YoloModeDefault,
     DefaultImage,
     Environment,
     SandboxAutoCleanup,
@@ -66,13 +79,13 @@ pub enum FieldKey {
     MountSsh,
     CustomInstruction,
     ContainerRuntime,
+    CommandWrapper,
     // Tmux
     StatusBar,
     Mouse,
-    // Session
-    DefaultTool,
     AgentExtraArgs,
     AgentCommandOverride,
+    ClaudeStatusHooks,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -81,9 +94,10 @@ pub enum FieldKey {
     SoundOnWaiting,
     SoundOnIdle,
     SoundOnError,
-    // Hooks
-    HookOnCreate,
-    HookOnLaunch,
+    // Theme
+    ThemeName,
+    // Claude
+    ClaudeConfigDir,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -236,14 +250,16 @@ pub fn build_fields_for_category(
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
     match category {
-        SettingsCategory::Theme => build_theme_fields(scope, global, profile),
-        SettingsCategory::Updates => build_updates_fields(scope, global, profile),
-        SettingsCategory::Worktree => build_worktree_fields(scope, global, profile),
-        SettingsCategory::Sandbox => build_sandbox_fields(scope, global, profile),
-        SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
         SettingsCategory::Session => build_session_fields(scope, global, profile),
-        SettingsCategory::Sound => build_sound_fields(scope, global, profile),
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
+        SettingsCategory::Sandbox => build_sandbox_fields(scope, global, profile),
+        SettingsCategory::Worktree => build_worktree_fields(scope, global, profile),
+        SettingsCategory::Diff => build_diff_fields(scope, global, profile),
+        SettingsCategory::Updates => build_updates_fields(scope, global, profile),
+        SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
+        SettingsCategory::Sound => build_sound_fields(scope, global, profile),
+        SettingsCategory::Theme => build_theme_fields(scope, global, profile),
+        SettingsCategory::Claude => build_claude_fields(scope, global, profile),
     }
 }
 
@@ -298,6 +314,11 @@ fn build_updates_fields(
         global.updates.check_enabled,
         updates.and_then(|u| u.check_enabled),
     );
+    let (auto_update, o_au) = resolve_value(
+        scope,
+        global.updates.auto_update,
+        updates.and_then(|u| u.auto_update),
+    );
     let (check_interval, o2) = resolve_value(
         scope,
         global.updates.check_interval_hours,
@@ -318,6 +339,15 @@ fn build_updates_fields(
             category: SettingsCategory::Updates,
             has_override: o1,
             inherited_display: inherited_if(o1, FieldValue::Bool(global.updates.check_enabled)),
+        },
+        SettingField {
+            key: FieldKey::AutoUpdate,
+            label: "Auto Update",
+            description: "Automatically install updates when available",
+            value: FieldValue::Bool(auto_update),
+            category: SettingsCategory::Updates,
+            has_override: o_au,
+            inherited_display: inherited_if(o_au, FieldValue::Bool(global.updates.auto_update)),
         },
         SettingField {
             key: FieldKey::CheckIntervalHours,
@@ -350,6 +380,7 @@ fn build_worktree_fields(
 ) -> Vec<SettingField> {
     let wt = profile.worktree.as_ref();
 
+    let (enabled, o_en) = resolve_value(scope, global.worktree.enabled, wt.and_then(|w| w.enabled));
     let (path_template, o1) = resolve_value(
         scope,
         global.worktree.path_template.clone(),
@@ -365,6 +396,11 @@ fn build_worktree_fields(
         global.worktree.auto_cleanup,
         wt.and_then(|w| w.auto_cleanup),
     );
+    let (show_branch_in_tui, o_sb) = resolve_value(
+        scope,
+        global.worktree.show_branch_in_tui,
+        wt.and_then(|w| w.show_branch_in_tui),
+    );
     let (delete_branch_on_cleanup, o4) = resolve_value(
         scope,
         global.worktree.delete_branch_on_cleanup,
@@ -372,6 +408,15 @@ fn build_worktree_fields(
     );
 
     vec![
+        SettingField {
+            key: FieldKey::WorktreeEnabled,
+            label: "Enabled",
+            description: "Enable worktree support for new sessions",
+            value: FieldValue::Bool(enabled),
+            category: SettingsCategory::Worktree,
+            has_override: o_en,
+            inherited_display: inherited_if(o_en, FieldValue::Bool(global.worktree.enabled)),
+        },
         SettingField {
             key: FieldKey::PathTemplate,
             label: "Path Template",
@@ -404,6 +449,18 @@ fn build_worktree_fields(
             category: SettingsCategory::Worktree,
             has_override: o3,
             inherited_display: inherited_if(o3, FieldValue::Bool(global.worktree.auto_cleanup)),
+        },
+        SettingField {
+            key: FieldKey::ShowBranchInTui,
+            label: "Show Branch in TUI",
+            description: "Display branch name in the TUI session list",
+            value: FieldValue::Bool(show_branch_in_tui),
+            category: SettingsCategory::Worktree,
+            has_override: o_sb,
+            inherited_display: inherited_if(
+                o_sb,
+                FieldValue::Bool(global.worktree.show_branch_in_tui),
+            ),
         },
         SettingField {
             key: FieldKey::DeleteBranchOnCleanup,
@@ -494,6 +551,12 @@ fn build_sandbox_fields(
         scope,
         global.sandbox.container_runtime,
         sb.and_then(|s| s.container_runtime),
+    );
+    let (command_wrapper, o_cw) = resolve_optional(
+        scope,
+        global.sandbox.command_wrapper.clone(),
+        sb.and_then(|s| s.command_wrapper.clone()),
+        sb.map(|s| s.command_wrapper.is_some()).unwrap_or(false),
     );
 
     let terminal_mode_selected = match default_terminal_mode {
@@ -681,6 +744,18 @@ fn build_sandbox_fields(
                 },
             ),
         },
+        SettingField {
+            key: FieldKey::CommandWrapper,
+            label: "Command Wrapper",
+            description: "Command prefix for non-sandboxed sessions (e.g. safehouse --env --enable=docker --)",
+            value: FieldValue::OptionalText(command_wrapper),
+            category: SettingsCategory::Sandbox,
+            has_override: o_cw,
+            inherited_display: inherited_if(
+                o_cw,
+                FieldValue::OptionalText(global.sandbox.command_wrapper.clone()),
+            ),
+        },
     ]
 }
 
@@ -770,6 +845,7 @@ fn build_session_fields(
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
     let session = profile.session.as_ref();
+    let claude = profile.claude.as_ref();
 
     let (default_tool, has_override) = resolve_optional(
         scope,
@@ -843,6 +919,12 @@ fn build_session_fields(
         items
     };
 
+    let (status_hooks, status_hooks_override) = resolve_value(
+        scope,
+        global.claude.status_hooks,
+        claude.and_then(|c| c.status_hooks),
+    );
+
     vec![
         SettingField {
             key: FieldKey::DefaultTool,
@@ -896,6 +978,18 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 cmd_override_override,
                 FieldValue::List(global_cmd_override_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::ClaudeStatusHooks,
+            label: "Status Hooks",
+            description: "Use Claude Code hooks for status detection instead of pane capture",
+            value: FieldValue::Bool(status_hooks),
+            category: SettingsCategory::Session,
+            has_override: status_hooks_override,
+            inherited_display: inherited_if(
+                status_hooks_override,
+                FieldValue::Bool(global.claude.status_hooks),
             ),
         },
     ]
@@ -1095,6 +1189,81 @@ fn build_hooks_fields(
     ]
 }
 
+fn build_diff_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let diff = profile.diff.as_ref();
+
+    let (default_branch, o1) = resolve_optional(
+        scope,
+        global.diff.default_branch.clone(),
+        diff.and_then(|d| d.default_branch.clone()),
+        diff.map(|d| d.default_branch.is_some()).unwrap_or(false),
+    );
+    let (context_lines, o2) = resolve_value(
+        scope,
+        global.diff.context_lines as u64,
+        diff.and_then(|d| d.context_lines.map(|c| c as u64)),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::DefaultBranch,
+            label: "Default Branch",
+            description: "Base branch for diffs (empty = auto-detect)",
+            value: FieldValue::OptionalText(default_branch),
+            category: SettingsCategory::Diff,
+            has_override: o1,
+            inherited_display: inherited_if(
+                o1,
+                FieldValue::OptionalText(global.diff.default_branch.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::ContextLines,
+            label: "Context Lines",
+            description: "Lines of context around changes",
+            value: FieldValue::Number(context_lines),
+            category: SettingsCategory::Diff,
+            has_override: o2,
+            inherited_display: inherited_if(
+                o2,
+                FieldValue::Number(global.diff.context_lines as u64),
+            ),
+        },
+    ]
+}
+
+fn build_claude_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let claude = profile.claude.as_ref();
+
+    let (config_dir, o1) = resolve_optional(
+        scope,
+        global.claude.config_dir.clone(),
+        claude.and_then(|c| c.config_dir.clone()),
+        claude.map(|c| c.config_dir.is_some()).unwrap_or(false),
+    );
+
+    vec![SettingField {
+        key: FieldKey::ClaudeConfigDir,
+        label: "Config Directory",
+        description: "Custom Claude Code config directory (supports ~/)",
+        value: FieldValue::OptionalText(config_dir),
+        category: SettingsCategory::Claude,
+        has_override: o1,
+        inherited_display: inherited_if(
+            o1,
+            FieldValue::OptionalText(global.claude.config_dir.clone()),
+        ),
+    }]
+}
+
 /// Apply a field's value back to the appropriate config.
 /// For profile scope, the value is always stored as an override.
 pub fn apply_field_to_config(
@@ -1119,16 +1288,19 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
+        (FieldKey::AutoUpdate, FieldValue::Bool(v)) => config.updates.auto_update = *v,
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
             config.updates.check_interval_hours = *v
         }
         (FieldKey::NotifyInCli, FieldValue::Bool(v)) => config.updates.notify_in_cli = *v,
         // Worktree
+        (FieldKey::WorktreeEnabled, FieldValue::Bool(v)) => config.worktree.enabled = *v,
         (FieldKey::PathTemplate, FieldValue::Text(v)) => config.worktree.path_template = v.clone(),
         (FieldKey::BareRepoPathTemplate, FieldValue::Text(v)) => {
             config.worktree.bare_repo_path_template = v.clone()
         }
         (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => config.worktree.auto_cleanup = *v,
+        (FieldKey::ShowBranchInTui, FieldValue::Bool(v)) => config.worktree.show_branch_in_tui = *v,
         (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
             config.worktree.delete_branch_on_cleanup = *v
         }
@@ -1165,6 +1337,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => ContainerRuntimeName::AppleContainer,
             };
         }
+        (FieldKey::CommandWrapper, FieldValue::OptionalText(v)) => {
+            config.sandbox.command_wrapper = v.clone();
+        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             config.tmux.status_bar = match selected {
@@ -1181,6 +1356,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             };
         }
         // Session
+        (FieldKey::ClaudeStatusHooks, FieldValue::Bool(v)) => {
+            config.claude.status_hooks = *v;
+        }
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool =
                 crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
@@ -1214,6 +1392,19 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::SoundOnError, FieldValue::OptionalText(v)) => {
             config.sound.on_error = v.clone();
         }
+        // Diff
+        (FieldKey::DefaultBranch, FieldValue::OptionalText(v)) => {
+            config.diff.default_branch = v.clone();
+        }
+        (FieldKey::ContextLines, FieldValue::Number(v)) => {
+            config.diff.context_lines = *v as usize;
+        }
+        // Theme
+        (FieldKey::ThemeName, FieldValue::Text(v)) => config.theme.name = v.clone(),
+        // Claude
+        (FieldKey::ClaudeConfigDir, FieldValue::OptionalText(v)) => {
+            config.claude.config_dir = v.clone();
+        }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => config.hooks.on_create = v.clone(),
         (FieldKey::HookOnLaunch, FieldValue::List(v)) => config.hooks.on_launch = v.clone(),
@@ -1223,7 +1414,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
 
 /// Apply a field to the profile config.
 /// Always stores the value as an override; use 'r' key to clear overrides.
-fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut ProfileConfig) {
+fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut ProfileConfig) {
     match (&field.key, &field.value) {
         // Theme
         (FieldKey::ThemeName, FieldValue::Select { selected, options }) => {
@@ -1238,6 +1429,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.updates, |s, val| s.check_enabled = val);
         }
+        (FieldKey::AutoUpdate, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.updates, |s, val| s.auto_update = val);
+        }
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
             set_profile_override(*v, &mut config.updates, |s, val| {
                 s.check_interval_hours = val
@@ -1247,6 +1441,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(*v, &mut config.updates, |s, val| s.notify_in_cli = val);
         }
         // Worktree
+        (FieldKey::WorktreeEnabled, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.worktree, |s, val| s.enabled = val);
+        }
         (FieldKey::PathTemplate, FieldValue::Text(v)) => {
             set_profile_override(v.clone(), &mut config.worktree, |s, val| {
                 s.path_template = val
@@ -1259,6 +1456,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.worktree, |s, val| s.auto_cleanup = val);
+        }
+        (FieldKey::ShowBranchInTui, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.worktree, |s, val| {
+                s.show_branch_in_tui = val
+            });
         }
         (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.worktree, |s, val| {
@@ -1337,6 +1539,19 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 s.container_runtime = val
             });
         }
+        (FieldKey::CommandWrapper, FieldValue::OptionalText(v)) => {
+            if *v == global.sandbox.command_wrapper {
+                if let Some(ref mut s) = config.sandbox {
+                    s.command_wrapper = None;
+                }
+            } else {
+                use crate::session::SandboxConfigOverride;
+                let s = config
+                    .sandbox
+                    .get_or_insert_with(SandboxConfigOverride::default);
+                s.command_wrapper = v.clone();
+            }
+        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             let mode = match selected {
@@ -1355,6 +1570,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(mode, &mut config.tmux, |s, val| s.mouse = val);
         }
         // Session
+        (FieldKey::ClaudeStatusHooks, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.claude, |s, val| s.status_hooks = val);
+        }
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             let tool = crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
             use crate::session::SessionConfigOverride;
@@ -1422,6 +1640,41 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .sound
                 .get_or_insert_with(crate::sound::SoundConfigOverride::default);
             s.on_error = v.clone();
+        }
+        // Diff
+        (FieldKey::DefaultBranch, FieldValue::OptionalText(v)) => {
+            if *v == global.diff.default_branch {
+                if let Some(ref mut d) = config.diff {
+                    d.default_branch = None;
+                }
+            } else {
+                use crate::session::DiffConfigOverride;
+                let d = config.diff.get_or_insert_with(DiffConfigOverride::default);
+                d.default_branch = v.clone();
+            }
+        }
+        (FieldKey::ContextLines, FieldValue::Number(v)) => {
+            set_profile_override(*v as usize, &mut config.diff, |s, val| {
+                s.context_lines = val
+            });
+        }
+        // Theme
+        (FieldKey::ThemeName, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.theme, |s, val| s.name = val);
+        }
+        // Claude
+        (FieldKey::ClaudeConfigDir, FieldValue::OptionalText(v)) => {
+            if *v == global.claude.config_dir {
+                if let Some(ref mut c) = config.claude {
+                    c.config_dir = None;
+                }
+            } else {
+                use crate::session::ClaudeConfigOverride;
+                let c = config
+                    .claude
+                    .get_or_insert_with(ClaudeConfigOverride::default);
+                c.config_dir = v.clone();
+            }
         }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => {

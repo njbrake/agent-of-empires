@@ -162,7 +162,7 @@ async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
     let was_running = tmux_session.exists();
     let had_container = inst.is_sandboxed()
-        && crate::containers::DockerContainer::from_session_id(&inst.id)
+        && crate::containers::DockerContainer::for_instance(inst)
             .is_running()
             .unwrap_or(false);
 
@@ -249,9 +249,7 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
                     let tmux_name = crate::tmux::Session::generate_name(&i.id, &i.title);
                     tmux_name == session_name
                 })
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Current tmux session is not an Agent of Empires session")
-                })?
+                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not a ▨ kokorro session"))?
         } else {
             bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
         }
@@ -369,9 +367,7 @@ async fn rename_session(profile: &str, args: RenameArgs) -> Result<()> {
                     let tmux_name = crate::tmux::Session::generate_name(&i.id, &i.title);
                     tmux_name == session_name
                 })
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Current tmux session is not an Agent of Empires session")
-                })?
+                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not a ▨ kokorro session"))?
         } else {
             bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
         }
@@ -466,5 +462,5 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
         }
     }
 
-    bail!("Current tmux session is not an Agent of Empires session")
+    bail!("Current tmux session is not a ▨ kokorro session")
 }

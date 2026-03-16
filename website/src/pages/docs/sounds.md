@@ -1,10 +1,10 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Sound Effects
-description: Configure audio feedback for agent state transitions in Agent of Empires.
+description: Configure audio feedback for agent state transitions in ▨ kokorro.
 ---
 
-Agent of Empires can play sound effects when agent sessions change state, providing audio feedback for transitions like starting, running, waiting, idle, and error states.
+▨ kokorro can play sound effects when agent sessions change state, providing audio feedback for transitions like starting, running, waiting, idle, and error states.
 
 ## Features
 
@@ -33,7 +33,7 @@ Agent of Empires can play sound effects when agent sessions change state, provid
 
 ## Available Sounds
 
-Agent of Empires can download 10 CC0 (public domain) fantasy/RPG sound effects from GitHub:
+▨ kokorro can download 10 CC0 (public domain) fantasy/RPG sound effects from GitHub:
 
 ### Default State Transition Sounds
 - `start.wav` - Spell fire sound (session starting)

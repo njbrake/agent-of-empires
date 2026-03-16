@@ -1439,6 +1439,26 @@ fn test_uppercase_l_grows_list() {
 
 #[test]
 #[serial]
+fn test_sidebar_mode_default_false() {
+    let env = create_test_env_empty();
+    assert!(!env.view.sidebar_mode);
+}
+
+#[test]
+#[serial]
+fn test_tab_toggles_sidebar_mode() {
+    let mut env = create_test_env_empty();
+    assert!(!env.view.sidebar_mode);
+
+    env.view.handle_key(key(KeyCode::Tab));
+    assert!(env.view.sidebar_mode);
+
+    env.view.handle_key(key(KeyCode::Tab));
+    assert!(!env.view.sidebar_mode);
+}
+
+#[test]
+#[serial]
 fn test_sort_order_defaults_to_newest() {
     use crate::session::config::SortOrder;
 

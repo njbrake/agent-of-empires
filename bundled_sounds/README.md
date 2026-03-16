@@ -1,6 +1,6 @@
 # Bundled Sound Effects
 
-This directory contains CC0 (public domain) sound effects bundled with Agent of Empires.
+This directory contains CC0 (public domain) sound effects bundled with ▨ kokorro.
 
 ## Source
 

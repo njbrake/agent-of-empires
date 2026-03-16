@@ -10,6 +10,7 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use ratatui::widgets::ListState;
 use tui_input::Input;
 
 use crate::session::{
@@ -92,6 +93,13 @@ pub(super) const ICON_STOPPED: &str = "■";
 pub(super) const ICON_DELETING: &str = "✗";
 pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
+
+// Tree connectors for multiline session details
+pub(super) const TREE_BRANCH: &str = "├─ ";
+pub(super) const TREE_LAST: &str = "└─ ";
+
+// Compact indicator dot for collapsed sessions
+pub(super) const ICON_INDICATOR: &str = "●";
 
 pub struct HomeView {
     pub(super) storages: HashMap<String, Storage>,
@@ -178,6 +186,13 @@ pub struct HomeView {
 
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
+
+    // Sidebar mode: hides the preview panel, showing only the session list
+    pub(super) sidebar_mode: bool,
+
+    // Multi-line session fold state (runtime-only)
+    pub(super) collapsed_sessions: HashSet<String>,
+    pub(super) list_state: ListState,
 }
 
 impl HomeView {
@@ -285,6 +300,13 @@ impl HomeView {
             list_width: user_config
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            sidebar_mode: load_config()
+                .ok()
+                .flatten()
+                .and_then(|c| c.app_state.sidebar_mode)
+                .unwrap_or(false),
+            collapsed_sessions: HashSet::new(),
+            list_state: ListState::default(),
         };
 
         view.flat_items = view.build_flat_items();
@@ -345,6 +367,10 @@ impl HomeView {
             .collect();
         self.flat_items = self.build_flat_items();
 
+        // Prune stale collapsed session IDs
+        self.collapsed_sessions
+            .retain(|id| self.instance_map.contains_key(id));
+
         if self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
             self.cursor = self.flat_items.len() - 1;
         }
@@ -400,6 +426,7 @@ impl HomeView {
                     }
                 }
             }
+
             self.pending_status_refresh = false;
             return true;
         }
@@ -603,6 +630,23 @@ impl HomeView {
     fn save_list_width(&self) {
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.home_list_width = Some(self.list_width);
+            let _ = save_config(&config);
+        }
+    }
+
+    pub fn toggle_sidebar_mode(&mut self) {
+        self.sidebar_mode = !self.sidebar_mode;
+        self.save_sidebar_mode();
+    }
+
+    pub fn set_sidebar_mode(&mut self, value: bool) {
+        self.sidebar_mode = value;
+        self.save_sidebar_mode();
+    }
+
+    fn save_sidebar_mode(&self) {
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.sidebar_mode = Some(self.sidebar_mode);
             let _ = save_config(&config);
         }
     }

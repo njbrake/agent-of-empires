@@ -1,4 +1,4 @@
-//! Agent of Empires - Terminal session manager for AI coding agents
+//! ▨ kokorro - Terminal session manager for AI coding agents
 
 use agent_of_empires::cli::{self, Cli, Commands};
 use agent_of_empires::migrations;
@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     // These work in read-only/sandboxed environments (e.g. Nix builds).
     match cli.command {
         Some(Commands::Completion { shell }) => {
-            generate(shell, &mut Cli::command(), "aoe", &mut std::io::stdout());
+            generate(shell, &mut Cli::command(), "koko", &mut std::io::stdout());
             return Ok(());
         }
         Some(Commands::Init(args)) => return cli::init::run(args).await,
@@ -31,6 +31,7 @@ async fn main() -> Result<()> {
                 TmuxCommands::Status(args) => cli::tmux::run_status(args),
             };
         }
+        Some(Commands::Hook) => return cli::hook::run(),
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Uninstall(args)) => return cli::uninstall::run(args).await,
         _ => {}
@@ -52,7 +53,8 @@ async fn main() -> Result<()> {
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
-        None => tui::run(&profile).await,
+        Some(Commands::Hooks { command }) => cli::hooks_manage::run(command).await,
+        None => tui::run(&profile, cli.sidebar_mode).await,
         _ => unreachable!(),
     }
 }

@@ -1,7 +1,7 @@
 ---
 layout: ../../../layouts/Docs.astro
 title: Repository Configuration & Hooks
-description: Per-repo configuration and hooks for Agent of Empires sessions.
+description: Per-repo configuration and hooks for ▨ kokorro sessions.
 ---
 
 AoE supports per-repo configuration via a `.aoe/config.toml` file in your project root. This lets you define project-specific defaults and hooks that apply to every team member using AoE on that repo.

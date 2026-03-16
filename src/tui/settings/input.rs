@@ -518,6 +518,11 @@ impl SettingsView {
                     u.check_enabled = None;
                 }
             }
+            FieldKey::AutoUpdate => {
+                if let Some(ref mut u) = config.updates {
+                    u.auto_update = None;
+                }
+            }
             FieldKey::CheckIntervalHours => {
                 if let Some(ref mut u) = config.updates {
                     u.check_interval_hours = None;
@@ -529,6 +534,11 @@ impl SettingsView {
                 }
             }
             // Worktree
+            FieldKey::WorktreeEnabled => {
+                if let Some(ref mut w) = config.worktree {
+                    w.enabled = None;
+                }
+            }
             FieldKey::PathTemplate => {
                 if let Some(ref mut w) = config.worktree {
                     w.path_template = None;
@@ -542,6 +552,11 @@ impl SettingsView {
             FieldKey::WorktreeAutoCleanup => {
                 if let Some(ref mut w) = config.worktree {
                     w.auto_cleanup = None;
+                }
+            }
+            FieldKey::ShowBranchInTui => {
+                if let Some(ref mut w) = config.worktree {
+                    w.show_branch_in_tui = None;
                 }
             }
             FieldKey::DeleteBranchOnCleanup => {
@@ -577,6 +592,11 @@ impl SettingsView {
                 }
             }
             // Session
+            FieldKey::ClaudeStatusHooks => {
+                if let Some(ref mut c) = config.claude {
+                    c.status_hooks = None;
+                }
+            }
             FieldKey::DefaultTool => {
                 if let Some(ref mut s) = config.session {
                     s.default_tool = None;
@@ -647,6 +667,11 @@ impl SettingsView {
                     s.container_runtime = None;
                 }
             }
+            FieldKey::CommandWrapper => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.command_wrapper = None;
+                }
+            }
             // Sound
             FieldKey::SoundEnabled => {
                 if let Some(ref mut s) = config.sound {
@@ -681,6 +706,23 @@ impl SettingsView {
             FieldKey::SoundOnError => {
                 if let Some(ref mut s) = config.sound {
                     s.on_error = None;
+                }
+            }
+            // Diff
+            FieldKey::DefaultBranch => {
+                if let Some(ref mut d) = config.diff {
+                    d.default_branch = None;
+                }
+            }
+            FieldKey::ContextLines => {
+                if let Some(ref mut d) = config.diff {
+                    d.context_lines = None;
+                }
+            }
+            // Claude
+            FieldKey::ClaudeConfigDir => {
+                if let Some(ref mut c) = config.claude {
+                    c.config_dir = None;
                 }
             }
             // Hooks

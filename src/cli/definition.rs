@@ -8,6 +8,7 @@ use clap_complete::Shell;
 
 use super::add::AddArgs;
 use super::group::GroupCommands;
+use super::hooks_manage::HooksCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
@@ -26,7 +27,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(about = "Terminal session manager for AI coding agents")]
 #[command(version = VERSION)]
 #[command(
-    long_about = "Agent of Empires (aoe) is a terminal session manager that uses tmux to help \
+    long_about = "▨ kokorro (aoe) is a terminal session manager that uses tmux to help \
     you manage and monitor AI coding agents like Claude Code and OpenCode.\n\n\
     Run without arguments to launch the TUI dashboard."
 )]
@@ -34,6 +35,10 @@ pub struct Cli {
     /// Profile to use (separate workspace with its own sessions)
     #[arg(short = 'p', long, global = true, env = "AGENT_OF_EMPIRES_PROFILE")]
     pub profile: Option<String>,
+
+    /// Launch in sidebar mode (shows only the session list, no preview)
+    #[arg(long)]
+    pub sidebar_mode: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -94,8 +99,18 @@ pub enum Commands {
         command: SoundsCommands,
     },
 
-    /// Uninstall Agent of Empires
+    /// Uninstall ▨ kokorro
     Uninstall(UninstallArgs),
+
+    /// Manage Claude Code hooks for status detection
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommands,
+    },
+
+    /// Internal hook handler invoked by Claude Code lifecycle events
+    #[command(name = "_hook", hide = true)]
+    Hook,
 
     /// Generate shell completions
     Completion {

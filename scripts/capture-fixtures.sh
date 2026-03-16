@@ -5,8 +5,8 @@
 #   ./scripts/capture-fixtures.sh <tool> <state> <tmux_session> [description]
 #
 # Examples:
-#   ./scripts/capture-fixtures.sh claude running aoe_myproject_abc12345
-#   ./scripts/capture-fixtures.sh claude running aoe_myproject_abc12345 "tool_call"
+#   ./scripts/capture-fixtures.sh opencode running aoe_myproject_abc12345
+#   ./scripts/capture-fixtures.sh opencode running aoe_myproject_abc12345 "tool_call"
 #   ./scripts/capture-fixtures.sh opencode waiting_question aoe_task_def67890 "clarification"
 #
 # States: running, waiting_question, waiting_permission, idle
@@ -29,14 +29,14 @@ usage() {
     echo "Usage: $0 <tool> <state> <tmux_session> [description]"
     echo ""
     echo "Arguments:"
-    echo "  tool          Tool name: 'claude' or 'opencode'"
+    echo "  tool          Tool name: 'opencode' (or other pane-scraped tools)"
     echo "  state         State to capture: 'running', 'waiting_question', 'waiting_permission', 'idle'"
     echo "  tmux_session  Name of the tmux session to capture from"
     echo "  description   Optional description for the fixture filename (e.g., 'tool_call')"
     echo ""
     echo "Examples:"
-    echo "  $0 claude running aoe_myproject_abc12345"
-    echo "  $0 claude running aoe_myproject_abc12345 tool_call"
+    echo "  $0 opencode running aoe_myproject_abc12345"
+    echo "  $0 opencode running aoe_myproject_abc12345 tool_call"
     echo "  $0 opencode waiting_question aoe_task_def67890 clarification"
     echo ""
     echo "Output filename format: NNN_description.txt (e.g., 001_capture.txt, 002_tool_call.txt)"
@@ -65,16 +65,12 @@ DESCRIPTION=$(echo "$DESCRIPTION" | tr ' ' '_' | tr -cd '[:alnum:]_')
 
 # Validate tool
 case "$TOOL" in
-    claude|claude_code)
-        TOOL_DIR="claude_code"
-        TOOL_DISPLAY="Claude Code"
-        ;;
     opencode)
         TOOL_DIR="opencode"
         TOOL_DISPLAY="OpenCode"
         ;;
     *)
-        echo "Error: Invalid tool '$TOOL'. Must be 'claude' or 'opencode'."
+        echo "Error: Invalid tool '$TOOL'. Claude Code uses hooks for status -- only pane-scraped tools are supported."
         exit 1
         ;;
 esac
@@ -120,9 +116,6 @@ OUTPUT_FILE="$OUTPUT_DIR/${SEQ_NUM}_${DESCRIPTION}.txt"
 # Get tool version if possible
 get_version() {
     case "$TOOL_DIR" in
-        claude_code)
-            claude --version 2>/dev/null | head -1 || echo "unknown"
-            ;;
         opencode)
             opencode --version 2>/dev/null | head -1 || echo "unknown"
             ;;
@@ -161,4 +154,4 @@ echo "  2. Update the 'Key indicators' comment if needed"
 echo "  3. Run tests: cargo test --test status_detection"
 echo ""
 echo "If tests fail, you may need to update the detection logic in:"
-echo "  src/tmux/session.rs (detect_claude_status or detect_opencode_status)"
+echo "  src/tmux/status_detection.rs (e.g. detect_opencode_status)"

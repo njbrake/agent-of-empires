@@ -6,7 +6,7 @@ name = "agent-of-empires"
 version = "0.16.1"
 edition = "2021"
 rust-version = "1.74"
-authors = ["Agent of Empires Contributors"]
+authors = ["▨ kokorro Contributors"]
 description = "Terminal session manager for AI coding agents"
 license = "MIT"
 repository = "https://github.com/njbrake/agent-of-empires"
@@ -108,5 +108,5 @@ lto = false
 codegen-units = 16
 
 [[bin]]
-name = "aoe"
+name = "koko"
 path = "src/main.rs"

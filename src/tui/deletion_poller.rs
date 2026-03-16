@@ -126,7 +126,7 @@ impl DeletionPoller {
         if request.delete_sandbox {
             if let Some(sandbox) = &request.instance.sandbox_info {
                 if sandbox.enabled {
-                    let container = DockerContainer::from_session_id(&request.instance.id);
+                    let container = DockerContainer::for_instance(&request.instance);
                     if container.exists().unwrap_or(false) {
                         if let Err(e) = container.remove(true) {
                             errors.push(format!("Container: {}", e));
@@ -174,7 +174,7 @@ impl Default for DeletionPoller {
 /// Delete worktree contents from inside the sandbox container.
 /// Returns true if the container successfully deleted the contents.
 fn cleanup_sandbox_worktree(instance: &Instance) -> bool {
-    let container = DockerContainer::from_session_id(&instance.id);
+    let container = DockerContainer::for_instance(instance);
     if !container.exists().unwrap_or(false) {
         return false;
     }

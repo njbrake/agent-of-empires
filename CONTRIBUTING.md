@@ -1,6 +1,6 @@
 # Contributing to aoe
 
-Thanks for your interest in contributing to aoe (Agent of Empires)! This document provides guidelines for contributing to the project.
+Thanks for your interest in contributing to aoe (▨ kokorro)! This document provides guidelines for contributing to the project.
 
 ## Before You Start
 

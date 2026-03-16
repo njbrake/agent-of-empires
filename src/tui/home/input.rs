@@ -540,7 +540,8 @@ impl HomeView {
                 };
 
                 let repo_path = std::path::PathBuf::from(&inst.project_path);
-                match DiffView::new(repo_path) {
+                let profile = inst.source_profile.as_str();
+                match DiffView::new(repo_path, profile) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open diff view: {}", e);
@@ -588,12 +589,18 @@ impl HomeView {
                             has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
                         };
 
-                        self.unified_delete_dialog =
-                            Some(UnifiedDeleteDialog::new(inst.title.clone(), config));
+                        let profile = &inst.source_profile;
+                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
+                            inst.title.clone(),
+                            config,
+                            profile,
+                        ));
                     } else {
+                        let profile = self.active_profile.as_deref().unwrap_or("default");
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
+                            profile,
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
@@ -646,6 +653,16 @@ impl HomeView {
                             existing_groups,
                         ));
                     }
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Err(e) = self.handle_move(-1) {
+                    tracing::error!("Failed to move item: {}", e);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Err(e) = self.handle_move(1) {
+                    tracing::error!("Failed to move item: {}", e);
                 }
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -703,32 +720,63 @@ impl HomeView {
                     self.toggle_group_collapsed(&path);
                 }
             }
+            KeyCode::Tab => {
+                self.toggle_sidebar_mode();
+            }
             KeyCode::Char('H') => {
                 self.shrink_list();
             }
             KeyCode::Char('L') => {
                 self.grow_list();
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if let Some(Item::Group {
+            KeyCode::Left | KeyCode::Char('h') => match self.flat_items.get(self.cursor) {
+                Some(Item::Group {
                     path, collapsed, ..
-                }) = self.flat_items.get(self.cursor)
-                {
+                }) => {
                     if !collapsed {
                         let path = path.clone();
                         self.toggle_group_collapsed(&path);
                     }
                 }
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(Item::Group {
+                Some(Item::Session { id, .. }) => {
+                    self.collapsed_sessions.insert(id.clone());
+                }
+                _ => {}
+            },
+            KeyCode::Right | KeyCode::Char('l') => match self.flat_items.get(self.cursor) {
+                Some(Item::Group {
                     path, collapsed, ..
-                }) = self.flat_items.get(self.cursor)
-                {
+                }) => {
                     if *collapsed {
                         let path = path.clone();
                         self.toggle_group_collapsed(&path);
                     }
+                }
+                Some(Item::Session { id, .. }) => {
+                    self.collapsed_sessions.remove(id);
+                }
+                _ => {}
+            },
+            KeyCode::Char('z') => {
+                // Toggle all: if any expanded, collapse all; if all collapsed, expand all
+                let all_session_ids: Vec<String> = self
+                    .flat_items
+                    .iter()
+                    .filter_map(|item| {
+                        if let Item::Session { id, .. } = item {
+                            Some(id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let all_collapsed = all_session_ids
+                    .iter()
+                    .all(|id| self.collapsed_sessions.contains(id));
+                if all_collapsed {
+                    self.collapsed_sessions.clear();
+                } else {
+                    self.collapsed_sessions.extend(all_session_ids);
                 }
             }
             _ => {}

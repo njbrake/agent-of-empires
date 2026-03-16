@@ -101,6 +101,9 @@ pub struct AppStateConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_file_list_width: Option<u16>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_mode: Option<bool>,
+
     #[serde(default)]
     pub has_seen_custom_instruction_warning: bool,
 
@@ -172,6 +175,10 @@ pub struct ThemeConfig {
 pub struct ClaudeConfig {
     #[serde(default)]
     pub config_dir: Option<String>,
+
+    /// Use Claude Code hooks for status detection instead of pane capture
+    #[serde(default)]
+    pub status_hooks: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +306,12 @@ pub struct SandboxConfig {
     /// Container runtime to use for sandboxing (docker or apple_container)
     #[serde(default)]
     pub container_runtime: ContainerRuntimeName,
+
+    /// Command wrapper prepended to agent commands for non-sandboxed sessions.
+    /// Useful for tools like safehouse that provide OS-level sandboxing without containers.
+    /// Example: "safehouse --env --enable=docker,shell-init --"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_wrapper: Option<String>,
 }
 
 /// Container runtime options for sandboxing
@@ -326,6 +339,7 @@ impl Default for SandboxConfig {
             mount_ssh: false,
             custom_instruction: None,
             container_runtime: ContainerRuntimeName::default(),
+            command_wrapper: None,
         }
     }
 }
@@ -404,9 +418,8 @@ pub fn user_has_tmux_config() -> bool {
 }
 
 /// Determine if status bar styling should be applied based on config and environment.
-pub fn should_apply_tmux_status_bar() -> bool {
-    let config = Config::load().unwrap_or_default();
-    match config.tmux.status_bar {
+pub fn should_apply_tmux_status_bar(tmux_config: &TmuxConfig) -> bool {
+    match tmux_config.status_bar {
         TmuxStatusBarMode::Enabled => true,
         TmuxStatusBarMode::Disabled => false,
         TmuxStatusBarMode::Auto => !user_has_tmux_config(),
@@ -415,9 +428,8 @@ pub fn should_apply_tmux_status_bar() -> bool {
 
 /// Determine if mouse support should be enabled based on config and environment.
 /// Returns Some(true) to enable, Some(false) to disable, None to not touch the setting.
-pub fn should_apply_tmux_mouse() -> Option<bool> {
-    let config = Config::load().unwrap_or_default();
-    match config.tmux.mouse {
+pub fn should_apply_tmux_mouse(tmux_config: &TmuxConfig) -> Option<bool> {
+    match tmux_config.mouse {
         TmuxMouseMode::Enabled => Some(true),
         TmuxMouseMode::Disabled => Some(false),
         TmuxMouseMode::Auto => {

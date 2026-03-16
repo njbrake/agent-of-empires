@@ -6,12 +6,12 @@ use std::time::Instant;
 
 use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_STOPPED, ICON_UNKNOWN,
-    ICON_WAITING,
+    ICON_EXPANDED, ICON_IDLE, ICON_INDICATOR, ICON_RUNNING, ICON_STARTING, ICON_STOPPED,
+    ICON_UNKNOWN, ICON_WAITING, TREE_BRANCH, TREE_LAST,
 };
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
-use crate::tui::styles::Theme;
+use crate::tui::styles::{tint_background, Theme};
 use crate::update::UpdateInfo;
 
 impl HomeView {
@@ -58,14 +58,19 @@ impl HomeView {
             .constraints(constraints)
             .split(area);
 
-        // Layout: left panel (list) and right panel (preview)
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(self.list_width), Constraint::Min(40)])
-            .split(main_chunks[0]);
+        if self.sidebar_mode {
+            // Sidebar mode: session list fills entire width, no preview
+            self.render_list(frame, main_chunks[0], theme);
+        } else {
+            // Layout: left panel (list) and right panel (preview)
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(self.list_width), Constraint::Min(40)])
+                .split(main_chunks[0]);
 
-        self.render_list(frame, chunks[0], theme);
-        self.render_preview(frame, chunks[1], theme);
+            self.render_list(frame, chunks[0], theme);
+            self.render_preview(frame, chunks[1], theme);
+        }
         self.render_status_bar(frame, main_chunks[1], theme);
 
         if let Some(info) = update_info {
@@ -124,7 +129,7 @@ impl HomeView {
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let title = match self.view_mode {
-            ViewMode::Agent => format!(" Agent of Empires [{}] ", self.active_profile_display()),
+            ViewMode::Agent => format!(" ▨ kokorro [{}] ", self.active_profile_display()),
             ViewMode::Terminal => format!(" Terminals [{}] ", self.active_profile_display()),
         };
         let (border_color, title_color) = match self.view_mode {
@@ -153,6 +158,9 @@ impl HomeView {
             return;
         }
 
+        let mut list_state = std::mem::take(&mut self.list_state);
+        list_state.select(Some(self.cursor));
+
         let list_items: Vec<ListItem> = self
             .flat_items
             .iter()
@@ -165,10 +173,10 @@ impl HomeView {
             })
             .collect();
 
-        let list =
-            List::new(list_items).highlight_style(Style::default().bg(theme.session_selection));
+        let list = List::new(list_items).highlight_style(Style::default());
 
-        frame.render_widget(list, inner);
+        frame.render_stateful_widget(list, inner, &mut list_state);
+        self.list_state = list_state;
 
         // Render search bar if active
         if self.search_active {
@@ -226,136 +234,208 @@ impl HomeView {
     ) -> ListItem<'_> {
         let indent = get_indent(item.depth());
 
-        use std::borrow::Cow;
+        // Groups remain single-line
+        if let Item::Group {
+            name,
+            collapsed,
+            session_count,
+            ..
+        } = item
+        {
+            let icon = if *collapsed {
+                ICON_COLLAPSED
+            } else {
+                ICON_EXPANDED
+            };
+            let style = Style::default().fg(theme.group).bold();
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled(format!("{} ", icon), style),
+                Span::styled(format!("{} ({})", name, session_count), style),
+            ]);
+            return if is_selected {
+                ListItem::new(line).style(Style::default().bg(theme.session_selection))
+            } else {
+                ListItem::new(line)
+            };
+        }
 
-        let (icon, text, style): (&str, Cow<str>, Style) = match item {
-            Item::Group {
-                name,
-                collapsed,
-                session_count,
-                ..
-            } => {
-                let icon = if *collapsed {
-                    ICON_COLLAPSED
-                } else {
-                    ICON_EXPANDED
+        // Session rendering
+        let Item::Session { id, .. } = item else {
+            unreachable!()
+        };
+
+        let Some(inst) = self.instance_map.get(id) else {
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled("? ", Style::default().fg(theme.dimmed)),
+                Span::styled(id.clone(), Style::default().fg(theme.dimmed)),
+            ]);
+            return ListItem::new(line);
+        };
+
+        // Resolve icon and status color based on view mode
+        let (icon, status_color) = match self.view_mode {
+            ViewMode::Agent => {
+                let icon = match inst.status {
+                    Status::Running => ICON_RUNNING,
+                    Status::Waiting => ICON_WAITING,
+                    Status::Idle => ICON_IDLE,
+                    Status::Unknown => ICON_UNKNOWN,
+                    Status::Stopped => ICON_STOPPED,
+                    Status::Error => ICON_ERROR,
+                    Status::Starting => ICON_STARTING,
+                    Status::Deleting => ICON_DELETING,
                 };
-                let text = Cow::Owned(format!("{} ({})", name, session_count));
-                let style = Style::default().fg(theme.group).bold();
-                (icon, text, style)
+                let color = match inst.status {
+                    Status::Running => theme.running,
+                    Status::Waiting => theme.waiting,
+                    Status::Idle => theme.idle,
+                    Status::Unknown => theme.waiting,
+                    Status::Stopped => theme.dimmed,
+                    Status::Error => theme.error,
+                    Status::Starting => theme.dimmed,
+                    Status::Deleting => theme.waiting,
+                };
+                (icon, color)
             }
-            Item::Session { id, .. } => {
-                if let Some(inst) = self.get_instance(id) {
-                    match self.view_mode {
-                        ViewMode::Agent => {
-                            let icon = match inst.status {
-                                Status::Running => ICON_RUNNING,
-                                Status::Waiting => ICON_WAITING,
-                                Status::Idle => ICON_IDLE,
-                                Status::Unknown => ICON_UNKNOWN,
-                                Status::Stopped => ICON_STOPPED,
-                                Status::Error => ICON_ERROR,
-                                Status::Starting => ICON_STARTING,
-                                Status::Deleting => ICON_DELETING,
-                            };
-                            let color = match inst.status {
-                                Status::Running => theme.running,
-                                Status::Waiting => theme.waiting,
-                                Status::Idle => theme.idle,
-                                Status::Unknown => theme.waiting,
-                                Status::Stopped => theme.dimmed,
-                                Status::Error => theme.error,
-                                Status::Starting => theme.dimmed,
-                                Status::Deleting => theme.waiting,
-                            };
-                            let style = Style::default().fg(color);
-                            (icon, Cow::Borrowed(&inst.title), style)
-                        }
-                        ViewMode::Terminal => {
-                            // For sandboxed sessions, check the appropriate terminal based on mode
-                            let terminal_mode = if inst.is_sandboxed() {
-                                self.get_terminal_mode(id)
-                            } else {
-                                TerminalMode::Host
-                            };
-                            let terminal_running = match terminal_mode {
-                                TerminalMode::Container => inst
-                                    .container_terminal_tmux_session()
-                                    .map(|s| s.exists())
-                                    .unwrap_or(false),
-                                TerminalMode::Host => inst
-                                    .terminal_tmux_session()
-                                    .map(|s| s.exists())
-                                    .unwrap_or(false),
-                            };
-                            let (icon, color) = if terminal_running {
-                                (ICON_RUNNING, theme.terminal_active)
-                            } else {
-                                (ICON_IDLE, theme.dimmed)
-                            };
-                            let style = Style::default().fg(color);
-                            (icon, Cow::Borrowed(&inst.title), style)
-                        }
-                    }
+            ViewMode::Terminal => {
+                let terminal_mode = if inst.is_sandboxed() {
+                    self.get_terminal_mode(id)
                 } else {
-                    (
-                        "?",
-                        Cow::Borrowed(id.as_str()),
-                        Style::default().fg(theme.dimmed),
-                    )
+                    TerminalMode::Host
+                };
+                let terminal_running = match terminal_mode {
+                    TerminalMode::Container => inst
+                        .container_terminal_tmux_session()
+                        .map(|s| s.exists())
+                        .unwrap_or(false),
+                    TerminalMode::Host => inst
+                        .terminal_tmux_session()
+                        .map(|s| s.exists())
+                        .unwrap_or(false),
+                };
+                if terminal_running {
+                    (ICON_RUNNING, theme.terminal_active)
+                } else {
+                    (ICON_IDLE, theme.dimmed)
                 }
             }
         };
-
-        let mut line_spans = Vec::with_capacity(5);
-        line_spans.push(Span::raw(indent));
+        let style = Style::default().fg(status_color);
         let icon_style = if is_match {
             Style::default().fg(theme.search)
         } else {
             style
         };
-        line_spans.push(Span::styled(format!("{} ", icon), icon_style));
-        line_spans.push(Span::styled(
-            text.into_owned(),
-            if is_selected { style.bold() } else { style },
-        ));
+        let title_style = if is_selected { style.bold() } else { style };
 
-        if let Item::Session { id, .. } = item {
-            if let Some(inst) = self.get_instance(id) {
-                if let Some(wt_info) = &inst.worktree_info {
-                    line_spans.push(Span::styled(
-                        format!("  {}", wt_info.branch),
-                        Style::default().fg(theme.branch),
-                    ));
-                }
-                if inst.is_sandboxed() {
-                    match self.view_mode {
-                        ViewMode::Agent => {
-                            line_spans.push(Span::styled(
-                                " [sandbox]",
-                                Style::default().fg(theme.sandbox),
-                            ));
-                        }
-                        ViewMode::Terminal => {
-                            let mode = self.get_terminal_mode(id);
-                            let mode_text = match mode {
-                                TerminalMode::Container => " [container]",
-                                TerminalMode::Host => " [host]",
-                            };
-                            line_spans
-                                .push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
-                        }
-                    }
+        let is_collapsed = self.collapsed_sessions.contains(id);
+        let has_worktree = inst.worktree_info.is_some();
+        let has_sandbox = inst.is_sandboxed();
+
+        if is_collapsed {
+            // Collapsed: single line with indicator dots
+            let mut spans = Vec::with_capacity(6);
+            spans.push(Span::raw(indent));
+            spans.push(Span::styled(format!("{} ", icon), icon_style));
+            spans.push(Span::styled(inst.title.clone(), title_style));
+
+            if has_worktree {
+                spans.push(Span::styled(
+                    format!(" {}", ICON_INDICATOR),
+                    Style::default().fg(theme.branch),
+                ));
+            }
+            if has_sandbox {
+                spans.push(Span::styled(
+                    format!(" {}", ICON_INDICATOR),
+                    Style::default().fg(theme.sandbox),
+                ));
+            }
+
+            let line = Line::from(spans);
+            return if is_selected {
+                ListItem::new(line)
+                    .style(Style::default().bg(tint_background(status_color, theme.background)))
+            } else {
+                ListItem::new(line)
+            };
+        }
+
+        // Expanded: multi-line with tree structure
+        let mut lines = Vec::with_capacity(4);
+
+        // Title line
+        let title_line = Line::from(vec![
+            Span::raw(indent),
+            Span::styled(format!("{} ", icon), icon_style),
+            Span::styled(inst.title.clone(), title_style),
+        ]);
+        lines.push(title_line);
+
+        // Collect detail entries: (text, style)
+        let mut details: Vec<(String, Style)> = Vec::new();
+
+        if let Some(wt_info) = &inst.worktree_info {
+            details.push((wt_info.branch.clone(), Style::default().fg(theme.branch)));
+
+            // Worktree directory name -- skip if it matches the branch (dedup)
+            if let Some(dir_name) = std::path::Path::new(&inst.project_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+            {
+                if dir_name != crate::git::template::sanitize_branch_name(&wt_info.branch) {
+                    details.push((dir_name.to_string(), Style::default().fg(theme.dimmed)));
                 }
             }
         }
 
-        let line = Line::from(line_spans);
+        if has_sandbox {
+            match self.view_mode {
+                ViewMode::Agent => {
+                    if let Some(sandbox) = &inst.sandbox_info {
+                        details.push((
+                            sandbox.container_name.clone(),
+                            Style::default().fg(theme.sandbox),
+                        ));
+                    }
+                }
+                ViewMode::Terminal => {
+                    let mode = self.get_terminal_mode(id);
+                    let mode_text = match mode {
+                        TerminalMode::Container => "container",
+                        TerminalMode::Host => "host",
+                    };
+                    details.push((mode_text.to_string(), Style::default().fg(theme.sandbox)));
+                }
+            }
+        }
+
+        // Build detail lines with tree connectors
+        let detail_count = details.len();
+        let tree_style = Style::default().fg(status_color);
+        let detail_indent = format!("{}  ", indent);
+
+        for (i, (text, text_style)) in details.into_iter().enumerate() {
+            let connector = if i == detail_count - 1 {
+                TREE_LAST
+            } else {
+                TREE_BRANCH
+            };
+            let detail_line = Line::from(vec![
+                Span::raw(detail_indent.clone()),
+                Span::styled(connector, tree_style),
+                Span::styled(text, text_style),
+            ]);
+            lines.push(detail_line);
+        }
 
         if is_selected {
-            ListItem::new(line).style(Style::default().bg(theme.session_selection))
+            ListItem::new(lines)
+                .style(Style::default().bg(tint_background(status_color, theme.background)))
         } else {
-            ListItem::new(line)
+            ListItem::new(lines)
         }
     }
 
@@ -579,6 +659,18 @@ impl HomeView {
             Span::styled(" j/k", key_style),
             Span::styled(" Nav ", desc_style),
         ];
+        // Show h/l Fold hint when a session with details is selected
+        if let Some(id) = &self.selected_session {
+            if let Some(inst) = self.instance_map.get(id) {
+                if inst.worktree_info.is_some() || inst.is_sandboxed() {
+                    spans.extend([
+                        Span::styled("│", sep_style),
+                        Span::styled(" h/l", key_style),
+                        Span::styled(" Fold ", desc_style),
+                    ]);
+                }
+            }
+        }
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
             Some(Item::Group {
                 collapsed: true, ..
@@ -599,6 +691,18 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" t", key_style),
             Span::styled(" View ", desc_style),
+        ]);
+        spans.extend([
+            Span::styled("│", sep_style),
+            Span::styled(" Tab", key_style),
+            Span::styled(
+                if self.sidebar_mode {
+                    " Preview "
+                } else {
+                    " Sidebar "
+                },
+                desc_style,
+            ),
         ]);
 
         // Show c: container/host hint for sandboxed sessions in Terminal view

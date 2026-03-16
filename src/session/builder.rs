@@ -20,6 +20,7 @@ pub struct InstanceParams {
     pub path: String,
     pub group: String,
     pub tool: String,
+    pub profile: String,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
@@ -172,6 +173,7 @@ pub fn build_instance(
     };
 
     let mut instance = Instance::new(&final_title, &final_path);
+    instance.profile = params.profile.clone();
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
     instance.command = crate::agents::get_agent(&params.tool)
@@ -237,12 +239,13 @@ pub fn cleanup_instance(instance: &Instance, created_worktree: Option<&CreatedWo
 
     if let Some(sandbox) = &instance.sandbox_info {
         if sandbox.enabled {
-            let container = containers::DockerContainer::from_session_id(&instance.id);
+            let container = containers::DockerContainer::for_instance(instance);
             if container.exists().unwrap_or(false) {
                 if let Err(e) = container.remove(true) {
                     tracing::warn!("Failed to clean up container: {}", e);
                 }
             }
+            super::container_config::cleanup_plugin_manifest(&sandbox.container_name);
         }
     }
 

@@ -74,12 +74,58 @@ impl DockerContainer {
         format!("aoe-sandbox-{}", truncate_id(session_id, 8))
     }
 
-    pub fn from_session_id(session_id: &str) -> Self {
+    /// Create a container handle for an existing instance, using the stored name/id
+    /// instead of generating a name from session_id. Falls back through:
+    /// 1. container_id (if available, look up current name from Docker)
+    /// 2. stored container_name
+    /// 3. generated name from session_id (for backwards compat)
+    pub fn for_instance(instance: &crate::session::Instance) -> Self {
+        let image = instance
+            .sandbox_info
+            .as_ref()
+            .map(|s| s.image.clone())
+            .unwrap_or_default();
+
+        // Try to resolve the actual name via container_id first
+        if let Some(ref sandbox) = instance.sandbox_info {
+            if let Some(ref container_id) = sandbox.container_id {
+                let runtime = get_container_runtime();
+                if let Ok(Some(actual_name)) = runtime.get_container_name(container_id) {
+                    return Self {
+                        name: actual_name,
+                        image,
+                        runtime,
+                    };
+                }
+            }
+
+            // Fall back to stored container_name
+            if !sandbox.container_name.is_empty() {
+                let runtime = get_container_runtime();
+                if runtime
+                    .does_container_exist(&sandbox.container_name)
+                    .unwrap_or(false)
+                {
+                    return Self {
+                        name: sandbox.container_name.clone(),
+                        image,
+                        runtime,
+                    };
+                }
+            }
+        }
+
+        // Final fallback: generated name
         Self {
-            name: Self::generate_name(session_id),
-            image: String::new(),
+            name: Self::generate_name(&instance.id),
+            image,
             runtime: get_container_runtime(),
         }
+    }
+
+    /// Look up the actual container name from Docker using a container_id or name.
+    pub fn get_container_name(&self, id_or_name: &str) -> Result<Option<String>> {
+        self.runtime.get_container_name(id_or_name)
     }
 
     pub fn exists(&self) -> Result<bool> {

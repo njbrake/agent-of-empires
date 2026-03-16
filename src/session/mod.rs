@@ -3,7 +3,7 @@
 pub mod builder;
 pub mod civilizations;
 pub mod config;
-mod container_config;
+pub(crate) mod container_config;
 mod environment;
 mod groups;
 mod instance;
@@ -19,14 +19,14 @@ pub use config::{
 };
 pub(crate) use environment::user_shell;
 pub use environment::validate_env_entry;
-pub use groups::{flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item};
+pub use groups::{flatten_tree, flatten_tree_all_profiles, parent_path, Group, GroupTree, Item};
 pub use instance::{Instance, SandboxInfo, Status, TerminalInfo, WorktreeInfo};
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, save_profile_config,
     validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
-    ClaudeConfigOverride, HooksConfigOverride, ProfileConfig, SandboxConfigOverride,
-    SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride,
-    WorktreeConfigOverride,
+    ClaudeConfigOverride, DiffConfigOverride, HooksConfigOverride, ProfileConfig,
+    SandboxConfigOverride, SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride,
+    UpdatesConfigOverride, WorktreeConfigOverride,
 };
 pub use repo_config::{
     check_hook_trust, execute_hooks, execute_hooks_in_container, load_repo_config,

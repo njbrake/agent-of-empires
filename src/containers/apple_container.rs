@@ -50,6 +50,15 @@ impl ContainerRuntimeInterface for AppleContainer {
         self.base.image_exists_locally(image)
     }
 
+    fn get_container_name(&self, id_or_name: &str) -> Result<Option<String>> {
+        // Apple Container doesn't support renaming, so just check existence
+        if self.does_container_exist(id_or_name)? {
+            Ok(Some(id_or_name.to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn does_container_exist(&self, name: &str) -> Result<bool> {
         // Apple Container's `inspect` returns success(0) for non-existent containers,
         // so we use `logs` which properly fails for missing containers.

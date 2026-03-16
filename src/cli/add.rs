@@ -208,6 +208,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         instance.worktree_info = Some(worktree_info);
     }
 
+    instance.profile = profile.to_string();
     instance.yolo_mode = args.yolo || config.session.yolo_mode_default;
 
     // Apply extra_args and command override: CLI flags take priority, then config defaults
@@ -247,7 +248,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 .sandbox_image
                 .as_ref()
                 .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| runtime.effective_default_image());
+                .unwrap_or_else(|| config.sandbox.default_image.clone());
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,

@@ -1,8 +1,7 @@
 //! Status detection for agent sessions
 
-use crate::session::Status;
-
 use super::utils::strip_ansi;
+use crate::session::Status;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -55,7 +54,8 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    for line in &lines {
+    // Braille spinners — ONLY last 5 non-empty lines to avoid stale false positives
+    for line in non_empty_lines.iter().rev().take(5) {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -85,7 +85,8 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         }
     }
 
-    for line in &lines {
+    // Numbered selections — scoped to last 30 non-empty lines
+    for line in non_empty_lines.iter().rev().take(30) {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
             let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
@@ -101,45 +102,6 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         line.contains("❯") && (line.contains(" 1.") || line.contains(" 2.") || line.contains(" 3."))
     }) {
         return Status::Waiting;
-    }
-
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-
-        if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING - Completion indicators + input prompt nearby
-    // Only check in last lines
-    let completion_indicators = [
-        "complete",
-        "done",
-        "finished",
-        "ready",
-        "what would you like",
-        "what else",
-        "anything else",
-        "how can i help",
-        "let me know",
-    ];
-    let has_completion = completion_indicators
-        .iter()
-        .any(|ind| last_lines_lower.contains(ind));
-    if has_completion {
-        for line in non_empty_lines.iter().rev().take(10) {
-            let clean = strip_ansi(line).trim().to_string();
-            if clean == ">" || clean == "> " || clean == ">>" {
-                return Status::Waiting;
-            }
-        }
     }
 
     Status::Idle
@@ -274,7 +236,8 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    for line in &lines {
+    // Braille spinners — ONLY last 5 non-empty lines to avoid stale false positives
+    for line in non_empty_lines.iter().rev().take(5) {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -304,8 +267,8 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    // WAITING: Numbered selection
-    for line in &lines {
+    // WAITING: Numbered selection — scoped to last 30 non-empty lines
+    for line in non_empty_lines.iter().rev().take(30) {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
             let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
@@ -315,20 +278,6 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
             {
                 return Status::Waiting;
             }
-        }
-    }
-
-    // WAITING: Input prompt ready
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "codex>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
         }
     }
 
@@ -508,7 +457,8 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    for line in &lines {
+    // Braille spinners — ONLY last 5 non-empty lines to avoid stale false positives
+    for line in non_empty_lines.iter().rev().take(5) {
         for spinner in SPINNER_CHARS {
             if line.contains(spinner) {
                 return Status::Running;
@@ -528,14 +478,6 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
     ];
     for prompt in &approval_prompts {
         if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Input prompt
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
             return Status::Waiting;
         }
     }
@@ -582,15 +524,6 @@ mod tests {
         );
         assert_eq!(detect_opencode_status("continue? (y/n)"), Status::Waiting);
         assert_eq!(detect_opencode_status("approve changes"), Status::Waiting);
-        assert_eq!(detect_opencode_status("task complete.\n>"), Status::Waiting);
-        assert_eq!(
-            detect_opencode_status("ready for input\n> "),
-            Status::Waiting
-        );
-        assert_eq!(
-            detect_opencode_status("done! what else can i help with?\n>"),
-            Status::Waiting
-        );
     }
 
     #[test]
@@ -611,12 +544,12 @@ mod tests {
     #[test]
     fn test_detect_opencode_status_completion_with_prompt() {
         let content = "Task complete! What else can I help with?\n>";
-        assert_eq!(detect_opencode_status(content), Status::Waiting);
+        assert_eq!(detect_opencode_status(content), Status::Idle);
     }
 
     #[test]
     fn test_detect_opencode_status_double_prompt() {
-        assert_eq!(detect_opencode_status("Ready\n>>"), Status::Waiting);
+        assert_eq!(detect_opencode_status("Ready\n>>"), Status::Idle);
     }
 
     #[test]
@@ -695,8 +628,6 @@ mod tests {
             detect_codex_status("execute this action? [y/n]"),
             Status::Waiting
         );
-        assert_eq!(detect_codex_status("ready\ncodex>"), Status::Waiting);
-        assert_eq!(detect_codex_status("done\n>"), Status::Waiting);
     }
 
     #[test]
@@ -726,7 +657,6 @@ mod tests {
             detect_gemini_status("execute this action? [y/n]"),
             Status::Waiting
         );
-        assert_eq!(detect_gemini_status("ready\n>"), Status::Waiting);
     }
 
     #[test]

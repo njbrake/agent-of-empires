@@ -26,7 +26,7 @@ use crate::migrations;
 use crate::session::get_update_settings;
 use crate::update::check_for_update;
 
-pub async fn run(profile: &str) -> Result<()> {
+pub async fn run(profile: &str, sidebar_mode: bool) -> Result<()> {
     // Run pending migrations with a spinner so users see progress
     if migrations::has_pending_migrations() {
         const SPINNER_FRAMES: &[char] = &['◐', '◓', '◑', '◒'];
@@ -55,7 +55,7 @@ pub async fn run(profile: &str) -> Result<()> {
     if !crate::tmux::is_tmux_available() {
         eprintln!("Error: tmux not found in PATH");
         eprintln!();
-        eprintln!("Agent of Empires requires tmux. Install with:");
+        eprintln!("▨ kokorro requires tmux. Install with:");
         eprintln!("  brew install tmux     # macOS");
         eprintln!("  apt install tmux      # Debian/Ubuntu");
         eprintln!("  pacman -S tmux        # Arch");
@@ -67,7 +67,7 @@ pub async fn run(profile: &str) -> Result<()> {
     if !available_tools.any_available() {
         eprintln!("Error: No coding tools found in PATH");
         eprintln!();
-        eprintln!("Agent of Empires requires at least one of:");
+        eprintln!("▨ kokorro requires at least one of:");
         eprintln!("  claude    - Anthropic's Claude CLI");
         eprintln!("  opencode  - OpenCode CLI");
         eprintln!("  cursor    - Cursor's Agent CLI");
@@ -100,6 +100,9 @@ pub async fn run(profile: &str) -> Result<()> {
 
     // Create app and run
     let mut app = App::new(profile, available_tools)?;
+    if sidebar_mode {
+        app.home_mut().set_sidebar_mode(true);
+    }
     let result = app.run(&mut terminal).await;
 
     // Restore terminal

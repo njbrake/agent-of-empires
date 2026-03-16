@@ -85,6 +85,7 @@ impl StatusPoller {
                     }
 
                     inst.update_status();
+                    inst.refresh_container_name();
 
                     StatusUpdate {
                         id: inst.id,

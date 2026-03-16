@@ -1,7 +1,7 @@
-//! Session operations for HomeView (create, delete, rename)
+//! Session operations for HomeView (create, delete, rename, move)
 
 use crate::session::builder::{self, InstanceParams};
-use crate::session::{list_profiles, GroupTree, Status, Storage};
+use crate::session::{list_profiles, parent_path, GroupTree, Item, Status, Storage};
 use crate::tui::deletion_poller::DeletionRequest;
 use crate::tui::dialogs::{DeleteOptions, GroupDeleteOptions, NewSessionData};
 
@@ -25,6 +25,7 @@ impl HomeView {
             path: data.path,
             group: data.group,
             tool: data.tool,
+            profile: data.profile,
             worktree_branch: data.worktree_branch,
             create_new_branch: data.create_new_branch,
             sandbox: data.sandbox,
@@ -195,6 +196,286 @@ impl HomeView {
             (i.group_path == group_path || i.group_path.starts_with(prefix))
                 && i.sandbox_info.as_ref().is_some_and(|s| s.enabled)
         })
+    }
+
+    // --- Move operations ---
+
+    /// Unified move dispatcher. Returns early if search filter is active.
+    pub(super) fn handle_move(&mut self, direction: i32) -> anyhow::Result<()> {
+        if self.search_active {
+            return Ok(());
+        }
+
+        if self.selected_group.is_some() {
+            self.move_group(direction)?;
+        } else if self.selected_session.is_some() && !self.move_session_in_group(direction)? {
+            self.move_session_across_boundary(direction)?;
+        }
+        Ok(())
+    }
+
+    /// Move a group among its siblings. Swaps sort_order with adjacent sibling.
+    fn move_group(&mut self, direction: i32) -> anyhow::Result<()> {
+        let path = match &self.selected_group {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+
+        let profile = match &self.selected_group_profile {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+
+        let tree = match self.group_trees.get(&profile) {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+
+        let siblings = tree.get_sibling_paths(&path);
+        let pos = match siblings.iter().position(|p| *p == path) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let target_pos = if direction < 0 {
+            if pos == 0 {
+                return Ok(());
+            }
+            pos - 1
+        } else {
+            if pos + 1 >= siblings.len() {
+                return Ok(());
+            }
+            pos + 1
+        };
+
+        if let Some(tree) = self.group_trees.get_mut(&profile) {
+            tree.swap_group_order(&path, &siblings[target_pos]);
+        }
+        self.save_and_rebuild()?;
+        self.select_group_by_path(&path);
+        Ok(())
+    }
+
+    /// Move a session within its group.
+    /// Returns Ok(true) if the move was handled (including no-ops like missing session),
+    /// or Ok(false) if the session is at the group boundary and needs cross-group movement.
+    fn move_session_in_group(&mut self, direction: i32) -> anyhow::Result<bool> {
+        let session_id = match &self.selected_session {
+            Some(id) => id.clone(),
+            None => return Ok(true),
+        };
+
+        let group_path = match self.instance_map.get(&session_id) {
+            Some(inst) => inst.group_path.clone(),
+            None => return Ok(true),
+        };
+
+        // Collect indices of sessions in the same group, preserving Vec order
+        let group_indices: Vec<usize> = self
+            .instances
+            .iter()
+            .enumerate()
+            .filter(|(_, inst)| inst.group_path == group_path)
+            .map(|(i, _)| i)
+            .collect();
+
+        let pos_in_group = match group_indices
+            .iter()
+            .position(|&i| self.instances[i].id == session_id)
+        {
+            Some(p) => p,
+            None => return Ok(true),
+        };
+
+        let at_boundary = if direction < 0 {
+            pos_in_group == 0
+        } else {
+            pos_in_group + 1 >= group_indices.len()
+        };
+
+        if at_boundary {
+            return Ok(false);
+        }
+
+        // Swap within the instances Vec
+        let target_pos = if direction < 0 {
+            pos_in_group - 1
+        } else {
+            pos_in_group + 1
+        };
+
+        let idx_a = group_indices[pos_in_group];
+        let idx_b = group_indices[target_pos];
+        self.instances.swap(idx_a, idx_b);
+
+        self.save_and_rebuild()?;
+        self.select_session_by_id(&session_id);
+        Ok(true)
+    }
+
+    /// Move session across group boundary when at the edge of its current group.
+    fn move_session_across_boundary(&mut self, direction: i32) -> anyhow::Result<()> {
+        let session_id = match &self.selected_session {
+            Some(id) => id.clone(),
+            None => return Ok(()),
+        };
+
+        let current_group = match self.instance_map.get(&session_id) {
+            Some(inst) => inst.group_path.clone(),
+            None => return Ok(()),
+        };
+
+        if direction < 0 {
+            // Moving UP from first session: move out to parent group
+            let new_group = parent_path(&current_group);
+
+            // Already at top level, can't move further up
+            if new_group == current_group {
+                return Ok(());
+            }
+
+            // Update group_path in instances
+            if let Some(inst) = self.instances.iter_mut().find(|i| i.id == session_id) {
+                inst.group_path = new_group.clone();
+            }
+
+            // Reposition: move to end of new group's sessions in the Vec
+            self.reposition_session_in_vec(&session_id, &new_group, false);
+        } else {
+            // Moving DOWN from last session: look at what's next in flat_items
+            let cursor_idx = self
+                .flat_items
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(idx, item)| {
+                    if let Item::Session { id, .. } = item {
+                        if *id == session_id {
+                            return Some(idx);
+                        }
+                    }
+                    None
+                });
+
+            let cursor_idx = match cursor_idx {
+                Some(i) => i,
+                None => return Ok(()),
+            };
+
+            // Find the next group in flat_items after this session
+            let target_group = self.flat_items[cursor_idx + 1..].iter().find_map(|item| {
+                if let Item::Group { path, .. } = item {
+                    Some(path.clone())
+                } else {
+                    None
+                }
+            });
+
+            let target_group = match target_group {
+                Some(g) => g,
+                None => return Ok(()),
+            };
+
+            // Auto-expand collapsed target group
+            let session_profile = self
+                .instance_map
+                .get(&session_id)
+                .map(|i| i.source_profile.clone());
+            if let Some(profile) = &session_profile {
+                if let Some(tree) = self.group_trees.get_mut(profile) {
+                    if let Some(g) = tree.get_group_mut(&target_group) {
+                        if g.collapsed {
+                            g.collapsed = false;
+                        }
+                    }
+                }
+            }
+
+            // Update group_path in instances
+            if let Some(inst) = self.instances.iter_mut().find(|i| i.id == session_id) {
+                inst.group_path = target_group.clone();
+            }
+
+            // Reposition: move to beginning of target group's sessions
+            self.reposition_session_in_vec(&session_id, &target_group, true);
+        }
+
+        self.save_and_rebuild()?;
+        self.select_session_by_id(&session_id);
+        Ok(())
+    }
+
+    /// Move a session in the instances Vec to appear at the start or end of its new group.
+    fn reposition_session_in_vec(
+        &mut self,
+        session_id: &str,
+        target_group: &str,
+        at_beginning: bool,
+    ) {
+        // Remove the session from its current position
+        let session_pos = match self.instances.iter().position(|i| i.id == session_id) {
+            Some(p) => p,
+            None => return,
+        };
+        let session = self.instances.remove(session_pos);
+
+        if at_beginning {
+            // Insert before the first session in the target group
+            let insert_pos = self
+                .instances
+                .iter()
+                .position(|i| i.group_path == target_group)
+                .unwrap_or(self.instances.len());
+            self.instances.insert(insert_pos, session);
+        } else {
+            // Insert after the last session in the target group
+            let last_pos = self
+                .instances
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(i, inst)| {
+                    if inst.group_path == target_group {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                });
+            match last_pos {
+                Some(p) => self.instances.insert(p + 1, session),
+                None => self.instances.push(session),
+            }
+        }
+    }
+
+    /// Rebuild all derived state from instances + group_trees and persist.
+    fn save_and_rebuild(&mut self) -> anyhow::Result<()> {
+        self.rebuild_group_trees();
+        self.instance_map = self
+            .instances
+            .iter()
+            .map(|i| (i.id.clone(), i.clone()))
+            .collect();
+        self.flat_items = self.build_flat_items();
+        self.save()?;
+        Ok(())
+    }
+
+    /// Find a group in flat_items by path and select it.
+    fn select_group_by_path(&mut self, path: &str) {
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            if let Item::Group {
+                path: item_path, ..
+            } = item
+            {
+                if item_path == path {
+                    self.cursor = idx;
+                    self.update_selected();
+                    return;
+                }
+            }
+        }
     }
 
     pub(super) fn rename_selected(

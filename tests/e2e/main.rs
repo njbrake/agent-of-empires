@@ -1,4 +1,4 @@
-//! End-to-end tests for Agent of Empires.
+//! End-to-end tests for kokorro.
 //!
 //! These tests exercise the full `aoe` binary -- both TUI mode (via tmux) and
 //! CLI subcommands (via subprocess). They catch startup failures, rendering

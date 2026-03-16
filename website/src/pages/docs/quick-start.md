@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Quick Start
-description: Get up and running with Agent of Empires in minutes. Create sessions, attach to agents, and use worktrees.
+description: Get up and running with ▨ kokorro in minutes. Create sessions, attach to agents, and use worktrees.
 ---
 
 ## Launch the TUI

@@ -29,7 +29,7 @@ impl WelcomeDialog {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
-            .title(" Welcome to Agent of Empires ")
+            .title(" Welcome to ▨ kokorro ")
             .title_style(Style::default().fg(theme.accent).bold());
 
         let inner = block.inner(dialog_area);

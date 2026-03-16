@@ -17,6 +17,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_profile() -> String {
+    "default".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalInfo {
     #[serde(default)]
@@ -74,6 +78,8 @@ pub struct Instance {
     pub project_path: String,
     #[serde(default)]
     pub group_path: String,
+    #[serde(default = "default_profile")]
+    pub profile: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default)]
@@ -122,6 +128,7 @@ impl Instance {
             title: title.to_string(),
             project_path: project_path.to_string(),
             group_path: String::new(),
+            profile: default_profile(),
             parent_session_id: None,
             command: String::new(),
             extra_args: String::new(),
@@ -138,6 +145,11 @@ impl Instance {
             last_start_time: None,
             last_error: None,
         }
+    }
+
+    /// Load the effective config for this instance's profile (global + profile overrides merged).
+    pub fn resolved_config(&self) -> super::config::Config {
+        super::profile_config::resolve_config(&self.profile).unwrap_or_default()
     }
 
     pub fn is_sub_session(&self) -> bool {
@@ -291,6 +303,7 @@ impl Instance {
 
     /// Apply all configured tmux options to a session with the given name and title.
     fn apply_session_tmux_options(&self, session_name: &str, display_title: &str) {
+        let config = self.resolved_config();
         let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
         let sandbox = self.sandbox_display();
         crate::tmux::status_bar::apply_all_tmux_options(
@@ -298,6 +311,7 @@ impl Instance {
             display_title,
             branch,
             sandbox.as_ref(),
+            &config.tmux,
         );
     }
 
@@ -375,15 +389,13 @@ impl Instance {
             let container = self.get_container_for_instance()?;
             // Run on_launch hooks inside the container
             if let Some(ref hook_cmds) = on_launch_hooks {
-                if let Some(ref sandbox) = self.sandbox_info {
-                    let workdir = self.container_workdir();
-                    if let Err(e) = super::repo_config::execute_hooks_in_container(
-                        hook_cmds,
-                        &sandbox.container_name,
-                        &workdir,
-                    ) {
-                        tracing::warn!("on_launch hook failed in container: {}", e);
-                    }
+                let workdir = self.container_workdir();
+                if let Err(e) = super::repo_config::execute_hooks_in_container(
+                    hook_cmds,
+                    &container.name,
+                    &workdir,
+                ) {
+                    tracing::warn!("on_launch hook failed in container: {}", e);
                 }
             }
 
@@ -519,7 +531,9 @@ impl Instance {
             .ok_or_else(|| anyhow::anyhow!("Cannot ensure container for non-sandboxed session"))?;
 
         let image = &sandbox.image;
-        let container = DockerContainer::new(&self.id, image);
+
+        // Use for_instance to handle renamed containers
+        let container = DockerContainer::for_instance(self);
 
         if container.is_running()? {
             container_config::refresh_agent_configs();
@@ -532,19 +546,52 @@ impl Instance {
             return Ok(container);
         }
 
-        // Ensure image is available (always pulls to get latest)
+        // Container doesn't exist yet -- create with the canonical generated name
+        let new_container = DockerContainer::new(&self.id, image);
+
         let runtime = containers::get_container_runtime();
         runtime.ensure_image(image)?;
 
         let config = self.build_container_config()?;
-        let container_id = container.create(&config)?;
+        let container_id = new_container.create(&config)?;
 
         if let Some(ref mut sandbox) = self.sandbox_info {
             sandbox.container_id = Some(container_id);
+            sandbox.container_name = new_container.name.clone();
             sandbox.created_at = Some(Utc::now());
         }
 
-        Ok(container)
+        Ok(new_container)
+    }
+
+    /// Query Docker for the actual container name and update SandboxInfo if it changed.
+    /// Returns true if the name was updated.
+    pub fn refresh_container_name(&mut self) -> bool {
+        let sandbox = match self.sandbox_info.as_ref() {
+            Some(s) if s.enabled => s,
+            _ => return false,
+        };
+
+        // Need a container_id to look up the actual name
+        let container_id = match sandbox.container_id.as_deref() {
+            Some(id) if !id.is_empty() => id,
+            _ => return false,
+        };
+
+        let runtime = containers::get_container_runtime();
+        let actual_name = match runtime.get_container_name(container_id) {
+            Ok(Some(name)) => name,
+            _ => return false,
+        };
+
+        if actual_name != sandbox.container_name {
+            if let Some(ref mut sandbox) = self.sandbox_info {
+                sandbox.container_name = actual_name;
+            }
+            return true;
+        }
+
+        false
     }
 
     /// Get the container working directory for this instance.
@@ -586,6 +633,14 @@ impl Instance {
         if session.exists() {
             session.kill()?;
         }
+        // Clean up hook status files (full ID + 8-char prefix from legacy sessions)
+        if let Ok(app_dir) = crate::session::get_app_dir() {
+            let hook_dir = app_dir.join("hook_status");
+            let _ = std::fs::remove_file(hook_dir.join(&self.id));
+            if self.id.len() > 8 {
+                let _ = std::fs::remove_file(hook_dir.join(&self.id[..8]));
+            }
+        }
         Ok(())
     }
 
@@ -596,7 +651,7 @@ impl Instance {
         self.kill()?;
 
         if self.is_sandboxed() {
-            let container = containers::DockerContainer::from_session_id(&self.id);
+            let container = containers::DockerContainer::for_instance(self);
             if container.is_running().unwrap_or(false) {
                 container.stop()?;
             }
@@ -627,6 +682,24 @@ impl Instance {
                 self.status = Status::Starting;
                 return;
             }
+        }
+
+        // Claude sessions: hooks are the sole source of truth.
+        // No pane-scraping fallback -- stale/missing hook status defaults to Idle.
+        if self.tool == "claude" {
+            if let Some(status) = crate::tmux::hook_status::read_hook_status(&self.id) {
+                self.status = status;
+                return;
+            }
+            // No fresh hook status -- check if tmux session still exists
+            match self.tmux_session() {
+                Ok(s) if s.exists() => self.status = Status::Idle,
+                _ => {
+                    self.status = Status::Error;
+                    self.last_error_check = Some(std::time::Instant::now());
+                }
+            }
+            return;
         }
 
         let session = match self.tmux_session() {
@@ -707,6 +780,9 @@ fn generate_id() -> String {
 /// pressing Ctrl-Z suspends the process with no way to recover via job control.
 /// This wrapper disables the suspend character at the terminal level before exec'ing
 /// the actual command.
+///
+/// If `instance_id` is provided, exports `AOE_INSTANCE_ID` so that Claude Code hooks
+/// can write status files keyed to this session.
 ///
 /// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
 /// Single quotes in `cmd` are escaped with the `'\''` technique to prevent

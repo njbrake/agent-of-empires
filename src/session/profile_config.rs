@@ -38,6 +38,9 @@ pub struct ProfileConfig {
     pub session: Option<SessionConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,6 +57,9 @@ pub struct ThemeConfigOverride {
 pub struct ClaudeConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_hooks: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -132,6 +138,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_runtime: Option<ContainerRuntimeName>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_wrapper: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +165,15 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_command_override: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiffConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_lines: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -203,6 +221,7 @@ pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
         || config.sandbox.is_some()
         || config.tmux.is_some()
         || config.session.is_some()
+        || config.diff.is_some()
         || config.hooks.is_some()
         || config.sound.is_some()
 }
@@ -257,6 +276,9 @@ pub fn apply_sandbox_overrides(
     }
     if let Some(container_runtime) = source.container_runtime {
         target.container_runtime = container_runtime;
+    }
+    if let Some(ref command_wrapper) = source.command_wrapper {
+        target.command_wrapper = Some(command_wrapper.clone());
     }
 }
 
@@ -317,6 +339,16 @@ pub fn apply_session_overrides(
     }
 }
 
+/// Apply diff config overrides to a target config.
+pub fn apply_diff_overrides(target: &mut super::config::DiffConfig, source: &DiffConfigOverride) {
+    if source.default_branch.is_some() {
+        target.default_branch = source.default_branch.clone();
+    }
+    if let Some(context_lines) = source.context_lines {
+        target.context_lines = context_lines;
+    }
+}
+
 /// Apply tmux config overrides to a target config.
 pub fn apply_tmux_overrides(target: &mut super::config::TmuxConfig, source: &TmuxConfigOverride) {
     if let Some(status_bar) = source.status_bar {
@@ -338,6 +370,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
     if let Some(ref claude_override) = profile.claude {
         if claude_override.config_dir.is_some() {
             global.claude.config_dir = claude_override.config_dir.clone();
+        }
+        if let Some(status_hooks) = claude_override.status_hooks {
+            global.claude.status_hooks = status_hooks;
         }
     }
 
@@ -370,6 +405,10 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
 
     if let Some(ref session_override) = profile.session {
         apply_session_overrides(&mut global.session, session_override);
+    }
+
+    if let Some(ref diff_override) = profile.diff {
+        apply_diff_overrides(&mut global.diff, diff_override);
     }
 
     if let Some(ref hooks_override) = profile.hooks {

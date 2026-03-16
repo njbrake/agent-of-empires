@@ -118,6 +118,10 @@ impl App {
         })
     }
 
+    pub fn home_mut(&mut self) -> &mut HomeView {
+        &mut self.home
+    }
+
     pub fn set_theme(&mut self, name: &str) {
         self.theme = load_theme(name);
         self.needs_redraw = true;

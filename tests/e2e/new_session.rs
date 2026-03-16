@@ -11,7 +11,7 @@ fn test_new_session_dialog_opens() {
     let mut h = TuiTestHarness::new("new_dialog");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("kokorro");
     h.send_keys("n");
     h.wait_for("Title");
     h.assert_screen_contains("Path");
@@ -25,7 +25,7 @@ fn test_new_session_dialog_escape_cancels() {
     let mut h = TuiTestHarness::new("new_esc");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for("kokorro");
     h.send_keys("n");
     h.wait_for("Title");
 

@@ -41,6 +41,11 @@ pub trait ContainerRuntimeInterface {
     fn image_exists_locally(&self, image: &str) -> bool;
 
     // container management
+
+    /// Look up the current container name by id or name.
+    /// Returns None if the container doesn't exist.
+    fn get_container_name(&self, id_or_name: &str) -> Result<Option<String>>;
+
     fn does_container_exist(&self, name: &str) -> Result<bool>;
 
     fn is_container_running(&self, name: &str) -> Result<bool>;

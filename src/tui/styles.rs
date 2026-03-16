@@ -226,6 +226,20 @@ impl Theme {
     }
 }
 
+/// Mix a status color into a base background at 1/10th intensity.
+/// Produces the "vertical tab glow" for selected session items.
+pub fn tint_background(status_color: Color, base_bg: Color) -> Color {
+    if let (Color::Rgb(sr, sg, sb), Color::Rgb(br, bg, bb)) = (status_color, base_bg) {
+        Color::Rgb(
+            br.saturating_add(sr / 10),
+            bg.saturating_add(sg / 10),
+            bb.saturating_add(sb / 10),
+        )
+    } else {
+        base_bg
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

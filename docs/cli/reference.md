@@ -41,11 +41,15 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe sounds list`↴](#aoe-sounds-list)
 * [`aoe sounds test`↴](#aoe-sounds-test)
 * [`aoe uninstall`↴](#aoe-uninstall)
+* [`aoe hooks`↴](#aoe-hooks)
+* [`aoe hooks install`↴](#aoe-hooks-install)
+* [`aoe hooks uninstall`↴](#aoe-hooks-uninstall)
+* [`aoe hooks status`↴](#aoe-hooks-status)
 * [`aoe completion`↴](#aoe-completion)
 
 ## `aoe`
 
-Agent of Empires (aoe) is a terminal session manager that uses tmux to help you manage and monitor AI coding agents like Claude Code and OpenCode.
+▨ kokorro (aoe) is a terminal session manager that uses tmux to help you manage and monitor AI coding agents like Claude Code and OpenCode.
 
 Run without arguments to launch the TUI dashboard.
 
@@ -64,12 +68,14 @@ Run without arguments to launch the TUI dashboard.
 * `worktree` — Manage git worktrees for parallel development
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
-* `uninstall` — Uninstall Agent of Empires
+* `uninstall` — Uninstall ▨ kokorro
+* `hooks` — Manage Claude Code hooks for status detection
 * `completion` — Generate shell completions
 
 ###### **Options:**
 
 * `-p`, `--profile <PROFILE>` — Profile to use (separate workspace with its own sessions)
+* `--sidebar-mode` — Launch in sidebar mode (shows only the session list, no preview)
 
 
 
@@ -558,7 +564,7 @@ Test a sound by playing it
 
 ## `aoe uninstall`
 
-Uninstall Agent of Empires
+Uninstall ▨ kokorro
 
 **Usage:** `aoe uninstall [OPTIONS]`
 
@@ -568,6 +574,44 @@ Uninstall Agent of Empires
 * `--keep-tmux-config` — Keep tmux configuration
 * `--dry-run` — Show what would be removed without removing
 * `-y` — Skip confirmation prompts
+
+
+
+## `aoe hooks`
+
+Manage Claude Code hooks for status detection
+
+**Usage:** `aoe hooks <COMMAND>`
+
+###### **Subcommands:**
+
+* `install` — Install Claude Code hooks for status detection
+* `uninstall` — Remove aoe hooks from Claude Code settings
+* `status` — Show whether hooks are installed and enabled
+
+
+
+## `aoe hooks install`
+
+Install Claude Code hooks for status detection
+
+**Usage:** `aoe hooks install`
+
+
+
+## `aoe hooks uninstall`
+
+Remove aoe hooks from Claude Code settings
+
+**Usage:** `aoe hooks uninstall`
+
+
+
+## `aoe hooks status`
+
+Show whether hooks are installed and enabled
+
+**Usage:** `aoe hooks status`
 
 
 

@@ -1,4 +1,4 @@
-# Agent of Empires
+# ▨ kokorro
 
 [![YouTube](https://img.shields.io/badge/YouTube-channel-red?logo=youtube)](https://www.youtube.com/@agent-of-empires)
 
@@ -8,17 +8,7 @@ AoE lets you run multiple AI agents in parallel -- each in its own tmux session,
 
 ## See it in action
 
-<iframe
-width="100%"
-style="aspect-ratio:16/9;border-radius:8px"
-src="https://www.youtube-nocookie.com/embed/Kk8dX_F-P4E"
-title="Agent of Empires Demo"
-frameborder="0"
-allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-allowfullscreen
-></iframe>
-
-![Agent of Empires Demo](assets/demo.gif)
+![▨ kokorro Demo](assets/demo.gif)
 
 ## Why AoE?
 
