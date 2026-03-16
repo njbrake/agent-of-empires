@@ -1,0 +1,15 @@
+{
+  "strategy": "manual-commit",
+  "enabled": true,
+  "strategy_options": {
+    "push_sessions": true,
+    "summarize": {
+      "enabled": true
+    },
+    "checkpoint_remote": {
+      "provider": "github",
+      "repo": "entire-kokorro-snyper"
+    }
+  },
+  "telemetry": false
+}

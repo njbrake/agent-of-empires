@@ -54,4 +54,5 @@ sdd-*/
 
 debug.log
 website/.next/
-.entire
+
+*.code-workspace
