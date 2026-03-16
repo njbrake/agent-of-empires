@@ -1,0 +1,552 @@
+use serial_test::serial;
+use std::process::Command;
+
+use crate::harness::{require_tmux, TuiTestHarness};
+
+/// Helper to read a session field from the sessions.json in the harness's isolated home.
+fn read_sessions_json(h: &TuiTestHarness) -> serde_json::Value {
+    let sessions_path = if cfg!(target_os = "linux") {
+        h.home_path()
+            .join(".config/agent-of-empires/profiles/default/sessions.json")
+    } else {
+        h.home_path()
+            .join(".agent-of-empires/profiles/default/sessions.json")
+    };
+    let content = std::fs::read_to_string(&sessions_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", sessions_path.display(), e));
+    serde_json::from_str(&content).expect("invalid sessions JSON")
+}
+
+#[test]
+#[serial]
+fn test_cli_add_and_list() {
+    let h = TuiTestHarness::new("cli_add_list");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "E2E Test Session"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let list_output = h.run_cli(&["list"]);
+    assert!(
+        list_output.status.success(),
+        "aoe list failed: {}",
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        stdout.contains("E2E Test Session"),
+        "list output should contain session title.\nOutput:\n{}",
+        stdout
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_invalid_path() {
+    let h = TuiTestHarness::new("cli_add_invalid");
+
+    let output = h.run_cli(&["add", "/nonexistent/path/that/does/not/exist"]);
+    assert!(
+        !output.status.success(),
+        "aoe add should fail for nonexistent path"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("not")
+            || combined.contains("exist")
+            || combined.contains("error")
+            || combined.contains("Error")
+            || combined.contains("invalid")
+            || combined.contains("No such"),
+        "expected error message about invalid path.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_respects_config_extra_args() {
+    let h = TuiTestHarness::new("cli_add_config_extra_args");
+    let project = h.project_path();
+
+    // Write config with agent_extra_args for claude
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+default_tool = "claude"
+agent_extra_args = {{ claude = "--verbose --debug" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "ConfigExtraArgs"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["extra_args"].as_str().unwrap_or(""),
+        "--verbose --debug",
+        "extra_args should be populated from config"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_respects_config_command_override() {
+    let h = TuiTestHarness::new("cli_add_config_cmd_override");
+    let project = h.project_path();
+
+    // Write config with agent_command_override for claude
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+default_tool = "claude"
+agent_command_override = {{ claude = "my-custom-claude" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "ConfigCmdOverride"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["command"].as_str().unwrap_or(""),
+        "my-custom-claude",
+        "command should be populated from config agent_command_override"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_cli_flags_override_config() {
+    let h = TuiTestHarness::new("cli_add_flags_override");
+    let project = h.project_path();
+
+    // Write config with agent_extra_args for claude
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+default_tool = "claude"
+agent_extra_args = {{ claude = "--from-config" }}
+agent_command_override = {{ claude = "config-claude" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    // CLI flags should take priority over config
+    let add_output = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "-t",
+        "FlagsOverride",
+        "--extra-args",
+        "from-cli-extra",
+        "--cmd-override",
+        "cli-claude",
+    ]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["extra_args"].as_str().unwrap_or(""),
+        "from-cli-extra",
+        "CLI --extra-args should override config"
+    );
+    assert_eq!(
+        session["command"].as_str().unwrap_or(""),
+        "cli-claude",
+        "CLI --cmd-override should override config"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_respects_default_tool() {
+    let h = TuiTestHarness::new("cli_add_default_tool");
+    let project = h.project_path();
+
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+default_tool = "opencode"
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "DefaultTool"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["tool"].as_str().unwrap_or(""),
+        "opencode",
+        "tool should be 'opencode' from default_tool config"
+    );
+    assert_eq!(
+        session["command"].as_str().unwrap_or(""),
+        "opencode",
+        "command should be 'opencode' via set_default_command"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_cmd_overrides_default_tool() {
+    let h = TuiTestHarness::new("cli_add_cmd_overrides");
+    let project = h.project_path();
+
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+default_tool = "opencode"
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "-t",
+        "CmdOverride",
+        "--cmd",
+        "claude",
+    ]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["tool"].as_str().unwrap_or(""),
+        "claude",
+        "explicit --cmd should override default_tool config"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_respects_yolo_mode_default() {
+    let h = TuiTestHarness::new("cli_add_yolo_default");
+    let project = h.project_path();
+
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+yolo_mode_default = true
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "YoloDefault"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["yolo_mode"].as_bool(),
+        Some(true),
+        "yolo_mode should be true from yolo_mode_default config"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_yolo_flag_without_config() {
+    let h = TuiTestHarness::new("cli_add_yolo_flag");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "YoloFlag", "--yolo"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(
+        session["yolo_mode"].as_bool(),
+        Some(true),
+        "--yolo flag should set yolo_mode to true"
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_default_tool_no_config() {
+    let h = TuiTestHarness::new("cli_add_no_config");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "NoConfig"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    // Harness prepends a fake `claude` binary to PATH, so no-config tool
+    // selection should deterministically choose `claude`.
+    let expected = "claude";
+    assert_eq!(
+        session["tool"].as_str().unwrap_or(""),
+        expected,
+        "tool should default to first available tool ('{}') when no default_tool config",
+        expected
+    );
+}
+
+/// `aoe session capture` should return pane content or empty output for a stopped session.
+#[test]
+#[serial]
+fn test_cli_session_capture_stopped() {
+    let h = TuiTestHarness::new("cli_capture_stopped");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "CaptureTest"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session_id = sessions[0]["id"].as_str().expect("session should have id");
+
+    // Capture a session that is not running -- should succeed with empty content
+    let capture_output = h.run_cli(&["session", "capture", session_id, "--json"]);
+    assert!(
+        capture_output.status.success(),
+        "aoe session capture failed: {}",
+        String::from_utf8_lossy(&capture_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&capture_output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(json["status"], "stopped");
+    assert_eq!(json["content"], "");
+    assert_eq!(json["title"], "CaptureTest");
+}
+
+/// `aoe session capture` plain text mode should output raw content.
+#[test]
+#[serial]
+fn test_cli_session_capture_plain() {
+    let h = TuiTestHarness::new("cli_capture_plain");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "CapturePlain"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session_id = sessions[0]["id"].as_str().expect("session should have id");
+
+    // Plain text capture of stopped session -- empty output, no error
+    let capture_output = h.run_cli(&["session", "capture", session_id]);
+    assert!(
+        capture_output.status.success(),
+        "aoe session capture (plain) failed: {}",
+        String::from_utf8_lossy(&capture_output.stderr)
+    );
+}
+
+/// Renaming a session via CLI should rename the tmux session, not kill it.
+/// Regression test for https://github.com/njbrake/agent-of-empires/issues/431
+#[test]
+#[serial]
+fn test_cli_rename_preserves_tmux_session() {
+    require_tmux!();
+
+    let h = TuiTestHarness::new("cli_rename_tmux");
+    let project = h.project_path();
+
+    // 1. Add a session
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "OldName"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    // 2. Read the session ID from storage
+    let sessions = read_sessions_json(&h);
+    let session_id = sessions[0]["id"].as_str().expect("session should have id");
+    let truncated_id = &session_id[..8.min(session_id.len())];
+
+    // 3. Compute the tmux session name that aoe would use
+    let old_tmux_name = format!("aoe_OldName_{}", truncated_id);
+
+    // Create a real tmux session with that name (simulates a running session)
+    let create = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            &old_tmux_name,
+            "-x",
+            "80",
+            "-y",
+            "24",
+            "sleep",
+            "60",
+        ])
+        .output()
+        .expect("tmux new-session");
+    assert!(
+        create.status.success(),
+        "failed to create tmux session: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    // 4. Rename the session via CLI
+    let rename_output = h.run_cli(&["session", "rename", session_id, "-t", "NewName"]);
+    assert!(
+        rename_output.status.success(),
+        "aoe session rename failed: {}",
+        String::from_utf8_lossy(&rename_output.stderr)
+    );
+
+    // 5. The old tmux session name should be gone
+    let old_exists = Command::new("tmux")
+        .args(["has-session", "-t", &old_tmux_name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    assert!(
+        !old_exists,
+        "Old tmux session '{}' should no longer exist after rename",
+        old_tmux_name
+    );
+
+    // 6. The new tmux session name should exist
+    let new_tmux_name = format!("aoe_NewName_{}", truncated_id);
+    let new_exists = Command::new("tmux")
+        .args(["has-session", "-t", &new_tmux_name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    assert!(
+        new_exists,
+        "New tmux session '{}' should exist after rename",
+        new_tmux_name
+    );
+
+    // Cleanup
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &new_tmux_name])
+        .output();
+}

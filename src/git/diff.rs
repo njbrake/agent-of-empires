@@ -105,7 +105,7 @@ pub struct FileDiff {
 /// Uses the merge-base of HEAD and the base branch, so only changes introduced
 /// on the current branch are shown (matching GitHub PR diff behavior).
 pub fn compute_changed_files(repo_path: &Path, base_branch: &str) -> Result<Vec<DiffFile>> {
-    let repo = git2::Repository::discover(repo_path)?;
+    let repo = super::open_repo_at(repo_path)?;
 
     let base_tree = get_merge_base_tree(&repo, base_branch)?;
 
@@ -234,7 +234,7 @@ fn get_merge_base_tree<'a>(repo: &'a git2::Repository, reference: &str) -> Resul
 /// comparing against the branch tip directly (which includes unrelated
 /// changes from the base branch).
 pub fn check_merge_base_status(repo_path: &Path, base_branch: &str) -> Option<String> {
-    let repo = match git2::Repository::discover(repo_path) {
+    let repo = match super::open_repo_at(repo_path) {
         Ok(r) => r,
         Err(_) => return Some("Could not open repository.".to_string()),
     };
@@ -294,7 +294,7 @@ pub fn compute_file_diff(
     base_branch: &str,
     context_lines: usize,
 ) -> Result<FileDiff> {
-    let repo = git2::Repository::discover(repo_path)?;
+    let repo = super::open_repo_at(repo_path)?;
     let workdir = repo.workdir().ok_or(GitError::NotAGitRepo)?;
 
     let base_tree = get_merge_base_tree(&repo, base_branch)?;
@@ -441,7 +441,7 @@ fn is_binary_bytes(content: &[u8]) -> bool {
 
 /// Get the content of a file from the working directory
 pub fn get_working_file_content(repo_path: &Path, file_path: &Path) -> Result<String> {
-    let repo = git2::Repository::discover(repo_path)?;
+    let repo = super::open_repo_at(repo_path)?;
     let workdir = repo.workdir().ok_or(GitError::NotAGitRepo)?;
     let full_path = workdir.join(file_path);
 
@@ -450,7 +450,7 @@ pub fn get_working_file_content(repo_path: &Path, file_path: &Path) -> Result<St
 
 /// Save content to a file in the working directory
 pub fn save_working_file_content(repo_path: &Path, file_path: &Path, content: &str) -> Result<()> {
-    let repo = git2::Repository::discover(repo_path)?;
+    let repo = super::open_repo_at(repo_path)?;
     let workdir = repo.workdir().ok_or(GitError::NotAGitRepo)?;
     let full_path = workdir.join(file_path);
 
@@ -464,7 +464,7 @@ pub fn save_working_file_content(repo_path: &Path, file_path: &Path, content: &s
 
 /// List available branches in the repository
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
-    let repo = git2::Repository::discover(repo_path)?;
+    let repo = super::open_repo_at(repo_path)?;
     let mut branches = Vec::new();
 
     // Local branches
@@ -491,7 +491,7 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
 
 /// Get the default branch name (main or master)
 pub fn get_default_branch(repo_path: &Path) -> Result<String> {
-    let repo = git2::Repository::discover(repo_path)?;
+    let repo = super::open_repo_at(repo_path)?;
 
     // Try to find main first, then master
     for name in &["main", "master"] {

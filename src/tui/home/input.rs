@@ -5,11 +5,13 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::{HomeView, TerminalMode, ViewMode};
-use crate::session::{flatten_tree, list_profiles, repo_config, resolve_config, Item, Status};
+use crate::session::config::{load_config, save_config, SortOrder};
+use crate::session::{list_profiles, repo_config, resolve_config, Item, Status};
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    InfoDialog, NewSessionData, NewSessionDialog, RenameDialog, UnifiedDeleteDialog,
+    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction,
+    RenameDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -35,6 +37,17 @@ impl HomeView {
                         self.settings_view = None;
                         self.confirm_dialog = None;
                         self.settings_close_confirm = false;
+                        // Revert theme to saved config (undo any preview)
+                        if let Ok(config) =
+                            resolve_config(self.active_profile.as_deref().unwrap_or("default"))
+                        {
+                            let theme_name = if config.theme.name.is_empty() {
+                                "phosphor".to_string()
+                            } else {
+                                config.theme.name
+                            };
+                            return Some(Action::SetTheme(theme_name));
+                        }
                         return None;
                     }
                 }
@@ -44,11 +57,24 @@ impl HomeView {
         // Handle settings view (full-screen takeover)
         if let Some(ref mut settings) = self.settings_view {
             match settings.handle_key(key) {
-                SettingsAction::Continue => return None,
+                SettingsAction::Continue => {
+                    return None;
+                }
                 SettingsAction::Close => {
                     self.settings_view = None;
                     // Refresh config-dependent state in case settings changed
                     self.refresh_from_config();
+                    // Reload theme from saved config
+                    if let Ok(config) =
+                        resolve_config(self.active_profile.as_deref().unwrap_or("default"))
+                    {
+                        let theme_name = if config.theme.name.is_empty() {
+                            "phosphor".to_string()
+                        } else {
+                            config.theme.name
+                        };
+                        return Some(Action::SetTheme(theme_name));
+                    }
                     return None;
                 }
                 SettingsAction::UnsavedChangesWarning => {
@@ -60,6 +86,9 @@ impl HomeView {
                     ));
                     self.settings_close_confirm = true;
                     return None;
+                }
+                SettingsAction::PreviewTheme(name) => {
+                    return Some(Action::SetTheme(name));
                 }
             }
         }
@@ -124,6 +153,31 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.hooks_install_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.hooks_install_dialog = None;
+                    self.pending_hooks_install_data = None;
+                }
+                DialogResult::Submit(_) => {
+                    self.hooks_install_dialog = None;
+                    // Persist the acknowledgment
+                    if let Ok(mut config) =
+                        crate::session::config::load_config().map(|c| c.unwrap_or_default())
+                    {
+                        config.app_state.has_acknowledged_agent_hooks = true;
+                        let _ = crate::session::config::save_config(&config);
+                    }
+                    // Resume session creation
+                    if let Some(data) = self.pending_hooks_install_data.take() {
+                        return self.continue_session_creation(data);
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.hook_trust_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -146,11 +200,12 @@ impl HomeView {
                                 ) {
                                     tracing::error!("Failed to trust repo: {}", e);
                                 }
-                                let merged = self.merge_repo_hooks_onto_config(hooks);
+                                let merged =
+                                    self.merge_repo_hooks_onto_config_for(&data.profile, hooks);
                                 return self.create_session_with_hooks(data, merged);
                             }
                             HookTrustAction::Skip => {
-                                let fallback = self.resolve_global_profile_hooks();
+                                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
                                 return self.create_session_with_hooks(data, fallback);
                             }
                         }
@@ -177,29 +232,31 @@ impl HomeView {
                     }
                 }
                 DialogResult::Submit(data) => {
-                    // Check for hooks before creating the session
-                    match repo_config::check_hook_trust(std::path::Path::new(&data.path)) {
-                        Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
-                            use crate::tui::dialogs::HookTrustDialog;
-                            self.hook_trust_dialog =
-                                Some(HookTrustDialog::new(hooks, hooks_hash, data.path.clone()));
-                            self.pending_hook_trust_data = Some(data);
-                        }
-                        Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
-                            // Merge repo hooks onto global+profile hooks (per-field override)
-                            let merged = self.merge_repo_hooks_onto_config(repo_hooks);
-                            return self.create_session_with_hooks(data, merged);
-                        }
-                        Ok(repo_config::HookTrustStatus::NoHooks) => {
-                            let fallback = self.resolve_global_profile_hooks();
-                            return self.create_session_with_hooks(data, fallback);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to check repo hooks: {}", e);
-                            let fallback = self.resolve_global_profile_hooks();
-                            return self.create_session_with_hooks(data, fallback);
+                    // Check if the tool uses hooks and user hasn't acknowledged yet
+                    let tool_name = if data.tool.is_empty() {
+                        "claude".to_string()
+                    } else {
+                        data.tool.clone()
+                    };
+                    let has_hooks = crate::agents::get_agent(&tool_name)
+                        .and_then(|a| a.hook_config.as_ref())
+                        .is_some();
+
+                    if has_hooks {
+                        let acknowledged = crate::session::config::load_config()
+                            .ok()
+                            .flatten()
+                            .map(|c| c.app_state.has_acknowledged_agent_hooks)
+                            .unwrap_or(false);
+
+                        if !acknowledged {
+                            self.hooks_install_dialog = Some(HooksInstallDialog::new(&tool_name));
+                            self.pending_hooks_install_data = Some(data);
+                            return None;
                         }
                     }
+
+                    return self.continue_session_creation(data);
                 }
             }
             return None;
@@ -210,6 +267,7 @@ impl HomeView {
                 DialogResult::Continue => {}
                 DialogResult::Cancel => {
                     self.confirm_dialog = None;
+                    self.pending_stop_session = None;
                 }
                 DialogResult::Submit(_) => {
                     let action = dialog.action().to_string();
@@ -217,6 +275,10 @@ impl HomeView {
                     if action == "delete_group" {
                         if let Err(e) = self.delete_selected_group() {
                             tracing::error!("Failed to delete group: {}", e);
+                        }
+                    } else if action == "stop_session" {
+                        if let Some(session_id) = self.pending_stop_session.take() {
+                            return Some(Action::StopSession(session_id));
                         }
                     }
                 }
@@ -280,21 +342,80 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.profile_picker_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.profile_picker_dialog = None;
+                }
+                DialogResult::Submit(action) => match action {
+                    ProfilePickerAction::Switch(name) => {
+                        self.profile_picker_dialog = None;
+                        // The synthetic "all" entry (only present in filtered mode)
+                        // switches back to all-profiles mode
+                        let profile = if self.active_profile.is_some() && name == "all" {
+                            None
+                        } else {
+                            Some(name)
+                        };
+                        if let Err(e) = self.switch_profile(profile) {
+                            tracing::error!("Failed to switch profile: {}", e);
+                        }
+                    }
+                    ProfilePickerAction::Created(name) => {
+                        self.profile_picker_dialog = None;
+                        match crate::session::create_profile(&name) {
+                            Ok(()) => {
+                                if let Err(e) = self.switch_profile(Some(name)) {
+                                    tracing::error!("Failed to switch to new profile: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                self.info_dialog = Some(InfoDialog::new(
+                                    "Error",
+                                    &format!("Failed to create profile: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                    ProfilePickerAction::Deleted(name) => {
+                        match crate::session::delete_profile(&name) {
+                            Ok(()) => {
+                                self.show_profile_picker();
+                            }
+                            Err(e) => {
+                                self.profile_picker_dialog = None;
+                                self.info_dialog = Some(InfoDialog::new(
+                                    "Error",
+                                    &format!("Failed to delete profile: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                },
+            }
+            return None;
+        }
+
         // Search mode
         if self.search_active {
             match key.code {
                 KeyCode::Esc => {
                     self.search_active = false;
                     self.search_query = Input::default();
-                    self.filtered_items = None;
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
                 }
                 KeyCode::Enter => {
                     self.search_active = false;
+                    self.search_query = Input::default();
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
                 }
                 _ => {
                     self.search_query
                         .handle_event(&crossterm::event::Event::Key(key));
-                    self.update_filter();
+                    self.update_search();
                 }
             }
             return None;
@@ -302,14 +423,19 @@ impl HomeView {
 
         // Normal mode keybindings
         match key.code {
+            KeyCode::Esc => {
+                if !self.search_matches.is_empty() {
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
+                    self.search_query = Input::default();
+                }
+            }
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => {
                 self.show_help = true;
             }
             KeyCode::Char('P') => {
-                if let Some(next) = self.get_next_profile() {
-                    return Some(Action::SwitchProfile(next));
-                }
+                self.show_profile_picker();
             }
             KeyCode::Char('t') => {
                 self.view_mode = match self.view_mode {
@@ -321,7 +447,7 @@ impl HomeView {
                 // Toggle container/host terminal mode (only in Terminal view for sandboxed sessions)
                 if self.view_mode == ViewMode::Terminal {
                     if let Some(id) = &self.selected_session {
-                        if let Some(inst) = self.instance_map.get(id) {
+                        if let Some(inst) = self.get_instance(id) {
                             if inst.is_sandboxed() {
                                 let id = id.clone();
                                 self.toggle_terminal_mode(&id);
@@ -340,29 +466,53 @@ impl HomeView {
                 self.search_query = Input::default();
             }
             KeyCode::Char('n') => {
-                let existing_titles: Vec<String> =
-                    self.instances.iter().map(|i| i.title.clone()).collect();
-                let existing_groups: Vec<String> = self
-                    .group_tree
-                    .get_all_groups()
-                    .iter()
-                    .map(|g| g.path.clone())
-                    .collect();
-                self.new_dialog = Some(NewSessionDialog::new(
-                    self.available_tools.clone(),
-                    existing_titles,
-                    existing_groups,
-                    self.storage.profile(),
-                ));
+                if !self.search_matches.is_empty() {
+                    self.search_match_index =
+                        (self.search_match_index + 1) % self.search_matches.len();
+                    self.cursor = self.search_matches[self.search_match_index];
+                    self.update_selected();
+                } else {
+                    let existing_titles: Vec<String> =
+                        self.instances().iter().map(|i| i.title.clone()).collect();
+                    let existing_groups: Vec<String> =
+                        self.all_groups().iter().map(|g| g.path.clone()).collect();
+                    let current_profile = self
+                        .active_profile
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string());
+                    let profiles =
+                        list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+                    self.new_dialog = Some(NewSessionDialog::new(
+                        self.available_tools.clone(),
+                        existing_titles,
+                        existing_groups,
+                        &current_profile,
+                        profiles,
+                    ));
+                }
+            }
+            KeyCode::Char('N') => {
+                if !self.search_matches.is_empty() {
+                    self.search_match_index = if self.search_match_index == 0 {
+                        self.search_matches.len() - 1
+                    } else {
+                        self.search_match_index - 1
+                    };
+                    self.cursor = self.search_matches[self.search_match_index];
+                    self.update_selected();
+                }
             }
             KeyCode::Char('s') => {
                 // Open settings view with selected session's project path (if any)
                 let project_path = self
                     .selected_session
                     .as_ref()
-                    .and_then(|id| self.instance_map.get(id))
+                    .and_then(|id| self.get_instance(id))
                     .map(|inst| inst.project_path.clone());
-                match SettingsView::new(self.storage.profile(), project_path) {
+                match SettingsView::new(
+                    self.active_profile.as_deref().unwrap_or("default"),
+                    project_path,
+                ) {
                     Ok(view) => self.settings_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open settings: {}", e);
@@ -383,14 +533,15 @@ impl HomeView {
                     return None;
                 };
 
-                let Some(inst) = self.instance_map.get(session_id) else {
+                let Some(inst) = self.get_instance(session_id) else {
                     self.info_dialog =
                         Some(InfoDialog::new("Error", "Could not find session data."));
                     return None;
                 };
 
                 let repo_path = std::path::PathBuf::from(&inst.project_path);
-                match DiffView::new(repo_path, self.storage.profile()) {
+                let profile = inst.source_profile.as_str();
+                match DiffView::new(repo_path, profile) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open diff view: {}", e);
@@ -398,6 +549,19 @@ impl HomeView {
                             "Error",
                             &format!("Failed to open diff view: {}", e),
                         ));
+                    }
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(session_id) = &self.selected_session {
+                    if let Some(inst) = self.get_instance(session_id) {
+                        if inst.status == Status::Stopped || inst.status == Status::Deleting {
+                            return None;
+                        }
+                        let message = format!("Are you sure you want to stop '{}'?", inst.title);
+                        self.pending_stop_session = Some(session_id.clone());
+                        self.confirm_dialog =
+                            Some(ConfirmDialog::new("Stop Session", &message, "stop_session"));
                     }
                 }
             }
@@ -411,7 +575,7 @@ impl HomeView {
                     return None;
                 }
                 if let Some(session_id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(session_id) {
+                    if let Some(inst) = self.get_instance(session_id) {
                         if inst.status == Status::Deleting {
                             return None;
                         }
@@ -425,16 +589,18 @@ impl HomeView {
                             has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
                         };
 
+                        let profile = &inst.source_profile;
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             inst.title.clone(),
                             config,
-                            self.storage.profile(),
+                            profile,
                         ));
                     } else {
+                        let profile = self.active_profile.as_deref().unwrap_or("default");
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
-                            self.storage.profile(),
+                            profile,
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
@@ -467,18 +633,24 @@ impl HomeView {
             }
             KeyCode::Char('r') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                 if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         if inst.status == Status::Deleting {
                             return None;
                         }
-                        let current_profile = self.storage.profile().to_string();
+                        let current_profile = self
+                            .active_profile
+                            .clone()
+                            .unwrap_or_else(|| "default".to_string());
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+                        let existing_groups: Vec<String> =
+                            self.all_groups().iter().map(|g| g.path.clone()).collect();
                         self.rename_dialog = Some(RenameDialog::new(
                             &inst.title,
                             &inst.group_path,
                             &current_profile,
                             profiles,
+                            existing_groups,
                         ));
                     }
                 }
@@ -492,6 +664,12 @@ impl HomeView {
                 if let Err(e) = self.handle_move(1) {
                     tracing::error!("Failed to move item: {}", e);
                 }
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.apply_sort_order(self.sort_order.cycle_reverse());
+            }
+            KeyCode::Char('o') => {
+                self.apply_sort_order(self.sort_order.cycle());
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_cursor(-1);
@@ -517,7 +695,7 @@ impl HomeView {
             }
             KeyCode::Enter => {
                 if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         if inst.status == Status::Deleting {
                             return None;
                         }
@@ -525,7 +703,7 @@ impl HomeView {
                     return match self.view_mode {
                         ViewMode::Agent => Some(Action::AttachSession(id.clone())),
                         ViewMode::Terminal => {
-                            let terminal_mode = if let Some(inst) = self.instance_map.get(id) {
+                            let terminal_mode = if let Some(inst) = self.get_instance(id) {
                                 if inst.is_sandboxed() {
                                     self.get_terminal_mode(id)
                                 } else {
@@ -608,20 +786,14 @@ impl HomeView {
     }
 
     pub(super) fn move_cursor(&mut self, delta: i32) {
-        let items = if let Some(ref filtered) = self.filtered_items {
-            filtered.len()
-        } else {
-            self.flat_items.len()
-        };
-
-        if items == 0 {
+        if self.flat_items.is_empty() {
             return;
         }
 
         let new_cursor = if delta < 0 {
             self.cursor.saturating_sub((-delta) as usize)
         } else {
-            (self.cursor + delta as usize).min(items - 1)
+            (self.cursor + delta as usize).min(self.flat_items.len() - 1)
         };
 
         self.cursor = new_cursor;
@@ -629,71 +801,185 @@ impl HomeView {
     }
 
     pub(super) fn update_selected(&mut self) {
-        let item_idx = if let Some(ref filtered) = self.filtered_items {
-            filtered.get(self.cursor).copied()
-        } else {
-            Some(self.cursor)
-        };
-
-        if let Some(idx) = item_idx {
-            if let Some(item) = self.flat_items.get(idx) {
-                match item {
-                    Item::Session { id, .. } => {
-                        self.selected_session = Some(id.clone());
-                        self.selected_group = None;
-                    }
-                    Item::Group { path, .. } => {
-                        self.selected_session = None;
-                        self.selected_group = Some(path.clone());
-                    }
+        if let Some(item) = self.flat_items.get(self.cursor) {
+            match item {
+                Item::Session { id, .. } => {
+                    self.selected_session = Some(id.clone());
+                    self.selected_group = None;
+                    self.selected_group_profile = None;
                 }
+                Item::Group { path, .. } => {
+                    self.selected_session = None;
+                    self.selected_group = Some(path.clone());
+                    self.selected_group_profile = self.profile_for_cursor(self.cursor);
+                }
+            }
+        }
+    }
+
+    fn apply_sort_order(&mut self, new_order: SortOrder) {
+        self.sort_order = new_order;
+        self.flat_items = self.build_flat_items();
+        if self.search_active && !self.search_query.value().is_empty() {
+            self.update_search();
+        } else {
+            self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
+            self.update_selected();
+        }
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.sort_order = Some(self.sort_order);
+            if let Err(e) = save_config(&config) {
+                tracing::warn!("Failed to save sort order: {}", e);
             }
         }
     }
 
     fn toggle_group_collapsed(&mut self, path: &str) {
-        self.group_tree.toggle_collapsed(path);
-        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
-        if let Err(e) = self
-            .storage
-            .save_with_groups(&self.instances, &self.group_tree)
-        {
+        // Route to the correct profile's GroupTree
+        let profile = self.profile_for_cursor(self.cursor);
+        if let Some(profile) = profile {
+            if let Some(tree) = self.group_trees.get_mut(&profile) {
+                tree.toggle_collapsed(path);
+            }
+        }
+        self.flat_items = self.build_flat_items();
+        if let Err(e) = self.save() {
             tracing::error!("Failed to save group state: {}", e);
         }
     }
 
-    pub(super) fn update_filter(&mut self) {
-        if self.search_query.value().is_empty() {
-            self.filtered_items = None;
+    /// Re-score matches after a reload without moving the cursor.
+    pub(super) fn refresh_search_matches(&mut self) {
+        let query = self.search_query.value();
+        if query.is_empty() {
+            self.search_matches.clear();
+            self.search_match_index = 0;
             return;
         }
 
-        let query = self.search_query.value().to_lowercase();
-        let mut matches = Vec::new();
+        use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+        use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+        let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+        let atom = Atom::new(
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+            false,
+        );
+
+        let mut scored: Vec<(usize, u16)> = Vec::new();
+        let mut buf = Vec::new();
 
         for (idx, item) in self.flat_items.iter().enumerate() {
-            match item {
+            let haystack = match item {
                 Item::Session { id, .. } => {
-                    if let Some(inst) = self.instance_map.get(id) {
-                        if inst.title_lower.contains(&query)
-                            || inst.project_path_lower.contains(&query)
-                        {
-                            matches.push(idx);
-                        }
+                    if let Some(inst) = self.get_instance(id) {
+                        format!("{} {}", inst.title, inst.project_path)
+                    } else {
+                        continue;
                     }
                 }
                 Item::Group { name, path, .. } => {
-                    if name.to_lowercase().contains(&query) || path.to_lowercase().contains(&query)
-                    {
-                        matches.push(idx);
-                    }
+                    format!("{} {}", name, path)
                 }
+            };
+
+            let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);
+            if let Some(score) = atom.score(haystack_utf32, &mut matcher) {
+                scored.push((idx, score));
             }
         }
 
-        self.filtered_items = Some(matches);
-        self.cursor = 0;
-        self.update_selected();
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        self.search_matches = scored.into_iter().map(|(idx, _)| idx).collect();
+        // Clamp match_index in case matches shrank
+        if self.search_matches.is_empty() {
+            self.search_match_index = 0;
+        } else if self.search_match_index >= self.search_matches.len() {
+            self.search_match_index = self.search_matches.len() - 1;
+        }
+    }
+
+    pub(super) fn update_search(&mut self) {
+        self.search_matches.clear();
+        self.search_match_index = 0;
+
+        let query = self.search_query.value();
+        if query.is_empty() {
+            return;
+        }
+
+        use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+        use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+        let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+        let atom = Atom::new(
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+            false,
+        );
+
+        let mut scored: Vec<(usize, u16)> = Vec::new();
+        let mut buf = Vec::new();
+
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            let haystack = match item {
+                Item::Session { id, .. } => {
+                    if let Some(inst) = self.get_instance(id) {
+                        format!("{} {}", inst.title, inst.project_path)
+                    } else {
+                        continue;
+                    }
+                }
+                Item::Group { name, path, .. } => {
+                    format!("{} {}", name, path)
+                }
+            };
+
+            let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);
+            if let Some(score) = atom.score(haystack_utf32, &mut matcher) {
+                scored.push((idx, score));
+            }
+        }
+
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        self.search_matches = scored.into_iter().map(|(idx, _)| idx).collect();
+
+        if let Some(&best) = self.search_matches.first() {
+            self.cursor = best;
+            self.update_selected();
+        }
+    }
+
+    /// Continue session creation after agent hooks acknowledgment.
+    /// Runs the repo hook trust check and then creates the session.
+    fn continue_session_creation(&mut self, data: NewSessionData) -> Option<Action> {
+        match repo_config::check_hook_trust(std::path::Path::new(&data.path)) {
+            Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
+                use crate::tui::dialogs::HookTrustDialog;
+                self.hook_trust_dialog =
+                    Some(HookTrustDialog::new(hooks, hooks_hash, data.path.clone()));
+                self.pending_hook_trust_data = Some(data);
+                None
+            }
+            Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
+                let merged = self.merge_repo_hooks_onto_config_for(&data.profile, repo_hooks);
+                self.create_session_with_hooks(data, merged)
+            }
+            Ok(repo_config::HookTrustStatus::NoHooks) => {
+                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
+                self.create_session_with_hooks(data, fallback)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check repo hooks: {}", e);
+                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
+                self.create_session_with_hooks(data, fallback)
+            }
+        }
     }
 
     /// Create a session with optional hooks. Delegates to the background
@@ -748,11 +1034,12 @@ impl HomeView {
         None
     }
 
-    /// Resolve hooks from global+profile config. Returns `Some(hooks)` only if
-    /// at least one hook command is defined. Global/profile hooks are implicitly
-    /// trusted and skip the repo trust dialog.
-    fn resolve_global_profile_hooks(&self) -> Option<crate::session::HooksConfig> {
-        let config = resolve_config(self.storage.profile()).ok()?;
+    /// Resolve hooks from global+profile config for the given profile.
+    fn resolve_global_profile_hooks_for(
+        &self,
+        profile: &str,
+    ) -> Option<crate::session::HooksConfig> {
+        let config = resolve_config(profile).ok()?;
         if config.hooks.on_create.is_empty() && config.hooks.on_launch.is_empty() {
             None
         } else {
@@ -760,16 +1047,13 @@ impl HomeView {
         }
     }
 
-    /// Merge trusted repo hooks onto the resolved global+profile config using
-    /// per-field override semantics: repo fields replace global/profile fields
-    /// only when the repo field is non-empty.
-    fn merge_repo_hooks_onto_config(
+    /// Merge trusted repo hooks onto the resolved config for the given profile.
+    fn merge_repo_hooks_onto_config_for(
         &self,
+        profile: &str,
         repo_hooks: crate::session::HooksConfig,
     ) -> Option<crate::session::HooksConfig> {
-        let mut base = resolve_config(self.storage.profile())
-            .map(|c| c.hooks)
-            .unwrap_or_default();
+        let mut base = resolve_config(profile).map(|c| c.hooks).unwrap_or_default();
 
         if !repo_hooks.on_create.is_empty() {
             base.on_create = repo_hooks.on_create;

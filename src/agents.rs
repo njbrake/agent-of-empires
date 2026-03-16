@@ -20,6 +20,15 @@ pub enum YoloMode {
     CliFlag(&'static str),
     /// Set an environment variable (name, value).
     EnvVar(&'static str, &'static str),
+    /// Agent always runs in YOLO mode with no opt-in needed (e.g. pi).
+    AlwaysYolo,
+}
+
+/// Configuration for installing status-detection hooks into an agent's settings file.
+pub struct AgentHookConfig {
+    /// Path relative to the project/home dir where the agent's settings live
+    /// (e.g. `.claude/settings.json`).
+    pub settings_rel_path: &'static str,
 }
 
 /// Everything we know about a single agent CLI.
@@ -45,6 +54,10 @@ pub struct AgentDef {
     pub detect_status: fn(&str) -> Status,
     /// Environment variables always injected into the container for this agent.
     pub container_env: &'static [(&'static str, &'static str)],
+    /// Hook configuration for file-based status detection. If set, AoE installs
+    /// hooks into the agent's settings file so status is written to a file instead
+    /// of being parsed from tmux pane content.
+    pub hook_config: Option<AgentHookConfig>,
 }
 
 pub const AGENTS: &[AgentDef] = &[
@@ -57,8 +70,11 @@ pub const AGENTS: &[AgentDef] = &[
         instruction_flag: Some("--append-system-prompt {}"),
         set_default_command: false,
         supports_host_launch: true,
-        detect_status: status_detection::hook_managed_status,
+        detect_status: status_detection::detect_claude_status,
         container_env: &[("CLAUDE_CONFIG_DIR", "/root/.claude")],
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".claude/settings.json",
+        }),
     },
     AgentDef {
         name: "opencode",
@@ -71,6 +87,7 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: false,
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
+        hook_config: None,
     },
     AgentDef {
         name: "vibe",
@@ -83,6 +100,7 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: true,
         detect_status: status_detection::detect_vibe_status,
         container_env: &[],
+        hook_config: None,
     },
     AgentDef {
         name: "codex",
@@ -97,6 +115,7 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: true,
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
+        hook_config: None,
     },
     AgentDef {
         name: "gemini",
@@ -109,6 +128,49 @@ pub const AGENTS: &[AgentDef] = &[
         supports_host_launch: true,
         detect_status: status_detection::detect_gemini_status,
         container_env: &[],
+        hook_config: None,
+    },
+    AgentDef {
+        name: "cursor",
+        binary: "agent",
+        aliases: &["agent"],
+        detection: DetectionMethod::Which("agent"),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
+        instruction_flag: None,
+        set_default_command: false,
+        supports_host_launch: true,
+        detect_status: status_detection::detect_cursor_status,
+        container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".cursor/settings.json",
+        }),
+    },
+    AgentDef {
+        name: "copilot",
+        binary: "copilot",
+        aliases: &["github-copilot"],
+        detection: DetectionMethod::Which("copilot"),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
+        instruction_flag: None,
+        set_default_command: false,
+        supports_host_launch: true,
+        detect_status: status_detection::detect_copilot_status,
+        container_env: &[("COPILOT_CONFIG_DIR", "/root/.copilot")],
+        hook_config: None,
+    },
+    AgentDef {
+        name: "pi",
+        binary: "pi",
+        aliases: &[],
+        detection: DetectionMethod::Which("pi"),
+        // Pi runs in full YOLO mode by default (no approval gates), so no flag needed.
+        yolo: Some(YoloMode::AlwaysYolo),
+        instruction_flag: None,
+        set_default_command: false,
+        supports_host_launch: true,
+        detect_status: status_detection::detect_pi_status,
+        container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
+        hook_config: None,
     },
 ];
 
@@ -174,6 +236,9 @@ mod tests {
         assert_eq!(get_agent("vibe").unwrap().binary, "vibe");
         assert_eq!(get_agent("codex").unwrap().binary, "codex");
         assert_eq!(get_agent("gemini").unwrap().binary, "gemini");
+        assert_eq!(get_agent("cursor").unwrap().binary, "agent");
+        assert_eq!(get_agent("copilot").unwrap().binary, "copilot");
+        assert_eq!(get_agent("pi").unwrap().binary, "pi");
     }
 
     #[test]
@@ -184,7 +249,10 @@ mod tests {
     #[test]
     fn test_agent_names() {
         let names = agent_names();
-        assert_eq!(names, vec!["claude", "opencode", "vibe", "codex", "gemini"]);
+        assert_eq!(
+            names,
+            vec!["claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi"]
+        );
     }
 
     #[test]
@@ -194,7 +262,12 @@ mod tests {
         assert_eq!(resolve_tool_name("mistral-vibe"), Some("vibe"));
         assert_eq!(resolve_tool_name("codex"), Some("codex"));
         assert_eq!(resolve_tool_name("gemini"), Some("gemini"));
+        assert_eq!(resolve_tool_name("cursor"), Some("cursor"));
+        assert_eq!(resolve_tool_name("github-copilot"), Some("copilot"));
+        assert_eq!(resolve_tool_name("copilot"), Some("copilot"));
+        assert_eq!(resolve_tool_name("pi"), Some("pi"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
+        assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
     }
 
@@ -203,10 +276,16 @@ mod tests {
         assert_eq!(settings_index_from_name(None), 0);
         assert_eq!(settings_index_from_name(Some("claude")), 1);
         assert_eq!(settings_index_from_name(Some("gemini")), 5);
+        assert_eq!(settings_index_from_name(Some("cursor")), 6);
+        assert_eq!(settings_index_from_name(Some("copilot")), 7);
+        assert_eq!(settings_index_from_name(Some("pi")), 8);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
         assert_eq!(name_from_settings_index(5), Some("gemini"));
+        assert_eq!(name_from_settings_index(6), Some("cursor"));
+        assert_eq!(name_from_settings_index(7), Some("copilot"));
+        assert_eq!(name_from_settings_index(8), Some("pi"));
         assert_eq!(name_from_settings_index(99), None);
     }
 

@@ -3,7 +3,6 @@
 //! This module provides shared logic for building new session instances,
 //! used by both synchronous (TUI operations) and asynchronous (background poller) code paths.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
@@ -28,10 +27,13 @@ pub struct InstanceParams {
     /// The sandbox image to use. Required when sandbox is true.
     pub sandbox_image: String,
     pub yolo_mode: bool,
-    /// Additional environment variable keys to pass from host to container.
-    pub extra_env_keys: Vec<String>,
-    /// Additional KEY=VALUE environment variables to inject into the container.
-    pub extra_env_values: Vec<String>,
+    /// Additional environment entries for the container.
+    /// `KEY` = pass through from host, `KEY=VALUE` = set explicitly.
+    pub extra_env: Vec<String>,
+    /// Extra arguments to append after the agent binary
+    pub extra_args: String,
+    /// Command override for the agent binary (replaces the default binary)
+    pub command_override: String,
 }
 
 /// Result of building an instance, tracking what was created for cleanup purposes.
@@ -52,7 +54,11 @@ pub struct CreatedWorktree {
 /// This does NOT start the instance or create Docker containers - that happens
 /// separately via `instance.start()`. This separation allows for proper cleanup
 /// if starting fails.
-pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Result<BuildResult> {
+pub fn build_instance(
+    params: InstanceParams,
+    existing_titles: &[&str],
+    profile: &str,
+) -> Result<BuildResult> {
     if params.sandbox {
         let runtime = containers::get_container_runtime();
         if !runtime.is_available() {
@@ -62,6 +68,8 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             bail!("Container runtime daemon is not running. Please start Docker or Apple Container to use sandbox mode.");
         }
     }
+
+    let config = super::profile_config::resolve_config(profile).unwrap_or_default();
 
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()
@@ -77,8 +85,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository");
         }
-
-        let config = super::profile_config::resolve_config(&params.profile)?;
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
@@ -149,6 +155,17 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
         }
     }
 
+    // Validate that the final path exists and is a directory.
+    // This catches cases where the user typed a non-existent path in the TUI;
+    // without this check tmux silently falls back to the home directory.
+    let final_path_buf = PathBuf::from(&final_path);
+    if !final_path_buf.exists() {
+        bail!("Project path does not exist: {}", final_path);
+    }
+    if !final_path_buf.is_dir() {
+        bail!("Project path is not a directory: {}", final_path);
+    }
+
     let final_title = if params.title.is_empty() {
         civilizations::generate_random_title(existing_titles)
     } else {
@@ -166,6 +183,23 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
     instance.worktree_info = worktree_info;
     instance.yolo_mode = params.yolo_mode;
 
+    // Apply agent_command_override and agent_extra_args from resolved config.
+    // Per-session values from params take priority over config.
+    if !params.command_override.is_empty() {
+        instance.command = params.command_override;
+    } else if let Some(cmd_override) = config.session.agent_command_override.get(&params.tool) {
+        if !cmd_override.is_empty() {
+            instance.command = cmd_override.clone();
+        }
+    }
+    if !params.extra_args.is_empty() {
+        instance.extra_args = params.extra_args;
+    } else if let Some(extra) = config.session.agent_extra_args.get(&params.tool) {
+        if !extra.is_empty() {
+            instance.extra_args = extra.clone();
+        }
+    }
+
     if params.sandbox {
         instance.sandbox_info = Some(SandboxInfo {
             enabled: true,
@@ -173,30 +207,12 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             image: params.sandbox_image.clone(),
             container_name: containers::DockerContainer::generate_name(&instance.id),
             created_at: None,
-            extra_env_keys: if params.extra_env_keys.is_empty() {
+            extra_env: if params.extra_env.is_empty() {
                 None
             } else {
-                Some(params.extra_env_keys.clone())
+                Some(params.extra_env.clone())
             },
-            extra_env_values: {
-                let map: HashMap<String, String> = params
-                    .extra_env_values
-                    .iter()
-                    .filter_map(|entry| {
-                        entry
-                            .split_once('=')
-                            .map(|(k, v)| (k.to_string(), v.to_string()))
-                    })
-                    .collect();
-                if map.is_empty() {
-                    None
-                } else {
-                    Some(map)
-                }
-            },
-            custom_instruction: super::profile_config::resolve_config(&params.profile)
-                .ok()
-                .and_then(|c| c.sandbox.custom_instruction),
+            custom_instruction: config.sandbox.custom_instruction.clone(),
         });
     }
 

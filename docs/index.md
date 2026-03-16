@@ -6,11 +6,13 @@ A terminal session manager for AI coding agents on Linux and macOS, built on tmu
 
 AoE lets you run multiple AI agents in parallel -- each in its own tmux session, optionally on its own git branch, optionally inside a Docker container. A TUI dashboard shows you what every agent is doing at a glance.
 
+## See it in action
+
 ![▨ kokorro Demo](assets/demo.gif)
 
 ## Why AoE?
 
-**The problem:** You're working with AI coding agents (Claude Code, OpenCode, Codex, etc.) and want to run several in parallel across different tasks or branches. Managing multiple terminal windows, git branches, and container lifecycles by hand gets tedious fast.
+**The problem:** You're working with AI coding agents (Claude Code, OpenCode, Cursor, Codex, etc.) and want to run several in parallel across different tasks or branches. Managing multiple terminal windows, git branches, and container lifecycles by hand gets tedious fast.
 
 **AoE handles it for you:**
 
@@ -22,7 +24,7 @@ AoE lets you run multiple AI agents in parallel -- each in its own tmux session,
 
 ## Supported Agents
 
-Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI. AoE auto-detects which are installed.
+Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi. AoE auto-detects which are installed.
 
 <div class="cta-box">
 <p><strong>Ready to get started?</strong></p>

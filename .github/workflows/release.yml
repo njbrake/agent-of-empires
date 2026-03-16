@@ -90,7 +90,7 @@ jobs:
           shasum -a 256 ${{ matrix.name }}.tar.gz > ${{ matrix.name }}.tar.gz.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ matrix.name }}
           path: |
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Download all artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           path: artifacts
           merge-multiple: true
@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           path: artifacts
           merge-multiple: true
@@ -243,3 +243,40 @@ jobs:
           git commit -m "Update aoe to ${VERSION}"
           git push
 
+  publish-clawhub:
+    name: Publish to ClawHub
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@ecf28ddc73e819eb6fa29df6b34ef8921c743461 # v2
+        if: env.CLAWHUB_TOKEN != ''
+
+      - name: Install clawhub CLI
+        if: env.CLAWHUB_TOKEN != ''
+        run: |
+          bun install -g clawhub
+          # Workaround: clawhub CLI v0.7.0 doesn't send acceptLicenseTerms
+          GLOBAL_DIR="$(bun pm ls -g 2>/dev/null | head -1 | sed 's/ .*//')"
+          PUBLISH_JS="${GLOBAL_DIR}/node_modules/clawhub/dist/cli/commands/publish.js"
+          sed -i 's/slug,/slug, acceptLicenseTerms: true,/' "$PUBLISH_JS"
+
+      - name: Publish skill
+        if: env.CLAWHUB_TOKEN != ''
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          VERSION_NUM="${VERSION#v}"
+          clawhub login --token "$CLAWHUB_TOKEN" --no-browser
+          clawhub publish contrib/openclaw-skill \
+            --slug aoe \
+            --name "Agent of Empires" \
+            --version "$VERSION_NUM" \
+            --tags latest
+
+      - name: Skip notice
+        if: env.CLAWHUB_TOKEN == ''
+        run: echo "::notice::Skipping ClawHub publish -- CLAWHUB_TOKEN secret not configured"

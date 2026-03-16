@@ -16,6 +16,8 @@ pub enum SettingsAction {
     Close,
     /// Close was cancelled due to unsaved changes
     UnsavedChangesWarning,
+    /// Live-preview a theme change (theme name)
+    PreviewTheme(String),
 }
 
 impl SettingsView {
@@ -45,6 +47,17 @@ impl SettingsView {
             }
         }
 
+        // Handle help overlay
+        if self.show_help {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
+            ) {
+                self.show_help = false;
+            }
+            return SettingsAction::Continue;
+        }
+
         // Handle text editing mode
         if self.editing_input.is_some() {
             return self.handle_text_edit_key(key);
@@ -65,8 +78,8 @@ impl SettingsView {
                 SettingsAction::Continue
             }
 
-            // Close
-            (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
+            // Close from anywhere
+            (KeyCode::Char('q'), _) => {
                 if self.has_changes {
                     SettingsAction::UnsavedChangesWarning
                 } else {
@@ -74,8 +87,26 @@ impl SettingsView {
                 }
             }
 
-            // Switch scope tabs
-            (KeyCode::Tab, _) => {
+            // Escape goes up one level
+            (KeyCode::Esc, _) => match self.focus {
+                SettingsFocus::Fields => {
+                    self.focus = SettingsFocus::Categories;
+                    SettingsAction::Continue
+                }
+                SettingsFocus::Categories => {
+                    if self.has_changes {
+                        SettingsAction::UnsavedChangesWarning
+                    } else {
+                        SettingsAction::Close
+                    }
+                }
+            },
+
+            // Switch scope: [ and ] cycle between Global / Profile / Repo
+            (KeyCode::Char(']'), _) => {
+                if self.has_changes {
+                    return SettingsAction::UnsavedChangesWarning;
+                }
                 self.scope = match self.scope {
                     SettingsScope::Global => SettingsScope::Profile,
                     SettingsScope::Profile => {
@@ -90,7 +121,10 @@ impl SettingsView {
                 self.rebuild_fields();
                 SettingsAction::Continue
             }
-            (KeyCode::BackTab, _) => {
+            (KeyCode::Char('['), _) => {
+                if self.has_changes {
+                    return SettingsAction::UnsavedChangesWarning;
+                }
                 self.scope = match self.scope {
                     SettingsScope::Global => {
                         if self.project_path.is_some() {
@@ -106,13 +140,39 @@ impl SettingsView {
                 SettingsAction::Continue
             }
 
-            // Switch focus between categories and fields
-            (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
-                self.focus = SettingsFocus::Categories;
+            // Cycle through profiles when in Profile scope: { and }
+            (KeyCode::Char('}'), _) | (KeyCode::Char('{'), _) => {
+                if self.scope == SettingsScope::Profile && !self.available_profiles.is_empty() {
+                    if self.has_changes {
+                        return SettingsAction::UnsavedChangesWarning;
+                    }
+                    let current_idx = self
+                        .available_profiles
+                        .iter()
+                        .position(|p| p == &self.profile)
+                        .unwrap_or(0);
+                    let next_idx = if key.code == KeyCode::Char('}') {
+                        (current_idx + 1) % self.available_profiles.len()
+                    } else if current_idx == 0 {
+                        self.available_profiles.len() - 1
+                    } else {
+                        current_idx - 1
+                    };
+                    let new_profile = self.available_profiles[next_idx].clone();
+                    if let Err(e) = self.switch_profile(&new_profile) {
+                        self.error_message = Some(format!("Failed to load profile: {}", e));
+                    }
+                }
                 SettingsAction::Continue
             }
-            (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
+
+            // Switch focus between categories and fields
+            (KeyCode::Tab, _) | (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
                 self.focus = SettingsFocus::Fields;
+                SettingsAction::Continue
+            }
+            (KeyCode::BackTab, _) | (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
+                self.focus = SettingsFocus::Categories;
                 SettingsAction::Continue
             }
 
@@ -170,7 +230,6 @@ impl SettingsView {
                     let field = &self.fields[self.selected_field];
                     match &field.value {
                         FieldValue::Bool(value) => {
-                            // Toggle boolean on Enter too
                             let new_value = !value;
                             self.fields[self.selected_field].value = FieldValue::Bool(new_value);
                             self.apply_field_to_config(self.selected_field);
@@ -191,13 +250,23 @@ impl SettingsView {
                             self.editing_input = Some(Input::new(value.to_string()));
                         }
                         FieldValue::Select { selected, options } => {
-                            // Cycle through options
                             let new_selected = (*selected + 1) % options.len();
+                            let new_options = options.clone();
                             self.fields[self.selected_field].value = FieldValue::Select {
                                 selected: new_selected,
-                                options: options.clone(),
+                                options: new_options,
                             };
                             self.apply_field_to_config(self.selected_field);
+
+                            if self.fields[self.selected_field].key == FieldKey::ThemeName {
+                                if let FieldValue::Select { selected, options } =
+                                    &self.fields[self.selected_field].value
+                                {
+                                    if let Some(name) = options.get(*selected) {
+                                        return SettingsAction::PreviewTheme(name.clone());
+                                    }
+                                }
+                            }
                         }
                         FieldValue::List(_) => {
                             // Expand list for editing
@@ -211,14 +280,33 @@ impl SettingsView {
                 SettingsAction::Continue
             }
 
+            // Toggle help overlay
+            (KeyCode::Char('?'), _) => {
+                self.show_help = true;
+                SettingsAction::Continue
+            }
+
             // Reset field to default (clear profile/repo override)
             (KeyCode::Char('r'), _) => {
                 if (self.scope == SettingsScope::Profile || self.scope == SettingsScope::Repo)
                     && self.focus == SettingsFocus::Fields
                     && !self.fields.is_empty()
                 {
+                    let was_theme = self.fields[self.selected_field].key == FieldKey::ThemeName;
                     self.clear_profile_override(self.selected_field);
                     self.rebuild_fields();
+
+                    if was_theme {
+                        if let Some(field) =
+                            self.fields.iter().find(|f| f.key == FieldKey::ThemeName)
+                        {
+                            if let FieldValue::Select { selected, options } = &field.value {
+                                if let Some(name) = options.get(*selected) {
+                                    return SettingsAction::PreviewTheme(name.clone());
+                                }
+                            }
+                        }
+                    }
                 }
                 SettingsAction::Continue
             }
@@ -333,7 +421,6 @@ impl SettingsView {
                     }
                 }
 
-                // Update state and apply config after releasing borrows
                 if let Some(ref mut s) = self.list_edit_state {
                     s.selected_index = new_selected_idx;
                 }
@@ -373,6 +460,11 @@ impl SettingsView {
                 if let Some(input) = input {
                     let text = input.value().to_string();
                     if !text.is_empty() {
+                        // Validate env var references before accepting
+                        if self.fields[self.selected_field].key == FieldKey::Environment {
+                            self.error_message = crate::session::validate_env_entry(&text);
+                        }
+
                         if let FieldValue::List(ref mut items) =
                             self.fields[self.selected_field].value
                         {
@@ -414,6 +506,12 @@ impl SettingsView {
         };
 
         match key {
+            // Theme
+            FieldKey::ThemeName => {
+                if let Some(ref mut t) = config.theme {
+                    t.name = None;
+                }
+            }
             // Updates
             FieldKey::CheckEnabled => {
                 if let Some(ref mut u) = config.updates {
@@ -477,11 +575,6 @@ impl SettingsView {
                     s.environment = None;
                 }
             }
-            FieldKey::EnvironmentValues => {
-                if let Some(ref mut s) = config.sandbox {
-                    s.environment_values = None;
-                }
-            }
             FieldKey::SandboxAutoCleanup => {
                 if let Some(ref mut s) = config.sandbox {
                     s.auto_cleanup = None;
@@ -519,6 +612,16 @@ impl SettingsView {
                     s.yolo_mode_default = None;
                 }
             }
+            FieldKey::AgentExtraArgs => {
+                if let Some(ref mut s) = config.session {
+                    s.agent_extra_args = None;
+                }
+            }
+            FieldKey::AgentCommandOverride => {
+                if let Some(ref mut s) = config.session {
+                    s.agent_command_override = None;
+                }
+            }
             FieldKey::DefaultTerminalMode => {
                 if let Some(ref mut s) = config.sandbox {
                     s.default_terminal_mode = None;
@@ -527,6 +630,11 @@ impl SettingsView {
             FieldKey::ExtraVolumes => {
                 if let Some(ref mut s) = config.sandbox {
                     s.extra_volumes = None;
+                }
+            }
+            FieldKey::PortMappings => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.port_mappings = None;
                 }
             }
             FieldKey::VolumeIgnores => {
@@ -609,12 +717,6 @@ impl SettingsView {
             FieldKey::ContextLines => {
                 if let Some(ref mut d) = config.diff {
                     d.context_lines = None;
-                }
-            }
-            // Theme
-            FieldKey::ThemeName => {
-                if let Some(ref mut t) = config.theme {
-                    t.name = None;
                 }
             }
             // Claude

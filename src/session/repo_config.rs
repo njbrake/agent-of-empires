@@ -432,7 +432,8 @@ enum HookTarget<'a> {
     },
 }
 
-/// Build a `Command` for running a hook via `bash -c`.
+/// Build a `Command` for running a hook. Local hooks use the user's `$SHELL`;
+/// container hooks use `bash` since the user shell may not be installed.
 fn build_hook_command(cmd: &str, target: &HookTarget, merge_stderr: bool) -> std::process::Command {
     let shell_cmd = if merge_stderr {
         format!("{} 2>&1", cmd)
@@ -442,7 +443,8 @@ fn build_hook_command(cmd: &str, target: &HookTarget, merge_stderr: bool) -> std
 
     match target {
         HookTarget::Local { project_path } => {
-            let mut command = std::process::Command::new("bash");
+            let shell = super::environment::user_shell();
+            let mut command = std::process::Command::new(shell);
             command.arg("-c").arg(shell_cmd).current_dir(project_path);
             command
         }
@@ -764,6 +766,7 @@ mod tests {
             session: Some(SessionConfigOverride {
                 default_tool: Some("opencode".to_string()),
                 yolo_mode_default: None,
+                ..Default::default()
             }),
             ..Default::default()
         };

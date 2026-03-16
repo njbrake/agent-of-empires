@@ -8,3 +8,4 @@ publish = false
 agent-of-empires = { path = ".." }
 clap = { version = "4.5", features = ["derive"] }
 clap-markdown = "0.1"
+regex = "1"

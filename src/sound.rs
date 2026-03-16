@@ -386,7 +386,9 @@ pub fn play_for_transition(old: Status, new: Status, config: &SoundConfig) {
         Status::Waiting => config.on_waiting.as_deref(),
         Status::Idle => config.on_idle.as_deref(),
         Status::Error => config.on_error.as_deref(),
-        Status::Deleting => return, // No sound for deletion
+        Status::Unknown => return,
+        Status::Stopped => return,
+        Status::Deleting => return,
     };
 
     if let Some(name) = resolve_sound_name(override_name, config) {

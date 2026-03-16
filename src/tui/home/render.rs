@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_INDICATOR, ICON_RUNNING, ICON_STARTING, ICON_WAITING,
-    TREE_BRANCH, TREE_LAST,
+    ICON_EXPANDED, ICON_IDLE, ICON_INDICATOR, ICON_RUNNING, ICON_STARTING, ICON_STOPPED,
+    ICON_UNKNOWN, ICON_WAITING, TREE_BRANCH, TREE_LAST,
 };
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
@@ -79,7 +79,7 @@ impl HomeView {
 
         // Render dialogs on top
         if self.show_help {
-            HelpOverlay::render(frame, area, theme);
+            HelpOverlay::render(frame, area, theme, self.sort_order);
         }
 
         if let Some(dialog) = &self.new_dialog {
@@ -102,6 +102,10 @@ impl HomeView {
             dialog.render(frame, area, theme);
         }
 
+        if let Some(dialog) = &self.hooks_install_dialog {
+            dialog.render(frame, area, theme);
+        }
+
         if let Some(dialog) = &self.hook_trust_dialog {
             dialog.render(frame, area, theme);
         }
@@ -117,12 +121,16 @@ impl HomeView {
         if let Some(dialog) = &self.info_dialog {
             dialog.render(frame, area, theme);
         }
+
+        if let Some(dialog) = &self.profile_picker_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let title = match self.view_mode {
-            ViewMode::Agent => format!(" ▨ kokorro [{}] ", self.storage.profile()),
-            ViewMode::Terminal => format!(" Terminals [{}] ", self.storage.profile()),
+            ViewMode::Agent => format!(" ▨ kokorro [{}] ", self.active_profile_display()),
+            ViewMode::Terminal => format!(" Terminals [{}] ", self.active_profile_display()),
         };
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
@@ -137,7 +145,7 @@ impl HomeView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        if self.instances.is_empty() && self.groups.is_empty() {
+        if self.instances().is_empty() && !self.has_any_groups() {
             let empty_text = vec![
                 Line::from(""),
                 Line::from("No sessions yet").style(Style::default().fg(theme.dimmed)),
@@ -150,25 +158,20 @@ impl HomeView {
             return;
         }
 
-        let indices: Vec<usize> = if let Some(ref filtered) = self.filtered_items {
-            filtered.clone()
-        } else {
-            (0..self.flat_items.len()).collect()
-        };
-
-        let list_items: Vec<ListItem> = indices
-            .iter()
-            .enumerate()
-            .filter_map(|(display_idx, &item_idx)| {
-                self.flat_items.get(item_idx).map(|item| {
-                    let is_selected = display_idx == self.cursor;
-                    self.render_item(item, is_selected, theme)
-                })
-            })
-            .collect();
-
         let mut list_state = std::mem::take(&mut self.list_state);
         list_state.select(Some(self.cursor));
+
+        let list_items: Vec<ListItem> = self
+            .flat_items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let is_selected = idx == self.cursor;
+                let is_match =
+                    !self.search_matches.is_empty() && self.search_matches.contains(&idx);
+                self.render_item(item, is_selected, is_match, theme)
+            })
+            .collect();
 
         let list = List::new(list_items).highlight_style(Style::default());
 
@@ -207,11 +210,28 @@ impl HomeView {
                 spans.push(Span::styled(after, text_style));
             }
 
+            if !self.search_matches.is_empty() {
+                let count_text = format!(
+                    " [{}/{}]",
+                    self.search_match_index + 1,
+                    self.search_matches.len()
+                );
+                spans.push(Span::styled(count_text, Style::default().fg(theme.dimmed)));
+            } else if !value.is_empty() {
+                spans.push(Span::styled(" [0/0]", Style::default().fg(theme.dimmed)));
+            }
+
             frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
         }
     }
 
-    fn render_item(&self, item: &Item, is_selected: bool, theme: &Theme) -> ListItem<'static> {
+    fn render_item(
+        &self,
+        item: &Item,
+        is_selected: bool,
+        is_match: bool,
+        theme: &Theme,
+    ) -> ListItem<'_> {
         let indent = get_indent(item.depth());
 
         // Groups remain single-line
@@ -261,6 +281,8 @@ impl HomeView {
                     Status::Running => ICON_RUNNING,
                     Status::Waiting => ICON_WAITING,
                     Status::Idle => ICON_IDLE,
+                    Status::Unknown => ICON_UNKNOWN,
+                    Status::Stopped => ICON_STOPPED,
                     Status::Error => ICON_ERROR,
                     Status::Starting => ICON_STARTING,
                     Status::Deleting => ICON_DELETING,
@@ -269,6 +291,8 @@ impl HomeView {
                     Status::Running => theme.running,
                     Status::Waiting => theme.waiting,
                     Status::Idle => theme.idle,
+                    Status::Unknown => theme.waiting,
+                    Status::Stopped => theme.dimmed,
                     Status::Error => theme.error,
                     Status::Starting => theme.dimmed,
                     Status::Deleting => theme.waiting,
@@ -299,6 +323,11 @@ impl HomeView {
             }
         };
         let style = Style::default().fg(status_color);
+        let icon_style = if is_match {
+            Style::default().fg(theme.search)
+        } else {
+            style
+        };
         let title_style = if is_selected { style.bold() } else { style };
 
         let is_collapsed = self.collapsed_sessions.contains(id);
@@ -309,19 +338,19 @@ impl HomeView {
             // Collapsed: single line with indicator dots
             let mut spans = Vec::with_capacity(6);
             spans.push(Span::raw(indent));
-            spans.push(Span::styled(format!("{} ", icon), style));
+            spans.push(Span::styled(format!("{} ", icon), icon_style));
             spans.push(Span::styled(inst.title.clone(), title_style));
 
             if has_worktree {
                 spans.push(Span::styled(
                     format!(" {}", ICON_INDICATOR),
-                    Style::default().fg(theme.worktree_indicator),
+                    Style::default().fg(theme.branch),
                 ));
             }
             if has_sandbox {
                 spans.push(Span::styled(
                     format!(" {}", ICON_INDICATOR),
-                    Style::default().fg(theme.sandbox_indicator),
+                    Style::default().fg(theme.sandbox),
                 ));
             }
 
@@ -340,7 +369,7 @@ impl HomeView {
         // Title line
         let title_line = Line::from(vec![
             Span::raw(indent),
-            Span::styled(format!("{} ", icon), style),
+            Span::styled(format!("{} ", icon), icon_style),
             Span::styled(inst.title.clone(), title_style),
         ]);
         lines.push(title_line);
@@ -349,7 +378,7 @@ impl HomeView {
         let mut details: Vec<(String, Style)> = Vec::new();
 
         if let Some(wt_info) = &inst.worktree_info {
-            details.push((wt_info.branch.clone(), Style::default().fg(Color::Cyan)));
+            details.push((wt_info.branch.clone(), Style::default().fg(theme.branch)));
 
             // Worktree directory name -- skip if it matches the branch (dedup)
             if let Some(dir_name) = std::path::Path::new(&inst.project_path)
@@ -368,7 +397,7 @@ impl HomeView {
                     if let Some(sandbox) = &inst.sandbox_info {
                         details.push((
                             sandbox.container_name.clone(),
-                            Style::default().fg(Color::Magenta),
+                            Style::default().fg(theme.sandbox),
                         ));
                     }
                 }
@@ -378,7 +407,7 @@ impl HomeView {
                         TerminalMode::Container => "container",
                         TerminalMode::Host => "host",
                     };
-                    details.push((mode_text.to_string(), Style::default().fg(Color::Magenta)));
+                    details.push((mode_text.to_string(), Style::default().fg(theme.sandbox)));
                 }
             }
         }
@@ -425,7 +454,7 @@ impl HomeView {
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     self.preview_cache.content = inst
                         .capture_output_with_size(height as usize, width, height)
                         .unwrap_or_default();
@@ -457,7 +486,7 @@ impl HomeView {
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     self.terminal_preview_cache.content = inst
                         .terminal_tmux_session()
                         .and_then(|s| s.capture_pane(height as usize))
@@ -490,7 +519,7 @@ impl HomeView {
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     self.container_terminal_preview_cache.content = inst
                         .container_terminal_tmux_session()
                         .and_then(|s| s.capture_pane(height as usize))
@@ -527,7 +556,7 @@ impl HomeView {
                 self.refresh_preview_cache_if_needed(inner.width, inner.height);
 
                 if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.instance_map.get(id) {
+                    if let Some(inst) = self.get_instance(id) {
                         Preview::render_with_cache(
                             frame,
                             inner,
@@ -549,7 +578,7 @@ impl HomeView {
 
                 if let Some(id) = selected_id {
                     // Determine which terminal to preview based on mode
-                    let terminal_mode = if let Some(inst) = self.instance_map.get(&id) {
+                    let terminal_mode = if let Some(inst) = self.get_instance(&id) {
                         if inst.is_sandboxed() {
                             self.get_terminal_mode(&id)
                         } else {
@@ -576,7 +605,7 @@ impl HomeView {
                     }
 
                     // Now borrow instance for rendering
-                    if let Some(inst) = self.instance_map.get(&id) {
+                    if let Some(inst) = self.get_instance(&id) {
                         let (terminal_running, preview_content) = match terminal_mode {
                             TerminalMode::Container => {
                                 let running = inst
@@ -679,7 +708,7 @@ impl HomeView {
         // Show c: container/host hint for sandboxed sessions in Terminal view
         if self.view_mode == ViewMode::Terminal {
             if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
+                if let Some(inst) = self.get_instance(id) {
                     if inst.is_sandboxed() {
                         spans.extend([
                             Span::styled("│", sep_style),

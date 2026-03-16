@@ -6,8 +6,8 @@
     <a href="https://github.com/njbrake/agent-of-empires/releases"><img src="https://img.shields.io/github/v/release/njbrake/agent-of-empires" alt="GitHub release"></a>
     <a href="https://formulae.brew.sh/formula/aoe"><img src="https://img.shields.io/homebrew/v/aoe" alt="Homebrew"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+    <a href="https://clawhub.ai/njbrake/aoe"><img src="https://img.shields.io/badge/ClawHub-aoe-blue" alt="ClawHub"></a>
     <br>
-    <a href="https://agent-of-empires.com/docs/credits.html"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnjbrake%2Fagent-of-empires%2Fcredit%2Fcredits.json&query=%24.contributors.length&label=contributors&color=blue&logo=github" alt="Contributors"></a>
     <a href="https://www.youtube.com/@agent-of-empires"><img src="https://img.shields.io/badge/YouTube-channel-red?logo=youtube" alt="YouTube"></a>
     <a href="https://x.com/natebrake"><img src="https://img.shields.io/badge/follow-%40natebrake-black?logo=x&logoColor=white" alt="Follow @natebrake"></a>
   </p>
@@ -23,7 +23,7 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 
 ## Features
 
-- **Multi-agent support** -- Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI
+- **Multi-agent support** -- Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi.dev
 - **TUI dashboard** -- visual interface to create, monitor, and manage sessions
 - **Agent + terminal views** -- toggle between your AI agents and paired shell terminals with `t`
 - **Status detection** -- see which agents are running, waiting for input, or idle
@@ -53,6 +53,9 @@ curl -fsSL \
 # Homebrew
 brew install aoe
 
+# Nix
+nix run github:njbrake/agent-of-empires
+
 # Build from source
 git clone https://github.com/njbrake/agent-of-empires
 cd agent-of-empires && cargo build --release
@@ -78,13 +81,18 @@ In the TUI: `n` to create a session, `Enter` to attach, `t` to toggle terminal v
 
 ## Documentation
 
-- **[Installation](https://njbrake.github.io/agent-of-empires/installation)** -- prerequisites and install methods
-- **[Quick Start](https://njbrake.github.io/agent-of-empires/quick-start)** -- first steps and basic usage
-- **[Workflow Guide](https://njbrake.github.io/agent-of-empires/guides/workflow)** -- recommended setup with bare repos and worktrees
-- **[Docker Sandbox](https://njbrake.github.io/agent-of-empires/guides/sandbox)** -- container isolation for agents
-- **[Repo Config & Hooks](https://njbrake.github.io/agent-of-empires/guides/repo-config)** -- per-project settings and automation
-- **[Configuration Reference](https://njbrake.github.io/agent-of-empires/guides/configuration)** -- all config options
-- **[CLI Reference](https://njbrake.github.io/agent-of-empires/cli/reference)** -- complete command documentation
+- **[Installation](https://www.agent-of-empires.com/docs/installation)** -- prerequisites and install methods
+- **[Quick Start](https://www.agent-of-empires.com/docs/quick-start)** -- first steps and basic usage
+- **[Workflow Guide](https://www.agent-of-empires.com/docs/guides/workflow)** -- recommended setup with bare repos and worktrees
+- **[Git Worktrees](https://www.agent-of-empires.com/docs/guides/worktrees)** -- parallel agents on different branches
+- **[Docker Sandbox](https://www.agent-of-empires.com/docs/guides/sandbox)** -- container isolation for agents
+- **[Repo Config & Hooks](https://www.agent-of-empires.com/docs/guides/repo-config)** -- per-project settings and automation
+- **[Diff View](https://www.agent-of-empires.com/docs/guides/diff-view)** -- review and edit changes in the TUI
+- **[tmux Status Bar](https://www.agent-of-empires.com/docs/guides/tmux-status-bar)** -- integrated session monitoring
+- **[Sound Effects](https://www.agent-of-empires.com/docs/sounds)** -- audible agent status notifications
+- **[Configuration Reference](https://www.agent-of-empires.com/docs/guides/configuration)** -- all config options
+- **[CLI Reference](https://www.agent-of-empires.com/docs/cli/reference)** -- complete command documentation
+- **[Development](https://www.agent-of-empires.com/docs/development)** -- contributing and local setup
 
 ## FAQ
 
@@ -94,7 +102,7 @@ Nothing. Sessions are tmux sessions running in the background. Open and close `a
 
 ### Which AI tools are supported?
 
-Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI. AoE auto-detects which are installed on your system.
+Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi.dev. AoE auto-detects which are installed on your system.
 
 ## Troubleshooting
 

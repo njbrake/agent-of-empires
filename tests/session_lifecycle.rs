@@ -136,6 +136,30 @@ fn test_session_backup_created() -> Result<()> {
 
 #[test]
 #[serial]
+fn test_source_profile_not_serialized() {
+    let _temp = setup_temp_home();
+
+    let mut instance = Instance::new("Test", "/tmp/test");
+    instance.source_profile = "work".to_string();
+
+    let storage = Storage::new("default").unwrap();
+    storage.save(std::slice::from_ref(&instance)).unwrap();
+
+    // Read raw JSON -- source_profile should not appear
+    let profile_dir = agent_of_empires::session::get_profile_dir("default").unwrap();
+    let content = std::fs::read_to_string(profile_dir.join("sessions.json")).unwrap();
+    assert!(
+        !content.contains("source_profile"),
+        "source_profile should not be serialized"
+    );
+
+    // Reload -- source_profile should default to empty
+    let loaded = storage.load().unwrap();
+    assert_eq!(loaded[0].source_profile, "");
+}
+
+#[test]
+#[serial]
 fn test_storage_defaults_to_default_profile() -> Result<()> {
     let _temp = setup_temp_home();
 

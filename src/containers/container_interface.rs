@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::error::Result;
 use enum_dispatch::enum_dispatch;
 
@@ -14,6 +16,7 @@ pub struct ContainerConfig {
     pub environment: Vec<(String, String)>,
     pub cpu_limit: Option<String>,
     pub memory_limit: Option<String>,
+    pub port_mappings: Vec<String>,
 }
 
 #[enum_dispatch]
@@ -60,7 +63,11 @@ pub trait ContainerRuntimeInterface {
 
     fn remove(&self, name: &str, force: bool) -> Result<()>;
 
-    fn exec_command(&self, name: &str, options: Option<&str>) -> String;
+    fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String;
 
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output>;
+
+    /// Check running state of all containers matching a name prefix in a single call.
+    /// Returns a map of container name -> is_running.
+    fn batch_running_states(&self, prefix: &str) -> HashMap<String, bool>;
 }

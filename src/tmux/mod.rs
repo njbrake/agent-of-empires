@@ -5,7 +5,7 @@ mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
 mod terminal_session;
-mod utils;
+pub(crate) mod utils;
 
 pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
@@ -98,12 +98,40 @@ pub fn is_tmux_available() -> bool {
 fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
     use crate::agents::DetectionMethod;
     match &agent.detection {
-        DetectionMethod::Which(binary) => Command::new("which")
-            .arg(binary)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false),
-        DetectionMethod::RunWithArg(binary, arg) => Command::new(binary).arg(arg).output().is_ok(),
+        DetectionMethod::Which(binary) => {
+            // First try direct `which` (fast path).
+            let direct = Command::new("which")
+                .arg(binary)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if direct {
+                return true;
+            }
+            // Fall back to a login shell so version-manager PATHs (NVM, etc.) are loaded.
+            let shell = crate::session::user_shell();
+            Command::new(&shell)
+                .args(["-lc", &format!("which {}", binary)])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+        DetectionMethod::RunWithArg(binary, arg) => {
+            if Command::new(binary)
+                .arg(arg)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            let shell = crate::session::user_shell();
+            Command::new(&shell)
+                .args(["-lc", &format!("{} {}", binary, arg)])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
     }
 }
 

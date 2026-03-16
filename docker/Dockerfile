@@ -1,5 +1,5 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
-# This image provides Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI in an isolated environment
+# This image provides Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi in an isolated environment
 
 FROM ubuntu:24.04
 
@@ -8,7 +8,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     curl \
     git \
-    git-lfs \
     build-essential \
     ca-certificates \
     gnupg \
@@ -17,9 +16,6 @@ RUN apt-get update && apt-get install -y \
     ripgrep \
     fzf \
     && rm -rf /var/lib/apt/lists/*
-
-# Set up Git LFS hooks globally
-RUN git lfs install
 
 # Install Node.js (required for Codex CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -47,6 +43,15 @@ RUN npm install -g @google/gemini-cli
 RUN curl -LsSf https://mistral.ai/vibe/install.sh | bash
 ENV PATH="/root/.vibe/bin:${PATH}"
 
+# Install Cursor CLI
+RUN curl -fsSL https://cursor.com/install | bash
+
+# Install Copilot CLI (GitHub)
+RUN npm install -g @github/copilot
+
+# Install Pi (pi.dev)
+RUN npm install -g @mariozechner/pi-coding-agent
+
 # Create directories for credential mounts
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \
@@ -54,6 +59,9 @@ RUN mkdir -p /root/.claude \
     /root/.vibe \
     /root/.codex \
     /root/.gemini \
+    /root/.cursor \
+    /root/.copilot \
+    /root/.pi \
     /root/.ssh
 
 # Allow Claude Code to use --dangerously-skip-permissions as root

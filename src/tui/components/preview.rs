@@ -63,7 +63,7 @@ impl Preview {
             if sandbox.enabled {
                 info_lines.push(Line::from(vec![
                     Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
-                    Span::styled(&sandbox.container_name, Style::default().fg(Color::Magenta)),
+                    Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
                 ]));
             }
         }
@@ -120,11 +120,13 @@ impl Preview {
         cached_output: &str,
         theme: &Theme,
     ) {
-        // Adjust height based on whether worktree info is present
+        // 3 base lines (path/tool/status) + optional profile + optional worktree block
+        let has_profile = !instance.source_profile.is_empty();
+        let base = if has_profile { 4 } else { 3 };
         let info_height = if instance.worktree_info.is_some() {
-            10 // Expanded to show worktree details
+            base + 5 // blank + header + branch + main + managed
         } else {
-            6 // Standard height
+            base
         };
 
         let chunks = Layout::default()
@@ -140,11 +142,16 @@ impl Preview {
     }
 
     fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
-        let mut info_lines = vec![
-            Line::from(vec![
-                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
-                Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
-            ]),
+        let mut info_lines = Vec::new();
+
+        if !instance.source_profile.is_empty() {
+            info_lines.push(Line::from(vec![
+                Span::styled("Profile: ", Style::default().fg(theme.dimmed)),
+                Span::styled(&instance.source_profile, Style::default().fg(theme.accent)),
+            ]));
+        }
+
+        info_lines.extend([
             Line::from(vec![
                 Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
                 Span::styled(
@@ -164,24 +171,15 @@ impl Preview {
                         crate::session::Status::Running => theme.running,
                         crate::session::Status::Waiting => theme.waiting,
                         crate::session::Status::Idle => theme.idle,
+                        crate::session::Status::Unknown => theme.waiting,
+                        crate::session::Status::Stopped => theme.dimmed,
                         crate::session::Status::Error => theme.error,
                         crate::session::Status::Starting => theme.dimmed,
                         crate::session::Status::Deleting => theme.waiting,
                     }),
                 ),
             ]),
-            Line::from(vec![
-                Span::styled("Group:   ", Style::default().fg(theme.dimmed)),
-                Span::styled(
-                    if instance.group_path.is_empty() {
-                        "(none)"
-                    } else {
-                        &instance.group_path
-                    },
-                    Style::default().fg(theme.group),
-                ),
-            ]),
-        ];
+        ]);
 
         // Add worktree information if present
         if let Some(wt_info) = &instance.worktree_info {
@@ -193,7 +191,7 @@ impl Preview {
             ]));
             info_lines.push(Line::from(vec![
                 Span::styled("Branch:  ", Style::default().fg(theme.dimmed)),
-                Span::styled(&wt_info.branch, Style::default().fg(Color::Cyan)),
+                Span::styled(&wt_info.branch, Style::default().fg(theme.branch)),
             ]));
             info_lines.push(Line::from(vec![
                 Span::styled("Main:    ", Style::default().fg(theme.dimmed)),
@@ -213,9 +211,9 @@ impl Preview {
                 Span::styled(
                     managed_text,
                     Style::default().fg(if wt_info.managed_by_aoe {
-                        Color::Green
+                        theme.worktree_managed
                     } else {
-                        Color::Yellow
+                        theme.worktree_manual
                     }),
                 ),
             ]));

@@ -1,6 +1,7 @@
 //! tmux utility functions
 
-#[allow(dead_code)]
+use std::process::Command;
+
 pub fn strip_ansi(content: &str) -> String {
     let mut result = content.to_string();
 
@@ -35,6 +36,73 @@ pub fn sanitize_session_name(name: &str) -> String {
         })
         .take(20)
         .collect()
+}
+
+/// Append `; set-option -p -t <target> remain-on-exit on` to an in-flight
+/// tmux argument list so that remain-on-exit is set atomically with session
+/// creation. Using pane-level (`-p`) avoids bleeding into user-created panes
+/// in the same session.
+///
+/// Note: the `-p` (pane-level) flag requires tmux >= 3.0.
+pub fn append_remain_on_exit_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-p".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "remain-on-exit".to_string(),
+        "on".to_string(),
+    ]);
+}
+
+pub fn is_pane_dead(session_name: &str) -> bool {
+    // Use `^` to target the first window's first pane regardless of
+    // base-index, so the check always hits the agent's pane even when the
+    // user has created additional tmux windows.  See #435.
+    let target = format!("{session_name}:^");
+    Command::new("tmux")
+        .args(["display-message", "-t", &target, "-p", "#{pane_dead}"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
+}
+
+fn pane_current_command(session_name: &str) -> Option<String> {
+    // Use `^` to target the first window's first pane regardless of base-index.
+    let target = format!("{session_name}:^");
+    Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            &target,
+            "-p",
+            "#{pane_current_command}",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+// Shells that indicate the agent is not running (the pane was restored by
+// tmux-resurrect, the agent crashed back to a prompt, or the user exited).
+const KNOWN_SHELLS: &[&str] = &[
+    "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "pwsh",
+];
+
+pub(crate) fn is_shell_command(cmd: &str) -> bool {
+    let normalized = cmd.strip_prefix('-').unwrap_or(cmd);
+    KNOWN_SHELLS.contains(&normalized)
+}
+
+pub fn is_pane_running_shell(session_name: &str) -> bool {
+    pane_current_command(session_name)
+        .map(|cmd| is_shell_command(&cmd))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -110,5 +178,37 @@ mod tests {
         assert!(result.starts_with("test"));
         assert!(result.contains('_'));
         assert!(!result.contains('😀'));
+    }
+
+    #[test]
+    fn test_is_shell_command_recognizes_common_shells() {
+        for shell in KNOWN_SHELLS {
+            assert!(
+                is_shell_command(shell),
+                "{shell} should be recognized as a shell"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_shell_command_recognizes_login_shells() {
+        for shell in ["-bash", "-zsh", "-sh", "-fish"] {
+            assert!(
+                is_shell_command(shell),
+                "{shell} should be recognized as a login shell"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_shell_command_rejects_agent_binaries() {
+        for cmd in [
+            "claude", "opencode", "codex", "gemini", "cursor", "sleep", "python",
+        ] {
+            assert!(
+                !is_shell_command(cmd),
+                "{cmd} should not be recognized as a shell"
+            );
+        }
     }
 }

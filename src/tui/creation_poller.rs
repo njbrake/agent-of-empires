@@ -55,6 +55,8 @@ pub struct CreationPoller {
     progress_tx: mpsc::Sender<HookProgress>,
     _handle: thread::JoinHandle<()>,
     pending: bool,
+    /// Profile from the last creation request (for cross-profile saves)
+    last_profile: Option<String>,
 }
 
 impl CreationPoller {
@@ -80,6 +82,7 @@ impl CreationPoller {
             progress_tx,
             _handle: handle,
             pending: false,
+            last_profile: None,
         }
     }
 
@@ -89,6 +92,7 @@ impl CreationPoller {
     ) -> CreationResult {
         let data = request.data;
         let hooks = request.hooks;
+        let profile = data.profile.clone();
 
         let existing_titles: Vec<&str> = request
             .existing_instances
@@ -107,11 +111,12 @@ impl CreationPoller {
             sandbox: data.sandbox,
             sandbox_image: data.sandbox_image,
             yolo_mode: data.yolo_mode,
-            extra_env_keys: data.extra_env_keys,
-            extra_env_values: data.extra_env_values,
+            extra_env: data.extra_env,
+            extra_args: data.extra_args,
+            command_override: data.command_override,
         };
 
-        let build_result = match builder::build_instance(params, &existing_titles) {
+        let build_result = match builder::build_instance(params, &existing_titles, &profile) {
             Ok(r) => r,
             Err(e) => return CreationResult::Error(format!("{:#}", e)),
         };
@@ -215,6 +220,7 @@ impl CreationPoller {
 
     pub fn request_creation(&mut self, request: CreationRequest) {
         self.pending = true;
+        self.last_profile = Some(request.data.profile.clone());
         if self
             .request_tx
             .send((request, self.progress_tx.clone()))
@@ -223,6 +229,11 @@ impl CreationPoller {
             tracing::error!("Failed to send creation request: receiver thread died");
             self.pending = false;
         }
+    }
+
+    /// Get the profile from the last creation request
+    pub fn last_profile(&self) -> Option<String> {
+        self.last_profile.clone()
     }
 
     pub fn try_recv_result(&mut self) -> Option<CreationResult> {

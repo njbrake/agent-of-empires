@@ -9,6 +9,7 @@ use crate::session::{GroupTree, Storage};
 #[derive(Subcommand)]
 pub enum GroupCommands {
     /// List all groups
+    #[command(alias = "ls")]
     List(GroupListArgs),
 
     /// Create a new group

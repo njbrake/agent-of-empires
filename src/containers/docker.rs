@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::container_interface::{ContainerConfig, ContainerRuntimeInterface};
 use super::error::{DockerError, Result};
 use super::runtime_base::RuntimeBase;
@@ -122,12 +124,50 @@ impl ContainerRuntimeInterface for Docker {
         self.base.remove(name, force)
     }
 
-    fn exec_command(&self, name: &str, options: Option<&str>) -> String {
-        self.base.exec_command(name, options)
+    fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String {
+        // Docker containers inherit a full PATH, so the command can be
+        // appended directly without wrapping in `sh -c` (unlike Apple Container).
+        self.base.exec_command(name, options, cmd)
     }
 
     fn exec(&self, name: &str, cmd: &[&str]) -> Result<std::process::Output> {
         self.base.exec(name, cmd)
+    }
+
+    fn batch_running_states(&self, prefix: &str) -> HashMap<String, bool> {
+        let output = self
+            .base
+            .command()
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name={}", prefix),
+                "--format",
+                "{{.Names}}\t{{.State}}",
+            ])
+            .output();
+
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return HashMap::new(),
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.splitn(2, '\t');
+                let name = parts.next()?.trim();
+                let state = parts.next()?.trim();
+                // Docker's --filter name= does substring matching, so
+                // post-filter to ensure we only include exact prefix matches.
+                if name.is_empty() || !name.starts_with(prefix) {
+                    return None;
+                }
+                Some((name.to_string(), state == "running"))
+            })
+            .collect()
     }
 }
 

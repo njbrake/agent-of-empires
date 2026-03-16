@@ -10,6 +10,7 @@ use crate::session::Storage;
 #[derive(Subcommand)]
 pub enum WorktreeCommands {
     /// List all worktrees in current repository
+    #[command(alias = "ls")]
     List,
 
     /// Show worktree information for a session

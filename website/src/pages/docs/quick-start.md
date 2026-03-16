@@ -68,10 +68,7 @@ Requires Docker to be installed.
 By default, AoE uses Claude Code. To use a different tool:
 
 ```bash
-aoe add -c opencode .
-aoe add -c vibe .
-aoe add -c codex .
-aoe add -c gemini .
+aoe add -c opencode .   # or any other supported agent
 ```
 
 In the TUI, select the tool from the dropdown in the new session dialog.

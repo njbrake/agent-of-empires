@@ -81,8 +81,25 @@ impl DeletionPoller {
                     let worktree_path = PathBuf::from(&request.instance.project_path);
                     let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
+                    // Sandbox containers run as root, so files they create are
+                    // root-owned on the host. On macOS Docker Desktop, chmod
+                    // inside the container doesn't propagate to the host, so
+                    // we delete the contents from inside the container instead.
+                    let sandbox_cleaned = if request.instance.is_sandboxed() {
+                        cleanup_sandbox_worktree(&request.instance)
+                    } else {
+                        false
+                    };
+
                     if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                        if let Err(e) = git_wt.remove_worktree(&worktree_path, request.force_delete)
+                        if sandbox_cleaned {
+                            // Contents deleted by container; remove empty dir + prune
+                            let _ = std::fs::remove_dir(&worktree_path);
+                            if let Err(e) = git_wt.prune_worktrees() {
+                                errors.push(format!("Worktree: {}", e));
+                            }
+                        } else if let Err(e) =
+                            git_wt.remove_worktree(&worktree_path, request.force_delete)
                         {
                             errors.push(format!("Worktree: {}", e));
                         }
@@ -125,6 +142,9 @@ impl DeletionPoller {
         // Kill paired terminal session if it exists
         let _ = request.instance.kill_terminal();
 
+        // Clean up hook status files
+        crate::hooks::cleanup_hook_status_dir(&request.instance.id);
+
         DeletionResult {
             session_id: request.session_id.clone(),
             success: errors.is_empty(),
@@ -149,6 +169,21 @@ impl Default for DeletionPoller {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Delete worktree contents from inside the sandbox container.
+/// Returns true if the container successfully deleted the contents.
+fn cleanup_sandbox_worktree(instance: &Instance) -> bool {
+    let container = DockerContainer::for_instance(instance);
+    if !container.exists().unwrap_or(false) {
+        return false;
+    }
+    if !container.is_running().unwrap_or(false) && container.start().is_err() {
+        return false;
+    }
+    container
+        .exec(&["find", ".", "-mindepth", "1", "-delete"])
+        .is_ok()
 }
 
 #[cfg(test)]

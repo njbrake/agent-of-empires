@@ -70,6 +70,7 @@ pub async fn run(profile: &str, sidebar_mode: bool) -> Result<()> {
         eprintln!("▨ kokorro requires at least one of:");
         eprintln!("  claude    - Anthropic's Claude CLI");
         eprintln!("  opencode  - OpenCode CLI");
+        eprintln!("  cursor    - Cursor's Agent CLI");
         eprintln!();
         eprintln!("Install one of these tools and ensure it's in your PATH.");
         std::process::exit(1);
@@ -98,7 +99,10 @@ pub async fn run(profile: &str, sidebar_mode: bool) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app and run
-    let mut app = App::new(profile, available_tools, sidebar_mode)?;
+    let mut app = App::new(profile, available_tools)?;
+    if sidebar_mode {
+        app.home_mut().set_sidebar_mode(true);
+    }
     let result = app.run(&mut terminal).await;
 
     // Restore terminal

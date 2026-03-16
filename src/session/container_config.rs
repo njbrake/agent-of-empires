@@ -4,21 +4,18 @@
 //! `ContainerConfig` structs. Includes sandbox directory sync, agent config
 //! mounting, and credential extraction.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::containers::{ContainerConfig, VolumeMount};
 use crate::git::GitWorktree;
 
-use super::environment::{collect_env_keys, collect_env_values};
+use super::environment::collect_environment;
 use super::instance::SandboxInfo;
 
 /// Container path where the hook relay script is installed.
 const HOOK_RELAY_PATH: &str = "/root/.claude/aoe_hook_relay.sh";
-
-/// Container path where hook_status directory is mounted from the host.
-const CONTAINER_HOOK_STATUS_DIR: &str = "/tmp/aoe_hook_status";
 
 /// Home directory inside the container (root user).
 const CONTAINER_HOME: &str = "/root";
@@ -83,6 +80,9 @@ const SANDBOX_SUBDIR: &str = "sandbox";
 
 /// Declarative definition of an agent CLI's config directory for sandbox mounting.
 struct AgentConfigMount {
+    /// Canonical agent name from the agent registry (e.g. "claude", "opencode").
+    /// Used to filter mounts so only the active tool's config is mounted.
+    tool_name: &'static str,
     /// Path relative to home (e.g. ".claude").
     host_rel: &'static str,
     /// Path suffix relative to container home (e.g. ".claude").
@@ -111,6 +111,7 @@ struct AgentConfigMount {
 /// To add a new agent, add an entry here -- no code changes needed.
 const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
     AgentConfigMount {
+        tool_name: "claude",
         host_rel: ".claude",
         container_suffix: ".claude",
         skip_entries: &["sandbox", "projects"],
@@ -121,10 +122,16 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: Some(("Claude Code-credentials", ".credentials.json")),
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
-        home_seed_files: &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)],
-        preserve_files: &[".credentials.json"],
+        // Claude Code sets GIT_CONFIG_GLOBAL=/root/.sandbox-gitconfig when IS_SANDBOX=1;
+        // the file must exist or all git commands fail.
+        home_seed_files: &[
+            (".claude.json", r#"{"hasCompletedOnboarding":true}"#),
+            (".sandbox-gitconfig", ""),
+        ],
+        preserve_files: &[".credentials.json", "history.jsonl"],
     },
     AgentConfigMount {
+        tool_name: "opencode",
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
         skip_entries: &["sandbox"],
@@ -135,6 +142,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "codex",
         host_rel: ".codex",
         container_suffix: ".codex",
         skip_entries: &["sandbox"],
@@ -145,6 +153,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "gemini",
         host_rel: ".gemini",
         container_suffix: ".gemini",
         skip_entries: &["sandbox"],
@@ -155,8 +164,42 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "vibe",
         host_rel: ".vibe",
         container_suffix: ".vibe",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
+    AgentConfigMount {
+        tool_name: "cursor",
+        host_rel: ".cursor",
+        container_suffix: ".cursor",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
+    AgentConfigMount {
+        tool_name: "copilot",
+        host_rel: ".copilot",
+        container_suffix: ".copilot",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
+    AgentConfigMount {
+        tool_name: "pi",
+        host_rel: ".pi",
+        container_suffix: ".pi",
         skip_entries: &["sandbox"],
         seed_files: &[],
         copy_dirs: &[],
@@ -188,6 +231,24 @@ fn sync_agent_config(
         }
     }
 
+    // If the sandbox already has a "projects/" subdirectory, a prior container
+    // session ran and created state we must not overwrite (e.g. settings.json,
+    // statsig/, session metadata). Only seed files, copy_dirs, and keychain
+    // credentials are still synced; the general top-level file copy is skipped.
+    //
+    // Why "projects/"? Claude Code creates this directory on first run to store
+    // per-project session data. Its presence reliably indicates the container
+    // has been used before. If this sentinel changes upstream, container restarts
+    // would fall back to the old behavior of re-copying all host files (safe,
+    // just potentially overwriting container-side customizations).
+    let has_prior_data = sandbox_dir.join("projects").exists();
+    if has_prior_data {
+        tracing::info!(
+            "sync_agent_config: sandbox={} has prior session data, skipping general file copy",
+            sandbox_dir.display()
+        );
+    }
+
     for entry in std::fs::read_dir(host_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -213,6 +274,12 @@ fn sync_agent_config(
                     tracing::warn!("Failed to copy dir {}: {}", name_str, e);
                 }
             }
+            continue;
+        }
+
+        // Skip general top-level file copies on restart to preserve
+        // container-created files (settings.json, statsig/, etc.).
+        if has_prior_data {
             continue;
         }
 
@@ -379,6 +446,29 @@ fn rewrite_plugins_for_container(
     if !plugins_json.exists() {
         return Ok(None);
     }
+    let app_dir = crate::session::get_app_dir()?;
+    rewrite_plugins_for_container_with_app_dir(
+        sandbox_dir,
+        container_name,
+        host_project_path,
+        workspace_path,
+        home,
+        &app_dir,
+    )
+}
+
+fn rewrite_plugins_for_container_with_app_dir(
+    sandbox_dir: &Path,
+    container_name: &str,
+    host_project_path: &str,
+    workspace_path: &str,
+    home: &Path,
+    app_dir: &Path,
+) -> Result<Option<std::path::PathBuf>> {
+    let plugins_json = sandbox_dir.join("plugins").join("installed_plugins.json");
+    if !plugins_json.exists() {
+        return Ok(None);
+    }
 
     let content = std::fs::read_to_string(&plugins_json)?;
     let mut manifest: serde_json::Value = serde_json::from_str(&content)?;
@@ -444,7 +534,6 @@ fn rewrite_plugins_for_container(
         }
     }
 
-    let app_dir = crate::session::get_app_dir()?;
     let manifests_dir = app_dir.join("plugin_manifests");
     std::fs::create_dir_all(&manifests_dir)?;
 
@@ -465,19 +554,46 @@ fn rewrite_plugins_for_container(
 /// Remove the per-instance plugin manifest file created for a container.
 pub(crate) fn cleanup_plugin_manifest(container_name: &str) {
     if let Ok(app_dir) = crate::session::get_app_dir() {
-        let safe_name = container_name.replace('/', "_");
-        let manifest_path = app_dir
-            .join("plugin_manifests")
-            .join(format!("{}.json", safe_name));
-        if manifest_path.exists() {
-            if let Err(e) = std::fs::remove_file(&manifest_path) {
-                tracing::warn!(
-                    "Failed to remove plugin manifest for {}: {}",
-                    container_name,
-                    e
-                );
-            }
+        cleanup_plugin_manifest_in_dir(container_name, &app_dir);
+    }
+}
+
+fn cleanup_plugin_manifest_in_dir(container_name: &str, app_dir: &Path) {
+    let safe_name = container_name.replace('/', "_");
+    let manifest_path = app_dir
+        .join("plugin_manifests")
+        .join(format!("{}.json", safe_name));
+    if manifest_path.exists() {
+        if let Err(e) = std::fs::remove_file(&manifest_path) {
+            tracing::warn!(
+                "Failed to remove plugin manifest for {}: {}",
+                container_name,
+                e
+            );
         }
+    }
+}
+
+/// Parse the `expiresAt` timestamp from a Claude Code credential JSON string.
+/// Returns `None` if the JSON is malformed or the field is missing/wrong type.
+#[cfg(any(target_os = "macos", test))]
+fn parse_credential_expires_at(content: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    value.get("claudeAiOauth")?.get("expiresAt")?.as_u64()
+}
+
+/// Decide whether an incoming credential should overwrite the existing one,
+/// based on `expiresAt` timestamps. Returns `true` if the incoming credential
+/// should be written.
+#[cfg(any(target_os = "macos", test))]
+fn should_overwrite_credential(existing_content: &str, incoming_content: &str) -> bool {
+    let existing_exp = parse_credential_expires_at(existing_content);
+    let incoming_exp = parse_credential_expires_at(incoming_content);
+
+    match (existing_exp, incoming_exp) {
+        (Some(existing), Some(incoming)) => incoming > existing,
+        (Some(_), None) => false,
+        _ => true,
     }
 }
 
@@ -536,6 +652,19 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
         return Ok(false);
     }
 
+    // Only overwrite if the keychain credential is fresher than what the sandbox already has.
+    if dest.exists() {
+        if let Ok(existing_content) = std::fs::read_to_string(dest) {
+            if !should_overwrite_credential(&existing_content, trimmed) {
+                tracing::debug!(
+                    "Keychain credential for '{}' is not fresher than sandbox, keeping sandbox",
+                    service,
+                );
+                return Ok(false);
+            }
+        }
+    }
+
     std::fs::write(dest, trimmed)?;
     tracing::debug!(
         "Extracted keychain credential for '{}' -> {}",
@@ -591,53 +720,101 @@ fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::pat
 
 /// Compute volume mount paths for Docker container.
 ///
-/// For bare repo worktrees, mounts the entire bare repo and sets working_dir to the worktree.
-/// This allows git commands inside the container to access the full repository structure.
+/// For bare repo worktrees (worktree inside the repo), mounts the main repo.
+/// For sibling worktrees (non-bare layout), mounts the main repo and worktree
+/// as separate volumes at paths preserving their relative structure.
+/// For non-git paths, mounts the project path directly.
 ///
 /// `project_path_str` is the raw project path string (used as the host mount path in the
-/// default case where no bare repo is detected).
+/// default case where no worktree is detected).
 ///
 /// Returns (host_mount_path, container_mount_path, working_dir)
 pub(crate) fn compute_volume_paths(
     project_path: &Path,
     project_path_str: &str,
-) -> Result<(String, String, String)> {
-    // Try to find the main repo if this is a git repository
-    if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
-        // Canonicalize paths for reliable comparison (handles symlinks like /tmp -> /private/tmp)
-        let main_repo_canonical = main_repo
-            .canonicalize()
-            .unwrap_or_else(|_| main_repo.clone());
-        let project_canonical = project_path
-            .canonicalize()
-            .unwrap_or_else(|_| project_path.to_path_buf());
+) -> Result<(Vec<VolumeMount>, String)> {
+    // Only look for a main repo if the project path itself has a .git entry (file or
+    // directory). This prevents git2::Repository::discover from walking up the directory
+    // tree and finding an unrelated ancestor repo (e.g., a dotfile-managed home directory),
+    // which would cause aoe to mount that ancestor -- potentially the user's entire $HOME --
+    // into the container.
+    //
+    // Legitimate git repos have a .git directory; worktrees have a .git file containing a
+    // gitdir pointer. Both cases are covered by this check.
+    if project_path.join(".git").exists() {
+        if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
+            // Canonicalize paths for reliable comparison (handles symlinks like /tmp -> /private/tmp)
+            let main_repo_canonical = main_repo
+                .canonicalize()
+                .unwrap_or_else(|_| main_repo.clone());
+            let project_canonical = project_path
+                .canonicalize()
+                .unwrap_or_else(|_| project_path.to_path_buf());
 
-        // Check if main repo is a bare repo and project_path is a worktree within it
-        if GitWorktree::is_bare_repo(&main_repo) && main_repo_canonical != project_canonical {
-            // Bare repo worktree: mount the entire repo, set working_dir to the worktree
-            let repo_name = main_repo_canonical
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "workspace".to_string());
+            // Check if project_path is a worktree (different from the main repo root).
+            // Mount enough of the filesystem so the worktree's relative gitdir reference
+            // resolves correctly inside the container.
+            if main_repo_canonical != project_canonical {
+                if project_canonical.starts_with(&main_repo_canonical) {
+                    // Worktree is inside the main repo (bare repo layout) --
+                    // mounting the main repo is sufficient.
+                    let name = main_repo_canonical
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "workspace".to_string());
+                    let container_base = format!("/workspace/{}", name);
+                    let relative_worktree = project_canonical
+                        .strip_prefix(&main_repo_canonical)
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    let working_dir = if relative_worktree.as_os_str().is_empty() {
+                        container_base.clone()
+                    } else {
+                        format!("{}/{}", container_base, relative_worktree.display())
+                    };
 
-            // Calculate relative path from main_repo to project_path (using canonical paths)
-            let relative_worktree = project_canonical
-                .strip_prefix(&main_repo_canonical)
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
+                    return Ok((
+                        vec![VolumeMount {
+                            host_path: main_repo_canonical.to_string_lossy().to_string(),
+                            container_path: container_base,
+                            read_only: false,
+                        }],
+                        working_dir,
+                    ));
+                } else {
+                    // Worktree is a sibling of the main repo (non-bare layout).
+                    // Mount each separately under /workspace/, preserving their
+                    // relative path structure from their common ancestor. This
+                    // ensures the worktree's .git file (which contains a relative
+                    // gitdir path) resolves correctly inside the container.
+                    let common = common_ancestor(&main_repo_canonical, &project_canonical);
+                    let repo_rel = main_repo_canonical
+                        .strip_prefix(&common)
+                        .unwrap_or(&main_repo_canonical);
+                    let wt_rel = project_canonical
+                        .strip_prefix(&common)
+                        .unwrap_or(&project_canonical);
 
-            let container_base = format!("/workspace/{}", repo_name);
-            let working_dir = if relative_worktree.as_os_str().is_empty() {
-                container_base.clone()
-            } else {
-                format!("{}/{}", container_base, relative_worktree.display())
-            };
+                    let repo_container = format!("/workspace/{}", repo_rel.display());
+                    let wt_container = format!("/workspace/{}", wt_rel.display());
 
-            return Ok((
-                main_repo_canonical.to_string_lossy().to_string(),
-                container_base,
-                working_dir,
-            ));
+                    return Ok((
+                        vec![
+                            VolumeMount {
+                                host_path: main_repo_canonical.to_string_lossy().to_string(),
+                                container_path: repo_container,
+                                read_only: false,
+                            },
+                            VolumeMount {
+                                host_path: project_canonical.to_string_lossy().to_string(),
+                                container_path: wt_container.clone(),
+                                read_only: false,
+                            },
+                        ],
+                        wt_container,
+                    ));
+                }
+            }
         }
     }
 
@@ -649,8 +826,11 @@ pub(crate) fn compute_volume_paths(
     let workspace_path = format!("/workspace/{}", dir_name);
 
     Ok((
-        project_path_str.to_string(),
-        workspace_path.clone(),
+        vec![VolumeMount {
+            host_path: project_path_str.to_string(),
+            container_path: workspace_path.clone(),
+            read_only: false,
+        }],
         workspace_path,
     ))
 }
@@ -695,31 +875,37 @@ pub(crate) fn build_container_config(
     sandbox_info: &SandboxInfo,
     tool: &str,
     is_yolo_mode: bool,
-    config: &super::config::Config,
+    instance_id: &str,
 ) -> Result<ContainerConfig> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
 
     let project_path = Path::new(project_path_str);
 
-    // Determine mount path and working directory.
+    // Determine mount path(s) and working directory.
     // For bare repo worktrees, mount the entire bare repo and set working_dir to the worktree.
-    // This allows git commands to access the full repository structure.
-    let (mount_host_path, container_base_path, workspace_path) =
-        compute_volume_paths(project_path, project_path_str)?;
+    // For sibling worktrees, mount the main repo and worktree as separate volumes.
+    let (project_volumes, workspace_path) = compute_volume_paths(project_path, project_path_str)?;
 
-    let mut volumes = vec![VolumeMount {
-        host_path: mount_host_path,
-        container_path: container_base_path,
-        read_only: false,
-    }];
+    let mut volumes = project_volumes;
 
-    let sandbox_config = &config.sandbox;
-    tracing::debug!(
-        "Sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
-        sandbox_config.extra_volumes,
-        sandbox_config.mount_ssh,
-        sandbox_config.volume_ignores
-    );
+    let sandbox_config = {
+        let profile = super::config::resolve_default_profile();
+        match super::profile_config::resolve_config(&profile) {
+            Ok(c) => {
+                tracing::debug!(
+                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
+                    c.sandbox.extra_volumes,
+                    c.sandbox.mount_ssh,
+                    c.sandbox.volume_ignores
+                );
+                c.sandbox
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load config, using defaults: {}", e);
+                Default::default()
+            }
+        }
+    };
 
     let gitconfig = home.join(".gitconfig");
     if gitconfig.exists() {
@@ -741,20 +927,21 @@ pub(crate) fn build_container_config(
         }
     }
 
-    let opencode_config = home.join(".config").join("opencode");
-    if opencode_config.exists() {
-        volumes.push(VolumeMount {
-            host_path: opencode_config.to_string_lossy().to_string(),
-            container_path: format!("{}/.config/opencode", CONTAINER_HOME),
-            read_only: true,
-        });
+    if tool == "opencode" {
+        let opencode_config = home.join(".config").join("opencode");
+        if opencode_config.exists() {
+            volumes.push(VolumeMount {
+                host_path: opencode_config.to_string_lossy().to_string(),
+                container_path: format!("{}/.config/opencode", CONTAINER_HOME),
+                read_only: true,
+            });
+        }
     }
 
     // Sync host agent config into a shared sandbox directory per agent and
-    // bind-mount it read-write. All containers share the same directory (1:N),
-    // so in-container changes persist.
+    // bind-mount it read-write. Only mount the config for the active tool.
     // Agent definitions are in AGENT_CONFIG_MOUNTS -- add new agents there, not here.
-    for mount in AGENT_CONFIG_MOUNTS {
+    for mount in AGENT_CONFIG_MOUNTS.iter().filter(|m| m.tool_name == tool) {
         let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
 
         let sandbox_dir = match prepare_sandbox_dir(mount, &home) {
@@ -834,23 +1021,46 @@ pub(crate) fn build_container_config(
         }
     }
 
-    // Mount hook_status directory so container relay scripts can write status
-    // files visible to the host TUI poller.
-    let app_dir = crate::session::get_app_dir()?;
-    let hook_status_dir = app_dir.join("hook_status");
-    std::fs::create_dir_all(&hook_status_dir)?;
-    volumes.push(VolumeMount {
-        host_path: hook_status_dir.to_string_lossy().to_string(),
-        container_path: CONTAINER_HOOK_STATUS_DIR.to_string(),
-        read_only: false,
-    });
+    // Mount the hook status directory so the host can read status files
+    // written by hooks running inside the container.
+    if let Some(agent) = crate::agents::get_agent(tool) {
+        if let Some(hook_cfg) = &agent.hook_config {
+            let hook_dir = crate::hooks::hook_status_dir(instance_id);
+            if let Err(e) = std::fs::create_dir_all(&hook_dir) {
+                tracing::warn!(
+                    "Failed to create hook directory {}: {}",
+                    hook_dir.display(),
+                    e
+                );
+            }
+            volumes.push(VolumeMount {
+                host_path: hook_dir.to_string_lossy().to_string(),
+                container_path: hook_dir.to_string_lossy().to_string(),
+                read_only: false,
+            });
 
-    let env_keys = collect_env_keys(sandbox_config, sandbox_info);
+            // Install hooks into the sandbox settings.json
+            // The sandbox dir for the agent config is already prepared above.
+            // We write hooks into it so the containerized agent picks them up.
+            let home = dirs::home_dir().unwrap_or_default();
+            let config_dir_name = std::path::Path::new(hook_cfg.settings_rel_path)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
+            // Find the matching agent config mount to locate the sandbox dir
+            for mount in AGENT_CONFIG_MOUNTS {
+                if mount.host_rel == config_dir_name.to_string_lossy() {
+                    let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
+                    let settings_file = sandbox_dir.join("settings.json");
+                    if let Err(e) = crate::hooks::install_hooks(&settings_file) {
+                        tracing::warn!("Failed to install hooks in sandbox settings: {}", e);
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
-    let mut environment: Vec<(String, String)> = env_keys
-        .iter()
-        .filter_map(|key| std::env::var(key).ok().map(|val| (key.clone(), val)))
-        .collect();
+    let mut environment: Vec<(String, String)> = collect_environment(&sandbox_config, sandbox_info);
 
     if let Some(agent) = crate::agents::get_agent(tool) {
         for &(key, value) in agent.container_env {
@@ -862,8 +1072,6 @@ pub(crate) fn build_container_config(
             }
         }
     }
-
-    environment.extend(collect_env_values(sandbox_config, sandbox_info));
 
     // Add extra_volumes from config (host:container format)
     // Also collect container paths to filter conflicting volume_ignores later
@@ -912,14 +1120,42 @@ pub(crate) fn build_container_config(
         })
         .collect();
 
+    // Deduplicate volumes by container_path (last writer wins, so extra_volumes
+    // from user config override automatic mounts).
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::with_capacity(volumes.len());
+    for vol in volumes.into_iter().rev() {
+        if seen.insert(vol.container_path.clone()) {
+            deduped.push(vol);
+        } else {
+            tracing::debug!("Dropping duplicate mount for {}", vol.container_path);
+        }
+    }
+    deduped.reverse();
+
     Ok(ContainerConfig {
         working_dir: workspace_path,
-        volumes,
+        volumes: deduped,
         anonymous_volumes,
         environment,
-        cpu_limit: sandbox_config.cpu_limit.clone(),
-        memory_limit: sandbox_config.memory_limit.clone(),
+        cpu_limit: sandbox_config.cpu_limit,
+        memory_limit: sandbox_config.memory_limit,
+        port_mappings: sandbox_config.port_mappings.clone(),
     })
+}
+
+/// Find the longest common ancestor path of two absolute paths.
+fn common_ancestor(a: &Path, b: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    let mut a_components = a.components();
+    let mut b_components = b.components();
+    loop {
+        match (a_components.next(), b_components.next()) {
+            (Some(ac), Some(bc)) if ac == bc => result.push(ac),
+            _ => break,
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -978,16 +1214,22 @@ mod tests {
         let (_dir, repo_path) = setup_regular_repo();
         let project_path_str = repo_path.to_str().unwrap();
 
-        let (mount_path, container_path, working_dir) =
-            compute_volume_paths(&repo_path, project_path_str).unwrap();
+        let (volumes, working_dir) = compute_volume_paths(&repo_path, project_path_str).unwrap();
 
+        assert_eq!(volumes.len(), 1);
         // Regular repo: mount path should be the project path
-        assert_eq!(mount_path, repo_path.to_string_lossy().to_string());
+        assert_eq!(
+            volumes[0].host_path,
+            repo_path.to_string_lossy().to_string()
+        );
         // Container path and working dir should be the same
-        assert_eq!(container_path, working_dir);
+        assert_eq!(volumes[0].container_path, working_dir);
         // Should be /workspace/{dir_name}
         let dir_name = repo_path.file_name().unwrap().to_string_lossy();
-        assert_eq!(container_path, format!("/workspace/{}", dir_name));
+        assert_eq!(
+            volumes[0].container_path,
+            format!("/workspace/{}", dir_name)
+        );
     }
 
     #[test]
@@ -995,13 +1237,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let project_path_str = dir.path().to_str().unwrap();
 
-        let (mount_path, container_path, working_dir) =
-            compute_volume_paths(dir.path(), project_path_str).unwrap();
+        let (volumes, working_dir) = compute_volume_paths(dir.path(), project_path_str).unwrap();
 
+        assert_eq!(volumes.len(), 1);
         // Non-git: mount path should be the project path
-        assert_eq!(mount_path, dir.path().to_string_lossy().to_string());
+        assert_eq!(
+            volumes[0].host_path,
+            dir.path().to_string_lossy().to_string()
+        );
         // Container path and working dir should be the same
-        assert_eq!(container_path, working_dir);
+        assert_eq!(volumes[0].container_path, working_dir);
     }
 
     #[test]
@@ -1015,11 +1260,14 @@ mod tests {
 
         let project_path_str = worktree_path.to_str().unwrap();
 
-        let (mount_path, container_path, working_dir) =
+        let (volumes, working_dir) =
             compute_volume_paths(&worktree_path, project_path_str).unwrap();
 
+        // Bare repo worktree: single mount of the repo root
+        assert_eq!(volumes.len(), 1);
+
         // Canonicalize paths for comparison (handles /var -> /private/var on macOS)
-        let mount_path_canon = Path::new(&mount_path).canonicalize().unwrap();
+        let mount_path_canon = Path::new(&volumes[0].host_path).canonicalize().unwrap();
         let main_repo_canon = main_repo_path.canonicalize().unwrap();
 
         // For bare repo worktree: mount the entire repo root
@@ -1031,7 +1279,7 @@ mod tests {
         // Container path should be /workspace/{repo_name}
         let repo_name = main_repo_path.file_name().unwrap().to_string_lossy();
         assert_eq!(
-            container_path,
+            volumes[0].container_path,
             format!("/workspace/{}", repo_name),
             "Container mount path should be /workspace/{{repo_name}}"
         );
@@ -1049,21 +1297,262 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_volume_paths_non_bare_repo_worktree() {
+        let (_dir, repo_path) = setup_regular_repo();
+
+        // Create a worktree from the regular (non-bare) repo
+        let worktree_path = repo_path.parent().unwrap().join("my-worktree");
+        let head = git2::Repository::open(&repo_path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
+            .unwrap();
+        drop(repo);
+
+        let output = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "wt-branch",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+
+        if !output.status.success() {
+            // git not available, skip
+            return;
+        }
+
+        let project_path_str = worktree_path.to_str().unwrap();
+
+        let (volumes, working_dir) =
+            compute_volume_paths(&worktree_path, project_path_str).unwrap();
+
+        // For non-bare sibling worktrees: mount the main repo and worktree separately
+        // as flat siblings under /workspace/.
+        assert_eq!(
+            volumes.len(),
+            2,
+            "Should have two volumes: main repo and worktree"
+        );
+
+        // First volume: the main repo
+        let repo_canon = repo_path.canonicalize().unwrap();
+        let mount0_canon = Path::new(&volumes[0].host_path).canonicalize().unwrap();
+        assert_eq!(
+            mount0_canon, repo_canon,
+            "First volume should mount the main repo"
+        );
+        let repo_name = repo_canon.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            volumes[0].container_path,
+            format!("/workspace/{}", repo_name),
+        );
+
+        // Second volume: the worktree
+        let wt_canon = worktree_path.canonicalize().unwrap();
+        let mount1_canon = Path::new(&volumes[1].host_path).canonicalize().unwrap();
+        assert_eq!(
+            mount1_canon, wt_canon,
+            "Second volume should mount the worktree"
+        );
+        assert_eq!(volumes[1].container_path, "/workspace/my-worktree");
+
+        // Working dir should point to the worktree
+        assert_eq!(
+            working_dir, "/workspace/my-worktree",
+            "Working dir should be the worktree container path"
+        );
+    }
+
+    #[test]
     fn test_compute_volume_paths_bare_repo_root() {
         let (_dir, main_repo_path, _worktree_path) = setup_bare_repo_with_worktree();
 
         let project_path_str = main_repo_path.to_str().unwrap();
 
-        let (mount_path, _container_path, working_dir) =
+        let (volumes, working_dir) =
             compute_volume_paths(&main_repo_path, project_path_str).unwrap();
 
+        assert_eq!(volumes.len(), 1);
+
         // When at repo root, mount path equals project path
-        let mount_canon = Path::new(&mount_path).canonicalize().unwrap();
+        let mount_canon = Path::new(&volumes[0].host_path).canonicalize().unwrap();
         let main_canon = main_repo_path.canonicalize().unwrap();
         assert_eq!(mount_canon, main_canon);
 
         // Working dir should be set
         assert!(!working_dir.is_empty());
+    }
+
+    #[test]
+    fn test_compute_volume_paths_subdir_of_ancestor_repo_not_mounted() {
+        // Simulates the scenario from GitHub issue #375: a user has a git repo at
+        // their home directory (e.g., for dotfile management) and sets their project
+        // path to a non-git subdirectory like ~/playground. Without the guard,
+        // git2::Repository::discover walks up and finds the ancestor repo, causing
+        // the entire parent (home directory) to be mounted into the container.
+        let dir = TempDir::new().unwrap();
+
+        // Create a git repo at the "parent" (simulating ~/  with dotfile management)
+        let _repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Create a subdirectory that is NOT its own git repo (simulating ~/playground)
+        let subdir = dir.path().join("playground");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let project_path_str = subdir.to_str().unwrap();
+
+        let (volumes, working_dir) = compute_volume_paths(&subdir, project_path_str).unwrap();
+
+        assert_eq!(volumes.len(), 1);
+        // The subdirectory should be mounted directly, NOT the parent repo
+        assert_eq!(
+            volumes[0].host_path,
+            subdir.to_string_lossy().to_string(),
+            "Should mount the subdirectory itself, not the ancestor git repo"
+        );
+        assert_eq!(volumes[0].container_path, working_dir);
+        assert_eq!(volumes[0].container_path, "/workspace/playground");
+    }
+
+    #[test]
+    fn test_common_ancestor() {
+        assert_eq!(
+            common_ancestor(Path::new("/a/b/c"), Path::new("/a/b/d")),
+            PathBuf::from("/a/b")
+        );
+        assert_eq!(
+            common_ancestor(Path::new("/a/b"), Path::new("/a/b")),
+            PathBuf::from("/a/b")
+        );
+        assert_eq!(
+            common_ancestor(Path::new("/a/b/c"), Path::new("/x/y/z")),
+            PathBuf::from("/")
+        );
+    }
+
+    #[test]
+    fn test_compute_volume_paths_non_bare_worktree_nested_layout() {
+        // Simulates a host layout where the worktree is nested deeper than the
+        // main repo relative to their common ancestor (e.g., repo at
+        // /scm/my-repo and worktree at /scm/worktrees/my-repo/1).
+        let dir = TempDir::new().unwrap();
+        let repo_path = dir.path().join("my-repo");
+        fs::create_dir_all(&repo_path).unwrap();
+        let repo = git2::Repository::init(&repo_path).unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            let oid = index.write_tree().unwrap();
+            let sig = git2::Signature::now("test", "test@test.com").unwrap();
+            let tree = repo.find_tree(oid).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+
+        let worktrees_dir = dir.path().join("worktrees").join("my-repo");
+        fs::create_dir_all(&worktrees_dir).unwrap();
+        let worktree_path = worktrees_dir.join("1");
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap().id();
+        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
+            .unwrap();
+        drop(repo);
+
+        let output = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "wt-branch",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+
+        if !output.status.success() {
+            return;
+        }
+
+        // AoE's create_worktree converts .git to relative paths via
+        // convert_git_file_to_relative. Replicate that here since we
+        // called git directly.
+        let git_file = worktree_path.join(".git");
+        let content = fs::read_to_string(&git_file).unwrap();
+        let abs_path = content
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:").map(str::trim))
+            .unwrap();
+        if Path::new(abs_path).is_absolute() {
+            let wt_canon = worktree_path.canonicalize().unwrap();
+            let gitdir_canon = Path::new(abs_path).canonicalize().unwrap();
+            if let Some(rel) = crate::git::GitWorktree::diff_paths(&gitdir_canon, &wt_canon) {
+                fs::write(&git_file, format!("gitdir: {}\n", rel.display())).unwrap();
+            }
+        }
+
+        let project_path_str = worktree_path.to_str().unwrap();
+        let (volumes, working_dir) =
+            compute_volume_paths(&worktree_path, project_path_str).unwrap();
+
+        assert_eq!(volumes.len(), 2);
+
+        // The container paths must preserve relative depth so the .git file's
+        // relative gitdir path resolves correctly.
+        let repo_canon = repo_path.canonicalize().unwrap();
+        let wt_canon = worktree_path.canonicalize().unwrap();
+        let common = common_ancestor(&repo_canon, &wt_canon);
+        let expected_repo = format!(
+            "/workspace/{}",
+            repo_canon.strip_prefix(&common).unwrap().display()
+        );
+        let expected_wt = format!(
+            "/workspace/{}",
+            wt_canon.strip_prefix(&common).unwrap().display()
+        );
+
+        assert_eq!(volumes[0].container_path, expected_repo);
+        assert_eq!(volumes[1].container_path, expected_wt);
+        assert_eq!(working_dir, expected_wt);
+
+        // Verify the .git file's relative path resolves correctly in the
+        // container layout.
+        let content = fs::read_to_string(&git_file).unwrap();
+        let gitdir_rel = content
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:").map(str::trim))
+            .unwrap();
+
+        let resolved = PathBuf::from(&working_dir).join(gitdir_rel);
+
+        // Normalize the path (resolve .. components)
+        let mut normalized = Vec::new();
+        for component in resolved.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                c => normalized.push(c.as_os_str().to_owned()),
+            }
+        }
+        let normalized: PathBuf = normalized.iter().collect();
+
+        // Should land inside the main repo's .git/worktrees/ directory
+        assert!(
+            normalized
+                .to_string_lossy()
+                .starts_with(&volumes[0].container_path),
+            "Resolved gitdir path '{}' should start with main repo container path '{}'",
+            normalized.display(),
+            volumes[0].container_path
+        );
     }
 
     // --- sandbox config tests ---
@@ -1183,8 +1672,55 @@ mod tests {
     #[test]
     fn test_agent_config_mounts_have_valid_entries() {
         for mount in AGENT_CONFIG_MOUNTS {
+            assert!(!mount.tool_name.is_empty());
             assert!(!mount.host_rel.is_empty());
             assert!(!mount.container_suffix.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_agent_config_mounts_each_tool_has_exactly_one() {
+        let tool_names: Vec<&str> = AGENT_CONFIG_MOUNTS.iter().map(|m| m.tool_name).collect();
+        // Each tool name should appear exactly once
+        for name in &tool_names {
+            let count = tool_names.iter().filter(|n| *n == name).count();
+            assert_eq!(count, 1, "tool_name '{}' appears {} times", name, count);
+        }
+    }
+
+    #[test]
+    fn test_agent_config_mounts_filter_by_tool() {
+        let claude_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "claude")
+            .collect();
+        assert_eq!(claude_mounts.len(), 1);
+        assert_eq!(claude_mounts[0].host_rel, ".claude");
+
+        let cursor_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "cursor")
+            .collect();
+        assert_eq!(cursor_mounts.len(), 1);
+        assert_eq!(cursor_mounts[0].host_rel, ".cursor");
+
+        // Unknown tool should match nothing
+        let unknown_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "unknown")
+            .collect();
+        assert_eq!(unknown_mounts.len(), 0);
+    }
+
+    #[test]
+    fn test_agent_config_mounts_match_agent_registry() {
+        // Every mount should correspond to a registered agent
+        for mount in AGENT_CONFIG_MOUNTS {
+            assert!(
+                crate::agents::get_agent(mount.tool_name).is_some(),
+                "AGENT_CONFIG_MOUNTS entry '{}' has no matching agent in the registry",
+                mount.tool_name
+            );
         }
     }
 
@@ -1439,6 +1975,70 @@ mod tests {
     }
 
     #[test]
+    fn test_history_preserved_across_resync() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        let sandbox = dir.path().join("sandbox");
+
+        // Host has a history file with host-only entries.
+        fs::write(host.join("history.jsonl"), "host-entry\n").unwrap();
+
+        // First sync copies it in.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &["history.jsonl"]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("history.jsonl")).unwrap(),
+            "host-entry\n"
+        );
+
+        // Container session appends entries.
+        fs::write(
+            sandbox.join("history.jsonl"),
+            "host-entry\ncontainer-session-1\ncontainer-session-2\n",
+        )
+        .unwrap();
+
+        // Re-sync (container restart) should NOT clobber the container's history.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &["history.jsonl"]).unwrap();
+        let content = fs::read_to_string(sandbox.join("history.jsonl")).unwrap();
+        assert!(
+            content.contains("container-session-1"),
+            "container history entries must survive re-sync"
+        );
+    }
+
+    #[test]
+    fn test_has_prior_data_skips_general_file_copy() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        let sandbox = dir.path().join("sandbox");
+
+        // First sync copies everything in.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            "{}"
+        );
+
+        // Simulate a prior container session by creating the "projects/" sentinel.
+        fs::create_dir_all(sandbox.join("projects")).unwrap();
+
+        // Container modifies settings.json during its session.
+        fs::write(sandbox.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
+
+        // Host updates settings.json independently.
+        fs::write(host.join("settings.json"), r#"{"theme":"light"}"#).unwrap();
+
+        // Re-sync should skip general file copies because projects/ exists,
+        // preserving the container's settings.json.
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            r#"{"theme":"dark"}"#,
+            "container-side settings must not be overwritten when projects/ sentinel exists"
+        );
+    }
+
+    #[test]
     fn test_preserve_files_seeded_when_missing() {
         let dir = TempDir::new().unwrap();
         let host = setup_host_dir(&dir);
@@ -1607,6 +2207,7 @@ mod tests {
     fn test_rewrite_plugins_for_container_basic() {
         let dir = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
+        let app_dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
 
@@ -1624,12 +2225,13 @@ mod tests {
         )
         .unwrap();
 
-        let result = rewrite_plugins_for_container(
+        let result = rewrite_plugins_for_container_with_app_dir(
             dir.path(),
             "test-container",
             "/Users/testuser/dev/myproject",
             "/workspace/myproject",
             home.path(),
+            app_dir.path(),
         )
         .unwrap();
 
@@ -1644,15 +2246,13 @@ mod tests {
             entry["installPath"],
             "/root/.claude/plugins/cache/official/linear/v1"
         );
-
-        // Clean up
-        fs::remove_file(&manifest_path).unwrap();
     }
 
     #[test]
     fn test_rewrite_plugins_for_container_user_scope() {
         let dir = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
+        let app_dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
 
@@ -1669,12 +2269,13 @@ mod tests {
         )
         .unwrap();
 
-        let result = rewrite_plugins_for_container(
+        let result = rewrite_plugins_for_container_with_app_dir(
             dir.path(),
             "test-container-user",
             "/Users/testuser/dev/someproject",
             "/workspace/someproject",
             home.path(),
+            app_dir.path(),
         )
         .unwrap();
 
@@ -1690,14 +2291,13 @@ mod tests {
             entry["installPath"],
             "/root/.claude/plugins/cache/official/rust-analyzer/1.0.0"
         );
-
-        fs::remove_file(&manifest_path).unwrap();
     }
 
     #[test]
     fn test_rewrite_plugins_for_container_mixed_projects() {
         let dir = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
+        let app_dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
 
@@ -1721,12 +2321,13 @@ mod tests {
         )
         .unwrap();
 
-        let result = rewrite_plugins_for_container(
+        let result = rewrite_plugins_for_container_with_app_dir(
             dir.path(),
             "test-container-mixed",
             "/Users/testuser/dev/myproject",
             "/workspace/myproject",
             home.path(),
+            app_dir.path(),
         )
         .unwrap();
 
@@ -1756,8 +2357,6 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("/root/.claude/"));
-
-        fs::remove_file(&manifest_path).unwrap();
     }
 
     #[test]
@@ -1788,6 +2387,7 @@ mod tests {
             .unwrap();
 
         let home = TempDir::new().unwrap();
+        let app_dir = TempDir::new().unwrap();
         let dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
@@ -1810,12 +2410,13 @@ mod tests {
 
         // We're creating a container for the worktree, but plugins are registered to main repo
         let wt_path_str = wt_path.to_string_lossy().to_string();
-        let result = rewrite_plugins_for_container(
+        let result = rewrite_plugins_for_container_with_app_dir(
             dir.path(),
             "test-container-wt",
             &wt_path_str,
             "/workspace/feature-branch",
             home.path(),
+            app_dir.path(),
         )
         .unwrap();
 
@@ -1830,7 +2431,6 @@ mod tests {
             "/workspace/feature-branch"
         );
 
-        fs::remove_file(&manifest_path).unwrap();
         drop(repo_dir);
     }
 
@@ -1838,6 +2438,7 @@ mod tests {
     fn test_rewrite_plugins_for_container_local_scope() {
         let dir = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
+        let app_dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
 
@@ -1855,12 +2456,13 @@ mod tests {
         )
         .unwrap();
 
-        let result = rewrite_plugins_for_container(
+        let result = rewrite_plugins_for_container_with_app_dir(
             dir.path(),
             "test-container-local",
             "/Users/testuser/dev/myproject",
             "/workspace/myproject",
             home.path(),
+            app_dir.path(),
         )
         .unwrap();
 
@@ -1876,21 +2478,19 @@ mod tests {
             entry["installPath"],
             "/root/.claude/plugins/cache/local/custom-tool/v1"
         );
-
-        fs::remove_file(&manifest_path).unwrap();
     }
 
     #[test]
     fn test_cleanup_plugin_manifest() {
-        let app_dir = crate::session::get_app_dir().unwrap();
-        let manifests_dir = app_dir.join("plugin_manifests");
+        let app_dir = TempDir::new().unwrap();
+        let manifests_dir = app_dir.path().join("plugin_manifests");
         fs::create_dir_all(&manifests_dir).unwrap();
 
         let manifest_path = manifests_dir.join("test-cleanup-container.json");
         fs::write(&manifest_path, "{}").unwrap();
         assert!(manifest_path.exists());
 
-        cleanup_plugin_manifest("test-cleanup-container");
+        cleanup_plugin_manifest_in_dir("test-cleanup-container", app_dir.path());
         assert!(!manifest_path.exists());
     }
 
@@ -2014,5 +2614,74 @@ mod tests {
 
         // File should not have been rewritten (no changes = no write)
         assert_eq!(before, after);
+    }
+
+    // --- credential freshness tests ---
+
+    #[test]
+    fn test_parse_credential_expires_at_valid() {
+        let json = r#"{"claudeAiOauth":{"expiresAt":1700000000}}"#;
+        assert_eq!(parse_credential_expires_at(json), Some(1700000000));
+    }
+
+    #[test]
+    fn test_parse_credential_expires_at_missing_key() {
+        // Missing claudeAiOauth entirely.
+        assert_eq!(parse_credential_expires_at(r#"{"other":"data"}"#), None);
+        // Missing expiresAt inside claudeAiOauth.
+        assert_eq!(
+            parse_credential_expires_at(r#"{"claudeAiOauth":{"token":"abc"}}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_credential_expires_at_invalid_json() {
+        assert_eq!(parse_credential_expires_at("not json at all"), None);
+        assert_eq!(parse_credential_expires_at(""), None);
+    }
+
+    #[test]
+    fn test_parse_credential_expires_at_wrong_type() {
+        // expiresAt is a string instead of a number.
+        let json = r#"{"claudeAiOauth":{"expiresAt":"1700000000"}}"#;
+        assert_eq!(parse_credential_expires_at(json), None);
+    }
+
+    #[test]
+    fn test_should_not_overwrite_with_stale_keychain() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":2000}}"#;
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(sandbox, keychain));
+    }
+
+    #[test]
+    fn test_should_overwrite_with_fresh_keychain() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":2000}}"#;
+        assert!(should_overwrite_credential(sandbox, keychain));
+    }
+
+    #[test]
+    fn test_should_not_overwrite_equal_timestamps() {
+        let cred = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(cred, cred));
+    }
+
+    #[test]
+    fn test_should_not_overwrite_when_keychain_unparseable() {
+        let sandbox = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(!should_overwrite_credential(sandbox, "not-json"));
+    }
+
+    #[test]
+    fn test_should_overwrite_when_both_unparseable() {
+        assert!(should_overwrite_credential("bad", "also-bad"));
+    }
+
+    #[test]
+    fn test_should_overwrite_when_only_keychain_parseable() {
+        let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
+        assert!(should_overwrite_credential("not-json", keychain));
     }
 }

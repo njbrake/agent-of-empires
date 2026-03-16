@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::repo_config;
-use crate::session::{civilizations, GroupTree, Instance, SandboxInfo, Storage};
+use crate::session::{civilizations, resolve_config, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -22,7 +22,7 @@ pub struct AddArgs {
     #[arg(short = 'g', long)]
     group: Option<String>,
 
-    /// Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex', 'gemini')
+    /// Command to run (e.g., 'claude' or any other supported agent)
     #[arg(short = 'c', long = "cmd")]
     command: Option<String>,
 
@@ -57,6 +57,14 @@ pub struct AddArgs {
     /// Automatically trust repository hooks without prompting
     #[arg(long = "trust-hooks")]
     trust_hooks: bool,
+
+    /// Extra arguments to append after the agent binary
+    #[arg(long)]
+    extra_args: Option<String>,
+
+    /// Override the agent binary command
+    #[arg(long)]
+    cmd_override: Option<String>,
 }
 
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
@@ -70,6 +78,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("Path is not a directory: {}", path.display());
     }
 
+    let config = resolve_config(profile).unwrap_or_default();
+
     let mut worktree_info_opt = None;
 
     if let Some(branch_raw) = &args.worktree_branch {
@@ -82,8 +92,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
         }
-
-        let config = crate::session::resolve_config(profile)?;
 
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
@@ -167,8 +175,33 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     if let Some(cmd) = &args.command {
-        instance.command = cmd.clone();
-        instance.tool = detect_tool(cmd)?;
+        let tool_name = detect_tool(cmd)?;
+        instance.tool = tool_name;
+        // Only store a custom command when the user passed extra args
+        // (e.g. "claude --resume xyz"). A bare tool name/alias should resolve
+        // through the agent definition so the correct binary is used.
+        if cmd.trim().contains(' ') {
+            instance.command = cmd.clone();
+        }
+    } else {
+        // Use default_tool from resolved config, then first available tool, then "claude"
+        let available_tools = crate::tmux::AvailableTools::detect();
+        instance.tool = config
+            .session
+            .default_tool
+            .as_deref()
+            .and_then(crate::agents::resolve_tool_name)
+            .or_else(|| available_tools.available_list().first().copied())
+            .unwrap_or("claude")
+            .to_string();
+    }
+
+    // Apply set_default_command for agents that need it (e.g., opencode, codex)
+    if instance.command.is_empty() {
+        instance.command = crate::agents::get_agent(&instance.tool)
+            .filter(|a| a.set_default_command)
+            .map(|a| a.binary.to_string())
+            .unwrap_or_default();
     }
 
     if let Some(worktree_info) = worktree_info_opt {
@@ -176,11 +209,27 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     instance.profile = profile.to_string();
-    instance.yolo_mode = args.yolo;
+    instance.yolo_mode = args.yolo || config.session.yolo_mode_default;
+
+    // Apply extra_args and command override: CLI flags take priority, then config defaults
+    if let Some(ref extra) = args.extra_args {
+        instance.extra_args = extra.clone();
+    } else if let Some(extra) = config.session.agent_extra_args.get(&instance.tool) {
+        if !extra.is_empty() {
+            instance.extra_args = extra.clone();
+        }
+    }
+
+    if let Some(ref cmd) = args.cmd_override {
+        instance.command = cmd.clone();
+    } else if let Some(cmd_override) = config.session.agent_command_override.get(&instance.tool) {
+        if !cmd_override.is_empty() {
+            instance.command = cmd_override.clone();
+        }
+    }
 
     // Handle sandbox setup
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
-    let config = crate::session::resolve_config(profile)?;
 
     let runtime = containers::get_container_runtime();
     if use_sandbox || config.sandbox.enabled_by_default {
@@ -206,8 +255,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 image,
                 container_name,
                 created_at: None,
-                extra_env_keys: None,
-                extra_env_values: None,
+                extra_env: None,
                 custom_instruction: config.sandbox.custom_instruction.clone(),
             });
         }

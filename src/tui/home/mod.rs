@@ -14,16 +14,18 @@ use ratatui::widgets::ListState;
 use tui_input::Input;
 
 use crate::session::{
-    config::{load_config, save_config},
-    flatten_tree, resolve_config, DefaultTerminalMode, Group, GroupTree, Instance, Item, Storage,
+    config::{load_config, save_config, SortOrder},
+    flatten_tree, flatten_tree_all_profiles, resolve_config, DefaultTerminalMode, Group, GroupTree,
+    Instance, Item, Storage,
 };
 use crate::tmux::AvailableTools;
 
 use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
 use super::dialogs::{
-    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, InfoDialog,
-    NewSessionData, NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, HooksInstallDialog,
+    InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerDialog, RenameDialog,
+    UnifiedDeleteDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -66,15 +68,15 @@ impl Default for PreviewCache {
 
 pub(super) const INDENTS: [&str; 10] = [
     "",
+    " ",
     "  ",
+    "   ",
     "    ",
+    "     ",
     "      ",
+    "       ",
     "        ",
-    "          ",
-    "            ",
-    "              ",
-    "                ",
-    "                  ",
+    "         ",
 ];
 
 pub(super) fn get_indent(depth: usize) -> &'static str {
@@ -86,6 +88,8 @@ pub(super) const ICON_WAITING: &str = "◐";
 pub(super) const ICON_IDLE: &str = "○";
 pub(super) const ICON_ERROR: &str = "✕";
 pub(super) const ICON_STARTING: &str = "◌";
+pub(super) const ICON_UNKNOWN: &str = "?";
+pub(super) const ICON_STOPPED: &str = "■";
 pub(super) const ICON_DELETING: &str = "✗";
 pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
@@ -98,18 +102,21 @@ pub(super) const TREE_LAST: &str = "└─ ";
 pub(super) const ICON_INDICATOR: &str = "●";
 
 pub struct HomeView {
-    pub(super) storage: Storage,
-    pub(super) instances: Vec<Instance>,
-    pub(super) instance_map: HashMap<String, Instance>,
-    pub(super) groups: Vec<Group>,
-    pub(super) group_tree: GroupTree,
+    pub(super) storages: HashMap<String, Storage>,
+    pub(super) active_profile: Option<String>,
+    instances: Vec<Instance>,
+    instance_map: HashMap<String, Instance>,
+    pub(super) group_trees: HashMap<String, GroupTree>,
     pub(super) flat_items: Vec<Item>,
 
     // UI state
     pub(super) cursor: usize,
     pub(super) selected_session: Option<String>,
     pub(super) selected_group: Option<String>,
+    /// Which profile the selected group belongs to (for scoped group operations)
+    pub(super) selected_group_profile: Option<String>,
     pub(super) view_mode: ViewMode,
+    pub(super) sort_order: SortOrder,
 
     // Dialogs
     pub(super) show_help: bool,
@@ -121,16 +128,23 @@ pub struct HomeView {
     pub(super) hook_trust_dialog: Option<HookTrustDialog>,
     /// Session data pending hook trust approval
     pub(super) pending_hook_trust_data: Option<NewSessionData>,
+    pub(super) hooks_install_dialog: Option<HooksInstallDialog>,
+    /// Session data pending agent hooks acknowledgment
+    pub(super) pending_hooks_install_data: Option<NewSessionData>,
     pub(super) welcome_dialog: Option<WelcomeDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
+    pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     /// Session to attach after the custom instruction warning dialog is dismissed
     pub(super) pending_attach_after_warning: Option<String>,
+    /// Session to stop after the confirmation dialog is accepted
+    pub(super) pending_stop_session: Option<String>,
 
     // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
-    pub(super) filtered_items: Option<Vec<usize>>,
+    pub(super) search_matches: Vec<usize>,
+    pub(super) search_match_index: usize,
 
     // Tool availability
     pub(super) available_tools: AvailableTools,
@@ -182,22 +196,41 @@ pub struct HomeView {
 }
 
 impl HomeView {
-    pub fn new(storage: Storage, available_tools: AvailableTools) -> anyhow::Result<Self> {
-        let (mut instances, groups) = storage.load_with_groups()?;
+    pub fn new(
+        active_profile: Option<String>,
+        available_tools: AvailableTools,
+    ) -> anyhow::Result<Self> {
+        use crate::session::list_profiles;
 
-        for inst in &mut instances {
-            inst.update_search_cache();
+        let mut storages = HashMap::new();
+        let mut all_instances = Vec::new();
+        let mut group_trees = HashMap::new();
+
+        let profile_names = match &active_profile {
+            Some(name) => vec![name.clone()],
+            None => list_profiles()?.into_iter().collect(),
+        };
+
+        for profile_name in &profile_names {
+            let storage = Storage::new(profile_name)?;
+            let (mut instances, groups) = storage.load_with_groups()?;
+            for inst in &mut instances {
+                inst.source_profile = profile_name.clone();
+            }
+            let tree = GroupTree::new_with_groups(&instances, &groups);
+            group_trees.insert(profile_name.clone(), tree);
+            all_instances.extend(instances);
+            storages.insert(profile_name.clone(), storage);
         }
 
-        let instance_map: HashMap<String, Instance> = instances
+        let instance_map: HashMap<String, Instance> = all_instances
             .iter()
             .map(|i| (i.id.clone(), i.clone()))
             .collect();
-        let group_tree = GroupTree::new_with_groups(&instances, &groups);
-        let flat_items = flatten_tree(&group_tree, &instances);
 
-        // Load the resolved config to get the default terminal mode and sound config
-        let resolved = resolve_config(storage.profile());
+        // In unified mode, config comes from "default" profile
+        let config_profile = active_profile.as_deref().unwrap_or("default");
+        let resolved = resolve_config(config_profile);
         let default_terminal_mode = resolved
             .as_ref()
             .map(|config| match config.sandbox.default_terminal_mode {
@@ -209,18 +242,25 @@ impl HomeView {
             .as_ref()
             .map(|config| config.sound.clone())
             .unwrap_or_default();
+        let user_config = load_config().ok().flatten();
+        let sort_order = user_config
+            .as_ref()
+            .and_then(|c| c.app_state.sort_order)
+            .unwrap_or_default();
 
         let mut view = Self {
-            storage,
-            instances,
+            storages,
+            active_profile,
+            instances: all_instances,
             instance_map,
-            groups,
-            group_tree,
-            flat_items,
+            group_trees,
+            flat_items: Vec::new(),
             cursor: 0,
             selected_session: None,
             selected_group: None,
+            selected_group_profile: None,
             view_mode: ViewMode::default(),
+            sort_order,
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
@@ -229,13 +269,18 @@ impl HomeView {
             rename_dialog: None,
             hook_trust_dialog: None,
             pending_hook_trust_data: None,
+            hooks_install_dialog: None,
+            pending_hooks_install_data: None,
             welcome_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
+            profile_picker_dialog: None,
             pending_attach_after_warning: None,
+            pending_stop_session: None,
             search_active: false,
             search_query: Input::default(),
-            filtered_items: None,
+            search_matches: Vec::new(),
+            search_match_index: 0,
             available_tools,
             status_poller: StatusPoller::new(),
             pending_status_refresh: false,
@@ -252,9 +297,7 @@ impl HomeView {
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
-            list_width: load_config()
-                .ok()
-                .flatten()
+            list_width: user_config
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
             sidebar_mode: load_config()
@@ -266,32 +309,63 @@ impl HomeView {
             list_state: ListState::default(),
         };
 
+        view.flat_items = view.build_flat_items();
         view.update_selected();
         Ok(view)
     }
 
     pub fn reload(&mut self) -> anyhow::Result<()> {
-        let (mut instances, groups) = self.storage.load_with_groups()?;
+        use crate::session::list_profiles;
 
-        for inst in &mut instances {
-            if let Some(prev) = self.instance_map.get(&inst.id) {
-                inst.status = prev.status;
-                inst.last_error = prev.last_error.clone();
-                inst.last_error_check = prev.last_error_check;
-                inst.last_start_time = prev.last_start_time;
+        let mut all_instances = Vec::new();
+
+        // Re-discover profiles in "all" mode
+        if self.active_profile.is_none() {
+            let current_profiles = list_profiles()?;
+            for name in &current_profiles {
+                if !self.storages.contains_key(name) {
+                    self.storages.insert(name.clone(), Storage::new(name)?);
+                }
             }
-            inst.update_search_cache();
+            self.storages.retain(|k, _| current_profiles.contains(k));
         }
 
-        self.instances = instances;
+        for (profile_name, storage) in &self.storages {
+            let (mut instances, groups) = storage.load_with_groups()?;
+            for inst in &mut instances {
+                inst.source_profile = profile_name.clone();
+                if let Some(prev) = self.instance_map.get(&inst.id) {
+                    inst.status = prev.status;
+                    inst.last_error = prev.last_error.clone();
+                    inst.last_error_check = prev.last_error_check;
+                    inst.last_start_time = prev.last_start_time;
+                }
+            }
+            // Rebuild this profile's tree from disk, preserving any collapsed
+            // state that was toggled in-memory but not yet on disk
+            let mut new_tree = GroupTree::new_with_groups(&instances, &groups);
+            if let Some(old_tree) = self.group_trees.get(profile_name) {
+                for g in old_tree.get_all_groups() {
+                    if g.collapsed {
+                        new_tree.set_collapsed(&g.path, true);
+                    }
+                }
+            }
+            self.group_trees.insert(profile_name.clone(), new_tree);
+            all_instances.extend(instances);
+        }
+
+        // Remove trees for profiles that no longer exist
+        let storage_keys: Vec<String> = self.storages.keys().cloned().collect();
+        self.group_trees.retain(|k, _| storage_keys.contains(k));
+
+        self.instances = all_instances;
         self.instance_map = self
             .instances
             .iter()
             .map(|i| (i.id.clone(), i.clone()))
             .collect();
-        self.groups = groups;
-        self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
-        self.flat_items = flatten_tree(&self.group_tree, &self.instances);
+        self.flat_items = self.build_flat_items();
 
         // Prune stale collapsed session IDs
         self.collapsed_sessions
@@ -299,6 +373,13 @@ impl HomeView {
 
         if self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
             self.cursor = self.flat_items.len() - 1;
+        }
+
+        if self.search_active && !self.search_query.value().is_empty() {
+            self.update_search();
+        } else if !self.search_matches.is_empty() {
+            // Recalculate match indices without moving the cursor
+            self.refresh_search_matches();
         }
 
         self.update_selected();
@@ -321,50 +402,29 @@ impl HomeView {
         use crate::session::Status;
 
         if let Some(updates) = self.status_poller.try_recv_updates() {
-            let mut needs_persist = false;
-
             for update in updates {
-                // Apply container name changes to both collections
-                if let Some(ref new_name) = update.container_name {
-                    if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
-                        if let Some(ref mut sandbox) = inst.sandbox_info {
-                            sandbox.container_name = new_name.clone();
-                            needs_persist = true;
-                        }
-                    }
-                    if let Some(inst) = self.instance_map.get_mut(&update.id) {
-                        if let Some(ref mut sandbox) = inst.sandbox_info {
-                            sandbox.container_name = new_name.clone();
-                        }
-                    }
-                }
+                let old_status = self.get_instance(&update.id).map(|i| i.status);
 
-                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == update.id) {
-                    if inst.status != Status::Deleting {
-                        let old_status = inst.status;
-                        inst.status = update.status;
-                        inst.last_error = update.last_error.clone();
-                        if old_status != update.status {
-                            crate::sound::play_for_transition(
-                                old_status,
-                                update.status,
-                                &self.sound_config,
-                            );
+                let should_update = old_status.is_some_and(|s| {
+                    s != Status::Deleting
+                        && s != Status::Stopped
+                        && update.status != Status::Stopped
+                });
+
+                if should_update {
+                    let new_status = update.status;
+                    let new_error = update.last_error;
+                    self.mutate_instance(&update.id, |inst| {
+                        inst.status = new_status;
+                        inst.last_error = new_error;
+                    });
+
+                    if let Some(old) = old_status {
+                        if old != new_status {
+                            crate::sound::play_for_transition(old, new_status, &self.sound_config);
                         }
                     }
                 }
-                if let Some(inst) = self.instance_map.get_mut(&update.id) {
-                    if inst.status != Status::Deleting {
-                        inst.status = update.status;
-                        inst.last_error = update.last_error;
-                    }
-                }
-            }
-
-            if needs_persist {
-                let _ = self
-                    .storage
-                    .save_with_groups(&self.instances, &self.group_tree);
             }
 
             self.pending_status_refresh = false;
@@ -378,30 +438,19 @@ impl HomeView {
 
         if let Some(result) = self.deletion_poller.try_recv_result() {
             if result.success {
-                self.instances.retain(|i| i.id != result.session_id);
-                self.instance_map.remove(&result.session_id);
-                self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
+                self.remove_instance(&result.session_id);
+                self.rebuild_group_trees();
 
-                if let Err(e) = self
-                    .storage
-                    .save_with_groups(&self.instances, &self.group_tree)
-                {
+                if let Err(e) = self.save() {
                     tracing::error!("Failed to save after deletion: {}", e);
                 }
                 let _ = self.reload();
             } else {
-                if let Some(inst) = self
-                    .instances
-                    .iter_mut()
-                    .find(|i| i.id == result.session_id)
-                {
+                let error = result.error;
+                self.mutate_instance(&result.session_id, |inst| {
                     inst.status = Status::Error;
-                    inst.last_error = result.error.clone();
-                }
-                if let Some(inst) = self.instance_map.get_mut(&result.session_id) {
-                    inst.status = Status::Error;
-                    inst.last_error = result.error;
-                }
+                    inst.last_error = error;
+                });
             }
             return true;
         }
@@ -473,17 +522,30 @@ impl HomeView {
                 on_launch_hooks_ran,
                 ..
             } => {
-                let instance = *instance;
-                self.instances.push(instance.clone());
-                self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
-                if !instance.group_path.is_empty() {
-                    self.group_tree.create_group(&instance.group_path);
+                let mut instance = *instance;
+                let target_profile = self.creation_poller.last_profile().unwrap_or_else(|| {
+                    self.active_profile
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string())
+                });
+                instance.source_profile = target_profile.clone();
+
+                // Ensure target profile storage exists
+                if !self.storages.contains_key(&target_profile) {
+                    if let Ok(s) = Storage::new(&target_profile) {
+                        self.storages.insert(target_profile.clone(), s);
+                    }
                 }
 
-                if let Err(e) = self
-                    .storage
-                    .save_with_groups(&self.instances, &self.group_tree)
-                {
+                self.add_instance(instance.clone());
+                self.rebuild_group_trees();
+                if !instance.group_path.is_empty() {
+                    if let Some(tree) = self.group_trees.get_mut(&target_profile) {
+                        tree.create_group(&instance.group_path);
+                    }
+                }
+
+                if let Err(e) = self.save() {
                     tracing::error!("Failed to save after creation: {}", e);
                 }
 
@@ -516,17 +578,26 @@ impl HomeView {
         self.creation_poller.is_pending()
     }
 
-    /// Tick the dialog spinner animation if loading, and drain hook progress
-    pub fn tick_dialog(&mut self) {
+    /// Tick dialog animations/timers and drain hook progress.
+    /// Returns true when a redraw is needed.
+    pub fn tick_dialog(&mut self) -> bool {
+        let mut changed = false;
+
         if let Some(dialog) = &mut self.new_dialog {
+            if dialog.tick() {
+                changed = true;
+            }
+
             if dialog.is_loading() {
-                dialog.tick();
                 // Drain all pending hook progress messages
                 while let Some(progress) = self.creation_poller.try_recv_progress() {
                     dialog.push_hook_progress(progress);
+                    changed = true;
                 }
             }
         }
+
+        changed
     }
 
     pub fn has_dialog(&self) -> bool {
@@ -537,9 +608,11 @@ impl HomeView {
             || self.group_delete_options_dialog.is_some()
             || self.rename_dialog.is_some()
             || self.hook_trust_dialog.is_some()
+            || self.hooks_install_dialog.is_some()
             || self.welcome_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
+            || self.profile_picker_dialog.is_some()
             || self.settings_view.is_some()
             || self.diff_view.is_some()
     }
@@ -586,34 +659,234 @@ impl HomeView {
         self.changelog_dialog = Some(ChangelogDialog::new(from_version));
     }
 
+    pub fn instances(&self) -> &[Instance] {
+        &self.instances
+    }
+
     pub fn get_instance(&self, id: &str) -> Option<&Instance> {
         self.instance_map.get(id)
     }
 
-    pub fn available_tools(&self) -> AvailableTools {
-        self.available_tools.clone()
+    pub(super) fn build_flat_items(&self) -> Vec<Item> {
+        if let Some(profile) = &self.active_profile {
+            // Filtered to a single profile -- only include that profile's instances
+            let filtered: Vec<Instance> = self
+                .instances
+                .iter()
+                .filter(|i| i.source_profile == *profile)
+                .cloned()
+                .collect();
+            match self.group_trees.get(profile) {
+                Some(tree) => flatten_tree(tree, &filtered, self.sort_order),
+                None => Vec::new(),
+            }
+        } else if self.storages.len() <= 1 {
+            // All-profiles mode with only one profile -- skip the profile header
+            match self.group_trees.values().next() {
+                Some(tree) => flatten_tree(tree, &self.instances, self.sort_order),
+                None => Vec::new(),
+            }
+        } else {
+            flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order)
+        }
     }
 
-    pub(super) fn get_next_profile(&self) -> Option<String> {
-        use crate::session::list_profiles;
+    pub fn active_profile_display(&self) -> &str {
+        self.active_profile.as_deref().unwrap_or("all")
+    }
 
-        let profiles = list_profiles().ok()?;
-        if profiles.len() <= 1 {
-            return None;
+    /// Switch the active profile filter in-place without destroying the view.
+    /// Pass `None` for all-profiles mode, or `Some(name)` to filter to one profile.
+    pub fn switch_profile(&mut self, new_profile: Option<String>) -> anyhow::Result<()> {
+        self.active_profile = new_profile;
+        // Clear selection before reload so stale session/group refs don't linger
+        self.selected_session = None;
+        self.selected_group = None;
+        self.selected_group_profile = None;
+        self.reload()?;
+        self.refresh_from_config();
+        // Invalidate preview caches since the visible sessions changed
+        self.preview_cache = PreviewCache::default();
+        self.terminal_preview_cache = PreviewCache::default();
+        self.container_terminal_preview_cache = PreviewCache::default();
+        // Clear search since match indices are invalid with new flat_items
+        if self.search_active {
+            self.search_active = false;
+            self.search_query = Input::default();
+            self.search_matches.clear();
+            self.search_match_index = 0;
         }
-        let current = self.storage.profile();
-        let current_idx = profiles.iter().position(|p| p == current).unwrap_or(0);
-        let next_idx = (current_idx + 1) % profiles.len();
-        Some(profiles[next_idx].clone())
+        Ok(())
+    }
+
+    /// Show the profile picker dialog with fresh data from disk.
+    pub(super) fn show_profile_picker(&mut self) {
+        use crate::session::list_profiles;
+        use crate::tui::dialogs::{ProfileEntry, ProfilePickerDialog};
+
+        let current_profile = self
+            .active_profile
+            .clone()
+            .unwrap_or_else(|| "all".to_string());
+        let profiles = list_profiles().unwrap_or_else(|_| vec!["default".to_string()]);
+        let mut entries: Vec<ProfileEntry> = profiles
+            .iter()
+            .map(|name| {
+                let session_count = Storage::new(name)
+                    .and_then(|s| s.load())
+                    .map(|instances| instances.len())
+                    .unwrap_or(0);
+                ProfileEntry {
+                    name: name.clone(),
+                    session_count,
+                    is_active: self.active_profile.as_deref() == Some(name.as_str()),
+                }
+            })
+            .collect();
+
+        // In filtered mode, add "all" entry at top
+        if self.active_profile.is_some() {
+            let total: usize = entries.iter().map(|e| e.session_count).sum();
+            entries.insert(
+                0,
+                ProfileEntry {
+                    name: "all".to_string(),
+                    session_count: total,
+                    is_active: false,
+                },
+            );
+        }
+
+        self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
+    }
+
+    pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
+        self.mutate_instance(id, |inst| inst.status = status);
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        for (profile_name, storage) in &self.storages {
+            let profile_instances: Vec<Instance> = self
+                .instances
+                .iter()
+                .filter(|i| i.source_profile == *profile_name)
+                .cloned()
+                .collect();
+            // Each profile has its own GroupTree with correct collapsed state
+            let tree = self
+                .group_trees
+                .get(profile_name)
+                .cloned()
+                .unwrap_or_else(|| GroupTree::new_with_groups(&profile_instances, &[]));
+            storage.save_with_groups(&profile_instances, &tree)?;
+        }
+        Ok(())
+    }
+
+    /// Rebuild all per-profile GroupTrees from the current instances,
+    /// preserving each tree's collapsed state.
+    pub(super) fn rebuild_group_trees(&mut self) {
+        for (profile_name, tree) in &mut self.group_trees {
+            let existing_groups = tree.get_all_groups();
+            let profile_instances: Vec<Instance> = self
+                .instances
+                .iter()
+                .filter(|i| i.source_profile == *profile_name)
+                .cloned()
+                .collect();
+            *tree = GroupTree::new_with_groups(&profile_instances, &existing_groups);
+        }
+    }
+
+    /// Determine which profile the item at the given cursor position belongs to.
+    pub(super) fn profile_for_cursor(&self, cursor: usize) -> Option<String> {
+        if let Some(profile) = &self.active_profile {
+            return Some(profile.clone());
+        }
+        if let Some(item) = self.flat_items.get(cursor) {
+            match item {
+                crate::session::Item::Session { id, .. } => {
+                    return self
+                        .get_instance(id.as_str())
+                        .map(|i| i.source_profile.clone());
+                }
+                crate::session::Item::Group { profile, path, .. } => {
+                    if let Some(p) = profile {
+                        return Some(p.clone());
+                    }
+                    // Fallback for single-profile mode: find any instance in this group
+                    return self
+                        .instances
+                        .iter()
+                        .find(|i| {
+                            i.group_path == *path || i.group_path.starts_with(&format!("{}/", path))
+                        })
+                        .map(|i| i.source_profile.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Collect all groups from all per-profile GroupTrees.
+    pub(super) fn all_groups(&self) -> Vec<Group> {
+        self.group_trees
+            .values()
+            .flat_map(|t| t.get_all_groups())
+            .collect()
+    }
+
+    /// Check if any profile has groups, without collecting them all.
+    pub(super) fn has_any_groups(&self) -> bool {
+        self.group_trees
+            .values()
+            .any(|t| !t.get_all_groups().is_empty())
+    }
+
+    /// Centralized instance addition: adds to both the `instances` vec
+    /// and `instance_map` to keep both collections in sync.
+    pub(super) fn add_instance(&mut self, instance: Instance) {
+        self.instance_map
+            .insert(instance.id.clone(), instance.clone());
+        self.instances.push(instance);
+    }
+
+    /// Centralized instance removal: removes from both the `instances` vec
+    /// and `instance_map` to keep both collections in sync.
+    pub(super) fn remove_instance(&mut self, id: &str) {
+        self.instances.retain(|i| i.id != id);
+        self.instance_map.remove(id);
+    }
+
+    /// Centralized instance mutation: applies `f` once to the `instances` vec
+    /// entry, then clones the result into `instance_map`. This guarantees both
+    /// collections stay in sync even for non-idempotent closures.
+    pub(super) fn mutate_instance(&mut self, id: &str, f: impl FnOnce(&mut Instance)) {
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            f(inst);
+            self.instance_map.insert(id.to_string(), inst.clone());
+        }
+    }
+
+    /// Like `mutate_instance`, but for fallible operations. Clones the entry,
+    /// applies `f` to the clone, and writes back to both collections only on
+    /// success -- neither collection is modified on error.
+    pub(super) fn try_mutate_instance(
+        &mut self,
+        id: &str,
+        f: impl FnOnce(&mut Instance) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            let mut updated = inst.clone();
+            f(&mut updated)?;
+            *inst = updated.clone();
+            self.instance_map.insert(id.to_string(), updated);
+        }
+        Ok(())
     }
 
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.last_error = error.clone();
-        }
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.last_error = error;
-        }
+        self.mutate_instance(id, |inst| inst.last_error = error);
     }
 
     pub fn start_terminal_for_instance_with_size(
@@ -621,14 +894,8 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_terminal_with_size(size)?;
-        }
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.start_terminal_with_size(size)?;
-        }
-        self.storage
-            .save_with_groups(&self.instances, &self.group_tree)?;
+        self.try_mutate_instance(id, |inst| inst.start_terminal_with_size(size))?;
+        self.save()?;
         Ok(())
     }
 
@@ -655,7 +922,8 @@ impl HomeView {
     /// Refresh all config-dependent state from the current profile's config.
     /// Call this after settings are saved to pick up any changes.
     pub fn refresh_from_config(&mut self) {
-        if let Ok(config) = resolve_config(self.storage.profile()) {
+        let profile = self.active_profile.as_deref().unwrap_or("default");
+        if let Ok(config) = resolve_config(profile) {
             // Refresh default terminal mode for sandboxed sessions
             self.default_terminal_mode = match config.sandbox.default_terminal_mode {
                 DefaultTerminalMode::Host => TerminalMode::Host,
@@ -682,13 +950,6 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
-        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_container_terminal_with_size(size)?;
-        }
-        if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.start_container_terminal_with_size(size)?;
-        }
-        // Don't save terminal info for container terminals - it's ephemeral
-        Ok(())
+        self.try_mutate_instance(id, |inst| inst.start_container_terminal_with_size(size))
     }
 }

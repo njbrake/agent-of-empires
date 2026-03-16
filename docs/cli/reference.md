@@ -17,6 +17,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session attach`↴](#aoe-session-attach)
 * [`aoe session show`↴](#aoe-session-show)
 * [`aoe session rename`↴](#aoe-session-rename)
+* [`aoe session capture`↴](#aoe-session-capture)
 * [`aoe session current`↴](#aoe-session-current)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
@@ -27,6 +28,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe profile list`↴](#aoe-profile-list)
 * [`aoe profile create`↴](#aoe-profile-create)
 * [`aoe profile delete`↴](#aoe-profile-delete)
+* [`aoe profile rename`↴](#aoe-profile-rename)
 * [`aoe profile default`↴](#aoe-profile-default)
 * [`aoe worktree`↴](#aoe-worktree)
 * [`aoe worktree list`↴](#aoe-worktree-list)
@@ -87,14 +89,17 @@ Add a new session
 
 * `-t`, `--title <TITLE>` — Session title (defaults to folder name)
 * `-g`, `--group <GROUP>` — Group path (defaults to parent folder)
-* `-c`, `--cmd <COMMAND>` — Command to run (e.g., 'claude', 'opencode', 'vibe', 'codex', 'gemini')
+* `-c`, `--cmd <COMMAND>` — Command to run (e.g., 'claude' or any other supported agent)
 * `-P`, `--parent <PARENT>` — Parent session (creates sub-session, inherits group)
 * `-l`, `--launch` — Launch the session immediately after creating
 * `-w`, `--worktree <WORKTREE_BRANCH>` — Create session in a git worktree for the specified branch
 * `-b`, `--new-branch` — Create a new branch (use with --worktree)
 * `-s`, `--sandbox` — Run session in Docker sandbox
 * `--sandbox-image <SANDBOX_IMAGE>` — Custom Docker image for sandbox (implies --sandbox)
+* `-y`, `--yolo` — Enable YOLO mode (skip permission prompts)
 * `--trust-hooks` — Automatically trust repository hooks without prompting
+* `--extra-args <EXTRA_ARGS>` — Extra arguments to append after the agent binary
+* `--cmd-override <CMD_OVERRIDE>` — Override the agent binary command
 
 
 
@@ -138,6 +143,7 @@ Remove a session
 ###### **Options:**
 
 * `--delete-worktree` — Delete worktree directory (default: keep worktree)
+* `--force` — Force worktree removal even with untracked/modified files
 * `--keep-container` — Keep container instead of deleting it (default: delete per config)
 
 
@@ -170,6 +176,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `attach` — Attach to session interactively
 * `show` — Show session details
 * `rename` — Rename a session
+* `capture` — Capture tmux pane output
 * `current` — Auto-detect current session
 
 
@@ -252,6 +259,26 @@ Rename a session
 
 * `-t`, `--title <TITLE>` — New title for the session
 * `-g`, `--group <GROUP>` — New group for the session (empty string to ungroup)
+
+
+
+## `aoe session capture`
+
+Capture tmux pane output
+
+**Usage:** `aoe session capture [OPTIONS] [IDENTIFIER]`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title (auto-detects in tmux if omitted)
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — Number of lines to capture
+
+  Default value: `50`
+* `--strip-ansi` — Strip ANSI escape codes
+* `--json` — Output as JSON
 
 
 
@@ -351,6 +378,7 @@ Manage profiles (separate workspaces)
 * `list` — List all profiles
 * `create` — Create a new profile
 * `delete` — Delete a profile
+* `rename` — Rename a profile
 * `default` — Show or set default profile
 
 
@@ -384,6 +412,19 @@ Delete a profile
 ###### **Arguments:**
 
 * `<NAME>` — Profile name
+
+
+
+## `aoe profile rename`
+
+Rename a profile
+
+**Usage:** `aoe profile rename <OLD_NAME> <NEW_NAME>`
+
+###### **Arguments:**
+
+* `<OLD_NAME>` — Current profile name
+* `<NEW_NAME>` — New profile name
 
 
 

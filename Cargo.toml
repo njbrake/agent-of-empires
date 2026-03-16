@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "0.12.4"
+version = "0.16.1"
 edition = "2021"
 rust-version = "1.74"
 authors = ["▨ kokorro Contributors"]
@@ -52,7 +52,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.11", features = ["v4"] }
 
 # Random
-rand = "0.9"
+rand = "0.10"
 
 # Directory utilities
 dirs = "6.0"

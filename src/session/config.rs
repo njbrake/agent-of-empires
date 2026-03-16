@@ -47,6 +47,46 @@ pub struct Config {
     pub app_state: AppStateConfig,
 }
 
+/// Session list sort order
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    #[default]
+    Newest,
+    Oldest,
+    AZ,
+    ZA,
+}
+
+impl SortOrder {
+    pub fn cycle(self) -> Self {
+        match self {
+            SortOrder::Newest => SortOrder::Oldest,
+            SortOrder::Oldest => SortOrder::AZ,
+            SortOrder::AZ => SortOrder::ZA,
+            SortOrder::ZA => SortOrder::Newest,
+        }
+    }
+
+    pub fn cycle_reverse(self) -> Self {
+        match self {
+            SortOrder::Newest => SortOrder::ZA,
+            SortOrder::Oldest => SortOrder::Newest,
+            SortOrder::AZ => SortOrder::Oldest,
+            SortOrder::ZA => SortOrder::AZ,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortOrder::Newest => "Newest",
+            SortOrder::Oldest => "Oldest",
+            SortOrder::AZ => "A-Z",
+            SortOrder::ZA => "Z-A",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppStateConfig {
     #[serde(default)]
@@ -66,6 +106,12 @@ pub struct AppStateConfig {
 
     #[serde(default)]
     pub has_seen_custom_instruction_warning: bool,
+
+    #[serde(default)]
+    pub has_acknowledged_agent_hooks: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_order: Option<SortOrder>,
 }
 
 /// Session-related configuration defaults
@@ -79,6 +125,14 @@ pub struct SessionConfig {
     /// Enable YOLO mode by default for new sessions (skip permission prompts)
     #[serde(default)]
     pub yolo_mode_default: bool,
+
+    /// Per-agent extra arguments appended after the binary (e.g., opencode = "--port 8080")
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_extra_args: HashMap<String, String>,
+
+    /// Per-agent command override replacing the binary entirely (e.g., claude = "happy cli claude")
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_command_override: HashMap<String, String>,
 }
 
 /// Diff view configuration
@@ -221,12 +275,6 @@ pub struct SandboxConfig {
     #[serde(default = "default_sandbox_environment")]
     pub environment: Vec<String>,
 
-    /// Environment variables with explicit values to inject into sandbox containers.
-    /// Unlike `environment` (which passes through host values), these are stored in config
-    /// and injected directly. Useful for sandbox-specific credentials like GH_TOKEN.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub environment_values: HashMap<String, String>,
-
     #[serde(default = "default_true")]
     pub auto_cleanup: bool,
 
@@ -235,6 +283,9 @@ pub struct SandboxConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_mappings: Vec<String>,
 
     /// Default terminal mode for sandboxed sessions (host or container)
     #[serde(default)]
@@ -279,10 +330,10 @@ impl Default for SandboxConfig {
             default_image: default_sandbox_image(),
             extra_volumes: Vec::new(),
             environment: default_sandbox_environment(),
-            environment_values: HashMap::new(),
             auto_cleanup: true,
             cpu_limit: None,
             memory_limit: None,
+            port_mappings: Vec::new(),
             default_terminal_mode: DefaultTerminalMode::default(),
             volume_ignores: Vec::new(),
             mount_ssh: false,
@@ -298,12 +349,10 @@ fn default_sandbox_image() -> String {
 }
 
 fn default_sandbox_environment() -> Vec<String> {
-    vec![
-        "TERM".to_string(),
-        "COLORTERM".to_string(),
-        "FORCE_COLOR".to_string(),
-        "NO_COLOR".to_string(),
-    ]
+    crate::session::environment::DEFAULT_TERMINAL_ENV_VARS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Default terminal mode for sandboxed sessions
@@ -424,6 +473,13 @@ pub fn save_config(config: &Config) -> Result<()> {
     let content = toml::to_string_pretty(config)?;
     fs::write(&path, content)?;
     Ok(())
+}
+
+/// Load the user's default profile name, falling back to "default" on error.
+pub fn resolve_default_profile() -> String {
+    Config::load()
+        .map(|c| c.default_profile)
+        .unwrap_or_else(|_| "default".to_string())
 }
 
 pub fn get_update_settings() -> UpdatesConfig {
@@ -578,6 +634,7 @@ mod tests {
             auto_cleanup = false
             cpu_limit = "2"
             memory_limit = "4g"
+            port_mappings = ["3000:3000", "5432:5432"]
         "#;
         let sb: SandboxConfig = toml::from_str(toml).unwrap();
         assert!(sb.enabled_by_default);
@@ -587,6 +644,10 @@ mod tests {
         assert!(!sb.auto_cleanup);
         assert_eq!(sb.cpu_limit, Some("2".to_string()));
         assert_eq!(sb.memory_limit, Some("4g".to_string()));
+        assert_eq!(
+            sb.port_mappings,
+            vec!["3000:3000".to_string(), "5432:5432".to_string()]
+        );
     }
 
     #[test]

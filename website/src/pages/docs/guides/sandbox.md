@@ -6,7 +6,7 @@ description: Run AI coding agents in isolated Docker containers with ▨ kokorro
 
 ## Overview
 
-Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI) inside isolated Docker containers while maintaining access to your project files and credentials.
+Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi) inside isolated Docker containers while maintaining access to your project files and credentials.
 
 **Key Features:**
 - One container per session
@@ -68,8 +68,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `cpu_limit` | (none) | CPU limit (e.g., "4") |
 | `memory_limit` | (none) | Memory limit (e.g., "8g") |
-| `environment` | `[]` | Env var names to pass through from host |
-| `environment_values` | `{}` | Env vars with explicit values to inject (see below) |
+| `environment` | `[]` | Env vars for containers (bare KEY or KEY=VALUE, see below) |
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
 | `extra_volumes` | `[]` | Additional volume mounts |
 | `mount_ssh` | `false` | Mount `~/.ssh/` read-only into containers |
@@ -88,11 +87,11 @@ environment = ["ANTHROPIC_API_KEY"]
 
 ### Shared Agent Config Directories
 
-AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents: Claude Code, OpenCode, Codex, Gemini, and Vibe.
+AOE shares your host agent credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported agents.
 
 Rather than bind-mounting your actual host config directories (which would let container writes modify your host files), AOE creates a **shared sandbox directory** per agent:
 
-1. For each agent whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`, `~/.vibe/`), AOE syncs credential files into a shared sandbox directory.
+1. For each agent whose host config directory exists, AOE syncs credential files into a shared sandbox directory.
 2. The sandbox directory is mounted read-write into **all** containers that use that agent.
 3. Containers can read credentials and write runtime state freely without affecting your host config.
 4. In-container changes (e.g. permission approvals, settings tweaks) persist across sessions since all containers share the same directory.
@@ -113,17 +112,9 @@ If an agent's config directory doesn't exist on the host (e.g. you haven't insta
 
 **Credential refresh:** Host credentials are re-synced every time a session starts (not just on first creation). If you re-authenticate on the host or update credentials, the next session start picks up the changes. Container-specific state (permission approvals, runtime config) is not overwritten during refresh.
 
-**Sandbox directory location:** Each agent's shared sandbox directory lives inside that agent's own config directory:
+**Sandbox directory location:** Each agent's shared sandbox directory lives inside that agent's own config directory as a `sandbox/` subdirectory (e.g. `~/.claude/sandbox/`). All containers share this directory.
 
-```
-~/.claude/sandbox/                    # Claude Code (shared by all containers)
-~/.codex/sandbox/                     # Codex (shared by all containers)
-~/.gemini/sandbox/                    # Gemini (shared by all containers)
-~/.local/share/opencode/sandbox/      # OpenCode (shared by all containers)
-~/.vibe/sandbox/                      # Vibe (shared by all containers)
-```
-
-Deleting an agent's config directory (e.g. `rm -rf ~/.codex/`) removes everything related to that agent, including the sandbox directory. To reset just the sandbox state for an agent, delete its `sandbox/` subdirectory (e.g. `rm -rf ~/.claude/sandbox/`) -- it will be re-created on the next session start.
+Deleting an agent's config directory removes everything related to that agent, including the sandbox directory. To reset just the sandbox state for an agent, delete its `sandbox/` subdirectory -- it will be re-created on the next session start.
 
 **Upgrading from named volumes:** Older versions of AOE stored agent auth in named Docker volumes (e.g. `aoe-claude-auth`). On upgrade, AOE automatically migrates data from these volumes into the sandbox directories. The old volumes are intentionally **not** deleted -- you can remove them manually once you've confirmed everything works:
 
@@ -141,7 +132,7 @@ Example: `aoe-sandbox-a1b2c3d4`
 
 1. **Session Creation:** When you add a sandboxed session, aoe records the sandbox configuration
 2. **Container Start:** When you start the session, aoe creates/starts the Docker container with appropriate volume mounts
-3. **tmux + docker exec:** Host tmux runs `docker exec -it <container> <tool>` (claude, opencode, vibe, codex, or gemini)
+3. **tmux + docker exec:** Host tmux runs `docker exec -it <container> <tool>` to launch the selected agent
 4. **Cleanup:** When you remove the session, the container is automatically deleted
 
 
@@ -150,31 +141,22 @@ Example: `aoe-sandbox-a1b2c3d4`
 These terminal-related variables are **always** passed through for proper UI/theming:
 - `TERM`, `COLORTERM`, `FORCE_COLOR`, `NO_COLOR`
 
-Pass additional variables (like API keys) through containers by adding them to config:
+Pass additional variables through containers by adding them to the `environment` list. Each entry can be:
+
+- **`KEY`** (bare name) -- passes the host env var value into the container
+- **`KEY=VALUE`** -- sets an explicit value
 
 ```toml
 [sandbox]
-environment = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
+environment = [
+    "ANTHROPIC_API_KEY",                # pass through from host
+    "OPENAI_API_KEY",                   # pass through from host
+    "GH_TOKEN=$AOE_GH_TOKEN",          # read AOE_GH_TOKEN from host, inject as GH_TOKEN
+    "CUSTOM_API_KEY=sk-sandbox-key",    # literal value
+]
 ```
 
-These variables are read from your host environment and passed to containers (in addition to the terminal defaults above).
-
-### Sandbox-Specific Values (`environment_values`)
-
-Use `environment_values` to inject env vars with values that AOE manages directly, independent of your host environment. This is useful for giving sandboxes credentials that differ from (or don't exist on) the host:
-
-```toml
-[sandbox.environment_values]
-GH_TOKEN = "ghp_sandbox_scoped_token"
-CUSTOM_API_KEY = "sk-sandbox-only-key"
-```
-
-Values starting with `$` are read from a host env var instead of being used literally. This lets you store the actual secret in your shell profile rather than in the AOE config file:
-
-```toml
-[sandbox.environment_values]
-GH_TOKEN = "$AOE_GH_TOKEN"   # reads AOE_GH_TOKEN from host, injects as GH_TOKEN
-```
+For `KEY=VALUE` entries, values starting with `$` read from a host env var. This lets you store secrets in your shell profile rather than in the AOE config file:
 
 ```bash
 # In your .bashrc / .zshrc
@@ -191,7 +173,7 @@ AOE provides two official sandbox images:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, ripgrep, fzf |
+| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, git, ripgrep, fzf |
 | `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
 
 ### Dev Sandbox Tools
@@ -216,7 +198,7 @@ default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
 
 ## Custom Docker Images
 
-The default sandbox image includes Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
+The default sandbox image includes all supported agents, git, and basic development tools. For projects requiring additional dependencies beyond what the dev sandbox provides, you can extend either base image.
 
 ### Step 1: Create a Dockerfile
 

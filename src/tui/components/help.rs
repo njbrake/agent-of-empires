@@ -3,10 +3,11 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
+use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 33;
+const DIALOG_HEIGHT: u16 = 38;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -35,6 +36,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 ("Enter", "Attach to session"),
                 ("n", "New session"),
+                ("x", "Stop session"),
                 ("d", "Delete session/group"),
                 ("r", "Rename session"),
             ],
@@ -47,14 +49,17 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("c", "Toggle container/host (sandbox)"),
                 ("D", "Diff view (git changes)"),
                 ("H/L", "Resize list panel"),
+                ("o", "Cycle sort forward"),
+                ("Ctrl+o", "Cycle sort backward"),
             ],
         ),
         (
             "Other",
             vec![
                 ("/", "Search"),
+                ("n/N", "Next/prev match"),
                 ("s", "Settings"),
-                ("P", "Next profile"),
+                ("P", "Profiles"),
                 ("?", "Toggle help"),
                 ("q", "Quit"),
             ],
@@ -65,9 +70,15 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
 #[cfg(test)]
 fn content_line_count() -> usize {
     let mut count = 0;
-    for (_, keys) in shortcuts() {
+    for (section, keys) in shortcuts() {
         count += 1; // section header
         count += keys.len(); // shortcut lines
+
+        // Add extra line for sort label after Views section
+        if section == "Views" {
+            count += 1;
+        }
+
         count += 1; // empty line after section
     }
     count
@@ -76,7 +87,7 @@ fn content_line_count() -> usize {
 pub struct HelpOverlay;
 
 impl HelpOverlay {
-    pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, sort_order: SortOrder) {
         let x = area.x + (area.width.saturating_sub(DIALOG_WIDTH)) / 2;
         let y = area.y + (area.height.saturating_sub(DIALOG_HEIGHT)) / 2;
 
@@ -104,6 +115,7 @@ impl HelpOverlay {
         frame.render_widget(block, dialog_area);
 
         let mut lines: Vec<Line> = Vec::new();
+        let sort_label = format!("(current sort: {})", sort_order.label());
 
         for (section, keys) in shortcuts() {
             lines.push(Line::from(Span::styled(
@@ -116,6 +128,15 @@ impl HelpOverlay {
                     Span::styled(desc, Style::default().fg(theme.text)),
                 ]));
             }
+
+            // Add sort label after "Views" section
+            if section == "Views" {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:10}", ""), Style::default().fg(theme.waiting)),
+                    Span::styled(sort_label.as_str(), Style::default().fg(theme.text)),
+                ]));
+            }
+
             lines.push(Line::from(""));
         }
 

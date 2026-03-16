@@ -7,7 +7,7 @@ mod render;
 use tui_input::Input;
 
 use crate::session::{
-    load_profile_config, load_repo_config, merge_configs, profile_to_repo_config,
+    list_profiles, load_profile_config, load_repo_config, merge_configs, profile_to_repo_config,
     repo_config_to_profile, save_config, save_profile_config, save_repo_config, Config,
     ProfileConfig, RepoConfig,
 };
@@ -43,8 +43,11 @@ pub struct ListEditState {
 
 /// The settings view state
 pub struct SettingsView {
-    /// Current profile name
+    /// Current profile name being edited
     pub(super) profile: String,
+
+    /// All available profile names (sorted)
+    pub(super) available_profiles: Vec<String>,
 
     /// Project path for repo-level settings (None if no session selected)
     pub(super) project_path: Option<String>,
@@ -100,6 +103,9 @@ pub struct SettingsView {
     /// Whether there are unsaved changes
     pub(super) has_changes: bool,
 
+    /// Whether the help overlay is shown
+    pub(super) show_help: bool,
+
     /// Error message to display
     pub(super) error_message: Option<String>,
 
@@ -122,7 +128,14 @@ impl SettingsView {
             .map(repo_config_to_profile)
             .unwrap_or_default();
 
+        let mut available_profiles = list_profiles().unwrap_or_default();
+        if !available_profiles.contains(&profile.to_string()) {
+            available_profiles.push(profile.to_string());
+            available_profiles.sort();
+        }
+
         let categories = vec![
+            SettingsCategory::Theme,
             SettingsCategory::Session,
             SettingsCategory::Hooks,
             SettingsCategory::Sandbox,
@@ -137,6 +150,7 @@ impl SettingsView {
 
         let mut view = Self {
             profile: profile.to_string(),
+            available_profiles,
             project_path,
             repo_config,
             repo_as_profile,
@@ -155,6 +169,7 @@ impl SettingsView {
             fields_scroll_offset: 0,
             fields_viewport_height: 0,
             has_changes: false,
+            show_help: false,
             error_message: None,
             success_message: None,
         };
@@ -189,6 +204,20 @@ impl SettingsView {
             self.selected_field = 0;
         }
         self.fields_scroll_offset = 0;
+    }
+
+    /// Switch to a different profile, reloading its config from disk
+    pub(super) fn switch_profile(&mut self, new_profile: &str) -> anyhow::Result<()> {
+        self.profile = new_profile.to_string();
+        self.profile_config = load_profile_config(new_profile)?;
+        self.resolved_base = merge_configs(self.global_config.clone(), &self.profile_config);
+        self.repo_as_profile = self
+            .repo_config
+            .as_ref()
+            .map(repo_config_to_profile)
+            .unwrap_or_default();
+        self.rebuild_fields();
+        Ok(())
     }
 
     /// Ensure the selected field is visible within the given viewport height.
@@ -264,6 +293,8 @@ impl SettingsView {
         match self.scope {
             SettingsScope::Global => {
                 save_config(&self.global_config)?;
+                self.resolved_base =
+                    merge_configs(self.global_config.clone(), &self.profile_config);
             }
             SettingsScope::Profile => {
                 save_profile_config(&self.profile, &self.profile_config)?;

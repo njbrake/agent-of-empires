@@ -1,8 +1,11 @@
 //! Group tree management
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
+use super::config::SortOrder;
 use super::Instance;
 
 /// Returns the parent of a group path (everything before the last `/`),
@@ -42,6 +45,8 @@ impl Group {
 pub struct GroupTree {
     roots: Vec<Group>,
     groups_by_path: HashMap<String, Group>,
+    /// Tracks the first-seen insertion order of group paths (used as a stable base for other sorts).
+    insertion_order: Vec<String>,
 }
 
 impl GroupTree {
@@ -49,12 +54,14 @@ impl GroupTree {
         let mut tree = Self {
             roots: Vec::new(),
             groups_by_path: HashMap::new(),
+            insertion_order: Vec::new(),
         };
 
-        // Add existing groups
+        // Add existing groups in the order they appear on disk (preserves prior save order)
         for group in existing_groups {
             tree.groups_by_path
                 .insert(group.path.clone(), group.clone());
+            tree.insertion_order.push(group.path.clone());
         }
 
         // Ensure all instance groups exist
@@ -93,37 +100,37 @@ impl GroupTree {
             if !self.groups_by_path.contains_key(&current_path) {
                 let group = Group::new(part, &current_path);
                 self.groups_by_path.insert(current_path.clone(), group);
+                self.insertion_order.push(current_path.clone());
                 created.push(current_path.clone());
             }
         }
+
         created
     }
 
-    /// Normalize sort_orders so siblings have contiguous values.
-    /// Uses (sort_order, name) as tiebreaker so the first load after upgrade
-    /// from all-zero preserves alphabetical order.
+    /// Assign sequential sort_order values to sibling groups that all have
+    /// sort_order 0 (e.g. on first creation or upgrade from older format).
+    /// Groups that already have non-zero sort_orders are left untouched.
     fn initialize_sort_orders(&mut self) {
-        // Collect all paths grouped by parent
-        let mut by_parent: HashMap<String, Vec<String>> = HashMap::new();
-        for path in self.groups_by_path.keys() {
-            by_parent
-                .entry(parent_path(path))
-                .or_default()
-                .push(path.clone());
+        // Collect groups by parent path
+        let mut by_parent: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for path in &self.insertion_order {
+            let parent = parent_path(path);
+            by_parent.entry(parent).or_default().push(path.clone());
         }
 
-        // For each parent, sort siblings by (sort_order, name) and assign contiguous values
-        for (_parent, mut siblings) in by_parent {
-            siblings.sort_by(|a, b| {
-                let ga = &self.groups_by_path[a];
-                let gb = &self.groups_by_path[b];
-                ga.sort_order
-                    .cmp(&gb.sort_order)
-                    .then(ga.name.cmp(&gb.name))
+        for siblings in by_parent.values() {
+            let all_zero = siblings.iter().all(|p| {
+                self.groups_by_path
+                    .get(p)
+                    .map_or(true, |g| g.sort_order == 0)
             });
-            for (i, path) in siblings.iter().enumerate() {
-                if let Some(g) = self.groups_by_path.get_mut(path) {
-                    g.sort_order = i as u32;
+            if all_zero && siblings.len() > 1 {
+                for (i, path) in siblings.iter().enumerate() {
+                    if let Some(g) = self.groups_by_path.get_mut(path) {
+                        g.sort_order = i as u32;
+                    }
                 }
             }
         }
@@ -132,17 +139,20 @@ impl GroupTree {
     fn rebuild_tree(&mut self) {
         self.roots.clear();
 
-        // Find root groups (no '/' in path)
-        let mut root_groups: Vec<Group> = self
-            .groups_by_path
-            .values()
-            .filter(|g| !g.path.contains('/'))
+        let root_paths: Vec<String> = self
+            .insertion_order
+            .iter()
+            .filter(|p| self.groups_by_path.contains_key(*p) && !p.contains('/'))
             .cloned()
+            .collect();
+
+        let mut root_groups: Vec<Group> = root_paths
+            .iter()
+            .filter_map(|p| self.groups_by_path.get(p).cloned())
             .collect();
 
         root_groups.sort_by_key(|g| g.sort_order);
 
-        // Build children recursively
         for root in &mut root_groups {
             self.build_children(root);
         }
@@ -153,11 +163,20 @@ impl GroupTree {
     fn build_children(&self, parent: &mut Group) {
         let prefix = format!("{}/", parent.path);
 
-        let mut children: Vec<Group> = self
-            .groups_by_path
-            .values()
-            .filter(|g| g.path.starts_with(&prefix) && !g.path[prefix.len()..].contains('/'))
+        let child_paths: Vec<String> = self
+            .insertion_order
+            .iter()
+            .filter(|p| {
+                self.groups_by_path.contains_key(*p)
+                    && p.starts_with(&prefix)
+                    && !p[prefix.len()..].contains('/')
+            })
             .cloned()
+            .collect();
+
+        let mut children: Vec<Group> = child_paths
+            .iter()
+            .filter_map(|p| self.groups_by_path.get(p).cloned())
             .collect();
 
         children.sort_by_key(|g| g.sort_order);
@@ -197,9 +216,10 @@ impl GroupTree {
             .cloned()
             .collect();
 
-        for p in to_remove {
-            self.groups_by_path.remove(&p);
+        for p in &to_remove {
+            self.groups_by_path.remove(p);
         }
+        self.insertion_order.retain(|p| !to_remove.contains(p));
 
         self.rebuild_tree();
     }
@@ -209,9 +229,11 @@ impl GroupTree {
     }
 
     pub fn get_all_groups(&self) -> Vec<Group> {
-        let mut groups: Vec<Group> = self.groups_by_path.values().cloned().collect();
-        groups.sort_by(|a, b| a.path.cmp(&b.path));
-        groups
+        // Return in insertion order so groups.json preserves creation order
+        self.insertion_order
+            .iter()
+            .filter_map(|p| self.groups_by_path.get(p).cloned())
+            .collect()
     }
 
     pub fn get_roots(&self) -> &[Group] {
@@ -258,6 +280,15 @@ impl GroupTree {
             self.rebuild_tree();
         }
     }
+
+    pub fn set_collapsed(&mut self, path: &str, collapsed: bool) {
+        if let Some(group) = self.groups_by_path.get_mut(path) {
+            if group.collapsed != collapsed {
+                group.collapsed = collapsed;
+                self.rebuild_tree();
+            }
+        }
+    }
 }
 
 /// Item represents either a group or an instance in the flattened tree view
@@ -269,6 +300,8 @@ pub enum Item {
         depth: usize,
         collapsed: bool,
         session_count: usize,
+        /// Which profile this group belongs to (set in all-profiles mode)
+        profile: Option<String>,
     },
     Session {
         id: String,
@@ -285,14 +318,128 @@ impl Item {
     }
 }
 
-pub fn flatten_tree(group_tree: &GroupTree, instances: &[Instance]) -> Vec<Item> {
+fn sort_by_name<T, F>(items: &mut [T], sort_order: SortOrder, key: F)
+where
+    F: Fn(&T) -> &str,
+{
+    match sort_order {
+        SortOrder::AZ => items.sort_by_key(|a| key(a).to_lowercase()),
+        SortOrder::ZA => items.sort_by_key(|b| std::cmp::Reverse(key(b).to_lowercase())),
+        _ => {}
+    }
+}
+
+/// Get the most recent created_at among all sessions (direct and nested) in a group.
+/// Returns DateTime::MIN_UTC if the group has no sessions.
+fn max_created_at_in_group(path: &str, instances: &[Instance]) -> DateTime<Utc> {
+    let prefix = format!("{}/", path);
+    instances
+        .iter()
+        .filter(|i| i.group_path == path || i.group_path.starts_with(&prefix))
+        .map(|i| i.created_at)
+        .max()
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
+
+/// Get the oldest created_at among all sessions (direct and nested) in a group.
+/// Returns DateTime::MAX_UTC if the group has no sessions (so empty groups sink to the bottom).
+fn min_created_at_in_group(path: &str, instances: &[Instance]) -> DateTime<Utc> {
+    let prefix = format!("{}/", path);
+    instances
+        .iter()
+        .filter(|i| i.group_path == path || i.group_path.starts_with(&prefix))
+        .map(|i| i.created_at)
+        .min()
+        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+}
+
+/// Flatten instances from multiple profiles into a single flat list.
+/// Merges all profiles' sessions and groups at depth 0 (no profile headers).
+/// Uses per-profile GroupTrees so collapsed state is isolated per profile.
+pub fn flatten_tree_all_profiles(
+    instances: &[Instance],
+    group_trees: &std::collections::HashMap<String, GroupTree>,
+    sort_order: SortOrder,
+) -> Vec<Item> {
     let mut items = Vec::new();
 
-    // Add ungrouped sessions first
-    let ungrouped: Vec<&Instance> = instances
+    // Collect all ungrouped sessions across all profiles
+    let mut ungrouped: Vec<&Instance> = instances
         .iter()
         .filter(|i| i.group_path.is_empty())
         .collect();
+
+    match sort_order {
+        SortOrder::Oldest => ungrouped.sort_by_key(|i| i.created_at),
+        SortOrder::Newest => ungrouped.sort_by_key(|i| Reverse(i.created_at)),
+        _ => sort_by_name(&mut ungrouped, sort_order, |i| &i.title),
+    }
+
+    for inst in ungrouped {
+        items.push(Item::Session {
+            id: inst.id.clone(),
+            depth: 0,
+        });
+    }
+
+    // Collect and flatten groups from all profiles at depth 0
+    let mut all_roots: Vec<(&str, &Group, Vec<Instance>)> = Vec::new();
+    for (profile_name, tree) in group_trees {
+        let profile_instances: Vec<Instance> = instances
+            .iter()
+            .filter(|i| i.source_profile == *profile_name)
+            .cloned()
+            .collect();
+        for root in tree.get_roots() {
+            all_roots.push((profile_name, root, profile_instances.clone()));
+        }
+    }
+
+    match sort_order {
+        SortOrder::Oldest => {
+            all_roots.sort_by_key(|(_, g, insts)| min_created_at_in_group(&g.path, insts));
+        }
+        SortOrder::Newest => {
+            all_roots.sort_by_key(|(_, g, insts)| Reverse(max_created_at_in_group(&g.path, insts)));
+        }
+        _ => all_roots.sort_by_key(|(_, g, _)| g.name.to_lowercase()),
+    }
+    if matches!(sort_order, SortOrder::ZA) {
+        all_roots.reverse();
+    }
+
+    for (profile_name, root, profile_instances) in &all_roots {
+        flatten_group(
+            root,
+            profile_instances,
+            &mut items,
+            0,
+            sort_order,
+            Some(profile_name),
+        );
+    }
+
+    items
+}
+
+pub fn flatten_tree(
+    group_tree: &GroupTree,
+    instances: &[Instance],
+    sort_order: SortOrder,
+) -> Vec<Item> {
+    let mut items = Vec::new();
+
+    // Add ungrouped sessions first (always at top, sorted if needed)
+    let mut ungrouped: Vec<&Instance> = instances
+        .iter()
+        .filter(|i| i.group_path.is_empty())
+        .collect();
+
+    match sort_order {
+        SortOrder::Oldest => ungrouped.sort_by_key(|i| i.created_at),
+        SortOrder::Newest => ungrouped.sort_by_key(|i| Reverse(i.created_at)),
+        _ => sort_by_name(&mut ungrouped, sort_order, |i| &i.title),
+    }
 
     for inst in ungrouped {
         items.push(Item::Session {
@@ -302,14 +449,33 @@ pub fn flatten_tree(group_tree: &GroupTree, instances: &[Instance]) -> Vec<Item>
     }
 
     // Add groups and their sessions
-    for root in group_tree.get_roots() {
-        flatten_group(root, instances, &mut items, 0);
+    let roots = group_tree.get_roots();
+    let mut roots_to_iterate: Vec<&Group> = roots.iter().collect();
+    match sort_order {
+        SortOrder::Oldest => {
+            roots_to_iterate.sort_by_key(|g| min_created_at_in_group(&g.path, instances));
+        }
+        SortOrder::Newest => {
+            roots_to_iterate.sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
+        }
+        _ => sort_by_name(&mut roots_to_iterate, sort_order, |g| &g.name),
+    }
+
+    for root in roots_to_iterate {
+        flatten_group(root, instances, &mut items, 0, sort_order, None);
     }
 
     items
 }
 
-fn flatten_group(group: &Group, instances: &[Instance], items: &mut Vec<Item>, depth: usize) {
+fn flatten_group(
+    group: &Group,
+    instances: &[Instance],
+    items: &mut Vec<Item>,
+    depth: usize,
+    sort_order: SortOrder,
+    profile: Option<&str>,
+) {
     let session_count = count_sessions_in_group(&group.path, instances);
 
     items.push(Item::Group {
@@ -318,17 +484,24 @@ fn flatten_group(group: &Group, instances: &[Instance], items: &mut Vec<Item>, d
         depth,
         collapsed: group.collapsed,
         session_count,
+        profile: profile.map(|s| s.to_string()),
     });
 
     if group.collapsed {
         return;
     }
 
-    // Add sessions in this group (direct children only)
-    let group_sessions: Vec<&Instance> = instances
+    // Add sessions in this group (direct children only), sorted if needed
+    let mut group_sessions: Vec<&Instance> = instances
         .iter()
         .filter(|i| i.group_path == group.path)
         .collect();
+
+    match sort_order {
+        SortOrder::Oldest => group_sessions.sort_by_key(|i| i.created_at),
+        SortOrder::Newest => group_sessions.sort_by_key(|i| Reverse(i.created_at)),
+        _ => sort_by_name(&mut group_sessions, sort_order, |i| &i.title),
+    }
 
     for inst in group_sessions {
         items.push(Item::Session {
@@ -337,9 +510,21 @@ fn flatten_group(group: &Group, instances: &[Instance], items: &mut Vec<Item>, d
         });
     }
 
-    // Recursively add child groups
-    for child in &group.children {
-        flatten_group(child, instances, items, depth + 1);
+    // Recursively add child groups (sort them if needed)
+    let mut children_to_iterate: Vec<&Group> = group.children.iter().collect();
+    match sort_order {
+        SortOrder::Oldest => {
+            children_to_iterate.sort_by_key(|g| min_created_at_in_group(&g.path, instances));
+        }
+        SortOrder::Newest => {
+            children_to_iterate
+                .sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
+        }
+        _ => sort_by_name(&mut children_to_iterate, sort_order, |g| &g.name),
+    }
+
+    for child in children_to_iterate {
+        flatten_group(child, instances, items, depth + 1, sort_order, profile);
     }
 }
 
@@ -383,7 +568,7 @@ mod tests {
 
         let instances = vec![ungrouped, inst1, inst2];
         let tree = GroupTree::new_with_groups(&instances, &[]);
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
 
         assert!(!items.is_empty());
 
@@ -426,7 +611,7 @@ mod tests {
         let instances = vec![inst1];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
 
-        let items_expanded = flatten_tree(&tree, &instances);
+        let items_expanded = flatten_tree(&tree, &instances, SortOrder::Oldest);
         let session_count_expanded = items_expanded
             .iter()
             .filter(|i| matches!(i, Item::Session { .. }))
@@ -434,7 +619,7 @@ mod tests {
         assert_eq!(session_count_expanded, 1);
 
         tree.toggle_collapsed("work");
-        let items_collapsed = flatten_tree(&tree, &instances);
+        let items_collapsed = flatten_tree(&tree, &instances, SortOrder::Oldest);
         let session_count_collapsed = items_collapsed
             .iter()
             .filter(|i| matches!(i, Item::Session { .. }))
@@ -450,7 +635,7 @@ mod tests {
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
 
         tree.toggle_collapsed("work");
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
 
         let group_items: Vec<_> = items
             .iter()
@@ -466,7 +651,7 @@ mod tests {
         let instances = vec![inst];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
 
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
         if let Some(Item::Group { collapsed, .. }) = items
             .iter()
             .find(|i| matches!(i, Item::Group { path, .. } if path == "work"))
@@ -475,7 +660,7 @@ mod tests {
         }
 
         tree.toggle_collapsed("work");
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
         if let Some(Item::Group { collapsed, .. }) = items
             .iter()
             .find(|i| matches!(i, Item::Group { path, .. } if path == "work"))
@@ -493,7 +678,7 @@ mod tests {
         let instances = vec![inst1, inst2];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
 
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
         let group_count = items
             .iter()
             .filter(|i| matches!(i, Item::Group { .. }))
@@ -501,7 +686,7 @@ mod tests {
         assert_eq!(group_count, 2);
 
         tree.toggle_collapsed("parent");
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
         let group_count_collapsed = items
             .iter()
             .filter(|i| matches!(i, Item::Group { .. }))
@@ -518,7 +703,7 @@ mod tests {
         let instances = vec![inst1, inst2];
         let tree = GroupTree::new_with_groups(&instances, &[]);
 
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
         if let Some(Item::Group { session_count, .. }) = items
             .iter()
             .find(|i| matches!(i, Item::Group { path, .. } if path == "parent"))
@@ -587,7 +772,7 @@ mod tests {
         inst2.group_path = "root/child".to_string();
         let instances = vec![ungrouped, inst1, inst2];
         let tree = GroupTree::new_with_groups(&instances, &[]);
-        let items = flatten_tree(&tree, &instances);
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
 
         for item in &items {
             match item {
@@ -629,9 +814,36 @@ mod tests {
     }
 
     #[test]
-    fn test_groups_initial_sort_order_uses_alphabetical_tiebreaker() {
-        // When all groups have sort_order 0 (e.g., after upgrade), initialize_sort_orders
-        // uses alphabetical tiebreaker to assign contiguous values
+    fn test_delete_group_removes_from_insertion_order() {
+        let mut inst1 = Instance::new("alpha-session", "/tmp/a");
+        inst1.group_path = "alpha".to_string();
+        let mut inst2 = Instance::new("beta-session", "/tmp/b");
+        inst2.group_path = "beta".to_string();
+        let mut inst3 = Instance::new("gamma-session", "/tmp/g");
+        inst3.group_path = "gamma".to_string();
+        let instances = vec![inst1, inst2, inst3];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let initial_groups_vec = tree.get_all_groups();
+        let initial_groups: Vec<_> = initial_groups_vec.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(initial_groups, vec!["alpha", "beta", "gamma"]);
+
+        tree.delete_group("beta");
+
+        let after_delete_vec = tree.get_all_groups();
+        let after_delete: Vec<_> = after_delete_vec.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(after_delete, vec!["alpha", "gamma"]);
+
+        tree.create_group("zeta");
+
+        let after_create_vec = tree.get_all_groups();
+        let after_create: Vec<_> = after_create_vec.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(after_create, vec!["alpha", "gamma", "zeta"]);
+    }
+
+    #[test]
+    fn test_group_sort_order_in_flatten_tree() {
+        // Groups are created in order: zebra, apple, mango (by instance order)
         let mut inst1 = Instance::new("z-session", "/tmp/z");
         inst1.group_path = "zebra".to_string();
         let mut inst2 = Instance::new("a-session", "/tmp/a");
@@ -641,10 +853,273 @@ mod tests {
         let instances = vec![inst1, inst2, inst3];
         let tree = GroupTree::new_with_groups(&instances, &[]);
 
+        // SortOrder::Oldest: groups sorted by oldest session (zebra, apple, mango)
+        let items_oldest = flatten_tree(&tree, &instances, SortOrder::Oldest);
+        let group_names_none: Vec<_> = items_oldest
+            .iter()
+            .filter_map(|i| match i {
+                Item::Group { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(group_names_none, vec!["zebra", "apple", "mango"]);
+
+        // SortOrder::AZ: groups appear alphabetically
+        let items_az = flatten_tree(&tree, &instances, SortOrder::AZ);
+        let group_names_az: Vec<_> = items_az
+            .iter()
+            .filter_map(|i| match i {
+                Item::Group { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(group_names_az, vec!["apple", "mango", "zebra"]);
+
+        // SortOrder::ZA: groups appear reverse alphabetically
+        let items_za = flatten_tree(&tree, &instances, SortOrder::ZA);
+        let group_names_za: Vec<_> = items_za
+            .iter()
+            .filter_map(|i| match i {
+                Item::Group { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(group_names_za, vec!["zebra", "mango", "apple"]);
+    }
+
+    #[test]
+    fn test_sort_order_cycle() {
+        assert_eq!(SortOrder::Newest.cycle(), SortOrder::Oldest);
+        assert_eq!(SortOrder::Oldest.cycle(), SortOrder::AZ);
+        assert_eq!(SortOrder::AZ.cycle(), SortOrder::ZA);
+        assert_eq!(SortOrder::ZA.cycle(), SortOrder::Newest);
+    }
+
+    #[test]
+    fn test_ungrouped_session_sort_oldest_preserves_insertion_order() {
+        let inst1 = Instance::new("Mango", "/tmp/m");
+        let inst2 = Instance::new("Apple", "/tmp/a");
+        let inst3 = Instance::new("Zebra", "/tmp/z");
+        let instances = vec![inst1, inst2, inst3];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
+        let session_titles: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Session { id, .. } => instances
+                    .iter()
+                    .find(|inst| &inst.id == id)
+                    .map(|inst| inst.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(session_titles, vec!["Mango", "Apple", "Zebra"]);
+    }
+
+    #[test]
+    fn test_ungrouped_session_sort_az() {
+        let inst1 = Instance::new("Mango", "/tmp/m");
+        let inst2 = Instance::new("Apple", "/tmp/a");
+        let inst3 = Instance::new("Zebra", "/tmp/z");
+        let instances = vec![inst1, inst2, inst3];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::AZ);
+        let session_titles: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Session { id, .. } => instances
+                    .iter()
+                    .find(|inst| &inst.id == id)
+                    .map(|inst| inst.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(session_titles, vec!["Apple", "Mango", "Zebra"]);
+    }
+
+    #[test]
+    fn test_ungrouped_session_sort_za() {
+        let inst1 = Instance::new("Mango", "/tmp/m");
+        let inst2 = Instance::new("Apple", "/tmp/a");
+        let inst3 = Instance::new("Zebra", "/tmp/z");
+        let instances = vec![inst1, inst2, inst3];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::ZA);
+        let session_titles: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Session { id, .. } => instances
+                    .iter()
+                    .find(|inst| &inst.id == id)
+                    .map(|inst| inst.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(session_titles, vec!["Zebra", "Mango", "Apple"]);
+    }
+
+    #[test]
+    fn test_session_sort_oldest_within_group_preserves_insertion_order() {
+        let mut inst1 = Instance::new("Mango", "/tmp/m");
+        inst1.group_path = "work".to_string();
+        let mut inst2 = Instance::new("Apple", "/tmp/a");
+        inst2.group_path = "work".to_string();
+        let mut inst3 = Instance::new("Zebra", "/tmp/z");
+        inst3.group_path = "work".to_string();
+        let instances = vec![inst1, inst2, inst3];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::Oldest);
+        let session_titles: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Session { id, .. } => instances
+                    .iter()
+                    .find(|inst| &inst.id == id)
+                    .map(|inst| inst.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(session_titles, vec!["Mango", "Apple", "Zebra"]);
+    }
+
+    #[test]
+    fn test_session_sort_az_within_group() {
+        let mut inst1 = Instance::new("Mango", "/tmp/m");
+        inst1.group_path = "work".to_string();
+        let mut inst2 = Instance::new("Apple", "/tmp/a");
+        inst2.group_path = "work".to_string();
+        let mut inst3 = Instance::new("Zebra", "/tmp/z");
+        inst3.group_path = "work".to_string();
+        let instances = vec![inst1, inst2, inst3];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::AZ);
+        let session_titles: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Session { id, .. } => instances
+                    .iter()
+                    .find(|inst| &inst.id == id)
+                    .map(|inst| inst.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(session_titles, vec!["Apple", "Mango", "Zebra"]);
+    }
+
+    #[test]
+    fn test_session_sort_za_within_group() {
+        let mut inst1 = Instance::new("Mango", "/tmp/m");
+        inst1.group_path = "work".to_string();
+        let mut inst2 = Instance::new("Apple", "/tmp/a");
+        inst2.group_path = "work".to_string();
+        let mut inst3 = Instance::new("Zebra", "/tmp/z");
+        inst3.group_path = "work".to_string();
+        let instances = vec![inst1, inst2, inst3];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::ZA);
+        let session_titles: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Session { id, .. } => instances
+                    .iter()
+                    .find(|inst| &inst.id == id)
+                    .map(|inst| inst.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(session_titles, vec!["Zebra", "Mango", "Apple"]);
+    }
+
+    #[test]
+    fn test_nested_child_groups_sort_order() {
+        let mut inst_parent = Instance::new("parent-session", "/tmp/parent");
+        inst_parent.group_path = "parent".to_string();
+        let mut inst_zeta = Instance::new("zeta-session", "/tmp/zeta");
+        inst_zeta.group_path = "parent/zeta".to_string();
+        let mut inst_alpha = Instance::new("alpha-session", "/tmp/alpha");
+        inst_alpha.group_path = "parent/alpha".to_string();
+        let instances = vec![inst_parent, inst_zeta, inst_alpha];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items_oldest = flatten_tree(&tree, &instances, SortOrder::Oldest);
+        let child_names_oldest: Vec<_> = items_oldest
+            .iter()
+            .skip(1)
+            .filter_map(|i| match i {
+                Item::Group { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(child_names_oldest, vec!["zeta", "alpha"]);
+
+        let items_az = flatten_tree(&tree, &instances, SortOrder::AZ);
+        let child_names_az: Vec<_> = items_az
+            .iter()
+            .skip(1)
+            .filter_map(|i| match i {
+                Item::Group { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(child_names_az, vec!["alpha", "zeta"]);
+
+        let items_za = flatten_tree(&tree, &instances, SortOrder::ZA);
+        let child_names_za: Vec<_> = items_za
+            .iter()
+            .skip(1)
+            .filter_map(|i| match i {
+                Item::Group { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(child_names_za, vec!["zeta", "alpha"]);
+    }
+
+    #[test]
+    fn test_sort_az_is_case_insensitive() {
+        let mut inst1 = Instance::new("z-session", "/tmp/z");
+        inst1.group_path = "Zebra".to_string();
+        let mut inst2 = Instance::new("a-session", "/tmp/a");
+        inst2.group_path = "apple".to_string();
+        let instances = vec![inst1, inst2];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::AZ);
+        let group_names: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Group { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(group_names, vec!["apple", "Zebra"]);
+    }
+
+    #[test]
+    fn test_existing_groups_vec_order_preserved_on_load() {
+        let gamma_group = Group::new("gamma", "gamma");
+        let alpha_group = Group::new("alpha", "alpha");
+        let existing_groups = vec![gamma_group, alpha_group];
+
+        let instances: Vec<Instance> = vec![];
+        let tree = GroupTree::new_with_groups(&instances, &existing_groups);
+
         let roots = tree.get_roots();
-        assert_eq!(roots[0].name, "apple");
-        assert_eq!(roots[1].name, "mango");
-        assert_eq!(roots[2].name, "zebra");
+        let root_names: Vec<_> = roots.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(root_names, vec!["gamma", "alpha"]);
+
+        let all_groups: Vec<_> = tree
+            .get_all_groups()
+            .into_iter()
+            .map(|g| g.name.as_str().to_string())
+            .collect();
+        assert_eq!(all_groups, vec!["gamma".to_string(), "alpha".to_string()]);
     }
 
     #[test]
@@ -655,13 +1130,17 @@ mod tests {
         inst2.group_path = "apple".to_string();
         let instances = vec![inst1, inst2];
 
-        // Build tree, then manually swap order
+        // Build tree: initial order is zebra(0), apple(1) by insertion
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
+        assert_eq!(tree.get_roots()[0].name, "zebra");
+        assert_eq!(tree.get_roots()[1].name, "apple");
+
+        // Swap sort_orders: zebra gets apple's (1), apple gets zebra's (0)
         tree.swap_group_order("zebra", "apple");
 
         let roots = tree.get_roots();
-        assert_eq!(roots[0].name, "zebra");
-        assert_eq!(roots[1].name, "apple");
+        assert_eq!(roots[0].name, "apple");
+        assert_eq!(roots[1].name, "zebra");
     }
 
     #[test]
