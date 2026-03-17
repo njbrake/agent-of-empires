@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use clap::Args;
 
 use crate::containers;
-use crate::git::cleanup::{cleanup_sandbox_worktree, is_permission_error, remove_worktree_dir};
+use crate::git::cleanup::remove_managed_worktree;
 use crate::git::GitWorktree;
 use crate::session::{GroupTree, Instance, Storage};
 use std::path::PathBuf;
@@ -75,76 +75,25 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
 
                 match GitWorktree::new(main_repo.clone()) {
                     Ok(git_wt) => {
-                        if !worktree_path.join(".git").exists() {
-                            // .git is missing. Remove the dir and prune.
-                            if let Err(e) =
-                                remove_worktree_dir(&worktree_path, &main_repo, args.force)
-                            {
-                                if inst.is_sandboxed()
-                                    && is_permission_error(&e.to_string())
-                                    && cleanup_sandbox_worktree(&inst)
-                                {
-                                    let container =
-                                        containers::DockerContainer::from_session_id(&inst.id);
-                                    let _ = container.remove(true);
-                                    if let Err(e2) =
-                                        remove_worktree_dir(&worktree_path, &main_repo, true)
-                                    {
-                                        eprintln!("Warning: failed to remove worktree dir: {}", e2);
-                                    }
-                                } else {
-                                    eprintln!("Warning: failed to remove worktree dir: {}", e);
-                                }
-                            }
-                            if let Err(e) = git_wt.prune_worktrees() {
-                                eprintln!("Warning: failed to prune worktrees: {}", e);
-                            } else {
+                        match remove_managed_worktree(
+                            &git_wt,
+                            &worktree_path,
+                            &main_repo,
+                            &inst,
+                            args.force,
+                        ) {
+                            Ok(()) => {
                                 worktree_removed = true;
                                 println!("  Worktree removed");
                             }
-                        } else {
-                            let result = git_wt.remove_worktree(&worktree_path, args.force);
-                            match result {
-                                Ok(()) => {
-                                    worktree_removed = true;
-                                    println!("  Worktree removed");
+                            Err(errs) => {
+                                for e in &errs {
+                                    eprintln!("Warning: {}", e);
                                 }
-                                Err(e) => {
-                                    let err_str = e.to_string();
-                                    if inst.is_sandboxed()
-                                        && is_permission_error(&err_str)
-                                        && cleanup_sandbox_worktree(&inst)
-                                    {
-                                        // Container cleanup deletes everything
-                                        // including .git, so git worktree remove
-                                        // won't work. Force-remove the container to
-                                        // release the bind mount, then remove the
-                                        // dir and prune.
-                                        let container =
-                                            containers::DockerContainer::from_session_id(&inst.id);
-                                        let _ = container.remove(true);
-                                        if let Err(e2) =
-                                            remove_worktree_dir(&worktree_path, &main_repo, true)
-                                        {
-                                            eprintln!(
-                                                "Warning: failed to remove worktree dir: {}",
-                                                e2
-                                            );
-                                        }
-                                        if let Err(e2) = git_wt.prune_worktrees() {
-                                            eprintln!("Warning: failed to prune worktrees: {}", e2);
-                                        } else {
-                                            worktree_removed = true;
-                                            println!("  Worktree removed");
-                                        }
-                                    } else {
-                                        eprintln!("Warning: failed to remove worktree: {}", e);
-                                        eprintln!(
-                                                "You may need to remove it manually with: git worktree remove {}",
-                                                inst.project_path
-                                            );
-                                    }
-                                }
+                                eprintln!(
+                                    "You may need to remove it manually with: git worktree remove {}",
+                                    inst.project_path
+                                );
                             }
                         }
                     }
