@@ -4,9 +4,10 @@ use anyhow::{bail, Result};
 use clap::Args;
 
 use crate::containers;
+use crate::git::cleanup::{cleanup_sandbox_worktree, is_permission_error, remove_worktree_dir};
 use crate::git::GitWorktree;
 use crate::session::{GroupTree, Instance, Storage};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -45,76 +46,6 @@ fn confirm_prompt(message: &str) -> Result<bool> {
     io::stdin().read_line(&mut response)?;
     let response = response.trim().to_lowercase();
     Ok(response.is_empty() || response == "y" || response == "yes")
-}
-
-/// Check if a git error message indicates a permission problem.
-fn is_permission_error(error: &str) -> bool {
-    let lower = error.to_lowercase();
-    lower.contains("permission denied")
-        || lower.contains("operation not permitted")
-        || lower.contains("access is denied")
-}
-
-/// Delete worktree contents from inside the sandbox container.
-/// Returns true if the container successfully deleted the contents.
-fn cleanup_sandbox_worktree(inst: &Instance) -> bool {
-    let container = containers::DockerContainer::from_session_id(&inst.id);
-    if !container.exists().unwrap_or(false) {
-        return false;
-    }
-    if !container.is_running().unwrap_or(false) {
-        let _ = container.start();
-    }
-    container
-        .exec(&["find", ".", "-mindepth", "1", "-delete"])
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-/// Safely remove a worktree directory, refusing to delete the main repo.
-///
-/// On failure, retries a few times with short delays to handle macOS
-/// Docker Desktop VirtioFS propagation delays after container removal.
-fn remove_worktree_dir(worktree_path: &Path, main_repo: &Path, force: bool) -> std::io::Result<()> {
-    let wt_canon = worktree_path
-        .canonicalize()
-        .unwrap_or(worktree_path.to_path_buf());
-    let mr_canon = main_repo.canonicalize().unwrap_or(main_repo.to_path_buf());
-    if wt_canon == mr_canon {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "worktree path equals main repo, refusing to delete",
-        ));
-    }
-
-    for attempt in 0..5 {
-        if !worktree_path.exists() {
-            return Ok(());
-        }
-        let result = std::fs::remove_dir(worktree_path);
-        if result.is_ok() {
-            return Ok(());
-        }
-        if force {
-            let result = std::fs::remove_dir_all(worktree_path);
-            if result.is_ok() {
-                return Ok(());
-            }
-        }
-        if attempt < 4 {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-    }
-
-    // Final attempt — return the error
-    if !worktree_path.exists() {
-        return Ok(());
-    }
-    let result = std::fs::remove_dir(worktree_path);
-    if result.is_ok() || !force {
-        return result;
-    }
-    std::fs::remove_dir_all(worktree_path)
 }
 
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
@@ -183,6 +114,9 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                                         && is_permission_error(&e.to_string())
                                         && cleanup_sandbox_worktree(&inst)
                                     {
+                                        let container =
+                                            containers::DockerContainer::from_session_id(&inst.id);
+                                        let _ = container.remove(true);
                                         if let Err(e2) =
                                             remove_worktree_dir(&worktree_path, &main_repo, true)
                                         {
