@@ -26,7 +26,7 @@ use crate::migrations;
 use crate::session::get_update_settings;
 use crate::update::check_for_update;
 
-pub async fn run(profile: &str) -> Result<()> {
+pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     // Run pending migrations with a spinner so users see progress
     if migrations::has_pending_migrations() {
         const SPINNER_FRAMES: &[char] = &['◐', '◓', '◑', '◒'];
@@ -100,6 +100,9 @@ pub async fn run(profile: &str) -> Result<()> {
 
     // Create app and run
     let mut app = App::new(profile, available_tools)?;
+    if let Some(warning) = startup_warning {
+        app.show_startup_warning(&warning);
+    }
     let result = app.run(&mut terminal).await;
 
     // Restore terminal

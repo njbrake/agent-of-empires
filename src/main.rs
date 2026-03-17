@@ -9,6 +9,7 @@ use clap_complete::generate;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut debug_log_warning: Option<String> = None;
     if std::env::var("AGENT_OF_EMPIRES_DEBUG").is_ok() {
         // Log to file to avoid corrupting the TUI on stderr.
         let log_path = agent_of_empires::session::get_app_dir().map(|d| d.join("debug.log"));
@@ -24,9 +25,9 @@ async fn main() -> Result<()> {
                 .init();
             tracing::info!("Debug logging to {}", log_path.unwrap().display());
         } else {
-            tracing_subscriber::fmt()
-                .with_env_filter("agent_of_empires=debug")
-                .init();
+            debug_log_warning = Some(
+                "AGENT_OF_EMPIRES_DEBUG is set but the debug log file could not be created. Debug logging is disabled.".to_string(),
+            );
         }
     }
 
@@ -67,7 +68,7 @@ async fn main() -> Result<()> {
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
-        None => tui::run(&profile).await,
+        None => tui::run(&profile, debug_log_warning).await,
         _ => unreachable!(),
     }
 }
