@@ -588,12 +588,18 @@ impl HomeView {
                             has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
                         };
 
-                        self.unified_delete_dialog =
-                            Some(UnifiedDeleteDialog::new(inst.title.clone(), config));
+                        let profile = self.active_profile.as_deref().unwrap_or("default");
+                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
+                            inst.title.clone(),
+                            config,
+                            profile,
+                        ));
                     } else {
+                        let profile = self.active_profile.as_deref().unwrap_or("default");
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
+                            profile,
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {

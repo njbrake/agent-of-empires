@@ -1,6 +1,6 @@
 //! Background deletion handler for TUI responsiveness
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
@@ -81,26 +81,104 @@ impl DeletionPoller {
                     let worktree_path = PathBuf::from(&request.instance.project_path);
                     let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
-                    // Sandbox containers run as root, so files they create are
-                    // root-owned on the host. On macOS Docker Desktop, chmod
-                    // inside the container doesn't propagate to the host, so
-                    // we delete the contents from inside the container instead.
-                    let sandbox_cleaned = if request.instance.is_sandboxed() {
-                        cleanup_sandbox_worktree(&request.instance)
-                    } else {
-                        false
-                    };
+                    match GitWorktree::new(main_repo.clone()) {
+                        Ok(git_wt) => {
+                            let has_dot_git = worktree_path.join(".git").exists();
+                            tracing::debug!(
+                                path = %worktree_path.display(),
+                                has_dot_git,
+                                is_sandboxed = request.instance.is_sandboxed(),
+                                force = request.force_delete,
+                                "worktree cleanup starting"
+                            );
 
-                    if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                        if sandbox_cleaned {
-                            // Contents deleted by container; remove empty dir + prune
-                            let _ = std::fs::remove_dir(&worktree_path);
-                            if let Err(e) = git_wt.prune_worktrees() {
-                                errors.push(format!("Worktree: {}", e));
+                            if !has_dot_git {
+                                // .git is missing (manual deletion or other
+                                // issue). Remove the dir ourselves and prune.
+                                if let Err(e) = remove_worktree_dir(
+                                    &worktree_path,
+                                    &main_repo,
+                                    request.force_delete,
+                                ) {
+                                    tracing::debug!(
+                                        error = %e,
+                                        kind = ?e.kind(),
+                                        "remove_worktree_dir failed (no .git path)"
+                                    );
+                                    if request.instance.is_sandboxed()
+                                        && is_permission_error(&e.to_string())
+                                    {
+                                        let cleaned = cleanup_sandbox_worktree(&request.instance);
+                                        tracing::debug!(cleaned, "container cleanup attempted");
+                                        if cleaned {
+                                            let container = DockerContainer::from_session_id(
+                                                &request.instance.id,
+                                            );
+                                            let rm_result = container.remove(true);
+                                            tracing::debug!(?rm_result, "container force-removed");
+                                            if let Err(e2) = remove_worktree_dir(
+                                                &worktree_path,
+                                                &main_repo,
+                                                true,
+                                            ) {
+                                                errors.push(format!("Worktree: {}", e2));
+                                            }
+                                        } else {
+                                            errors.push(format!("Worktree: {}", e));
+                                        }
+                                    } else {
+                                        errors.push(format!("Worktree: {}", e));
+                                    }
+                                }
+                                if let Err(e) = git_wt.prune_worktrees() {
+                                    errors.push(format!("Worktree: {}", e));
+                                }
+                            } else {
+                                let result =
+                                    git_wt.remove_worktree(&worktree_path, request.force_delete);
+                                if let Err(e) = result {
+                                    let err_str = e.to_string();
+                                    tracing::debug!(
+                                        error = %err_str,
+                                        is_perm = is_permission_error(&err_str),
+                                        "git worktree remove failed"
+                                    );
+                                    if request.instance.is_sandboxed()
+                                        && is_permission_error(&err_str)
+                                    {
+                                        let cleaned = cleanup_sandbox_worktree(&request.instance);
+                                        tracing::debug!(cleaned, "container cleanup attempted");
+                                        if cleaned {
+                                            let container = DockerContainer::from_session_id(
+                                                &request.instance.id,
+                                            );
+                                            let rm_result = container.remove(true);
+                                            tracing::debug!(?rm_result, "container force-removed");
+                                            if let Err(e2) = remove_worktree_dir(
+                                                &worktree_path,
+                                                &main_repo,
+                                                true,
+                                            ) {
+                                                tracing::debug!(
+                                                    error = %e2,
+                                                    kind = ?e2.kind(),
+                                                    "remove_worktree_dir failed after cleanup"
+                                                );
+                                                errors.push(format!("Worktree: {}", e2));
+                                            }
+                                            if let Err(e2) = git_wt.prune_worktrees() {
+                                                errors.push(format!("Worktree: {}", e2));
+                                            }
+                                        } else {
+                                            errors.push(format!("Worktree: {}", e));
+                                        }
+                                    } else {
+                                        errors.push(format!("Worktree: {}", e));
+                                    }
+                                }
                             }
-                        } else if let Err(e) =
-                            git_wt.remove_worktree(&worktree_path, request.force_delete)
-                        {
+                        }
+                        Err(e) => {
                             errors.push(format!("Worktree: {}", e));
                         }
                     }
@@ -110,12 +188,16 @@ impl DeletionPoller {
 
         // Branch cleanup (if user opted to delete it and worktree was successfully removed)
         if let Some((branch, main_repo)) = branch_to_delete {
-            // Only delete branch if worktree deletion succeeded (or wasn't requested)
             let worktree_ok =
                 !request.delete_worktree || !errors.iter().any(|e| e.starts_with("Worktree:"));
             if worktree_ok {
-                if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                    if let Err(e) = git_wt.delete_branch(&branch) {
+                match GitWorktree::new(main_repo) {
+                    Ok(git_wt) => {
+                        if let Err(e) = git_wt.delete_branch(&branch) {
+                            errors.push(format!("Branch: {}", e));
+                        }
+                    }
+                    Err(e) => {
                         errors.push(format!("Branch: {}", e));
                     }
                 }
@@ -171,6 +253,64 @@ impl Default for DeletionPoller {
     }
 }
 
+/// Remove a worktree directory from the filesystem.
+///
+/// Always tries `remove_dir` first (fast path for empty dirs). When `force`
+/// is true, falls back to `remove_dir_all` for non-empty directories.
+/// Refuses to delete the directory if it is the main repo itself.
+///
+/// On failure, retries a few times with short delays to handle macOS
+/// Docker Desktop VirtioFS propagation delays after container removal.
+fn remove_worktree_dir(worktree_path: &Path, main_repo: &Path, force: bool) -> std::io::Result<()> {
+    let wt = worktree_path
+        .canonicalize()
+        .unwrap_or(worktree_path.to_path_buf());
+    let mr = main_repo.canonicalize().unwrap_or(main_repo.to_path_buf());
+    if wt == mr {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "worktree path is the same as the main repo -- refusing to delete",
+        ));
+    }
+
+    for attempt in 0..5 {
+        if !worktree_path.exists() {
+            return Ok(());
+        }
+        let result = std::fs::remove_dir(worktree_path);
+        if result.is_ok() {
+            return Ok(());
+        }
+        if force {
+            let result = std::fs::remove_dir_all(worktree_path);
+            if result.is_ok() {
+                return Ok(());
+            }
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
+    // Final attempt — return the error
+    if !worktree_path.exists() {
+        return Ok(());
+    }
+    let result = std::fs::remove_dir(worktree_path);
+    if result.is_ok() || !force {
+        return result;
+    }
+    std::fs::remove_dir_all(worktree_path)
+}
+
+/// Check if a git error message indicates a permission problem.
+fn is_permission_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("permission denied")
+        || lower.contains("operation not permitted")
+        || lower.contains("access is denied")
+}
+
 /// Delete worktree contents from inside the sandbox container.
 /// Returns true if the container successfully deleted the contents.
 fn cleanup_sandbox_worktree(instance: &Instance) -> bool {
@@ -181,9 +321,10 @@ fn cleanup_sandbox_worktree(instance: &Instance) -> bool {
     if !container.is_running().unwrap_or(false) && container.start().is_err() {
         return false;
     }
-    container
-        .exec(&["find", ".", "-mindepth", "1", "-delete"])
-        .is_ok()
+    match container.exec(&["find", ".", "-mindepth", "1", "-delete"]) {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
