@@ -60,8 +60,6 @@ pub struct Theme {
 
     pub branch: Color,
     pub sandbox: Color,
-    pub worktree_managed: Color,
-    pub worktree_manual: Color,
 }
 
 impl Default for Theme {
@@ -104,8 +102,6 @@ impl Theme {
 
             branch: Color::Rgb(100, 160, 200),
             sandbox: Color::Rgb(200, 122, 255),
-            worktree_managed: Color::Rgb(100, 220, 160),
-            worktree_manual: Color::Rgb(255, 180, 60),
         }
     }
 
@@ -142,8 +138,6 @@ impl Theme {
 
             branch: Color::Rgb(125, 207, 255),
             sandbox: Color::Rgb(187, 154, 247),
-            worktree_managed: Color::Rgb(158, 206, 106),
-            worktree_manual: Color::Rgb(224, 175, 104),
         }
     }
 
@@ -180,8 +174,6 @@ impl Theme {
 
             branch: Color::Rgb(4, 165, 229),
             sandbox: Color::Rgb(136, 57, 239),
-            worktree_managed: Color::Rgb(64, 160, 43),
-            worktree_manual: Color::Rgb(223, 142, 29),
         }
     }
 
@@ -220,8 +212,6 @@ impl Theme {
 
             branch: Color::Rgb(139, 233, 253),
             sandbox: Color::Rgb(189, 147, 249),
-            worktree_managed: Color::Rgb(80, 250, 123),
-            worktree_manual: Color::Rgb(255, 184, 108),
         }
     }
 }

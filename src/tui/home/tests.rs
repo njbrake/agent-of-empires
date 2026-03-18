@@ -932,7 +932,6 @@ fn test_group_has_managed_worktrees() {
         main_repo_path: "/tmp/main".to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
-        cleanup_on_delete: true,
     });
 
     let mut inst2 = Instance::new("other-session", "/tmp/other");
@@ -1106,7 +1105,6 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
         main_repo_path: "/tmp/main".to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
-        cleanup_on_delete: true,
     });
 
     storage.save(&[inst1]).unwrap();
