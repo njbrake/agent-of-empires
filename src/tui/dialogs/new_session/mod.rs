@@ -65,7 +65,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Extra Repos",
-        description: "Additional repository paths for multi-repo workspace (use with worktree)",
+        description: "Additional repo paths for workspace. Tab-completes paths, Ctrl+P to browse",
     },
     FieldHelp {
         name: "Sandbox",
@@ -139,6 +139,10 @@ pub struct NewSessionDialog {
     pub(super) workspace_repo_editing_input: Option<Input>,
     /// Whether we are adding a new repo entry (vs editing existing)
     pub(super) workspace_repo_adding_new: bool,
+    /// Ghost completion for workspace repo path editing
+    pub(super) workspace_repo_ghost: Option<path_input::PathGhostCompletion>,
+    /// Whether the dir picker was opened for a workspace repo (vs the main path)
+    pub(super) workspace_repo_dir_picker_active: bool,
     /// Extra environment entries (session-specific).
     /// `KEY` = pass through, `KEY=VALUE` = set explicitly.
     pub(super) extra_env: Vec<String>,
@@ -386,6 +390,8 @@ impl NewSessionDialog {
             workspace_repo_selected_index: 0,
             workspace_repo_editing_input: None,
             workspace_repo_adding_new: false,
+            workspace_repo_ghost: None,
+            workspace_repo_dir_picker_active: false,
             sandbox_enabled,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -595,6 +601,8 @@ impl NewSessionDialog {
             workspace_repo_selected_index: 0,
             workspace_repo_editing_input: None,
             workspace_repo_adding_new: false,
+            workspace_repo_ghost: None,
+            workspace_repo_dir_picker_active: false,
             sandbox_enabled: false,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -652,6 +660,8 @@ impl NewSessionDialog {
             workspace_repo_selected_index: 0,
             workspace_repo_editing_input: None,
             workspace_repo_adding_new: false,
+            workspace_repo_ghost: None,
+            workspace_repo_dir_picker_active: false,
             sandbox_enabled: false,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -738,10 +748,22 @@ impl NewSessionDialog {
         if self.dir_picker.is_active() {
             match self.dir_picker.handle_key(key) {
                 DirPickerResult::Selected(path) => {
-                    self.path = Input::new(path);
-                    self.recompute_path_ghost();
+                    if self.workspace_repo_dir_picker_active {
+                        self.workspace_repo_editing_input = Some(Input::new(path));
+                        self.workspace_repo_ghost = self
+                            .workspace_repo_editing_input
+                            .as_ref()
+                            .and_then(path_input::compute_path_ghost);
+                        self.workspace_repo_dir_picker_active = false;
+                    } else {
+                        self.path = Input::new(path);
+                        self.recompute_path_ghost();
+                    }
                 }
-                DirPickerResult::Cancelled | DirPickerResult::Continue => {}
+                DirPickerResult::Cancelled => {
+                    self.workspace_repo_dir_picker_active = false;
+                }
+                DirPickerResult::Continue => {}
             }
             return DialogResult::Continue;
         }
@@ -1127,9 +1149,62 @@ impl NewSessionDialog {
 
     /// Handle key events when the workspace repos list is expanded
     fn handle_workspace_repos_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        // When actively editing a repo path, handle path-specific keys first
+        if self.workspace_repo_editing_input.is_some() {
+            // Ctrl+P: open dir picker for repo path
+            if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                let initial = self
+                    .workspace_repo_editing_input
+                    .as_ref()
+                    .map(|i| i.value().trim().to_string())
+                    .unwrap_or_default();
+                let initial = if initial.is_empty() {
+                    ".".to_string()
+                } else {
+                    initial
+                };
+                self.workspace_repo_dir_picker_active = true;
+                self.dir_picker.activate(&initial);
+                return DialogResult::Continue;
+            }
+
+            // Right/End at end of input: accept ghost text
+            if matches!(key.code, KeyCode::Right | KeyCode::End)
+                && key.modifiers == KeyModifiers::NONE
+            {
+                if let Some(ref input) = self.workspace_repo_editing_input {
+                    let cursor = input.visual_cursor();
+                    let char_len = input.value().chars().count();
+                    if cursor >= char_len {
+                        if let Some(ghost) = self.workspace_repo_ghost.take() {
+                            if let Some(ref mut input) = self.workspace_repo_editing_input {
+                                let value = input.value().to_string();
+                                let cursor_char = input.visual_cursor().min(value.chars().count());
+                                if ghost.input_snapshot == value
+                                    && ghost.cursor_snapshot == cursor_char
+                                {
+                                    let mut new_value = value;
+                                    new_value.push_str(&ghost.ghost_text);
+                                    *input = Input::new(new_value);
+                                    self.workspace_repo_ghost =
+                                        path_input::compute_path_ghost(input);
+                                    return DialogResult::Continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let validate =
             |value: &str, list: &[String]| !value.is_empty() && !list.contains(&value.to_string());
-        handle_editable_list_key(
+
+        // Wrap the generic handler to add tilde expansion and ghost recomputation
+        let had_input = self.workspace_repo_editing_input.is_some();
+        let was_adding = self.workspace_repo_adding_new;
+        let edit_index = self.workspace_repo_selected_index;
+        let result = handle_editable_list_key(
             key,
             &mut self.workspace_repos,
             &mut self.workspace_repos_expanded,
@@ -1137,7 +1212,32 @@ impl NewSessionDialog {
             &mut self.workspace_repo_editing_input,
             &mut self.workspace_repo_adding_new,
             validate,
-        )
+        );
+
+        // If editing just finished (Enter pressed), expand tilde in the stored value
+        if had_input && self.workspace_repo_editing_input.is_none() {
+            let idx = if was_adding {
+                self.workspace_repos.len().saturating_sub(1)
+            } else {
+                edit_index
+            };
+            if let Some(entry) = self.workspace_repos.get_mut(idx) {
+                *entry = path_input::expand_tilde(entry);
+            }
+            self.workspace_repo_ghost = None;
+        }
+
+        // If still editing, recompute ghost
+        if self.workspace_repo_editing_input.is_some() {
+            self.workspace_repo_ghost = self
+                .workspace_repo_editing_input
+                .as_ref()
+                .and_then(path_input::compute_path_ghost);
+        } else {
+            self.workspace_repo_ghost = None;
+        }
+
+        result
     }
 
     fn reload_tool_config(&mut self) {

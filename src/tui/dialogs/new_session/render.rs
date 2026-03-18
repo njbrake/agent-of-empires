@@ -925,13 +925,34 @@ impl NewSessionDialog {
             let header = Line::from(vec![
                 Span::styled("Extra Repos:", label_style),
                 Span::styled(
-                    " (a)dd (d)el (Enter)edit (Esc)close",
+                    " (a)dd (d)el (Enter)edit (Ctrl+P)browse (Esc)close",
                     Style::default().fg(theme.dimmed),
                 ),
             ]);
             lines.push(header);
 
             if let Some(ref input) = self.workspace_repo_editing_input {
+                let ghost_text = self
+                    .workspace_repo_ghost
+                    .as_ref()
+                    .map(|g| g.ghost_text.clone());
+
+                let make_input_line = |prefix: &'static str,
+                                       val: &str,
+                                       ghost: &Option<String>,
+                                       th: &Theme|
+                 -> Line<'static> {
+                    let mut spans = vec![
+                        Span::styled(prefix, Style::default().fg(th.accent)),
+                        Span::styled(val.to_string(), Style::default().fg(th.accent).bold()),
+                    ];
+                    if let Some(ref g) = ghost {
+                        spans.push(Span::styled(g.clone(), Style::default().fg(th.dimmed)));
+                    }
+                    spans.push(Span::styled("_", Style::default().fg(th.accent)));
+                    Line::from(spans)
+                };
+
                 if self.workspace_repo_adding_new {
                     for (i, entry) in self.workspace_repos.iter().enumerate() {
                         let prefix = if i == self.workspace_repo_selected_index {
@@ -944,24 +965,11 @@ impl NewSessionDialog {
                             Style::default().fg(theme.text),
                         )));
                     }
-                    let input_line = Line::from(vec![
-                        Span::styled("  + ", Style::default().fg(theme.accent)),
-                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
-                        Span::styled("_", Style::default().fg(theme.accent)),
-                    ]);
-                    lines.push(input_line);
+                    lines.push(make_input_line("  + ", input.value(), &ghost_text, theme));
                 } else {
                     for (i, entry) in self.workspace_repos.iter().enumerate() {
                         if i == self.workspace_repo_selected_index {
-                            let input_line = Line::from(vec![
-                                Span::styled("  > ", Style::default().fg(theme.accent)),
-                                Span::styled(
-                                    input.value(),
-                                    Style::default().fg(theme.accent).bold(),
-                                ),
-                                Span::styled("_", Style::default().fg(theme.accent)),
-                            ]);
-                            lines.push(input_line);
+                            lines.push(make_input_line("  > ", input.value(), &ghost_text, theme));
                         } else {
                             let prefix = "    ";
                             lines.push(Line::from(Span::styled(
