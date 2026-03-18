@@ -397,7 +397,7 @@ impl App {
         if !tmux_session.exists()
             || tmux_session.is_pane_dead()
             || (!instance.expects_shell()
-                && !instance.has_command_wrapper()
+                && !instance.launched_with_wrapper
                 && tmux_session.is_pane_running_shell())
         {
             if tmux_session.exists() {
@@ -447,8 +447,9 @@ impl App {
 
             self.home
                 .set_instance_status(session_id, crate::session::Status::Starting);
-            let mut inst = instance.clone();
-            if let Err(e) = inst.start_with_size_opts(size, skip_on_launch) {
+            if let Err(e) = self.home.try_mutate_instance(session_id, |inst| {
+                inst.start_with_size_opts(size, skip_on_launch)
+            }) {
                 self.home
                     .set_instance_error(session_id, Some(e.to_string()));
                 self.home
@@ -456,6 +457,7 @@ impl App {
                 return Ok(());
             }
             self.home.set_instance_error(session_id, None);
+            self.home.save()?;
         }
 
         let attach_result = with_raw_mode_disabled(terminal, || tmux_session.attach())?;
