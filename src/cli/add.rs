@@ -5,6 +5,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 
 use crate::containers::{self, ContainerRuntimeInterface};
+use crate::session::builder;
 use crate::session::repo_config;
 use crate::session::{civilizations, resolve_config, GroupTree, Instance, SandboxInfo, Storage};
 
@@ -93,101 +94,29 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(branch_raw) = &args.worktree_branch {
         use crate::git::GitWorktree;
-        use crate::session::{WorkspaceInfo, WorkspaceRepo, WorktreeInfo};
+        use crate::session::WorktreeInfo;
         use chrono::Utc;
 
         let branch = branch_raw.trim();
 
         if !args.extra_repos.is_empty() {
-            // Workspace mode: multiple repos get worktrees in a shared directory
-            let session_id = uuid::Uuid::new_v4().to_string();
-            let session_id_short = &session_id[..8];
-
-            // Resolve workspace directory from template, relative to primary repo
-            let primary_main_repo = GitWorktree::find_main_repo(&path)?;
-            let primary_git_wt = GitWorktree::new(primary_main_repo)?;
-            let workspace_path = primary_git_wt.compute_path(
+            let ws_result = builder::create_workspace(
+                &path,
+                &args.extra_repos,
                 branch,
+                args.create_branch,
                 &config.worktree.workspace_path_template,
-                session_id_short,
             )?;
-            let workspace_dir = workspace_path.to_string_lossy().to_string();
-            std::fs::create_dir_all(&workspace_path)?;
 
-            let all_repo_paths: Vec<PathBuf> = std::iter::once(path.clone())
-                .chain(
-                    args.extra_repos
-                        .iter()
-                        .map(|r| r.canonicalize().unwrap_or_else(|_| r.clone())),
-                )
-                .collect();
-
-            let mut repos = Vec::new();
-            let mut created_worktrees: Vec<(PathBuf, PathBuf)> = Vec::new();
-
-            for repo_path in &all_repo_paths {
-                if !GitWorktree::is_git_repo(repo_path) {
-                    // Clean up any worktrees we already created
-                    for (wt_path, main_repo) in &created_worktrees {
-                        if let Ok(git_wt) = GitWorktree::new(main_repo.clone()) {
-                            let _ = git_wt.remove_worktree(wt_path, false);
-                        }
-                    }
-                    let _ = std::fs::remove_dir_all(&workspace_path);
-                    bail!(
-                        "Path is not in a git repository: {}\nTip: All --repo paths must be git repositories",
-                        repo_path.display()
-                    );
-                }
-
-                let main_repo_path = GitWorktree::find_main_repo(repo_path)?;
-                let git_wt = GitWorktree::new(main_repo_path.clone())?;
-
-                let repo_name = repo_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "repo".to_string());
-
-                let worktree_subdir = workspace_path.join(&repo_name);
-
+            for repo in &ws_result.workspace_info.repos {
                 println!(
-                    "Creating worktree for {} at: {}",
-                    repo_name,
-                    worktree_subdir.display()
+                    "  Created worktree: {} -> {}",
+                    repo.name, repo.worktree_path
                 );
-                if let Err(e) = git_wt.create_worktree(branch, &worktree_subdir, args.create_branch)
-                {
-                    // Clean up any worktrees we already created
-                    for (wt_path, main_repo) in &created_worktrees {
-                        if let Ok(git_wt) = GitWorktree::new(main_repo.clone()) {
-                            let _ = git_wt.remove_worktree(wt_path, false);
-                        }
-                    }
-                    let _ = std::fs::remove_dir_all(&workspace_path);
-                    bail!("Failed to create worktree for {}: {}", repo_name, e);
-                }
-
-                created_worktrees.push((worktree_subdir.clone(), main_repo_path.clone()));
-
-                repos.push(WorkspaceRepo {
-                    name: repo_name,
-                    source_path: repo_path.to_string_lossy().to_string(),
-                    branch: branch.to_string(),
-                    worktree_path: worktree_subdir.to_string_lossy().to_string(),
-                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                    managed_by_aoe: true,
-                });
             }
 
-            path = workspace_path;
-
-            workspace_info_opt = Some(WorkspaceInfo {
-                branch: branch.to_string(),
-                workspace_dir,
-                repos,
-                created_at: Utc::now(),
-                cleanup_on_delete: true,
-            });
+            path = ws_result.workspace_path;
+            workspace_info_opt = Some(ws_result.workspace_info);
 
             println!("✓ Workspace created successfully");
         } else {
@@ -426,6 +355,19 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     let _ = git_wt.remove_worktree(&path, false);
                 }
             }
+        }
+        // Clean up workspace worktrees if we created them
+        if let Some(ref ws_info) = instance.workspace_info {
+            for repo in &ws_info.repos {
+                if repo.managed_by_aoe {
+                    let wt_path = PathBuf::from(&repo.worktree_path);
+                    let main_repo = PathBuf::from(&repo.main_repo_path);
+                    if let Ok(git_wt) = crate::git::GitWorktree::new(main_repo) {
+                        let _ = git_wt.remove_worktree(&wt_path, false);
+                    }
+                }
+            }
+            let _ = std::fs::remove_dir_all(&ws_info.workspace_dir);
         }
         return Err(e);
     }
