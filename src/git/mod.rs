@@ -3,6 +3,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+pub mod cleanup;
 pub mod diff;
 pub mod error;
 pub mod template;

@@ -1,6 +1,6 @@
-//! Status file I/O for Claude Code hooks-based status detection.
+//! Status file I/O for hooks-based agent status detection.
 //!
-//! Claude Code hooks write `running`, `waiting`, or `idle` to a well-known
+//! Agent hooks write `running`, `waiting`, or `idle` to a well-known
 //! file path so AoE can detect agent status without parsing tmux pane content.
 
 use std::path::PathBuf;

@@ -30,7 +30,7 @@ tokio = { version = "1.42", features = ["full"] }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.9"
+toml = "1.0"
 
 # File watching
 notify = "8.2"
@@ -94,7 +94,7 @@ fs2 = "0.4"
 
 [dev-dependencies]
 tempfile = "3.14"
-serial_test = "3.2"
+serial_test = "3.4"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 
 [profile.release]

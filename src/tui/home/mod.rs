@@ -139,7 +139,6 @@ pub struct HomeView {
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
     pub(super) pending_stop_session: Option<String>,
-
     // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,

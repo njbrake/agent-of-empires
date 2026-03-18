@@ -1021,8 +1021,6 @@ pub(crate) fn build_container_config(
         }
     }
 
-    // Mount the hook status directory so the host can read status files
-    // written by hooks running inside the container.
     if let Some(agent) = crate::agents::get_agent(tool) {
         if let Some(hook_cfg) = &agent.hook_config {
             let hook_dir = crate::hooks::hook_status_dir(instance_id);
@@ -1039,10 +1037,8 @@ pub(crate) fn build_container_config(
                 read_only: false,
             });
 
-            // Install hooks into the sandbox settings.json
-            // The sandbox dir for the agent config is already prepared above.
-            // We write hooks into it so the containerized agent picks them up.
-            let home = dirs::home_dir().unwrap_or_default();
+            // Install hooks into sandbox settings.json for the containerized agent.
+            // Shell one-liners work inside containers since they only use sh/mkdir/printf.
             let config_dir_name = std::path::Path::new(hook_cfg.settings_rel_path)
                 .parent()
                 .unwrap_or(std::path::Path::new("."));
@@ -1051,7 +1047,7 @@ pub(crate) fn build_container_config(
                 if mount.host_rel == config_dir_name.to_string_lossy() {
                     let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
                     let settings_file = sandbox_dir.join("settings.json");
-                    if let Err(e) = crate::hooks::install_hooks(&settings_file) {
+                    if let Err(e) = crate::hooks::install_hooks(&settings_file, hook_cfg.events) {
                         tracing::warn!("Failed to install hooks in sandbox settings: {}", e);
                     }
                     break;

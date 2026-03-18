@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::containers::DockerContainer;
+use crate::git::cleanup::remove_managed_worktree;
 use crate::git::GitWorktree;
 use crate::session::Instance;
 
@@ -81,26 +82,19 @@ impl DeletionPoller {
                     let worktree_path = PathBuf::from(&request.instance.project_path);
                     let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
-                    // Sandbox containers run as root, so files they create are
-                    // root-owned on the host. On macOS Docker Desktop, chmod
-                    // inside the container doesn't propagate to the host, so
-                    // we delete the contents from inside the container instead.
-                    let sandbox_cleaned = if request.instance.is_sandboxed() {
-                        cleanup_sandbox_worktree(&request.instance)
-                    } else {
-                        false
-                    };
-
-                    if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                        if sandbox_cleaned {
-                            // Contents deleted by container; remove empty dir + prune
-                            let _ = std::fs::remove_dir(&worktree_path);
-                            if let Err(e) = git_wt.prune_worktrees() {
-                                errors.push(format!("Worktree: {}", e));
+                    match GitWorktree::new(main_repo.clone()) {
+                        Ok(git_wt) => {
+                            if let Err(errs) = remove_managed_worktree(
+                                &git_wt,
+                                &worktree_path,
+                                &main_repo,
+                                &request.instance,
+                                request.force_delete,
+                            ) {
+                                errors.extend(errs);
                             }
-                        } else if let Err(e) =
-                            git_wt.remove_worktree(&worktree_path, request.force_delete)
-                        {
+                        }
+                        Err(e) => {
                             errors.push(format!("Worktree: {}", e));
                         }
                     }
@@ -110,12 +104,16 @@ impl DeletionPoller {
 
         // Branch cleanup (if user opted to delete it and worktree was successfully removed)
         if let Some((branch, main_repo)) = branch_to_delete {
-            // Only delete branch if worktree deletion succeeded (or wasn't requested)
             let worktree_ok =
                 !request.delete_worktree || !errors.iter().any(|e| e.starts_with("Worktree:"));
             if worktree_ok {
-                if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                    if let Err(e) = git_wt.delete_branch(&branch) {
+                match GitWorktree::new(main_repo) {
+                    Ok(git_wt) => {
+                        if let Err(e) = git_wt.delete_branch(&branch) {
+                            errors.push(format!("Branch: {}", e));
+                        }
+                    }
+                    Err(e) => {
                         errors.push(format!("Branch: {}", e));
                     }
                 }
@@ -169,21 +167,6 @@ impl Default for DeletionPoller {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Delete worktree contents from inside the sandbox container.
-/// Returns true if the container successfully deleted the contents.
-fn cleanup_sandbox_worktree(instance: &Instance) -> bool {
-    let container = DockerContainer::for_instance(instance);
-    if !container.exists().unwrap_or(false) {
-        return false;
-    }
-    if !container.is_running().unwrap_or(false) && container.start().is_err() {
-        return false;
-    }
-    container
-        .exec(&["find", ".", "-mindepth", "1", "-delete"])
-        .is_ok()
 }
 
 #[cfg(test)]

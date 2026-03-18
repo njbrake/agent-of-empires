@@ -43,9 +43,9 @@ cargo fmt                      # Format code
 cargo clippy                   # Lint
 ```
 
-For debug logging:
+For debug logging (writes to `debug.log` in app data dir):
 ```bash
-RUST_LOG=agent_of_empires=debug cargo run
+AGENT_OF_EMPIRES_DEBUG=1 cargo run
 ```
 
 ## Making Changes
