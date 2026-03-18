@@ -457,7 +457,7 @@ impl Instance {
                                         cmd = format!("{} {}", cmd, flag);
                                     }
                                     crate::agents::YoloMode::EnvVar(key, value) => {
-                                        cmd = format!("{}={} {}", key, value, cmd);
+                                        cmd = format!("{}='{}' {}", key, value, cmd);
                                     }
                                     crate::agents::YoloMode::AlwaysYolo => {}
                                 }
@@ -477,7 +477,7 @@ impl Instance {
                                 cmd = format!("{} {}", cmd, flag);
                             }
                             crate::agents::YoloMode::EnvVar(key, value) => {
-                                cmd = format!("{}={} {}", key, value, cmd);
+                                cmd = format!("{}='{}' {}", key, value, cmd);
                             }
                             crate::agents::YoloMode::AlwaysYolo => {}
                         }
@@ -771,6 +771,17 @@ mod tests {
         inst.yolo_mode = true;
         assert!(inst.is_yolo_mode());
         assert!(!inst.is_sandboxed());
+    }
+
+    #[test]
+    fn test_yolo_envvar_command_is_quoted() {
+        // EnvVar values containing JSON must be single-quoted to prevent
+        // shell expansion of special characters ({, *, ").
+        let key = "OPENCODE_PERMISSION";
+        let value = r#"{"*":"allow"}"#;
+        let cmd = "opencode";
+        let result = format!("{}='{}' {}", key, value, cmd);
+        assert_eq!(result, r#"OPENCODE_PERMISSION='{"*":"allow"}' opencode"#);
     }
 
     // Additional tests for is_sandboxed
