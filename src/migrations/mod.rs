@@ -12,13 +12,14 @@ mod v001_xdg_linux;
 mod v002_seed_sandbox_from_volumes;
 mod v003_yolo_mode_config;
 mod v004_unified_environment;
+mod v005_backfill_wrapper_flag;
 
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 4;
+const CURRENT_VERSION: u32 = 5;
 const VERSION_FILE: &str = ".schema_version";
 
 struct Migration {
@@ -47,6 +48,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "unified_environment",
         run: v004_unified_environment::run,
+    },
+    Migration {
+        version: 5,
+        name: "backfill_wrapper_flag",
+        run: v005_backfill_wrapper_flag::run,
     },
 ];
 
