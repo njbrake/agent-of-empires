@@ -160,7 +160,7 @@ sudo pacman -S alsa-utils pulseaudio
 - Check that sound files exist in `~/.config/agent-of-empires/sounds/`
 - Verify sounds are enabled in Settings
 - Test audio with: `aplay ~/.config/agent-of-empires/sounds/start.wav` (Linux)
-- Check logs: `AGENT_OF_EMPIRES_DEBUG=1 aoe`
+- Check logs: `AGENT_OF_EMPIRES_DEBUG=1 aoe` (writes to `debug.log` in app data dir)
 
 **Want Age of Empires II sounds?**
 If you own AoE II, manually copy the taunt files to your sounds directory.

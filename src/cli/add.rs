@@ -229,7 +229,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 main_repo_path: main_repo_path.to_string_lossy().to_string(),
                 managed_by_aoe: true,
                 created_at: Utc::now(),
-                cleanup_on_delete: true,
             });
 
             println!("✓ Worktree created successfully");

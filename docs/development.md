@@ -14,8 +14,7 @@ The release binary is at `target/release/aoe`.
 
 ```bash
 cargo run --release            # Run from source
-AGENT_OF_EMPIRES_DEBUG=1 cargo run  # With debug logging
-RUST_LOG=agent_of_empires=debug cargo run  # With env_logger debug output
+AGENT_OF_EMPIRES_DEBUG=1 cargo run  # Debug logging (writes to debug.log in app data dir)
 ```
 
 Requires `tmux` to be installed.

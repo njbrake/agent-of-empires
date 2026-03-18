@@ -29,6 +29,7 @@ fn test_delete_dialog_respects_worktree_auto_cleanup_true() {
             worktree_branch: Some("main".to_string()),
             has_sandbox: false,
         },
+        "default",
     );
     assert!(
         dialog.options().delete_worktree,
@@ -51,6 +52,7 @@ fn test_delete_dialog_respects_worktree_auto_cleanup_false() {
             worktree_branch: Some("main".to_string()),
             has_sandbox: false,
         },
+        "default",
     );
     assert!(
         !dialog.options().delete_worktree,
@@ -73,6 +75,7 @@ fn test_delete_dialog_respects_sandbox_auto_cleanup_true() {
             worktree_branch: None,
             has_sandbox: true,
         },
+        "default",
     );
     assert!(
         dialog.options().delete_sandbox,
@@ -95,6 +98,7 @@ fn test_delete_dialog_respects_sandbox_auto_cleanup_false() {
             worktree_branch: None,
             has_sandbox: true,
         },
+        "default",
     );
     assert!(
         !dialog.options().delete_sandbox,

@@ -13,10 +13,6 @@ use crate::tmux;
 use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalInfo {
     #[serde(default)]
@@ -45,8 +41,6 @@ pub struct WorktreeInfo {
     pub main_repo_path: String,
     pub managed_by_aoe: bool,
     pub created_at: DateTime<Utc>,
-    #[serde(default = "default_true")]
-    pub cleanup_on_delete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +51,10 @@ pub struct WorkspaceRepo {
     pub worktree_path: String,
     pub main_repo_path: String,
     pub managed_by_aoe: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,7 +395,7 @@ impl Instance {
                 // Install hooks in the user's home directory settings
                 if let Some(home) = dirs::home_dir() {
                     let settings_path = home.join(hook_cfg.settings_rel_path);
-                    if let Err(e) = crate::hooks::install_hooks(&settings_path) {
+                    if let Err(e) = crate::hooks::install_hooks(&settings_path, hook_cfg.events) {
                         tracing::warn!("Failed to install agent hooks: {}", e);
                     }
                 }
@@ -490,7 +488,7 @@ impl Instance {
                                         cmd = format!("{} {}", cmd, flag);
                                     }
                                     crate::agents::YoloMode::EnvVar(key, value) => {
-                                        cmd = format!("{}={} {}", key, value, cmd);
+                                        cmd = format_env_var_prefix(key, value, &cmd);
                                     }
                                     crate::agents::YoloMode::AlwaysYolo => {}
                                 }
@@ -510,7 +508,7 @@ impl Instance {
                                 cmd = format!("{} {}", cmd, flag);
                             }
                             crate::agents::YoloMode::EnvVar(key, value) => {
-                                cmd = format!("{}={} {}", key, value, cmd);
+                                cmd = format_env_var_prefix(key, value, &cmd);
                             }
                             crate::agents::YoloMode::AlwaysYolo => {}
                         }
@@ -734,6 +732,16 @@ fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
 }
 
+/// Format an environment variable assignment as a shell-safe command prefix.
+///
+/// Uses `shell_escape` (double-quote escaping) so the value is preserved
+/// verbatim when parsed by the inner `bash -c '...'` shell created by
+/// `wrap_command_ignore_suspend`.
+fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
+    let escaped = shell_escape(value);
+    format!("{}={} {}", key, escaped, cmd)
+}
+
 /// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
 ///
 /// When running agents directly as tmux session commands (without a parent shell),
@@ -804,6 +812,30 @@ mod tests {
         inst.yolo_mode = true;
         assert!(inst.is_yolo_mode());
         assert!(!inst.is_sandboxed());
+    }
+
+    #[test]
+    fn test_yolo_envvar_command_is_quoted() {
+        // EnvVar values containing JSON must be shell-escaped to prevent
+        // the inner bash from expanding special characters ({, *, ").
+        let result = format_env_var_prefix("OPENCODE_PERMISSION", r#"{"*":"allow"}"#, "opencode");
+        assert_eq!(
+            result,
+            r#"OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode"#
+        );
+    }
+
+    #[test]
+    fn test_yolo_envvar_survives_suspend_wrapper() {
+        // The full chain: format_env_var_prefix -> wrap_command_ignore_suspend
+        // must preserve the JSON value through both quoting layers.
+        let cmd = format_env_var_prefix("OPENCODE_PERMISSION", r#"{"*":"allow"}"#, "opencode");
+        let wrapped = wrap_command_ignore_suspend(&cmd);
+        assert!(
+            wrapped.contains(r#"OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode"#),
+            "wrapped command should contain the escaped env var assignment: {}",
+            wrapped,
+        );
     }
 
     // Additional tests for is_sandboxed
@@ -922,7 +954,6 @@ mod tests {
             main_repo_path: "/home/user/repo".to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
-            cleanup_on_delete: true,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -931,15 +962,6 @@ mod tests {
         assert_eq!(info.branch, deserialized.branch);
         assert_eq!(info.main_repo_path, deserialized.main_repo_path);
         assert_eq!(info.managed_by_aoe, deserialized.managed_by_aoe);
-        assert_eq!(info.cleanup_on_delete, deserialized.cleanup_on_delete);
-    }
-
-    #[test]
-    fn test_worktree_info_default_cleanup_on_delete() {
-        // Deserialize without cleanup_on_delete field - should default to true
-        let json = r#"{"branch":"test","main_repo_path":"/path","managed_by_aoe":true,"created_at":"2024-01-01T00:00:00Z"}"#;
-        let info: WorktreeInfo = serde_json::from_str(json).unwrap();
-        assert!(info.cleanup_on_delete);
     }
 
     // Tests for SandboxInfo
@@ -1020,7 +1042,6 @@ mod tests {
             main_repo_path: "/tmp/main".to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
-            cleanup_on_delete: true,
         });
 
         let json = serde_json::to_string(&inst).unwrap();

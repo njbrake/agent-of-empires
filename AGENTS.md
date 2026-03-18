@@ -32,7 +32,7 @@
 - `cargo test`: run unit + integration tests (some tests skip if `tmux` is unavailable).
 - `cargo fmt`: format with rustfmt (run before pushing).
 - `cargo clippy`: lint (fix warnings unless there’s a strong reason not to).
-- Debug logging: `RUST_LOG=agent_of_empires=debug cargo run` (or `AGENT_OF_EMPIRES_DEBUG=1 cargo run`).
+- Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes to `debug.log` in app data dir).
 
 ## Settings & Configuration
 

@@ -4,6 +4,8 @@
 
 Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi) inside isolated Docker containers while maintaining access to your project files and credentials.
 
+> **macOS users:** AoE also supports [Apple Containers](apple-containers.md) as a native alternative to Docker Desktop.
+
 **Key Features:**
 - One container per session
 - Shared authentication across containers (no re-auth needed)

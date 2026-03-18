@@ -48,7 +48,6 @@ fn test_add_session_with_worktree_flag() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
-        cleanup_on_delete: true,
     });
 
     assert!(wt_path.exists());
@@ -70,7 +69,6 @@ fn test_session_has_worktree_info_after_creation() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: now,
-        cleanup_on_delete: true,
     });
 
     let info = instance.worktree_info.as_ref().unwrap();
@@ -81,7 +79,6 @@ fn test_session_has_worktree_info_after_creation() {
     );
     assert!(info.managed_by_aoe);
     assert_eq!(info.created_at, now);
-    assert!(info.cleanup_on_delete);
 }
 
 #[test]
@@ -97,7 +94,6 @@ fn test_worktree_info_persists_across_save_load() {
         main_repo_path: "/original/repo".to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
-        cleanup_on_delete: false,
     });
 
     storage.save(&[instance.clone()]).unwrap();
@@ -109,7 +105,6 @@ fn test_worktree_info_persists_across_save_load() {
     assert_eq!(loaded_info.branch, "feature-branch");
     assert_eq!(loaded_info.main_repo_path, "/original/repo");
     assert!(loaded_info.managed_by_aoe);
-    assert!(!loaded_info.cleanup_on_delete);
 }
 
 #[test]
@@ -165,7 +160,6 @@ fn test_worktree_cleanup_on_session_removal() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
-        cleanup_on_delete: true,
     });
 
     git_wt.remove_worktree(&wt_path, false).unwrap();
@@ -192,11 +186,9 @@ fn test_worktree_preserved_when_keep_flag_used() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
-        cleanup_on_delete: false,
     });
 
     assert!(wt_path.exists());
-    assert!(!instance.worktree_info.as_ref().unwrap().cleanup_on_delete);
 }
 
 #[test]

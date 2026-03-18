@@ -118,6 +118,10 @@ impl App {
         })
     }
 
+    pub fn show_startup_warning(&mut self, message: &str) {
+        self.home.info_dialog = Some(crate::tui::dialogs::InfoDialog::new("Warning", message));
+    }
+
     pub fn set_theme(&mut self, name: &str) {
         self.theme = load_theme(name);
         self.needs_redraw = true;

@@ -124,7 +124,7 @@ impl Preview {
         let has_profile = !instance.source_profile.is_empty();
         let base = if has_profile { 4 } else { 3 };
         let info_height = if instance.worktree_info.is_some() {
-            base + 5 // blank + header + branch + main + managed
+            base + 4 // blank + header + branch + main
         } else {
             base
         };
@@ -198,23 +198,6 @@ impl Preview {
                 Span::styled(
                     shorten_path(&wt_info.main_repo_path),
                     Style::default().fg(theme.text),
-                ),
-            ]));
-
-            let managed_text = if wt_info.managed_by_aoe {
-                "Yes (delete branch on aoe session delete)"
-            } else {
-                "No (manual worktree)"
-            };
-            info_lines.push(Line::from(vec![
-                Span::styled("Managed: ", Style::default().fg(theme.dimmed)),
-                Span::styled(
-                    managed_text,
-                    Style::default().fg(if wt_info.managed_by_aoe {
-                        theme.worktree_managed
-                    } else {
-                        theme.worktree_manual
-                    }),
                 ),
             ]));
         }

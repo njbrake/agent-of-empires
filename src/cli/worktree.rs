@@ -93,14 +93,6 @@ async fn show_info(profile: &str, identifier: &str) -> Result<()> {
             if wt_info.managed_by_aoe { "Yes" } else { "No" }
         );
         println!(
-            "  Cleanup on delete: {}",
-            if wt_info.cleanup_on_delete {
-                "Yes"
-            } else {
-                "No"
-            }
-        );
-        println!(
             "  Created at:    {}",
             wt_info.created_at.format("%Y-%m-%d %H:%M:%S")
         );
