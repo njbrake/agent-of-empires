@@ -130,7 +130,10 @@ pub fn create_workspace(
             );
         }
 
-        let main_repo_path = GitWorktree::find_main_repo(repo_path)?;
+        let main_repo_path_raw = GitWorktree::find_main_repo(repo_path)?;
+        let main_repo_path = main_repo_path_raw
+            .canonicalize()
+            .unwrap_or(main_repo_path_raw);
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
         let repo_name = repo_path
@@ -233,7 +236,10 @@ pub fn build_instance(
             if !GitWorktree::is_git_repo(&path) {
                 bail!("Path is not in a git repository");
             }
-            let main_repo_path = GitWorktree::find_main_repo(&path)?;
+            let main_repo_path_raw = GitWorktree::find_main_repo(&path)?;
+            let main_repo_path = main_repo_path_raw
+                .canonicalize()
+                .unwrap_or(main_repo_path_raw);
             let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
             // Choose appropriate template based on repo type (bare vs regular)

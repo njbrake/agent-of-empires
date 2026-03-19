@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::containers::DockerContainer;
-use crate::git::cleanup::{cleanup_sandbox_worktree, remove_managed_worktree};
+use crate::git::cleanup::remove_managed_worktree;
 use crate::git::GitWorktree;
 use crate::session::Instance;
 
@@ -111,24 +111,24 @@ impl DeletionPoller {
                             let worktree_path = PathBuf::from(&repo.worktree_path);
                             let main_repo = PathBuf::from(&repo.main_repo_path);
 
-                            // Sandbox container cleanup for workspace worktrees
-                            let sandbox_cleaned = if request.instance.is_sandboxed() {
-                                cleanup_sandbox_worktree(&request.instance)
-                            } else {
-                                false
-                            };
-
-                            if let Ok(git_wt) = GitWorktree::new(main_repo) {
-                                if sandbox_cleaned {
-                                    let _ = std::fs::remove_dir(&worktree_path);
-                                    if let Err(e) = git_wt.prune_worktrees() {
-                                        errors.push(format!("Workspace worktree: {}", e));
+                            match GitWorktree::new(main_repo.clone()) {
+                                Ok(git_wt) => {
+                                    if let Err(errs) = remove_managed_worktree(
+                                        &git_wt,
+                                        &worktree_path,
+                                        &main_repo,
+                                        &request.instance,
+                                        request.force_delete,
+                                    ) {
+                                        errors.extend(
+                                            errs.into_iter().map(|e| {
+                                                format!("Workspace ({}): {}", repo.name, e)
+                                            }),
+                                        );
                                     }
-                                } else if let Err(e) =
-                                    git_wt.remove_worktree(&worktree_path, request.force_delete)
-                                {
-                                    errors
-                                        .push(format!("Workspace worktree ({}): {}", repo.name, e));
+                                }
+                                Err(e) => {
+                                    errors.push(format!("Workspace ({}): {}", repo.name, e));
                                 }
                             }
                         }
