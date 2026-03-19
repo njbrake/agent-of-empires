@@ -213,11 +213,16 @@ pub enum PollCommand {
 /// # Cleanup
 ///
 /// Cleanup is performed explicitly via `stop()` rather than `Drop` because
-/// the poller thread holds a clone of the command sender. Dropping the
-/// `SessionPoller` without `stop()` causes the thread to exit on the next
-/// `recv_timeout` when it detects channel disconnection, which may take up
-/// to `max_interval` seconds. Callers (Instance::kill, Instance::restart)
-/// call `stop()` explicitly for immediate shutdown.
+/// `Drop` alone cannot guarantee prompt shutdown. The poller thread holds
+/// the `cmd_rx` receiver; when `SessionPoller` drops, the corresponding
+/// `cmd_tx` sender is dropped too and `recv_timeout` returns `Disconnected`
+/// immediately -- so in the common case the thread exits promptly.
+///
+/// However, if the thread is blocked on `CaptureGate::wait` (up to
+/// `CAPTURE_GATE_TIMEOUT`), the channel disconnection is not checked until
+/// that wait completes. `stop()` sends an explicit `PollCommand::Stop` and
+/// joins the thread, providing a deterministic shutdown path for callers
+/// like `Instance::kill` and `Instance::restart`.
 pub struct SessionPoller {
     session_name: String,
     cmd_tx: mpsc::Sender<PollCommand>,

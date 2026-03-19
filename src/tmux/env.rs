@@ -60,6 +60,12 @@ pub fn get_hidden_env(session_name: &str, key: &str) -> Option<String> {
         }
     }
 
+    if let Ok(mut cache) = ENV_CACHE.write() {
+        if let Some(entries) = &mut cache.entries {
+            entries.remove(&cache_key);
+        }
+    }
+
     let value = fetch_hidden_env(session_name, key)?;
 
     if let Ok(mut cache) = ENV_CACHE.write() {
