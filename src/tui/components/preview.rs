@@ -1,5 +1,6 @@
 //! Preview panel component
 
+use ansi_to_tui::IntoText;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
@@ -91,12 +92,8 @@ impl Preview {
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else {
-            let output_lines: Vec<Line> = cached_output
-                .lines()
-                .map(|line| Line::from(Span::raw(line)))
-                .collect();
-
-            let line_count = output_lines.len();
+            let output_text = parse_output_text(cached_output);
+            let line_count = output_text.lines.len();
             let visible_height = inner.height as usize;
 
             let scroll_offset = if line_count > visible_height {
@@ -105,7 +102,7 @@ impl Preview {
                 0
             };
 
-            let paragraph = Paragraph::new(output_lines)
+            let paragraph = Paragraph::new(output_text)
                 .style(Style::default().fg(theme.text))
                 .scroll((scroll_offset, 0));
 
@@ -245,12 +242,8 @@ impl Preview {
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else {
-            let output_lines: Vec<Line> = cached_output
-                .lines()
-                .map(|line| Line::from(Span::raw(line)))
-                .collect();
-
-            let line_count = output_lines.len();
+            let output_text = parse_output_text(cached_output);
+            let line_count = output_text.lines.len();
             let visible_height = inner.height as usize;
 
             // Scroll to show the bottom of the content
@@ -260,13 +253,19 @@ impl Preview {
                 0
             };
 
-            let paragraph = Paragraph::new(output_lines)
+            let paragraph = Paragraph::new(output_text)
                 .style(Style::default().fg(theme.text))
                 .scroll((scroll_offset, 0));
 
             frame.render_widget(paragraph, inner);
         }
     }
+}
+
+fn parse_output_text(content: &str) -> Text<'static> {
+    content
+        .into_text()
+        .unwrap_or_else(|_| Text::from(content.to_string()))
 }
 
 fn shorten_path(path: &str) -> String {

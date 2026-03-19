@@ -143,6 +143,7 @@ impl TerminalSession {
                 "-t",
                 &target,
                 "-p",
+                "-e",
                 "-S",
                 &format!("-{}", lines),
             ])
@@ -292,6 +293,7 @@ impl ContainerTerminalSession {
                 "-t",
                 &target,
                 "-p",
+                "-e",
                 "-S",
                 &format!("-{}", lines),
             ])
