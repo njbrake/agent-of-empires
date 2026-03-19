@@ -679,8 +679,11 @@ impl Instance {
         // Check hook-based status first (more reliable than tmux pane parsing)
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
             tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
-            let crashed_to_shell = !self.expects_shell() && session.is_pane_running_shell();
-            self.status = if session.is_pane_dead() || crashed_to_shell {
+            // Trust hook status over shell detection. Wrapper scripts (e.g.
+            // Devbox, version managers) run agents via a shell process, so
+            // `is_pane_running_shell()` returns true even though the agent is
+            // healthy. Only check if the pane is actually dead.
+            self.status = if session.is_pane_dead() {
                 Status::Error
             } else {
                 hook_status
