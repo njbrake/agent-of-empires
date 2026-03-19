@@ -55,17 +55,9 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
             "Skip permission prompts for autonomous operation (--dangerously-skip-permissions)",
     },
     FieldHelp {
-        name: "Worktree Branch",
-        description: "Branch name for git worktree (Ctrl+P to browse existing branches)",
-    },
-    FieldHelp {
-        name: "New Branch",
+        name: "Worktree",
         description:
-            "Checked: create new branch. Unchecked: use existing (creates worktree if needed)",
-    },
-    FieldHelp {
-        name: "Extra Repos",
-        description: "Additional repo paths for workspace. Tab-completes paths, Ctrl+P to browse",
+            "Branch name for git worktree (Ctrl+P to configure branch mode and extra repos)",
     },
     FieldHelp {
         name: "Sandbox",
@@ -143,6 +135,10 @@ pub struct NewSessionDialog {
     pub(super) workspace_repo_ghost: Option<path_input::PathGhostCompletion>,
     /// Whether the dir picker was opened for a workspace repo (vs the main path)
     pub(super) workspace_repo_dir_picker_active: bool,
+    /// Worktree configuration overlay mode (Ctrl+P on worktree field)
+    pub(super) worktree_config_mode: bool,
+    /// Focused field within the worktree config overlay (0=new_branch, 1=extra_repos)
+    pub(super) worktree_config_focused_field: usize,
     /// Extra environment entries (session-specific).
     /// `KEY` = pass through, `KEY=VALUE` = set explicitly.
     pub(super) extra_env: Vec<String>,
@@ -392,6 +388,8 @@ impl NewSessionDialog {
             workspace_repo_adding_new: false,
             workspace_repo_ghost: None,
             workspace_repo_dir_picker_active: false,
+            worktree_config_mode: false,
+            worktree_config_focused_field: 0,
             sandbox_enabled,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -603,6 +601,8 @@ impl NewSessionDialog {
             workspace_repo_adding_new: false,
             workspace_repo_ghost: None,
             workspace_repo_dir_picker_active: false,
+            worktree_config_mode: false,
+            worktree_config_focused_field: 0,
             sandbox_enabled: false,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -662,6 +662,8 @@ impl NewSessionDialog {
             workspace_repo_adding_new: false,
             workspace_repo_ghost: None,
             workspace_repo_dir_picker_active: false,
+            worktree_config_mode: false,
+            worktree_config_focused_field: 0,
             sandbox_enabled: false,
             sandbox_image: Input::new(
                 containers::get_container_runtime().effective_default_image(),
@@ -726,6 +728,11 @@ impl NewSessionDialog {
             return self.handle_tool_config_key(key);
         }
 
+        // Delegate to worktree config mode handler when active
+        if self.worktree_config_mode {
+            return self.handle_worktree_config_key(key);
+        }
+
         if self.confirm_create_dir.is_some() {
             return self.handle_confirm_create_dir_key(key);
         }
@@ -771,10 +778,9 @@ impl NewSessionDialog {
         let has_profile_selection = self.available_profiles.len() > 1;
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
-        let has_worktree = !self.worktree_branch.value().is_empty();
         let has_yolo = !self.selected_tool_always_yolo();
-        // Field order: [profile], title, path, [tool], [yolo], worktree,
-        //   [new_branch], [sandbox], group
+        // Field order: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
+        // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
         // Tool config (extra_args, command_override) is in a Ctrl+P overlay on tool field.
         // Sandbox sub-options are in a separate sandbox_config_mode overlay.
         let profile_field = if has_profile_selection { 0 } else { usize::MAX };
@@ -795,35 +801,19 @@ impl NewSessionDialog {
             usize::MAX
         };
         let worktree_field = fi;
-        let new_branch_field = if has_worktree {
-            worktree_field + 1
-        } else {
-            usize::MAX
-        };
-        let mut next = if has_worktree {
-            new_branch_field + 1
-        } else {
-            worktree_field + 1
-        };
-        let extra_repos_field = if has_worktree {
-            let f = next;
-            next += 1;
-            f
-        } else {
-            usize::MAX
-        };
+        fi += 1;
         let sandbox_field = if has_sandbox {
-            let f = next;
-            next += 1;
+            let f = fi;
+            fi += 1;
             f
         } else {
             usize::MAX
         };
-        let group_field = next;
-        next += 1;
-        let max_field = next;
+        let group_field = fi;
+        fi += 1;
+        let max_field = fi;
 
-        // Ctrl+P opens a context-sensitive picker
+        // Ctrl+P opens a context-sensitive picker/config overlay
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.focused_field == self.path_field() {
                 let path_value = self.path.value().trim().to_string();
@@ -839,13 +829,9 @@ impl NewSessionDialog {
                 self.group_picker.activate(self.existing_groups.clone());
                 return DialogResult::Continue;
             }
-            if self.focused_field == worktree_field {
-                let path = std::path::Path::new(self.path.value().trim());
-                if let Ok(branches) = crate::git::diff::list_branches(path) {
-                    if !branches.is_empty() {
-                        self.branch_picker.activate(branches);
-                    }
-                }
+            if self.focused_field == worktree_field && !self.worktree_branch.value().is_empty() {
+                self.worktree_config_mode = true;
+                self.worktree_config_focused_field = 0;
                 return DialogResult::Continue;
             }
             if self.focused_field == sandbox_field && self.sandbox_enabled {
@@ -853,11 +839,6 @@ impl NewSessionDialog {
                 self.sandbox_focused_field = 0;
                 return DialogResult::Continue;
             }
-        }
-
-        // Handle workspace repos list editing when expanded
-        if self.workspace_repos_expanded && self.focused_field == extra_repos_field {
-            return self.handle_workspace_repos_list_key(key);
         }
 
         if self.handle_path_shortcuts(key) {
@@ -876,11 +857,6 @@ impl NewSessionDialog {
             KeyCode::Esc => {
                 self.error_message = None;
                 DialogResult::Cancel
-            }
-            KeyCode::Enter if self.focused_field == extra_repos_field => {
-                self.workspace_repos_expanded = true;
-                self.workspace_repo_selected_index = 0;
-                DialogResult::Continue
             }
             KeyCode::Enter => {
                 self.error_message = None;
@@ -967,12 +943,6 @@ impl NewSessionDialog {
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.focused_field == new_branch_field =>
-            {
-                self.create_new_branch = !self.create_new_branch;
-                DialogResult::Continue
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
                 if self.focused_field == sandbox_field =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
@@ -998,10 +968,8 @@ impl NewSessionDialog {
             _ => {
                 if self.focused_field != profile_field
                     && self.focused_field != tool_field
-                    && self.focused_field != new_branch_field
                     && self.focused_field != sandbox_field
                     && self.focused_field != yolo_mode_field
-                    && self.focused_field != extra_repos_field
                 {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
@@ -1121,6 +1089,72 @@ impl NewSessionDialog {
         }
     }
 
+    /// Handle key events when in worktree configuration mode.
+    fn handle_worktree_config_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
+        // Worktree config fields: 0=new_branch checkbox, 1=extra_repos list
+        const WT_NEW_BRANCH: usize = 0;
+        const WT_EXTRA_REPOS: usize = 1;
+        const WT_MAX: usize = 2;
+
+        // Handle workspace repos list editing when expanded
+        if self.workspace_repos_expanded && self.worktree_config_focused_field == WT_EXTRA_REPOS {
+            return self.handle_workspace_repos_list_key(key);
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.worktree_config_mode = false;
+                DialogResult::Continue
+            }
+            KeyCode::Char('?') => {
+                self.show_help = true;
+                DialogResult::Continue
+            }
+            // Ctrl+P on new_branch field opens branch picker
+            KeyCode::Char('p')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.worktree_config_focused_field == WT_NEW_BRANCH =>
+            {
+                let path = std::path::Path::new(self.path.value().trim());
+                if let Ok(branches) = crate::git::diff::list_branches(path) {
+                    if !branches.is_empty() {
+                        self.branch_picker.activate(branches);
+                    }
+                }
+                DialogResult::Continue
+            }
+            KeyCode::Enter if self.worktree_config_focused_field == WT_EXTRA_REPOS => {
+                self.workspace_repos_expanded = true;
+                self.workspace_repo_selected_index = 0;
+                DialogResult::Continue
+            }
+            KeyCode::Enter => {
+                self.worktree_config_mode = false;
+                DialogResult::Continue
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                self.worktree_config_focused_field =
+                    (self.worktree_config_focused_field + 1) % WT_MAX;
+                DialogResult::Continue
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.worktree_config_focused_field = if self.worktree_config_focused_field == 0 {
+                    WT_MAX - 1
+                } else {
+                    self.worktree_config_focused_field - 1
+                };
+                DialogResult::Continue
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.worktree_config_focused_field == WT_NEW_BRANCH =>
+            {
+                self.create_new_branch = !self.create_new_branch;
+                DialogResult::Continue
+            }
+            _ => DialogResult::Continue,
+        }
+    }
+
     /// Handle key events when the env list is expanded
     fn handle_env_list_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
         let validate =
@@ -1159,7 +1193,9 @@ impl NewSessionDialog {
                     .map(|i| i.value().trim().to_string())
                     .unwrap_or_default();
                 let initial = if initial.is_empty() {
-                    ".".to_string()
+                    std::env::current_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| ".".to_string())
                 } else {
                     initial
                 };
@@ -1195,6 +1231,29 @@ impl NewSessionDialog {
                     }
                 }
             }
+        }
+
+        // Intercept 'a' to pre-populate with the expanded cwd (like the main path field)
+        if self.workspace_repo_editing_input.is_none()
+            && key.code == KeyCode::Char('a')
+            && key.modifiers == KeyModifiers::NONE
+        {
+            let cwd = std::env::current_dir()
+                .map(|p| {
+                    let mut s = path_input::collapse_tilde(&p.to_string_lossy());
+                    if !s.ends_with('/') {
+                        s.push('/');
+                    }
+                    s
+                })
+                .unwrap_or_default();
+            self.workspace_repo_editing_input = Some(Input::new(cwd));
+            self.workspace_repo_adding_new = true;
+            self.workspace_repo_ghost = self
+                .workspace_repo_editing_input
+                .as_ref()
+                .and_then(path_input::compute_path_ghost);
+            return DialogResult::Continue;
         }
 
         let validate =
@@ -1269,30 +1328,16 @@ impl NewSessionDialog {
 
     fn current_input_mut(&mut self) -> &mut Input {
         let has_tool_selection = self.available_tools.len() > 1;
-        let has_worktree = !self.worktree_branch.value().is_empty();
         let has_yolo = !self.selected_tool_always_yolo();
         let base = if self.has_profile_selection() { 1 } else { 0 };
 
-        // Field layout: [profile], title, path, [tool], [yolo], worktree,
-        //   [new_branch], [extra_repos], [sandbox], group
+        // Field layout: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
         let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
         if has_yolo {
             fi += 1;
         }
         let worktree_field = fi;
-        let new_branch_field = if has_worktree {
-            worktree_field + 1
-        } else {
-            usize::MAX
-        };
-        let mut next = if has_worktree {
-            new_branch_field + 1
-        } else {
-            worktree_field + 1
-        };
-        if has_worktree {
-            next += 1; // extra_repos field
-        }
+        let mut next = worktree_field + 1;
         if self.docker_available {
             next += 1; // sandbox checkbox
         }

@@ -592,6 +592,7 @@ impl Instance {
             &self.tool,
             self.is_yolo_mode(),
             &self.id,
+            self.workspace_info.as_ref(),
         )
     }
 
