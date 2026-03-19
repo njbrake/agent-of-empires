@@ -24,6 +24,26 @@ pub enum YoloMode {
     AlwaysYolo,
 }
 
+/// How an agent resumes an existing session from the CLI.
+pub enum ResumeStrategy {
+    /// Append a flag (e.g. `--session <id>`). For agents where new and existing
+    /// sessions use the same flag.
+    Flag(&'static str),
+    /// Two different flags depending on whether conversation data already exists.
+    /// `existing` is used when there is prior conversation data (e.g. `--resume`),
+    /// `new_session` when creating/attaching unconditionally (e.g. `--session-id`).
+    FlagPair {
+        existing: &'static str,
+        new_session: &'static str,
+    },
+    /// Resume is a subcommand rather than a flag (e.g. `codex resume <id>`).
+    /// The subcommand + id are inserted right after the binary name so that
+    /// other flags land after it.
+    Subcommand(&'static str),
+    /// Agent does not support session resume.
+    Unsupported,
+}
+
 /// A single hook event that AoE registers in an agent's settings file.
 pub struct HookEvent {
     /// Event name as the agent expects it (e.g. `"PreToolUse"` for Claude Code).
@@ -39,7 +59,7 @@ pub struct AgentHookConfig {
     /// Path relative to the home dir where the agent's settings live
     /// (e.g. `.claude/settings.json`).
     pub settings_rel_path: &'static str,
-    /// Hook events to register (status transitions).
+    /// Hook events to register (status transitions and session lifecycle).
     pub events: &'static [HookEvent],
 }
 
@@ -70,6 +90,8 @@ pub struct AgentDef {
     /// hooks into the agent's settings file so status is written to a file instead
     /// of being parsed from tmux pane content.
     pub hook_config: Option<AgentHookConfig>,
+    /// How this agent resumes a prior session.
+    pub resume_strategy: ResumeStrategy,
 }
 
 /// Hook events shared by Claude Code and Cursor CLI.
@@ -94,6 +116,16 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
         matcher: Some("permission_prompt|elicitation_dialog"),
         status: Some("waiting"),
     },
+    HookEvent {
+        name: "SessionStart",
+        matcher: None,
+        status: None,
+    },
+    HookEvent {
+        name: "SessionEnd",
+        matcher: None,
+        status: None,
+    },
 ];
 
 pub const AGENTS: &[AgentDef] = &[
@@ -112,6 +144,10 @@ pub const AGENTS: &[AgentDef] = &[
             settings_rel_path: ".claude/settings.json",
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
+        resume_strategy: ResumeStrategy::FlagPair {
+            existing: "--resume",
+            new_session: "--session-id",
+        },
     },
     AgentDef {
         name: "opencode",
@@ -125,6 +161,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Flag("--session"),
     },
     AgentDef {
         name: "vibe",
@@ -138,6 +175,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_vibe_status,
         container_env: &[],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Flag("--resume"),
     },
     AgentDef {
         name: "codex",
@@ -153,6 +191,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Subcommand("resume"),
     },
     AgentDef {
         name: "gemini",
@@ -188,8 +227,19 @@ pub const AGENTS: &[AgentDef] = &[
                     matcher: Some("ToolPermission"),
                     status: Some("waiting"),
                 },
+                HookEvent {
+                    name: "SessionStart",
+                    matcher: None,
+                    status: None,
+                },
+                HookEvent {
+                    name: "SessionEnd",
+                    matcher: None,
+                    status: None,
+                },
             ],
         }),
+        resume_strategy: ResumeStrategy::Flag("--resume"),
     },
     AgentDef {
         name: "cursor",
@@ -206,6 +256,7 @@ pub const AGENTS: &[AgentDef] = &[
             settings_rel_path: ".cursor/settings.json",
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
+        resume_strategy: ResumeStrategy::Unsupported,
     },
     AgentDef {
         name: "copilot",
@@ -219,6 +270,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_copilot_status,
         container_env: &[("COPILOT_CONFIG_DIR", "/root/.copilot")],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Unsupported,
     },
     AgentDef {
         name: "pi",
@@ -233,6 +285,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_pi_status,
         container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
         hook_config: None,
+        resume_strategy: ResumeStrategy::Unsupported,
     },
 ];
 

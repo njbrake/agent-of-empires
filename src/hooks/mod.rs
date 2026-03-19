@@ -261,6 +261,9 @@ mod tests {
         assert!(hooks.contains_key("UserPromptSubmit"));
         assert!(hooks.contains_key("Stop"));
         assert!(hooks.contains_key("Notification"));
+        // SessionStart/SessionEnd have status: None, so they are skipped by shell one-liners
+        assert!(!hooks.contains_key("SessionStart"));
+        assert!(!hooks.contains_key("SessionEnd"));
     }
 
     #[test]

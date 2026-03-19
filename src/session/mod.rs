@@ -7,6 +7,7 @@ mod container_config;
 mod environment;
 mod groups;
 mod instance;
+pub mod poller;
 pub mod profile_config;
 pub mod repo_config;
 mod storage;
