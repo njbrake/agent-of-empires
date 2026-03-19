@@ -1947,3 +1947,114 @@ fn test_delete_group_scoped_to_owning_profile() {
         "beta's instance should still be in 'work'"
     );
 }
+
+#[test]
+#[serial]
+fn test_shift_n_opens_prefilled_dialog_from_session() {
+    let mut env = create_test_env_with_groups();
+    assert!(env.view.new_dialog.is_none());
+
+    // Move cursor to the "work-project" session (grouped under "work")
+    // flat_items: [Group("personal"), Session("personal-project"), Group("work"), Session("work-project"), Session("ungrouped")]
+    let work_session_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Session { id, .. } if env.view.get_instance(id).map(|i| i.title.as_str()) == Some("work-project")))
+        .expect("work-project session should exist in flat_items");
+    env.view.cursor = work_session_idx;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('N')));
+    let dialog = env.view.new_dialog.as_ref().expect("N should open dialog");
+    assert_eq!(dialog.path_value(), "/tmp/work");
+    assert_eq!(dialog.group_value(), "work");
+}
+
+#[test]
+#[serial]
+fn test_shift_n_opens_prefilled_dialog_from_group() {
+    let mut env = create_test_env_with_groups();
+
+    // Move cursor to a group row
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { path, .. } if path == "work"))
+        .expect("work group should exist in flat_items");
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('N')));
+    let dialog = env.view.new_dialog.as_ref().expect("N should open dialog");
+    assert_eq!(dialog.group_value(), "work");
+}
+
+#[test]
+#[serial]
+fn test_shift_n_does_nothing_with_no_selection() {
+    let mut env = create_test_env_empty();
+    env.view.handle_key(key(KeyCode::Char('N')));
+    assert!(
+        env.view.new_dialog.is_none(),
+        "N should not open dialog when nothing is selected"
+    );
+}
+
+#[test]
+#[serial]
+fn test_shift_n_prefills_main_repo_path_for_worktree_session() {
+    use crate::session::WorktreeInfo;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst = Instance::new("worktree-session", "/tmp/repo-worktrees/feature-branch");
+    inst.worktree_info = Some(WorktreeInfo {
+        branch: "feature-branch".to_string(),
+        main_repo_path: "/tmp/repo".to_string(),
+        managed_by_aoe: true,
+        created_at: chrono::Utc::now(),
+    });
+    storage.save(&[inst]).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+    view.cursor = 0;
+    view.update_selected();
+
+    view.handle_key(key(KeyCode::Char('N')));
+    let dialog = view.new_dialog.as_ref().expect("N should open dialog");
+    assert_eq!(
+        dialog.path_value(),
+        "/tmp/repo",
+        "Should pre-fill main_repo_path, not worktree path"
+    );
+}
+
+#[test]
+#[serial]
+fn test_shift_n_prefills_session_path_for_ungrouped() {
+    let mut env = create_test_env_with_groups();
+
+    // Move cursor to the ungrouped session
+    let ungrouped_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Session { id, .. } if env.view.get_instance(id).map(|i| i.title.as_str()) == Some("ungrouped")))
+        .expect("ungrouped session should exist");
+    env.view.cursor = ungrouped_idx;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('N')));
+    let dialog = env.view.new_dialog.as_ref().expect("N should open dialog");
+    assert_eq!(dialog.path_value(), "/tmp/u");
+    assert_eq!(
+        dialog.group_value(),
+        "",
+        "ungrouped session should not pre-fill group"
+    );
+}

@@ -423,6 +423,31 @@ impl NewSessionDialog {
         }
     }
 
+    /// Pre-fill the path field (e.g. from a selected session).
+    pub fn set_path(&mut self, path: String) {
+        self.path = Input::new(path);
+    }
+
+    /// Pre-fill the group field (e.g. from a selected session or group).
+    pub fn set_group(&mut self, group: String) {
+        self.group = Input::new(group);
+    }
+
+    #[cfg(test)]
+    pub fn path_value(&self) -> &str {
+        self.path.value()
+    }
+
+    #[cfg(test)]
+    pub fn group_value(&self) -> &str {
+        self.group.value()
+    }
+
+    #[cfg(test)]
+    pub fn profile_value(&self) -> &str {
+        &self.profile
+    }
+
     /// Set whether hooks will be executed during session creation
     pub fn set_has_hooks(&mut self, has_hooks: bool) {
         self.has_hooks = has_hooks;
