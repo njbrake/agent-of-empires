@@ -166,7 +166,7 @@ impl DeletionPoller {
         if request.delete_branch {
             if let Some(ws_info) = &request.instance.workspace_info {
                 let worktree_ok = !request.delete_worktree
-                    || !errors.iter().any(|e| e.starts_with("Workspace worktree"));
+                    || !errors.iter().any(|e| e.starts_with("Workspace ("));
                 if worktree_ok {
                     for repo in &ws_info.repos {
                         if repo.managed_by_aoe {
