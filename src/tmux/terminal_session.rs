@@ -136,7 +136,9 @@ impl TerminalSession {
             return Ok(String::new());
         }
 
-        let target = format!("{}:^", self.name);
+        // Use `^.0` to target the first window's first pane regardless of
+        // base-index or which pane is active.  See #435, #488.
+        let target = format!("{}:^.0", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
@@ -286,7 +288,9 @@ impl ContainerTerminalSession {
             return Ok(String::new());
         }
 
-        let target = format!("{}:^", self.name);
+        // Use `^.0` to target the first window's first pane regardless of
+        // base-index or which pane is active.  See #435, #488.
+        let target = format!("{}:^.0", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",

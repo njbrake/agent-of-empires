@@ -179,8 +179,9 @@ impl Session {
             return Ok(String::new());
         }
 
-        // Use `^` to target the first window's first pane regardless of base-index.
-        let target = format!("{}:^", self.name);
+        // Use `^.0` to target the first window's first pane regardless of
+        // base-index or which pane is active.  See #435, #488.
+        let target = format!("{}:^.0", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
