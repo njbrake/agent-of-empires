@@ -368,14 +368,16 @@ impl HomeView {
     fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250; // Refresh preview 4x/second max
 
-        let needs_refresh = match &self.selected_session {
-            Some(id) => {
-                self.preview_cache.session_id.as_ref() != Some(id)
-                    || self.preview_cache.dimensions != (width, height)
-                    || self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS
-            }
+        let session_changed = match &self.selected_session {
+            Some(id) => self.preview_cache.session_id.as_ref() != Some(id),
             None => false,
         };
+        let dims_changed = self.preview_cache.dimensions != (width, height);
+        let timer_expired =
+            self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS;
+
+        let needs_refresh =
+            self.selected_session.is_some() && (session_changed || dims_changed || timer_expired);
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
