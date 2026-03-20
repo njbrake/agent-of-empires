@@ -19,9 +19,9 @@ impl Preview {
         theme: &Theme,
     ) {
         let info_height = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
-            5
+            4 // title + path + status + sandbox
         } else {
-            4
+            3 // title + path + status
         };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
