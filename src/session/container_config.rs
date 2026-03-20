@@ -81,6 +81,17 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "opencode",
+        host_rel: ".config/opencode",
+        container_suffix: ".config/opencode",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
+    AgentConfigMount {
         tool_name: "codex",
         host_rel: ".codex",
         container_suffix: ".codex",
@@ -662,17 +673,6 @@ pub(crate) fn build_container_config(
             volumes.push(VolumeMount {
                 host_path: ssh_dir.to_string_lossy().to_string(),
                 container_path: format!("{}/.ssh", CONTAINER_HOME),
-                read_only: true,
-            });
-        }
-    }
-
-    if tool == "opencode" {
-        let opencode_config = home.join(".config").join("opencode");
-        if opencode_config.exists() {
-            volumes.push(VolumeMount {
-                host_path: opencode_config.to_string_lossy().to_string(),
-                container_path: format!("{}/.config/opencode", CONTAINER_HOME),
                 read_only: true,
             });
         }
@@ -1376,12 +1376,17 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_config_mounts_each_tool_has_exactly_one() {
+    fn test_agent_config_mounts_each_tool_has_expected_count() {
         let tool_names: Vec<&str> = AGENT_CONFIG_MOUNTS.iter().map(|m| m.tool_name).collect();
-        // Each tool name should appear exactly once
         for name in &tool_names {
             let count = tool_names.iter().filter(|n| *n == name).count();
-            assert_eq!(count, 1, "tool_name '{}' appears {} times", name, count);
+            // OpenCode has two mounts: data dir (.local/share/opencode) + config dir (.config/opencode)
+            let expected = if *name == "opencode" { 2 } else { 1 };
+            assert_eq!(
+                count, expected,
+                "tool_name '{}' appears {} times, expected {}",
+                name, count, expected
+            );
         }
     }
 
@@ -1393,6 +1398,16 @@ mod tests {
             .collect();
         assert_eq!(claude_mounts.len(), 1);
         assert_eq!(claude_mounts[0].host_rel, ".claude");
+
+        // OpenCode has both a data dir and a config dir mount
+        let opencode_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "opencode")
+            .collect();
+        assert_eq!(opencode_mounts.len(), 2);
+        let opencode_paths: Vec<&str> = opencode_mounts.iter().map(|m| m.host_rel).collect();
+        assert!(opencode_paths.contains(&".local/share/opencode"));
+        assert!(opencode_paths.contains(&".config/opencode"));
 
         let cursor_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
             .iter()
