@@ -53,58 +53,36 @@ impl SendMessageDialog {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_area = super::centered_rect(area, 70, 12);
+        // 2 for borders + 1 per content line, min 3 (single line), max 12
+        let content_lines = self.text_area.lines().len() as u16;
+        let height = (content_lines + 2).clamp(3, 12);
+        let dialog_area = super::centered_rect(area, 60, height);
 
         frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(format!(" {} ", self.session_title))
-            .title_style(Style::default().fg(theme.title).bold());
+            .border_style(Style::default().fg(theme.accent))
+            .title(format!(" > {} ", self.session_title))
+            .title_style(Style::default().fg(theme.accent).bold())
+            .title_bottom(
+                Line::from(vec![
+                    Span::styled(" Enter", Style::default().fg(theme.accent)),
+                    Span::styled(" send ", Style::default().fg(theme.dimmed)),
+                    Span::styled("Esc", Style::default().fg(theme.accent)),
+                    Span::styled(" cancel ", Style::default().fg(theme.dimmed)),
+                ])
+                .right_aligned(),
+            );
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(3),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-
-        // Prompt line styled like a terminal
-        let prompt = Line::from(vec![
-            Span::styled(" > ", Style::default().fg(theme.accent).bold()),
-            Span::styled(
-                "Type a message for the agent",
-                Style::default().fg(theme.dimmed),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(prompt), chunks[0]);
-
-        // Text area without extra border, just indented to align with prompt
-        let textarea_block = Block::default().padding(ratatui::widgets::Padding::horizontal(1));
-
         let mut text_area_clone = self.text_area.clone();
-        text_area_clone.set_block(textarea_block);
         text_area_clone.set_style(Style::default().fg(theme.text));
         text_area_clone.set_cursor_style(Style::default().fg(theme.background).bg(theme.accent));
 
-        frame.render_widget(&text_area_clone, chunks[1]);
-
-        // Hint bar
-        let hint = Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(theme.accent)),
-            Span::styled(" send  ", Style::default().fg(theme.dimmed)),
-            Span::styled("Shift+Enter", Style::default().fg(theme.accent)),
-            Span::styled(" newline  ", Style::default().fg(theme.dimmed)),
-            Span::styled("Esc", Style::default().fg(theme.accent)),
-            Span::styled(" cancel", Style::default().fg(theme.dimmed)),
-        ]);
-        frame.render_widget(Paragraph::new(hint), chunks[2]);
+        frame.render_widget(&text_area_clone, inner);
     }
 }
 
