@@ -18,6 +18,10 @@ pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (instances, _) = storage.load_with_groups()?;
 
+    if args.message.trim().is_empty() {
+        bail!("Message cannot be empty");
+    }
+
     let inst = super::resolve_session(&args.identifier, &instances)?;
     let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
 
