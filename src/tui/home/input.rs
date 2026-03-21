@@ -11,7 +11,7 @@ use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
     HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction,
-    RenameDialog, UnifiedDeleteDialog,
+    RenameDialog, SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -397,6 +397,41 @@ impl HomeView {
             return None;
         }
 
+        // Send message dialog
+        if let Some(dialog) = &mut self.send_message_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.send_message_dialog = None;
+                    self.pending_send_session = None;
+                }
+                DialogResult::Submit(message) => {
+                    self.send_message_dialog = None;
+                    if let Some(session_id) = self.pending_send_session.take() {
+                        if let Some(inst) = self.get_instance(&session_id) {
+                            match crate::tmux::Session::new(&inst.id, &inst.title) {
+                                Ok(tmux_session) => {
+                                    if let Err(e) = tmux_session.send_keys(&message) {
+                                        self.info_dialog = Some(InfoDialog::new(
+                                            "Send Failed",
+                                            &format!("Failed to send message: {}", e),
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    self.info_dialog = Some(InfoDialog::new(
+                                        "Send Failed",
+                                        &format!("Failed to resolve session: {}", e),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
         // Search mode
         if self.search_active {
             match key.code {
@@ -703,6 +738,20 @@ impl HomeView {
                             profiles,
                             existing_groups,
                         ));
+                    }
+                }
+            }
+            KeyCode::Char('m') => {
+                if let Some(id) = self.selected_session.clone() {
+                    if let Some(inst) = self.get_instance(&id) {
+                        let title = inst.title.clone();
+                        let inst_id = inst.id.clone();
+                        let tmux_session = crate::tmux::Session::new(&inst_id, &title).ok();
+                        let is_running = tmux_session.as_ref().is_some_and(|s| s.exists());
+                        if is_running {
+                            self.pending_send_session = Some(id);
+                            self.send_message_dialog = Some(SendMessageDialog::new(&title));
+                        }
                     }
                 }
             }

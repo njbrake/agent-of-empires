@@ -120,6 +120,10 @@ impl HomeView {
         if let Some(dialog) = &self.profile_picker_dialog {
             dialog.render(frame, area, theme);
         }
+
+        if let Some(dialog) = &self.send_message_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -628,6 +632,14 @@ impl HomeView {
             Span::styled(" n", key_style),
             Span::styled(" New ", desc_style),
         ]);
+
+        if self.selected_session.is_some() {
+            spans.extend([
+                Span::styled("│", sep_style),
+                Span::styled(" m", key_style),
+                Span::styled(" Msg ", desc_style),
+            ]);
+        }
 
         if !self.flat_items.is_empty() {
             spans.extend([

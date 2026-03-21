@@ -221,6 +221,38 @@ impl Session {
             &content, tool, fg_pid,
         ))
     }
+
+    /// Send literal text to the session's first window pane, followed by Enter.
+    /// Multi-line text is sent line by line, each followed by Enter.
+    pub fn send_keys(&self, text: &str) -> Result<()> {
+        if !self.exists() {
+            bail!("Session does not exist: {}", self.name);
+        }
+
+        let target = format!("{}:^.0", self.name);
+
+        for line in text.lines() {
+            let output = Command::new("tmux")
+                .args(["send-keys", "-t", &target, "-l", line])
+                .output()?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Failed to send keys: {}", stderr);
+            }
+
+            let output = Command::new("tmux")
+                .args(["send-keys", "-t", &target, "Enter"])
+                .output()?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Failed to send Enter: {}", stderr);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn sanitize_session_name(name: &str) -> String {
