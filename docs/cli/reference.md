@@ -9,6 +9,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe init`↴](#aoe-init)
 * [`aoe list`↴](#aoe-list)
 * [`aoe remove`↴](#aoe-remove)
+* [`aoe send`↴](#aoe-send)
 * [`aoe status`↴](#aoe-status)
 * [`aoe session`↴](#aoe-session)
 * [`aoe session start`↴](#aoe-session-start)
@@ -57,6 +58,7 @@ Run without arguments to launch the TUI dashboard.
 * `init` — Initialize .aoe/config.toml in a repository
 * `list` — List all sessions
 * `remove` — Remove a session
+* `send` — Send a message to a running agent session
 * `status` — Show session status summary
 * `session` — Manage session lifecycle (start, stop, attach, etc.)
 * `group` — Manage groups for organizing sessions
@@ -147,6 +149,19 @@ Remove a session
 * `--delete-branch` — Delete git branch after worktree removal (default: per config)
 * `--force` — Force worktree removal even with untracked/modified files
 * `--keep-container` — Keep container instead of deleting it (default: delete per config)
+
+
+
+## `aoe send`
+
+Send a message to a running agent session
+
+**Usage:** `aoe send <IDENTIFIER> <MESSAGE>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+* `<MESSAGE>` — Message to send to the agent
 
 
 

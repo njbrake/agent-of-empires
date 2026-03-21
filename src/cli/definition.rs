@@ -12,6 +12,7 @@ use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
 use super::remove::RemoveArgs;
+use super::send::SendArgs;
 use super::session::SessionCommands;
 use super::sounds::SoundsCommands;
 use super::status::StatusArgs;
@@ -54,6 +55,9 @@ pub enum Commands {
     /// Remove a session
     #[command(alias = "rm")]
     Remove(RemoveArgs),
+
+    /// Send a message to a running agent session
+    Send(SendArgs),
 
     /// Show session status summary
     Status(StatusArgs),

@@ -11,6 +11,7 @@ mod info;
 mod new_session;
 mod profile_picker;
 mod rename;
+mod send_message;
 mod welcome;
 
 pub use changelog::ChangelogDialog;
@@ -24,6 +25,7 @@ pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
 pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};
 pub use rename::{RenameData, RenameDialog};
+pub use send_message::SendMessageDialog;
 pub use welcome::WelcomeDialog;
 
 pub enum DialogResult<T> {
