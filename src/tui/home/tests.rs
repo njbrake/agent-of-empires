@@ -2058,3 +2058,32 @@ fn test_shift_n_prefills_session_path_for_ungrouped() {
         "ungrouped session should not pre-fill group"
     );
 }
+
+#[test]
+fn effective_list_width_clamps_on_small_screens() {
+    // The formula: list_width.min(available.saturating_sub(40)).max(10)
+    let clamp = |list_width: u16, available: u16| -> u16 {
+        list_width.min(available.saturating_sub(40)).max(10)
+    };
+
+    // Normal screen (120 cols): list_width 35 fits fine
+    assert_eq!(clamp(35, 120), 35);
+
+    // Medium screen (80 cols): list_width 35 still fits (80-40=40 > 35)
+    assert_eq!(clamp(35, 80), 35);
+
+    // Small screen (60 cols): list capped to 20, leaving 40 for preview
+    assert_eq!(clamp(35, 60), 20);
+
+    // Very small screen (50 cols): list capped to 10 (minimum)
+    assert_eq!(clamp(35, 50), 10);
+
+    // Tiny screen (30 cols): list stays at minimum 10
+    assert_eq!(clamp(35, 30), 10);
+
+    // User-resized list to 50 on a 100-col screen: capped to 60, but 50 < 60
+    assert_eq!(clamp(50, 100), 50);
+
+    // User-resized list to 50 on a 70-col screen: capped to 30, but min 10
+    assert_eq!(clamp(50, 70), 30);
+}

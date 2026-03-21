@@ -114,10 +114,15 @@ impl DiffView {
 
     fn render_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Split into file list (left) and diff content (right)
+        // On small screens, cap file list width so the diff pane gets adequate space
+        let effective_file_list_width = self
+            .file_list_width
+            .min(area.width.saturating_sub(40))
+            .max(5);
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(self.file_list_width),
+                Constraint::Length(effective_file_list_width),
                 Constraint::Min(40),
             ])
             .split(area);

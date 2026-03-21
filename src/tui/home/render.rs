@@ -59,9 +59,18 @@ impl HomeView {
             .split(area);
 
         // Layout: left panel (list) and right panel (preview)
+        // On small screens, cap list width so the preview pane gets adequate space
+        let available_width = main_chunks[0].width;
+        let effective_list_width = self
+            .list_width
+            .min(available_width.saturating_sub(40))
+            .max(10);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(self.list_width), Constraint::Min(40)])
+            .constraints([
+                Constraint::Length(effective_list_width),
+                Constraint::Min(40),
+            ])
             .split(main_chunks[0]);
 
         self.render_list(frame, chunks[0], theme);
