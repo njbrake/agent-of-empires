@@ -332,6 +332,7 @@ impl HomeView {
 
         let is_collapsed = self.collapsed_sessions.contains(id);
         let has_worktree = inst.worktree_info.is_some();
+        let has_workspace = inst.workspace_info.is_some();
         let has_sandbox = inst.is_sandboxed();
 
         if is_collapsed {
@@ -341,7 +342,7 @@ impl HomeView {
             spans.push(Span::styled(format!("{} ", icon), icon_style));
             spans.push(Span::styled(inst.title.clone(), title_style));
 
-            if has_worktree {
+            if has_workspace || has_worktree {
                 spans.push(Span::styled(
                     format!(" {}", ICON_INDICATOR),
                     Style::default().fg(theme.branch),
@@ -377,7 +378,12 @@ impl HomeView {
         // Collect detail entries: (text, style)
         let mut details: Vec<(String, Style)> = Vec::new();
 
-        if let Some(wt_info) = &inst.worktree_info {
+        if let Some(ws_info) = &inst.workspace_info {
+            details.push((
+                format!("{} [{} repos]", ws_info.branch, ws_info.repos.len()),
+                Style::default().fg(theme.branch),
+            ));
+        } else if let Some(wt_info) = &inst.worktree_info {
             details.push((wt_info.branch.clone(), Style::default().fg(theme.branch)));
 
             // Worktree directory name -- skip if it matches the branch (dedup)
@@ -443,14 +449,16 @@ impl HomeView {
     fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250; // Refresh preview 4x/second max
 
-        let needs_refresh = match &self.selected_session {
-            Some(id) => {
-                self.preview_cache.session_id.as_ref() != Some(id)
-                    || self.preview_cache.dimensions != (width, height)
-                    || self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS
-            }
+        let session_changed = match &self.selected_session {
+            Some(id) => self.preview_cache.session_id.as_ref() != Some(id),
             None => false,
         };
+        let dims_changed = self.preview_cache.dimensions != (width, height);
+        let timer_expired =
+            self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS;
+
+        let needs_refresh =
+            self.selected_session.is_some() && (session_changed || dims_changed || timer_expired);
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
@@ -662,7 +670,10 @@ impl HomeView {
         // Show h/l Fold hint when a session with details is selected
         if let Some(id) = &self.selected_session {
             if let Some(inst) = self.instance_map.get(id) {
-                if inst.worktree_info.is_some() || inst.is_sandboxed() {
+                if inst.worktree_info.is_some()
+                    || inst.workspace_info.is_some()
+                    || inst.is_sandboxed()
+                {
                     spans.extend([
                         Span::styled("│", sep_style),
                         Span::styled(" h/l", key_style),

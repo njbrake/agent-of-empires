@@ -56,11 +56,27 @@ pub fn append_remain_on_exit_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
+/// Append `; set-option -t <target> pane-base-index 0` to an in-flight tmux
+/// argument list so that pane indices always start at 0 regardless of the
+/// user's global config.  This lets status checks use `.0` to reliably target
+/// the agent's pane.  See #488.
+pub fn append_pane_base_index_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "pane-base-index".to_string(),
+        "0".to_string(),
+    ]);
+}
+
 pub fn is_pane_dead(session_name: &str) -> bool {
-    // Use `^` to target the first window's first pane regardless of
-    // base-index, so the check always hits the agent's pane even when the
-    // user has created additional tmux windows.  See #435.
-    let target = format!("{session_name}:^");
+    // Use `^.0` to target the first window's first pane regardless of
+    // base-index or which pane is active, so the check always hits the
+    // agent's pane even when the user has created additional tmux windows
+    // or split panes.  See #435, #488.
+    let target = format!("{session_name}:^.0");
     Command::new("tmux")
         .args(["display-message", "-t", &target, "-p", "#{pane_dead}"])
         .output()
@@ -71,8 +87,9 @@ pub fn is_pane_dead(session_name: &str) -> bool {
 }
 
 fn pane_current_command(session_name: &str) -> Option<String> {
-    // Use `^` to target the first window's first pane regardless of base-index.
-    let target = format!("{session_name}:^");
+    // Use `^.0` to target the first window's first pane regardless of
+    // base-index or which pane is active.  See #435, #488.
+    let target = format!("{session_name}:^.0");
     Command::new("tmux")
         .args([
             "display-message",

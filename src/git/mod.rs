@@ -68,9 +68,13 @@ impl GitWorktree {
             let bare_repo_path = repo.path().to_path_buf();
             let parent_dir = bare_repo_path.parent().ok_or(GitError::NotAGitRepo)?;
 
-            // For linked setups where the parent has a `.git` entry pointing to the bare repo
-            // (e.g. `/repo/.git -> ./.bare`), use the parent as the main repo path.
-            if parent_dir.join(".git").exists() {
+            // For linked setups where the parent has a `.git` file (not a directory)
+            // pointing to the bare repo (e.g. `/repo/.git` containing `gitdir: ./.bare`),
+            // use the parent as the main repo path.  We check `is_file()` rather than
+            // `exists()` to avoid being fooled by spurious `.git/` directories created by
+            // external tools (e.g. opencode drops a state file in `.git/` wherever it runs,
+            // including inside bare-repo parent directories).
+            if parent_dir.join(".git").is_file() {
                 return Ok(parent_dir.to_path_buf());
             }
 
@@ -119,7 +123,7 @@ impl GitWorktree {
         let git_or_bare_dir = worktrees_dir.parent()?;
         let parent_dir = git_or_bare_dir.parent()?;
         if git_or_bare_dir.file_name() == Some(OsStr::new(".git"))
-            || parent_dir.join(".git").exists()
+            || parent_dir.join(".git").is_file()
         {
             return Some(parent_dir.to_path_buf());
         }
@@ -1225,5 +1229,135 @@ mod tests {
 
         assert!(wt_path.exists());
         assert!(wt_path.join(".git").exists());
+    }
+
+    /// Sets up a bare repo whose parent directory contains a spurious `.git/` directory
+    /// (e.g. created by an external tool storing state files there).
+    fn setup_bare_repo_whose_parent_has_spurious_git_dir() -> Option<(TempDir, PathBuf)> {
+        let dir = TempDir::new().unwrap();
+
+        // Simulate what opencode does: create a `.git/` directory in the parent and
+        // drop a state file into it.  This is the exact scenario seen in production.
+        let spurious_git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&spurious_git_dir).unwrap();
+        std::fs::write(spurious_git_dir.join("opencode"), "some-sha\n").unwrap();
+
+        // Create the actual bare repo as a subdirectory of the parent.
+        let bare_path = dir.path().join("bare");
+        let init = std::process::Command::new("git")
+            .args(["init", "--bare", bare_path.to_str().unwrap()])
+            .output()
+            .ok()?;
+        if !init.status.success() {
+            return None;
+        }
+
+        // Give the bare repo an initial commit so HEAD resolves.
+        {
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let repo = git2::Repository::open_bare(&bare_path).unwrap();
+            let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+                .unwrap();
+        }
+
+        // Create a linked worktree (this is what creates bare/worktrees/ and bare/main/).
+        let main_wt = bare_path.join("main");
+        let add = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                bare_path.to_str().unwrap(),
+                "worktree",
+                "add",
+                main_wt.to_str().unwrap(),
+                "HEAD",
+            ])
+            .output()
+            .ok()?;
+        if !add.status.success() || !main_wt.exists() {
+            return None;
+        }
+
+        Some((dir, bare_path))
+    }
+
+    #[test]
+    fn test_find_main_repo_for_bare_repo_whose_parent_has_spurious_git_dir() {
+        let Some((_dir, bare_path)) = setup_bare_repo_whose_parent_has_spurious_git_dir() else {
+            return;
+        };
+
+        let result = GitWorktree::find_main_repo(&bare_path);
+        assert!(
+            result.is_ok(),
+            "find_main_repo should succeed for a bare repo whose parent has a \
+             spurious .git/ directory, got: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap().canonicalize().unwrap(),
+            bare_path.canonicalize().unwrap(),
+            "find_main_repo should return the bare repo root itself, not its parent"
+        );
+    }
+
+    #[test]
+    fn test_find_main_repo_from_worktree_with_spurious_parent_git_dir() {
+        let Some((_dir, bare_path)) = setup_bare_repo_whose_parent_has_spurious_git_dir() else {
+            return;
+        };
+
+        // find_main_repo from a linked worktree inside the bare repo should resolve
+        // back to the bare repo, not to the parent with the spurious .git/ dir.
+        let worktree_path = bare_path.join("main");
+        let result = GitWorktree::find_main_repo(&worktree_path);
+        assert!(
+            result.is_ok(),
+            "find_main_repo from worktree should succeed, got: {:?}",
+            result.err()
+        );
+        let resolved = result.unwrap().canonicalize().unwrap();
+        let expected = bare_path.canonicalize().unwrap();
+        assert_eq!(
+            resolved, expected,
+            "should resolve to bare repo, not parent"
+        );
+    }
+
+    #[test]
+    fn test_full_builder_flow_for_bare_repo_whose_parent_has_spurious_git_dir() {
+        let Some((_dir, bare_path)) = setup_bare_repo_whose_parent_has_spurious_git_dir() else {
+            return;
+        };
+
+        // Mimic the exact flow executed by builder.rs / cli/add.rs.
+        assert!(
+            GitWorktree::is_git_repo(&bare_path),
+            "is_git_repo must return true before the builder proceeds"
+        );
+
+        let main_repo_path = GitWorktree::find_main_repo(&bare_path).unwrap();
+
+        // This is the call that fails before the fix: find_main_repo returns the
+        // parent directory, and GitWorktree::new then rejects it as NotAGitRepo.
+        let git_wt = GitWorktree::new(main_repo_path.clone())
+            .expect("GitWorktree::new should succeed with the resolved bare repo path");
+
+        assert!(
+            GitWorktree::is_bare_repo(&main_repo_path),
+            "Should be detected as a bare repo"
+        );
+
+        let wt_path = bare_path.join("new-feature");
+        git_wt
+            .create_worktree("new-feature", &wt_path, true)
+            .unwrap();
+
+        assert!(wt_path.exists(), "Worktree directory should be created");
+        assert!(
+            wt_path.join(".git").is_file(),
+            "Worktree should have a .git pointer file"
+        );
     }
 }

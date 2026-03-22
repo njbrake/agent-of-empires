@@ -1,5 +1,6 @@
 //! Preview panel component
 
+use ansi_to_tui::IntoText;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
@@ -18,9 +19,9 @@ impl Preview {
         theme: &Theme,
     ) {
         let info_height = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
-            5
+            4 // title + path + status + sandbox
         } else {
-            4
+            3 // title + path + status
         };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -91,12 +92,8 @@ impl Preview {
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else {
-            let output_lines: Vec<Line> = cached_output
-                .lines()
-                .map(|line| Line::from(Span::raw(line)))
-                .collect();
-
-            let line_count = output_lines.len();
+            let output_text = parse_output_text(cached_output);
+            let line_count = output_text.lines.len();
             let visible_height = inner.height as usize;
 
             let scroll_offset = if line_count > visible_height {
@@ -105,7 +102,7 @@ impl Preview {
                 0
             };
 
-            let paragraph = Paragraph::new(output_lines)
+            let paragraph = Paragraph::new(output_text)
                 .style(Style::default().fg(theme.text))
                 .scroll((scroll_offset, 0));
 
@@ -124,7 +121,7 @@ impl Preview {
         let has_profile = !instance.source_profile.is_empty();
         let base = if has_profile { 4 } else { 3 };
         let info_height = if instance.worktree_info.is_some() {
-            base + 5 // blank + header + branch + main + managed
+            base + 4 // blank + header + branch + main
         } else {
             base
         };
@@ -200,23 +197,6 @@ impl Preview {
                     Style::default().fg(theme.text),
                 ),
             ]));
-
-            let managed_text = if wt_info.managed_by_aoe {
-                "Yes (delete branch on aoe session delete)"
-            } else {
-                "No (manual worktree)"
-            };
-            info_lines.push(Line::from(vec![
-                Span::styled("Managed: ", Style::default().fg(theme.dimmed)),
-                Span::styled(
-                    managed_text,
-                    Style::default().fg(if wt_info.managed_by_aoe {
-                        theme.worktree_managed
-                    } else {
-                        theme.worktree_manual
-                    }),
-                ),
-            ]));
         }
 
         let paragraph = Paragraph::new(info_lines);
@@ -262,12 +242,8 @@ impl Preview {
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         } else {
-            let output_lines: Vec<Line> = cached_output
-                .lines()
-                .map(|line| Line::from(Span::raw(line)))
-                .collect();
-
-            let line_count = output_lines.len();
+            let output_text = parse_output_text(cached_output);
+            let line_count = output_text.lines.len();
             let visible_height = inner.height as usize;
 
             // Scroll to show the bottom of the content
@@ -277,13 +253,19 @@ impl Preview {
                 0
             };
 
-            let paragraph = Paragraph::new(output_lines)
+            let paragraph = Paragraph::new(output_text)
                 .style(Style::default().fg(theme.text))
                 .scroll((scroll_offset, 0));
 
             frame.render_widget(paragraph, inner);
         }
     }
+}
+
+fn parse_output_text(content: &str) -> Text<'static> {
+    content
+        .into_text()
+        .unwrap_or_else(|_| Text::from(content.to_string()))
 }
 
 fn shorten_path(path: &str) -> String {

@@ -27,6 +27,12 @@ impl NewSessionDialog {
             return;
         }
 
+        // If in worktree config mode, render that overlay instead
+        if self.worktree_config_mode {
+            self.render_worktree_config(frame, area, theme);
+            return;
+        }
+
         let has_profile_selection = self.has_profile_selection();
         let has_tool_selection = self.available_tools.len() > 1;
         let has_sandbox = self.docker_available;
@@ -48,9 +54,6 @@ impl NewSessionDialog {
             constraints.push(Constraint::Length(2)); // YOLO mode checkbox
         }
         constraints.push(Constraint::Length(2)); // Worktree Branch
-        if has_worktree {
-            constraints.push(Constraint::Length(2)); // New Branch checkbox
-        }
         if has_sandbox {
             constraints.push(Constraint::Length(2)); // Sandbox checkbox (summary only)
         }
@@ -113,20 +116,15 @@ impl NewSessionDialog {
             usize::MAX
         };
         let worktree_field = fi;
-        let new_branch_field = worktree_field + 1;
-        let mut next_field_idx = if has_worktree {
-            new_branch_field + 1
-        } else {
-            worktree_field + 1
-        };
+        fi += 1;
         let sandbox_field = if has_sandbox {
-            let f = next_field_idx;
-            next_field_idx += 1;
+            let f = fi;
+            fi += 1;
             f
         } else {
             usize::MAX
         };
-        let group_field = next_field_idx;
+        let group_field = fi;
 
         // Profile picker (only when multiple profiles)
         if has_profile_selection {
@@ -257,56 +255,80 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Worktree Branch
-        let worktree_placeholder = if self.focused_field == worktree_field {
-            Some("(leave empty to skip | Ctrl+P to browse branches)")
-        } else {
-            Some("(leave empty to skip worktree)")
-        };
-        render_text_field(
-            frame,
-            chunks[ci],
-            "Worktree Branch:",
-            &self.worktree_branch,
-            self.focused_field == worktree_field,
-            worktree_placeholder,
-            theme,
-        );
-        ci += 1;
+        // Worktree Branch (with config summary)
+        {
+            let is_wt_focused = self.focused_field == worktree_field;
+            let wt_value = self.worktree_branch.value();
 
-        // New Branch checkbox (only when worktree is set)
-        if has_worktree {
-            let is_nb_focused = self.focused_field == new_branch_field;
-            let nb_label_style = if is_nb_focused {
-                Style::default().fg(theme.accent).underlined()
+            if wt_value.is_empty() {
+                render_text_field(
+                    frame,
+                    chunks[ci],
+                    "Worktree:",
+                    &self.worktree_branch,
+                    is_wt_focused,
+                    Some("(leave empty to skip worktree)"),
+                    theme,
+                );
             } else {
-                Style::default().fg(theme.text)
-            };
-            let checkbox = if self.create_new_branch { "[x]" } else { "[ ]" };
-            let checkbox_style = if self.create_new_branch {
-                Style::default().fg(theme.accent).bold()
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-            let nb_text = if self.create_new_branch {
-                "Create new branch"
-            } else {
-                "Attach to existing branch"
-            };
-            let nb_line = Line::from(vec![
-                Span::styled("New Branch:", nb_label_style),
-                Span::raw(" "),
-                Span::styled(checkbox, checkbox_style),
-                Span::styled(
-                    format!(" {}", nb_text),
-                    if self.create_new_branch {
-                        Style::default().fg(theme.accent)
-                    } else {
-                        Style::default().fg(theme.dimmed)
-                    },
-                ),
-            ]);
-            frame.render_widget(Paragraph::new(nb_line), chunks[ci]);
+                // Non-empty: show value + config summary + Ctrl+P hint
+                let label_style = if is_wt_focused {
+                    Style::default().fg(theme.accent).underlined()
+                } else {
+                    Style::default().fg(theme.text)
+                };
+
+                let mut spans = vec![Span::styled("Worktree:", label_style), Span::raw(" ")];
+
+                if is_wt_focused {
+                    let cursor_pos = self.worktree_branch.visual_cursor();
+                    let before: String = wt_value.chars().take(cursor_pos).collect();
+                    let cursor_char: String = wt_value
+                        .chars()
+                        .nth(cursor_pos)
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| " ".to_string());
+                    let after: String = wt_value.chars().skip(cursor_pos + 1).collect();
+                    if !before.is_empty() {
+                        spans.push(Span::styled(before, Style::default().fg(theme.accent)));
+                    }
+                    spans.push(Span::styled(
+                        cursor_char,
+                        Style::default().fg(theme.background).bg(theme.accent),
+                    ));
+                    if !after.is_empty() {
+                        spans.push(Span::styled(after, Style::default().fg(theme.accent)));
+                    }
+                } else {
+                    spans.push(Span::styled(
+                        wt_value.to_string(),
+                        Style::default().fg(theme.accent),
+                    ));
+                }
+
+                // Summary of config
+                let branch_mode = if self.create_new_branch {
+                    "new"
+                } else {
+                    "existing"
+                };
+                let repos_count = self.workspace_repos.len();
+                let summary = if repos_count > 0 {
+                    format!("  ({}, {} repos)", branch_mode, repos_count)
+                } else {
+                    format!("  ({})", branch_mode)
+                };
+                spans.push(Span::styled(summary, Style::default().fg(theme.dimmed)));
+
+                if is_wt_focused {
+                    spans.push(Span::styled(
+                        "  (Ctrl+P to configure)",
+                        Style::default().fg(theme.dimmed),
+                    ));
+                }
+
+                frame.render_widget(Paragraph::new(Line::from(spans)), chunks[ci]);
+            }
             ci += 1;
         }
 
@@ -432,9 +454,9 @@ impl NewSessionDialog {
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" configure  "));
             }
-            if self.focused_field == worktree_field {
+            if self.focused_field == worktree_field && has_worktree {
                 hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
-                hint_spans.push(Span::raw(" branches  "));
+                hint_spans.push(Span::raw(" configure  "));
             }
             hint_spans.push(Span::styled("Enter", Style::default().fg(theme.hint)));
             hint_spans.push(Span::raw(" create  "));
@@ -745,6 +767,132 @@ impl NewSessionDialog {
         }
     }
 
+    fn render_worktree_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let dialog_width: u16 = 72;
+
+        let repos_height: u16 = if self.workspace_repos_expanded {
+            (2 + self.workspace_repos.len() as u16).clamp(4, 8)
+        } else {
+            2
+        };
+
+        let constraints = vec![
+            Constraint::Length(2),            // New Branch checkbox
+            Constraint::Length(repos_height), // Extra Repos
+            Constraint::Min(1),               // Hints
+        ];
+
+        let fields_height: u16 = constraints
+            .iter()
+            .map(|c| match c {
+                Constraint::Length(n) => *n,
+                Constraint::Min(n) => *n,
+                _ => 0,
+            })
+            .sum();
+        let dialog_height = fields_height + 4;
+
+        let branch_name = self.worktree_branch.value().to_string();
+        let title = format!(" Worktree: {} ", branch_name);
+
+        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(title)
+            .title_style(Style::default().fg(theme.title).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints(constraints)
+            .split(inner);
+
+        // New Branch checkbox
+        {
+            let is_focused = self.worktree_config_focused_field == 0;
+            let label_style = if is_focused {
+                Style::default().fg(theme.accent).underlined()
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let checkbox = if self.create_new_branch { "[x]" } else { "[ ]" };
+            let checkbox_style = if self.create_new_branch {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let text = if self.create_new_branch {
+                "Create new branch"
+            } else {
+                "Attach to existing branch"
+            };
+            let text_style = if self.create_new_branch {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+            let line = Line::from(vec![
+                Span::styled("New Branch:", label_style),
+                Span::raw(" "),
+                Span::styled(checkbox, checkbox_style),
+                Span::styled(format!(" {}", text), text_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), chunks[0]);
+        }
+
+        // Extra Repos
+        self.render_extra_repos_field(
+            frame,
+            chunks[1],
+            self.worktree_config_focused_field == 1,
+            theme,
+        );
+
+        // Hints
+        let mut hint_spans = vec![
+            Span::styled("Tab", Style::default().fg(theme.hint)),
+            Span::raw(" next  "),
+            Span::styled("Space", Style::default().fg(theme.hint)),
+            Span::raw(" toggle  "),
+            Span::styled("C-p", Style::default().fg(theme.hint)),
+            Span::raw(" branches  "),
+            Span::styled("Enter", Style::default().fg(theme.hint)),
+            Span::raw(" done  "),
+            Span::styled("Esc", Style::default().fg(theme.hint)),
+            Span::raw(" back"),
+        ];
+        if self.worktree_config_focused_field == 1 && !self.workspace_repos_expanded {
+            hint_spans = vec![
+                Span::styled("Tab", Style::default().fg(theme.hint)),
+                Span::raw(" next  "),
+                Span::styled("Enter", Style::default().fg(theme.hint)),
+                Span::raw(" edit repos  "),
+                Span::styled("Esc", Style::default().fg(theme.hint)),
+                Span::raw(" back"),
+            ];
+        }
+        frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[2]);
+
+        if self.show_help {
+            self.render_help_overlay(frame, area, theme);
+        }
+
+        if self.branch_picker.is_active() {
+            self.branch_picker.render(frame, area, theme);
+        }
+
+        if self.dir_picker.is_active() {
+            self.dir_picker.render(frame, area, theme);
+        }
+    }
+
     fn render_env_field(&self, frame: &mut Frame, area: Rect, is_focused: bool, theme: &Theme) {
         let label_style = if is_focused {
             Style::default().fg(theme.accent).underlined()
@@ -859,6 +1007,128 @@ impl NewSessionDialog {
         }
     }
 
+    fn render_extra_repos_field(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        is_focused: bool,
+        theme: &Theme,
+    ) {
+        let label_style = if is_focused {
+            Style::default().fg(theme.accent).underlined()
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        if !self.workspace_repos_expanded {
+            // Collapsed view
+            let count = self.workspace_repos.len();
+            let summary = if count == 0 {
+                "(empty - press Enter to add)".to_string()
+            } else {
+                format!("[{} repos]", count)
+            };
+            let summary_style = if count > 0 {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.dimmed)
+            };
+
+            let line = Line::from(vec![
+                Span::styled("Extra Repos:", label_style),
+                Span::raw(" "),
+                Span::styled(summary, summary_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+        } else {
+            // Expanded view with list
+            let mut lines: Vec<Line> = Vec::new();
+
+            let header = Line::from(vec![
+                Span::styled("Extra Repos:", label_style),
+                Span::styled(
+                    " (a)dd (d)el (Enter)edit (Ctrl+P)browse (Esc)close",
+                    Style::default().fg(theme.dimmed),
+                ),
+            ]);
+            lines.push(header);
+
+            if let Some(ref input) = self.workspace_repo_editing_input {
+                let ghost_text = self
+                    .workspace_repo_ghost
+                    .as_ref()
+                    .map(|g| g.ghost_text.clone());
+
+                let make_input_line = |prefix: &'static str,
+                                       val: &str,
+                                       ghost: &Option<String>,
+                                       th: &Theme|
+                 -> Line<'static> {
+                    let mut spans = vec![
+                        Span::styled(prefix, Style::default().fg(th.accent)),
+                        Span::styled(val.to_string(), Style::default().fg(th.accent).bold()),
+                    ];
+                    if let Some(ref g) = ghost {
+                        spans.push(Span::styled(g.clone(), Style::default().fg(th.dimmed)));
+                    }
+                    spans.push(Span::styled("_", Style::default().fg(th.accent)));
+                    Line::from(spans)
+                };
+
+                if self.workspace_repo_adding_new {
+                    for (i, entry) in self.workspace_repos.iter().enumerate() {
+                        let prefix = if i == self.workspace_repo_selected_index {
+                            "  > "
+                        } else {
+                            "    "
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, entry),
+                            Style::default().fg(theme.text),
+                        )));
+                    }
+                    lines.push(make_input_line("  + ", input.value(), &ghost_text, theme));
+                } else {
+                    for (i, entry) in self.workspace_repos.iter().enumerate() {
+                        if i == self.workspace_repo_selected_index {
+                            lines.push(make_input_line("  > ", input.value(), &ghost_text, theme));
+                        } else {
+                            let prefix = "    ";
+                            lines.push(Line::from(Span::styled(
+                                format!("{}{}", prefix, entry),
+                                Style::default().fg(theme.text),
+                            )));
+                        }
+                    }
+                }
+            } else {
+                // Normal list display
+                if self.workspace_repos.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "    (press 'a' to add repo path)",
+                        Style::default().fg(theme.dimmed),
+                    )));
+                } else {
+                    for (i, entry) in self.workspace_repos.iter().enumerate() {
+                        let is_selected = i == self.workspace_repo_selected_index;
+                        let prefix = if is_selected { "  > " } else { "    " };
+                        let style = if is_selected {
+                            Style::default().fg(theme.accent).bold()
+                        } else {
+                            Style::default().fg(theme.text)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, entry),
+                            style,
+                        )));
+                    }
+                }
+            }
+
+            frame.render_widget(Paragraph::new(lines), area);
+        }
+    }
+
     fn render_inherited_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let label_style = Style::default().fg(theme.dimmed);
         let mut lines: Vec<Line> = Vec::new();
@@ -892,8 +1162,8 @@ impl NewSessionDialog {
 
         let dialog_width: u16 = HELP_DIALOG_WIDTH;
         let has_profile_selection = self.has_profile_selection();
-        // Base fields: Title, Path, YOLO, Worktree, New Branch, Group + close hint
-        let base_height: u16 = 20;
+        // Base fields: Title, Path, YOLO, Worktree, Group + close hint
+        let base_height: u16 = 17;
         let dialog_height: u16 = base_height
             + if has_profile_selection { 3 } else { 0 }
             + if has_tool_selection { 3 } else { 0 }
@@ -926,14 +1196,14 @@ impl NewSessionDialog {
             if idx == 4 && self.selected_tool_always_yolo() {
                 continue; // YOLO (hidden for AlwaysYolo agents)
             }
-            // idx 5 (Worktree), 6 (New Branch) always shown
-            if idx == 7 && !has_sandbox {
+            // idx 5 (Worktree) always shown
+            if idx == 6 && !has_sandbox {
                 continue; // Sandbox
             }
-            if (8..=9).contains(&idx) && !show_sandbox_options_help {
+            if (7..=8).contains(&idx) && !show_sandbox_options_help {
                 continue; // Image, Env
             }
-            // idx 10 (Group) always shown
+            // idx 9 (Group) always shown
 
             lines.push(Line::from(Span::styled(
                 help.name,

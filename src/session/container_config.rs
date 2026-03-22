@@ -142,6 +142,17 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
     },
     AgentConfigMount {
+        tool_name: "opencode",
+        host_rel: ".config/opencode",
+        container_suffix: ".config/opencode",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
+    AgentConfigMount {
         tool_name: "codex",
         host_rel: ".codex",
         container_suffix: ".codex",
@@ -334,7 +345,7 @@ fn seed_hook_relay_script(sandbox_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Rewrite `aoe _hook` commands in the sandbox's settings.json to use the
+/// Rewrite AoE hook commands in the sandbox's settings.json to use the
 /// container-local relay script path. Preserves all non-aoe user hooks.
 fn rewrite_hooks_for_container(sandbox_dir: &Path) -> Result<()> {
     let settings_path = sandbox_dir.join("settings.json");
@@ -356,7 +367,11 @@ fn rewrite_hooks_for_container(sandbox_dir: &Path) -> Result<()> {
                             let is_aoe = hook
                                 .get("command")
                                 .and_then(|c| c.as_str())
-                                .map(|cmd| cmd.contains("aoe _hook") || cmd.contains("aoe\" _hook"))
+                                .map(|cmd| {
+                                    cmd.contains("aoe-hooks")
+                                        || cmd.contains("aoe _hook")
+                                        || cmd.contains("aoe\" _hook")
+                                })
                                 .unwrap_or(false);
                             if is_aoe {
                                 if let Some(obj) = hook.as_object_mut() {
@@ -835,6 +850,72 @@ pub(crate) fn compute_volume_paths(
     ))
 }
 
+/// Compute volume mounts for a multi-repo workspace.
+///
+/// The workspace directory contains worktrees that point back to their main repos
+/// via relative paths in `.git` files. We need to mount both the workspace directory
+/// AND all main repos so these relative gitdir references resolve inside the container.
+///
+/// We find the common ancestor of all paths (workspace + main repos) and mount each
+/// under `/workspace/` preserving relative structure.
+fn compute_workspace_volume_paths(
+    workspace_path: &Path,
+    ws_info: &super::WorkspaceInfo,
+) -> Result<(Vec<VolumeMount>, String)> {
+    let workspace_canonical = workspace_path
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_path.to_path_buf());
+
+    // Collect all unique main repo paths
+    let mut main_repo_paths: Vec<PathBuf> = Vec::new();
+    for repo in &ws_info.repos {
+        let main_path = PathBuf::from(&repo.main_repo_path);
+        let canonical = main_path
+            .canonicalize()
+            .unwrap_or_else(|_| main_path.clone());
+        if !main_repo_paths.iter().any(|p| p == &canonical) {
+            main_repo_paths.push(canonical);
+        }
+    }
+
+    // Find common ancestor of workspace dir and all main repos
+    let mut common = workspace_canonical.clone();
+    for repo_path in &main_repo_paths {
+        common = common_ancestor(&common, repo_path);
+    }
+
+    // Mount workspace dir
+    let ws_rel = workspace_canonical
+        .strip_prefix(&common)
+        .unwrap_or(&workspace_canonical);
+    let ws_container = format!("/workspace/{}", ws_rel.display());
+
+    let mut volumes = vec![VolumeMount {
+        host_path: workspace_canonical.to_string_lossy().to_string(),
+        container_path: ws_container.clone(),
+        read_only: false,
+    }];
+
+    // Mount each main repo (needed for .git/worktrees/ references)
+    for repo_path in &main_repo_paths {
+        let repo_rel = repo_path.strip_prefix(&common).unwrap_or(repo_path);
+        let repo_container = format!("/workspace/{}", repo_rel.display());
+
+        // Skip if already covered by the workspace mount
+        if repo_path.starts_with(&workspace_canonical) {
+            continue;
+        }
+
+        volumes.push(VolumeMount {
+            host_path: repo_path.to_string_lossy().to_string(),
+            container_path: repo_container,
+            read_only: false,
+        });
+    }
+
+    Ok((volumes, ws_container))
+}
+
 /// Re-sync shared sandbox directories from the host so the container picks up
 /// any credential changes (e.g. re-auth) since it was created.
 pub(crate) fn refresh_agent_configs() {
@@ -876,15 +957,21 @@ pub(crate) fn build_container_config(
     tool: &str,
     is_yolo_mode: bool,
     instance_id: &str,
+    workspace_info: Option<&super::WorkspaceInfo>,
 ) -> Result<ContainerConfig> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
 
     let project_path = Path::new(project_path_str);
 
     // Determine mount path(s) and working directory.
+    // For multi-repo workspaces, mount the workspace dir and all main repos.
     // For bare repo worktrees, mount the entire bare repo and set working_dir to the worktree.
     // For sibling worktrees, mount the main repo and worktree as separate volumes.
-    let (project_volumes, workspace_path) = compute_volume_paths(project_path, project_path_str)?;
+    let (project_volumes, workspace_path) = if let Some(ws_info) = workspace_info {
+        compute_workspace_volume_paths(project_path, ws_info)?
+    } else {
+        compute_volume_paths(project_path, project_path_str)?
+    };
 
     let mut volumes = project_volumes;
 
@@ -922,17 +1009,6 @@ pub(crate) fn build_container_config(
             volumes.push(VolumeMount {
                 host_path: ssh_dir.to_string_lossy().to_string(),
                 container_path: format!("{}/.ssh", CONTAINER_HOME),
-                read_only: true,
-            });
-        }
-    }
-
-    if tool == "opencode" {
-        let opencode_config = home.join(".config").join("opencode");
-        if opencode_config.exists() {
-            volumes.push(VolumeMount {
-                host_path: opencode_config.to_string_lossy().to_string(),
-                container_path: format!("{}/.config/opencode", CONTAINER_HOME),
                 read_only: true,
             });
         }
@@ -1675,12 +1751,17 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_config_mounts_each_tool_has_exactly_one() {
+    fn test_agent_config_mounts_each_tool_has_expected_count() {
         let tool_names: Vec<&str> = AGENT_CONFIG_MOUNTS.iter().map(|m| m.tool_name).collect();
-        // Each tool name should appear exactly once
         for name in &tool_names {
             let count = tool_names.iter().filter(|n| *n == name).count();
-            assert_eq!(count, 1, "tool_name '{}' appears {} times", name, count);
+            // OpenCode has two mounts: data dir (.local/share/opencode) + config dir (.config/opencode)
+            let expected = if *name == "opencode" { 2 } else { 1 };
+            assert_eq!(
+                count, expected,
+                "tool_name '{}' appears {} times, expected {}",
+                name, count, expected
+            );
         }
     }
 
@@ -1692,6 +1773,16 @@ mod tests {
             .collect();
         assert_eq!(claude_mounts.len(), 1);
         assert_eq!(claude_mounts[0].host_rel, ".claude");
+
+        // OpenCode has both a data dir and a config dir mount
+        let opencode_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "opencode")
+            .collect();
+        assert_eq!(opencode_mounts.len(), 2);
+        let opencode_paths: Vec<&str> = opencode_mounts.iter().map(|m| m.host_rel).collect();
+        assert!(opencode_paths.contains(&".local/share/opencode"));
+        assert!(opencode_paths.contains(&".config/opencode"));
 
         let cursor_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
             .iter()

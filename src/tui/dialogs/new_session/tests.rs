@@ -106,6 +106,8 @@ fn test_tab_cycles_fields_single_tool() {
 
 #[test]
 fn test_tab_cycles_fields_single_tool_with_worktree() {
+    // Even with worktree set, new_branch and extra_repos are in a Ctrl+P overlay,
+    // so the main form has the same tab stops as without worktree.
     let mut dialog = single_tool_dialog();
     dialog.worktree_branch = Input::new("feature".to_string());
     assert_eq!(dialog.focused_field, 0); // title
@@ -120,10 +122,7 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
     assert_eq!(dialog.focused_field, 3); // worktree branch
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 4); // new branch checkbox (now visible)
-
-    dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 5); // group
+    assert_eq!(dialog.focused_field, 4); // group
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 0); // wrap to start
@@ -542,8 +541,11 @@ fn test_new_branch_checkbox_default_true() {
 fn test_new_branch_checkbox_toggle() {
     let mut dialog = single_tool_dialog();
     dialog.worktree_branch = Input::new("feature-branch".to_string());
-    // new_branch checkbox (single profile): title=0, path=1, yolo=2, worktree=3, new_branch=4
-    dialog.focused_field = 4;
+    // New branch is now in the worktree config overlay (Ctrl+P on worktree field)
+    dialog.focused_field = 3; // worktree field
+    dialog.handle_key(ctrl_key(KeyCode::Char('p'))); // Open config overlay
+    assert!(dialog.worktree_config_mode);
+    assert_eq!(dialog.worktree_config_focused_field, 0); // new_branch
     assert!(dialog.create_new_branch);
 
     dialog.handle_key(key(KeyCode::Char(' ')));
@@ -557,8 +559,11 @@ fn test_new_branch_checkbox_toggle() {
 fn test_submit_respects_create_new_branch() {
     let mut dialog = single_tool_dialog();
     dialog.worktree_branch = Input::new("feature-branch".to_string());
-    dialog.focused_field = 4; // new_branch
+    // Toggle new_branch off via config overlay
+    dialog.focused_field = 3; // worktree field
+    dialog.handle_key(ctrl_key(KeyCode::Char('p')));
     dialog.handle_key(key(KeyCode::Char(' '))); // Toggle off
+    dialog.handle_key(key(KeyCode::Esc)); // Exit overlay
 
     let result = dialog.handle_key(key(KeyCode::Enter));
     match result {

@@ -21,6 +21,7 @@ clap_complete = "4.5"
 # TUI
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"
+ansi-to-tui = "7.0"
 tui-textarea = "0.7"
 tui-input = "0.11"
 

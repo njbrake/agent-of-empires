@@ -41,10 +41,6 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe sounds list`↴](#aoe-sounds-list)
 * [`aoe sounds test`↴](#aoe-sounds-test)
 * [`aoe uninstall`↴](#aoe-uninstall)
-* [`aoe hooks`↴](#aoe-hooks)
-* [`aoe hooks install`↴](#aoe-hooks-install)
-* [`aoe hooks uninstall`↴](#aoe-hooks-uninstall)
-* [`aoe hooks status`↴](#aoe-hooks-status)
 * [`aoe completion`↴](#aoe-completion)
 
 ## `aoe`
@@ -69,7 +65,6 @@ Run without arguments to launch the TUI dashboard.
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
 * `uninstall` — Uninstall ▨ kokorro
-* `hooks` — Manage Claude Code hooks for status detection
 * `completion` — Generate shell completions
 
 ###### **Options:**
@@ -100,6 +95,7 @@ Add a new session
 * `-l`, `--launch` — Launch the session immediately after creating
 * `-w`, `--worktree <WORKTREE_BRANCH>` — Create session in a git worktree for the specified branch
 * `-b`, `--new-branch` — Create a new branch (use with --worktree)
+* `-r`, `--repo <EXTRA_REPOS>` — Additional repositories for multi-repo workspace (use with --worktree)
 * `-s`, `--sandbox` — Run session in Docker sandbox
 * `--sandbox-image <SANDBOX_IMAGE>` — Custom Docker image for sandbox (implies --sandbox)
 * `-y`, `--yolo` — Enable YOLO mode (skip permission prompts)
@@ -575,44 +571,6 @@ Uninstall ▨ kokorro
 * `--keep-tmux-config` — Keep tmux configuration
 * `--dry-run` — Show what would be removed without removing
 * `-y` — Skip confirmation prompts
-
-
-
-## `aoe hooks`
-
-Manage Claude Code hooks for status detection
-
-**Usage:** `aoe hooks <COMMAND>`
-
-###### **Subcommands:**
-
-* `install` — Install Claude Code hooks for status detection
-* `uninstall` — Remove aoe hooks from Claude Code settings
-* `status` — Show whether hooks are installed and enabled
-
-
-
-## `aoe hooks install`
-
-Install Claude Code hooks for status detection
-
-**Usage:** `aoe hooks install`
-
-
-
-## `aoe hooks uninstall`
-
-Remove aoe hooks from Claude Code settings
-
-**Usage:** `aoe hooks uninstall`
-
-
-
-## `aoe hooks status`
-
-Show whether hooks are installed and enabled
-
-**Usage:** `aoe hooks status`
 
 
 

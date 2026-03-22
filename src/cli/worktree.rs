@@ -93,14 +93,6 @@ async fn show_info(profile: &str, identifier: &str) -> Result<()> {
             if wt_info.managed_by_aoe { "Yes" } else { "No" }
         );
         println!(
-            "  Cleanup on delete: {}",
-            if wt_info.cleanup_on_delete {
-                "Yes"
-            } else {
-                "No"
-            }
-        );
-        println!(
             "  Created at:    {}",
             wt_info.created_at.format("%Y-%m-%d %H:%M:%S")
         );
@@ -112,6 +104,42 @@ async fn show_info(profile: &str, identifier: &str) -> Result<()> {
         } else {
             println!("\n  Status:        ✗ Worktree missing (orphaned session)");
             println!("  Tip:           Run 'aoe worktree cleanup' to remove orphaned sessions");
+        }
+    } else if let Some(ws_info) = &session.workspace_info {
+        println!("Workspace Information:\n");
+        println!("  Session:       {}", session.title);
+        println!("  Branch:        {}", ws_info.branch);
+        println!("  Workspace Dir: {}", ws_info.workspace_dir);
+        println!("  Repos:         {}", ws_info.repos.len());
+        println!(
+            "  Cleanup on delete: {}",
+            if ws_info.cleanup_on_delete {
+                "Yes"
+            } else {
+                "No"
+            }
+        );
+        println!(
+            "  Created at:    {}",
+            ws_info.created_at.format("%Y-%m-%d %H:%M:%S")
+        );
+        println!();
+        for repo in &ws_info.repos {
+            println!("  Repository: {}", repo.name);
+            println!("    Source:    {}", repo.source_path);
+            println!("    Worktree:  {}", repo.worktree_path);
+            println!("    Main Repo: {}", repo.main_repo_path);
+            println!(
+                "    Managed:   {}",
+                if repo.managed_by_aoe { "Yes" } else { "No" }
+            );
+            let wt_path = PathBuf::from(&repo.worktree_path);
+            if wt_path.exists() {
+                println!("    Status:    Exists");
+            } else {
+                println!("    Status:    Missing");
+            }
+            println!();
         }
     } else {
         bail!(
@@ -135,6 +163,12 @@ async fn cleanup_orphaned(profile: &str, force: bool) -> Result<()> {
         if let Some(_wt_info) = &inst.worktree_info {
             let worktree_path = PathBuf::from(&inst.project_path);
             if !worktree_path.exists() {
+                orphaned_sessions.push(inst.clone());
+            }
+        } else if let Some(ws_info) = &inst.workspace_info {
+            // Check if workspace dir exists
+            let ws_path = PathBuf::from(&ws_info.workspace_dir);
+            if !ws_path.exists() {
                 orphaned_sessions.push(inst.clone());
             }
         }

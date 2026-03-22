@@ -13,14 +13,9 @@ use crate::tmux;
 use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_profile() -> String {
     "default".to_string()
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalInfo {
     #[serde(default)]
@@ -48,6 +43,28 @@ pub struct WorktreeInfo {
     pub branch: String,
     pub main_repo_path: String,
     pub managed_by_aoe: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceRepo {
+    pub name: String,
+    pub source_path: String,
+    pub branch: String,
+    pub worktree_path: String,
+    pub main_repo_path: String,
+    pub managed_by_aoe: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceInfo {
+    pub branch: String,
+    pub workspace_dir: String,
+    pub repos: Vec<WorkspaceRepo>,
     pub created_at: DateTime<Utc>,
     #[serde(default = "default_true")]
     pub cleanup_on_delete: bool,
@@ -102,6 +119,10 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_info: Option<WorktreeInfo>,
 
+    // Multi-repo workspace integration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_info: Option<WorkspaceInfo>,
+
     // Docker sandbox integration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_info: Option<SandboxInfo>,
@@ -141,6 +162,7 @@ impl Instance {
             created_at: Utc::now(),
             last_accessed_at: None,
             worktree_info: None,
+            workspace_info: None,
             sandbox_info: None,
             terminal_info: None,
             source_profile: String::new(),
@@ -168,6 +190,10 @@ impl Instance {
 
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
+    }
+
+    pub fn is_workspace(&self) -> bool {
+        self.workspace_info.is_some()
     }
 
     pub fn is_sandboxed(&self) -> bool {
@@ -318,7 +344,11 @@ impl Instance {
     /// Apply all configured tmux options to a session with the given name and title.
     fn apply_session_tmux_options(&self, session_name: &str, display_title: &str) {
         let config = self.resolved_config();
-        let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
+        let branch = self
+            .worktree_info
+            .as_ref()
+            .map(|w| w.branch.as_str())
+            .or_else(|| self.workspace_info.as_ref().map(|w| w.branch.as_str()));
         let sandbox = self.sandbox_display();
         crate::tmux::status_bar::apply_all_tmux_options(
             session_name,
@@ -513,7 +543,7 @@ impl Instance {
                                         cmd = format!("{} {}", cmd, flag);
                                     }
                                     crate::agents::YoloMode::EnvVar(key, value) => {
-                                        cmd = format!("{}={} {}", key, value, cmd);
+                                        cmd = format_env_var_prefix(key, value, &cmd);
                                     }
                                     crate::agents::YoloMode::AlwaysYolo => {}
                                 }
@@ -533,7 +563,7 @@ impl Instance {
                                 cmd = format!("{} {}", cmd, flag);
                             }
                             crate::agents::YoloMode::EnvVar(key, value) => {
-                                cmd = format!("{}={} {}", key, value, cmd);
+                                cmd = format_env_var_prefix(key, value, &cmd);
                             }
                             crate::agents::YoloMode::AlwaysYolo => {}
                         }
@@ -652,6 +682,7 @@ impl Instance {
             &self.tool,
             self.is_yolo_mode(),
             &self.id,
+            self.workspace_info.as_ref(),
         )
     }
 
@@ -677,14 +708,7 @@ impl Instance {
         if session.exists() {
             session.kill()?;
         }
-        // Clean up hook status files (full ID + 8-char prefix from legacy sessions)
-        if let Ok(app_dir) = crate::session::get_app_dir() {
-            let hook_dir = app_dir.join("hook_status");
-            let _ = std::fs::remove_file(hook_dir.join(&self.id));
-            if self.id.len() > 8 {
-                let _ = std::fs::remove_file(hook_dir.join(&self.id[..8]));
-            }
-        }
+        crate::hooks::cleanup_hook_status_dir(&self.id);
         Ok(())
     }
 
@@ -728,24 +752,6 @@ impl Instance {
             }
         }
 
-        // Claude sessions: hooks are the sole source of truth.
-        // No pane-scraping fallback -- stale/missing hook status defaults to Idle.
-        if self.tool == "claude" {
-            if let Some(status) = crate::tmux::hook_status::read_hook_status(&self.id) {
-                self.status = status;
-                return;
-            }
-            // No fresh hook status -- check if tmux session still exists
-            match self.tmux_session() {
-                Ok(s) if s.exists() => self.status = Status::Idle,
-                _ => {
-                    self.status = Status::Error;
-                    self.last_error_check = Some(std::time::Instant::now());
-                }
-            }
-            return;
-        }
-
         let session = match self.tmux_session() {
             Ok(s) => s,
             Err(_) => {
@@ -764,10 +770,11 @@ impl Instance {
         // Check hook-based status first (more reliable than tmux pane parsing)
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
             tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
-            let crashed_to_shell = !self.expects_shell()
-                && !self.launched_with_wrapper
-                && session.is_pane_running_shell();
-            self.status = if session.is_pane_dead() || crashed_to_shell {
+            // Trust hook status over shell detection. Wrapper scripts (e.g.
+            // Devbox, version managers) run agents via a shell process, so
+            // `is_pane_running_shell()` returns true even though the agent is
+            // healthy. Only check if the pane is actually dead.
+            self.status = if session.is_pane_dead() {
                 Status::Error
             } else {
                 hook_status
@@ -820,6 +827,16 @@ impl Instance {
 
 fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
+}
+
+/// Format an environment variable assignment as a shell-safe command prefix.
+///
+/// Uses `shell_escape` (double-quote escaping) so the value is preserved
+/// verbatim when parsed by the inner `bash -c '...'` shell created by
+/// `wrap_command_ignore_suspend`.
+fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
+    let escaped = shell_escape(value);
+    format!("{}={} {}", key, escaped, cmd)
 }
 
 /// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
@@ -903,6 +920,30 @@ mod tests {
         inst.yolo_mode = true;
         assert!(inst.is_yolo_mode());
         assert!(!inst.is_sandboxed());
+    }
+
+    #[test]
+    fn test_yolo_envvar_command_is_quoted() {
+        // EnvVar values containing JSON must be shell-escaped to prevent
+        // the inner bash from expanding special characters ({, *, ").
+        let result = format_env_var_prefix("OPENCODE_PERMISSION", r#"{"*":"allow"}"#, "opencode");
+        assert_eq!(
+            result,
+            r#"OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode"#
+        );
+    }
+
+    #[test]
+    fn test_yolo_envvar_survives_suspend_wrapper() {
+        // The full chain: format_env_var_prefix -> wrap_command_ignore_suspend
+        // must preserve the JSON value through both quoting layers.
+        let cmd = format_env_var_prefix("OPENCODE_PERMISSION", r#"{"*":"allow"}"#, "opencode");
+        let wrapped = wrap_command_ignore_suspend(&cmd, false);
+        assert!(
+            wrapped.contains(r#"OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode"#),
+            "wrapped command should contain the escaped env var assignment: {}",
+            wrapped,
+        );
     }
 
     // Additional tests for is_sandboxed
@@ -1021,7 +1062,6 @@ mod tests {
             main_repo_path: "/home/user/repo".to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
-            cleanup_on_delete: true,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -1030,15 +1070,6 @@ mod tests {
         assert_eq!(info.branch, deserialized.branch);
         assert_eq!(info.main_repo_path, deserialized.main_repo_path);
         assert_eq!(info.managed_by_aoe, deserialized.managed_by_aoe);
-        assert_eq!(info.cleanup_on_delete, deserialized.cleanup_on_delete);
-    }
-
-    #[test]
-    fn test_worktree_info_default_cleanup_on_delete() {
-        // Deserialize without cleanup_on_delete field - should default to true
-        let json = r#"{"branch":"test","main_repo_path":"/path","managed_by_aoe":true,"created_at":"2024-01-01T00:00:00Z"}"#;
-        let info: WorktreeInfo = serde_json::from_str(json).unwrap();
-        assert!(info.cleanup_on_delete);
     }
 
     // Tests for SandboxInfo
@@ -1119,7 +1150,6 @@ mod tests {
             main_repo_path: "/tmp/main".to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
-            cleanup_on_delete: true,
         });
 
         let json = serde_json::to_string(&inst).unwrap();

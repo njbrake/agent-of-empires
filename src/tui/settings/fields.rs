@@ -62,6 +62,7 @@ pub enum FieldKey {
     WorktreeAutoCleanup,
     ShowBranchInTui,
     DeleteBranchOnCleanup,
+    WorkspacePathTemplate,
     // Diff
     DefaultBranch,
     ContextLines,
@@ -85,7 +86,6 @@ pub enum FieldKey {
     Mouse,
     AgentExtraArgs,
     AgentCommandOverride,
-    ClaudeStatusHooks,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -406,6 +406,11 @@ fn build_worktree_fields(
         global.worktree.delete_branch_on_cleanup,
         wt.and_then(|w| w.delete_branch_on_cleanup),
     );
+    let (workspace_path_template, o5) = resolve_value(
+        scope,
+        global.worktree.workspace_path_template.clone(),
+        wt.and_then(|w| w.workspace_path_template.clone()),
+    );
 
     vec![
         SettingField {
@@ -472,6 +477,18 @@ fn build_worktree_fields(
             inherited_display: inherited_if(
                 o4,
                 FieldValue::Bool(global.worktree.delete_branch_on_cleanup),
+            ),
+        },
+        SettingField {
+            key: FieldKey::WorkspacePathTemplate,
+            label: "Workspace Path Template",
+            description: "Template for multi-repo workspace directories ({branch}, {session-id})",
+            value: FieldValue::Text(workspace_path_template),
+            category: SettingsCategory::Worktree,
+            has_override: o5,
+            inherited_display: inherited_if(
+                o5,
+                FieldValue::Text(global.worktree.workspace_path_template.clone()),
             ),
         },
     ]
@@ -845,7 +862,6 @@ fn build_session_fields(
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
     let session = profile.session.as_ref();
-    let claude = profile.claude.as_ref();
 
     let (default_tool, has_override) = resolve_optional(
         scope,
@@ -919,12 +935,6 @@ fn build_session_fields(
         items
     };
 
-    let (status_hooks, status_hooks_override) = resolve_value(
-        scope,
-        global.claude.status_hooks,
-        claude.and_then(|c| c.status_hooks),
-    );
-
     vec![
         SettingField {
             key: FieldKey::DefaultTool,
@@ -978,18 +988,6 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 cmd_override_override,
                 FieldValue::List(global_cmd_override_list),
-            ),
-        },
-        SettingField {
-            key: FieldKey::ClaudeStatusHooks,
-            label: "Status Hooks",
-            description: "Use Claude Code hooks for status detection instead of pane capture",
-            value: FieldValue::Bool(status_hooks),
-            category: SettingsCategory::Session,
-            has_override: status_hooks_override,
-            inherited_display: inherited_if(
-                status_hooks_override,
-                FieldValue::Bool(global.claude.status_hooks),
             ),
         },
     ]
@@ -1304,6 +1302,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
             config.worktree.delete_branch_on_cleanup = *v
         }
+        (FieldKey::WorkspacePathTemplate, FieldValue::Text(v)) => {
+            config.worktree.workspace_path_template = v.clone()
+        }
         // Sandbox
         (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
             config.sandbox.enabled_by_default = *v
@@ -1356,9 +1357,6 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             };
         }
         // Session
-        (FieldKey::ClaudeStatusHooks, FieldValue::Bool(v)) => {
-            config.claude.status_hooks = *v;
-        }
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool =
                 crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
@@ -1467,6 +1465,11 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 s.delete_branch_on_cleanup = val
             });
         }
+        (FieldKey::WorkspacePathTemplate, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.worktree, |s, val| {
+                s.workspace_path_template = val
+            });
+        }
         // Sandbox
         (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.sandbox, |s, val| s.enabled_by_default = val);
@@ -1570,9 +1573,6 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             set_profile_override(mode, &mut config.tmux, |s, val| s.mouse = val);
         }
         // Session
-        (FieldKey::ClaudeStatusHooks, FieldValue::Bool(v)) => {
-            set_profile_override(*v, &mut config.claude, |s, val| s.status_hooks = val);
-        }
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             let tool = crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
             use crate::session::SessionConfigOverride;

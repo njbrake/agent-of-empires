@@ -57,9 +57,6 @@ pub struct ThemeConfigOverride {
 pub struct ClaudeConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status_hooks: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -96,6 +93,9 @@ pub struct WorktreeConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_branch_on_cleanup: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_path_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -305,6 +305,9 @@ pub fn apply_worktree_overrides(
     if let Some(delete_branch_on_cleanup) = source.delete_branch_on_cleanup {
         target.delete_branch_on_cleanup = delete_branch_on_cleanup;
     }
+    if let Some(ref workspace_path_template) = source.workspace_path_template {
+        target.workspace_path_template = workspace_path_template.clone();
+    }
 }
 
 /// Apply hooks config overrides to a target config.
@@ -370,9 +373,6 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
     if let Some(ref claude_override) = profile.claude {
         if claude_override.config_dir.is_some() {
             global.claude.config_dir = claude_override.config_dir.clone();
-        }
-        if let Some(status_hooks) = claude_override.status_hooks {
-            global.claude.status_hooks = status_hooks;
         }
     }
 

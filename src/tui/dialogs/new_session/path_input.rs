@@ -6,9 +6,9 @@ use tui_input::Input;
 use super::NewSessionDialog;
 use crate::tui::components::longest_common_prefix;
 
-pub(super) struct PathGhostCompletion {
-    input_snapshot: String,
-    cursor_snapshot: usize,
+pub(in crate::tui::dialogs) struct PathGhostCompletion {
+    pub(super) input_snapshot: String,
+    pub(super) cursor_snapshot: usize,
     pub(super) ghost_text: String,
     #[allow(dead_code)]
     candidates: Vec<String>,
@@ -20,6 +20,22 @@ fn char_to_byte_idx(value: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(idx, _)| idx)
         .unwrap_or(value.len())
+}
+
+/// Replace the home directory prefix with `~` for display.
+pub(super) fn collapse_tilde(path: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if let Some(rest) = path.strip_prefix(home_str.as_ref()) {
+            if rest.is_empty() {
+                return "~".to_string();
+            }
+            if rest.starts_with('/') {
+                return format!("~{}", rest);
+            }
+        }
+    }
+    path.to_string()
 }
 
 /// Expand a leading `~` to the user's home directory.
@@ -55,6 +71,73 @@ fn path_completion_base(parent_prefix: &str) -> Option<PathBuf> {
     }
 
     Some(PathBuf::from(trimmed))
+}
+
+/// Compute a path ghost completion for any Input field.
+/// Returns None if no completion is available.
+pub(super) fn compute_path_ghost(input: &Input) -> Option<PathGhostCompletion> {
+    let value = input.value().to_string();
+    let char_len = value.chars().count();
+    let cursor_char = input.visual_cursor().min(char_len);
+
+    if cursor_char < char_len {
+        return None;
+    }
+
+    let cursor_byte = char_to_byte_idx(&value, cursor_char);
+    let segment_start = value[..cursor_byte].rfind('/').map_or(0, |idx| idx + 1);
+    let parent_prefix = &value[..segment_start];
+    let current_segment = &value[segment_start..cursor_byte];
+
+    let base_dir = path_completion_base(parent_prefix)?;
+    let include_hidden = current_segment.starts_with('.');
+    let mut matches = Vec::new();
+    let entries = std::fs::read_dir(&base_dir).ok()?;
+
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !include_hidden && name.starts_with('.') {
+            continue;
+        }
+        if name.starts_with(current_segment) {
+            matches.push(name.to_string());
+        }
+    }
+
+    if matches.is_empty() {
+        return None;
+    }
+    matches.sort();
+
+    let ghost_text = if matches.len() == 1 {
+        let remainder = &matches[0][current_segment.len()..];
+        format!("{}/", remainder)
+    } else {
+        let common_prefix = longest_common_prefix(&matches);
+        if common_prefix.len() > current_segment.len() {
+            common_prefix[current_segment.len()..].to_string()
+        } else {
+            let remainder = &matches[0][current_segment.len()..];
+            format!("{}/", remainder)
+        }
+    };
+
+    if ghost_text.is_empty() {
+        return None;
+    }
+
+    Some(PathGhostCompletion {
+        input_snapshot: value,
+        cursor_snapshot: cursor_char,
+        ghost_text,
+        candidates: matches,
+    })
 }
 
 impl NewSessionDialog {
@@ -165,80 +248,7 @@ impl NewSessionDialog {
     }
 
     pub(super) fn recompute_path_ghost(&mut self) {
-        self.path_ghost = None;
-
-        let value = self.path.value().to_string();
-        let char_len = value.chars().count();
-        let cursor_char = self.path.visual_cursor().min(char_len);
-
-        // Only show ghost when cursor is at end of input
-        if cursor_char < char_len {
-            return;
-        }
-
-        let cursor_byte = char_to_byte_idx(&value, cursor_char);
-
-        let segment_start = value[..cursor_byte].rfind('/').map_or(0, |idx| idx + 1);
-        let parent_prefix = &value[..segment_start];
-        let current_segment = &value[segment_start..cursor_byte];
-
-        let Some(base_dir) = path_completion_base(parent_prefix) else {
-            return;
-        };
-
-        let include_hidden = current_segment.starts_with('.');
-        let mut matches = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&base_dir) else {
-            return;
-        };
-
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let file_name = entry.file_name();
-            let Some(name) = file_name.to_str() else {
-                continue;
-            };
-            if !include_hidden && name.starts_with('.') {
-                continue;
-            }
-            if name.starts_with(current_segment) {
-                matches.push(name.to_string());
-            }
-        }
-
-        if matches.is_empty() {
-            return;
-        }
-        matches.sort();
-
-        let ghost_text = if matches.len() == 1 {
-            // Single match: ghost = remaining chars + /
-            let remainder = &matches[0][current_segment.len()..];
-            format!("{}/", remainder)
-        } else {
-            let common_prefix = longest_common_prefix(&matches);
-            if common_prefix.len() > current_segment.len() {
-                // Multiple matches with common prefix extension
-                common_prefix[current_segment.len()..].to_string()
-            } else {
-                // Common prefix equals what's typed; show first candidate's remainder
-                let remainder = &matches[0][current_segment.len()..];
-                format!("{}/", remainder)
-            }
-        };
-
-        if ghost_text.is_empty() {
-            return;
-        }
-
-        self.path_ghost = Some(PathGhostCompletion {
-            input_snapshot: value,
-            cursor_snapshot: cursor_char,
-            ghost_text,
-            candidates: matches,
-        });
+        self.path_ghost = compute_path_ghost(&self.path);
     }
 
     pub(super) fn accept_path_ghost(&mut self) -> bool {

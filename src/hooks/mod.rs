@@ -31,7 +31,7 @@ fn hook_command(status: &str) -> String {
 }
 
 fn is_aoe_hook_command(cmd: &str) -> bool {
-    cmd.contains(AOE_HOOK_MARKER)
+    cmd.contains(AOE_HOOK_MARKER) || cmd.contains("aoe _hook") || cmd.contains("aoe\" _hook")
 }
 
 /// Build the AoE hooks JSON structure from agent-defined events.

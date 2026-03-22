@@ -3,7 +3,9 @@
 use anyhow::{bail, Result};
 use std::process::Command;
 
-use super::utils::{append_remain_on_exit_args, is_pane_dead, sanitize_session_name};
+use super::utils::{
+    append_pane_base_index_args, append_remain_on_exit_args, is_pane_dead, sanitize_session_name,
+};
 use super::{
     refresh_session_cache, session_exists_from_cache, CONTAINER_TERMINAL_PREFIX, TERMINAL_PREFIX,
 };
@@ -58,6 +60,7 @@ impl TerminalSession {
 
         let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
         append_remain_on_exit_args(&mut args, &self.name);
+        append_pane_base_index_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 
@@ -136,13 +139,16 @@ impl TerminalSession {
             return Ok(String::new());
         }
 
-        let target = format!("{}:^", self.name);
+        // Use `^.0` to target the first window's first pane regardless of
+        // base-index or which pane is active.  See #435, #488.
+        let target = format!("{}:^.0", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
                 "-t",
                 &target,
                 "-p",
+                "-e",
                 "-S",
                 &format!("-{}", lines),
             ])
@@ -207,6 +213,7 @@ impl ContainerTerminalSession {
 
         let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
         append_remain_on_exit_args(&mut args, &self.name);
+        append_pane_base_index_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 
@@ -285,13 +292,16 @@ impl ContainerTerminalSession {
             return Ok(String::new());
         }
 
-        let target = format!("{}:^", self.name);
+        // Use `^.0` to target the first window's first pane regardless of
+        // base-index or which pane is active.  See #435, #488.
+        let target = format!("{}:^.0", self.name);
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
                 "-t",
                 &target,
                 "-p",
+                "-e",
                 "-S",
                 &format!("-{}", lines),
             ])
