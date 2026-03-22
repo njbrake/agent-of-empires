@@ -109,12 +109,13 @@ const compactFeatures = [
       </div>
       <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
         {compactFeatures.map((feature, i) => (
-          <div class={`delay-${(i + 1) * 100}`}>
+          <div class={`delay-${(i + 1) * 100}${i === 0 ? ' lg:row-span-2' : ''}`}>
             <FeatureCard
               icon={feature.icon}
               title={feature.title}
               description={feature.description}
               tint={feature.tint}
+              featured={i === 0}
             />
           </div>
         ))}

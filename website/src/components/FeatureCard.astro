@@ -4,9 +4,10 @@ interface Props {
   description: string;
   icon: string;
   tint?: 'brand' | 'accent' | 'green';
+  featured?: boolean;
 }
 
-const { title, description, icon, tint } = Astro.props;
+const { title, description, icon, tint, featured = false } = Astro.props;
 
 const icons: Record<string, string> = {
   dashboard: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z"/>',
@@ -34,12 +35,12 @@ const iconColor = tint ? iconColorMap[tint] : 'text-brand-500';
 const iconBg = tint ? iconBgMap[tint] : 'bg-brand-600/15';
 ---
 
-<div class={`feature-card rounded-2xl p-8 animate-on-scroll ${tintClass}`}>
-  <div class={`w-14 h-14 ${iconBg} rounded-xl flex items-center justify-center mb-5`}>
-    <svg class={`w-7 h-7 ${iconColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<div class={`feature-card rounded-2xl p-8 animate-on-scroll ${tintClass}${featured ? ' h-full flex flex-col justify-center' : ''}`}>
+  <div class={`${featured ? 'w-16 h-16' : 'w-14 h-14'} ${iconBg} rounded-xl flex items-center justify-center mb-5`}>
+    <svg class={`${featured ? 'w-8 h-8' : 'w-7 h-7'} ${iconColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <Fragment set:html={icons[icon]} />
     </svg>
   </div>
-  <h3 class="text-xl font-semibold mb-3">{title}</h3>
-  <p class="text-gray-300 leading-relaxed">{description}</p>
+  <h3 class={`${featured ? 'text-2xl' : 'text-xl'} font-semibold mb-3 font-display`}>{title}</h3>
+  <p class={`text-gray-300 leading-relaxed${featured ? ' text-lg' : ''}`}>{description}</p>
 </div>

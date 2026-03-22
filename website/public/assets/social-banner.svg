@@ -12,15 +12,15 @@
     <linearGradient id="accent-line" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#d97706"/>
       <stop offset="50%" stop-color="#0d9488"/>
-      <stop offset="100%" stop-color="transparent"/>
+      <stop offset="100%" stop-color="#0d9488" stop-opacity="0"/>
     </linearGradient>
     <radialGradient id="glow" cx="30%" cy="30%" r="60%">
-      <stop offset="0%" stop-color="rgba(245, 158, 11, 0.12)"/>
-      <stop offset="100%" stop-color="transparent"/>
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="teal-glow" cx="70%" cy="70%" r="50%">
-      <stop offset="0%" stop-color="rgba(13, 148, 136, 0.06)"/>
-      <stop offset="100%" stop-color="transparent"/>
+      <stop offset="0%" stop-color="#0d9488" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#0d9488" stop-opacity="0"/>
     </radialGradient>
   </defs>
 
@@ -43,7 +43,7 @@
   <rect x="120" y="290" width="200" height="2" fill="url(#accent-line)" rx="1"/>
 
   <!-- Terminal bracket decoration -->
-  <text x="120" y="260" font-family="'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" font-size="14" fill="#64748b" letter-spacing="0.1em" text-transform="uppercase">TERMINAL SESSION MANAGER</text>
+  <text x="120" y="260" font-family="'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" font-size="14" fill="#64748b" letter-spacing="0.1em">TERMINAL SESSION MANAGER</text>
 
   <!-- Title -->
   <text x="120" y="370" font-family="'Satoshi', 'DM Sans', 'Inter', system-ui, sans-serif" font-size="72" font-weight="900" fill="url(#brand)">Agent of Empires</text>
