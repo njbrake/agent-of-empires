@@ -34,6 +34,7 @@ impl InfoDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .title(format!(" {} ", self.title))
             .title_style(Style::default().fg(theme.title).bold());

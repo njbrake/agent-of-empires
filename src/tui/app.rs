@@ -87,9 +87,9 @@ impl App {
         // Check if we need to show welcome or changelog dialogs
         let mut config = load_config()?.unwrap_or_default();
 
-        // Load theme from config, defaulting to phosphor if empty
+        // Load theme from config, defaulting to empire if empty
         let theme_name = if config.theme.name.is_empty() {
-            "phosphor"
+            "empire"
         } else {
             &config.theme.name
         };

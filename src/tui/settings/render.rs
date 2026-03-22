@@ -5,8 +5,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
     },
     Frame,
 };
@@ -131,6 +131,7 @@ impl SettingsView {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(border_style)
             .padding(Padding::horizontal(1));
 
@@ -179,6 +180,7 @@ impl SettingsView {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(border_style)
             .padding(Padding::new(1, 1, 0, 0));
 
@@ -846,6 +848,7 @@ impl SettingsView {
         let block = Block::default()
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .title(" Settings Help ")
             .title_style(

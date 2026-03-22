@@ -5,8 +5,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
     },
     Frame,
 };
@@ -135,6 +135,7 @@ impl DiffView {
         let block = Block::default()
             .title(" Files ")
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .padding(Padding::horizontal(1));
 
@@ -215,6 +216,7 @@ impl DiffView {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent));
 
         let inner = block.inner(area);
@@ -403,6 +405,7 @@ impl DiffView {
         let block = Block::default()
             .title(" Select Branch ")
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
             .style(Style::default().bg(theme.background));
 
@@ -459,6 +462,7 @@ impl DiffView {
         let block = Block::default()
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .title(" Diff View Help ")
             .title_style(

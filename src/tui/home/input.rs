@@ -42,7 +42,7 @@ impl HomeView {
                             resolve_config(self.active_profile.as_deref().unwrap_or("default"))
                         {
                             let theme_name = if config.theme.name.is_empty() {
-                                "phosphor".to_string()
+                                "empire".to_string()
                             } else {
                                 config.theme.name
                             };
@@ -69,7 +69,7 @@ impl HomeView {
                         resolve_config(self.active_profile.as_deref().unwrap_or("default"))
                     {
                         let theme_name = if config.theme.name.is_empty() {
-                            "phosphor".to_string()
+                            "empire".to_string()
                         } else {
                             config.theme.name
                         };

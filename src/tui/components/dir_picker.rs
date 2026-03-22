@@ -262,6 +262,7 @@ impl DirPicker {
         let title = format!(" Browse: {} ", path_display);
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
             .title(title)
             .title_style(Style::default().fg(theme.title).bold());
@@ -404,6 +405,7 @@ impl DirPicker {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .title(" Browse Help ")
             .title_style(Style::default().fg(theme.title).bold());
