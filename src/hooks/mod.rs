@@ -10,7 +10,7 @@ mod status_file;
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use status_file::{cleanup_hook_status_dir, hook_status_dir, read_hook_status};
@@ -88,10 +88,8 @@ fn remove_aoe_entries(matchers: &mut Vec<Value>) {
 pub fn install_hooks(settings_path: &Path, events: &[crate::agents::HookEvent]) -> Result<()> {
     let mut settings: Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
-            serde_json::json!({})
-        })
+        serde_json::from_str(&content)
+            .context(format!("Failed to parse {}", settings_path.display()))?
     } else {
         serde_json::json!({})
     };
@@ -501,6 +499,15 @@ mod tests {
         remove_aoe_entries(&mut matchers);
         assert_eq!(matchers.len(), 1);
         assert_eq!(matchers[0]["matcher"], "Bash");
+    }
+
+    #[test]
+    fn test_is_aoe_hook_command_legacy_patterns() {
+        assert!(is_aoe_hook_command("/usr/bin/aoe _hook"));
+        assert!(is_aoe_hook_command("/path/to/aoe\" _hook"));
+        assert!(is_aoe_hook_command("sh -c 'aoe-hooks stuff'"));
+        assert!(!is_aoe_hook_command("echo hello"));
+        assert!(!is_aoe_hook_command("user-linter check"));
     }
 
     #[test]

@@ -425,6 +425,10 @@ impl Instance {
                     if let Err(e) = crate::hooks::install_hooks(&settings_path, hook_cfg.events) {
                         tracing::warn!("Failed to install agent hooks: {}", e);
                     }
+                } else {
+                    tracing::warn!(
+                        "Could not determine home directory, skipping hook installation"
+                    );
                 }
             }
         }
@@ -724,8 +728,6 @@ impl Instance {
                 container.stop()?;
             }
         }
-
-        crate::hooks::cleanup_hook_status_dir(&self.id);
 
         Ok(())
     }

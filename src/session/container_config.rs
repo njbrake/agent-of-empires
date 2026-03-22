@@ -14,66 +14,8 @@ use crate::git::GitWorktree;
 use super::environment::collect_environment;
 use super::instance::SandboxInfo;
 
-/// Container path where the hook relay script is installed.
-const HOOK_RELAY_PATH: &str = "/root/.claude/aoe_hook_relay.sh";
-
 /// Home directory inside the container (root user).
 const CONTAINER_HOME: &str = "/root";
-
-/// POSIX shell script that replicates the event-to-status mapping from
-/// `src/cli/hook.rs`. Runs inside the container as a Claude Code hook command,
-/// writing status files to a host-mounted directory so the TUI can read them.
-const HOOK_RELAY_SCRIPT: &str = r#"#!/bin/sh
-# aoe hook relay - container-side status writer
-# Mirrors the logic in src/cli/hook.rs for use inside Docker sandboxes.
-# Writes status files to a mounted volume visible to the host TUI.
-
-STATUS_DIR="/tmp/aoe_hook_status"
-INSTANCE_ID="${AOE_INSTANCE_ID:-}"
-
-if [ -z "$INSTANCE_ID" ]; then
-    exit 0
-fi
-
-INPUT=$(cat)
-
-EVENT=$(printf '%s' "$INPUT" | grep -o '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
-
-if [ -z "$EVENT" ]; then
-    exit 0
-fi
-
-if [ "$EVENT" = "SessionEnd" ]; then
-    rm -f "${STATUS_DIR}/${INSTANCE_ID}"
-    exit 0
-fi
-
-STATUS=""
-case "$EVENT" in
-    SessionStart|UserPromptSubmit|PreToolUse|PostToolUse)
-        STATUS="running"
-        ;;
-    Stop)
-        STATUS="idle"
-        ;;
-    Notification)
-        NTYPE=$(printf '%s' "$INPUT" | grep -o '"notification_type"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
-        case "$NTYPE" in
-            permission_prompt|elicitation_dialog) STATUS="waiting" ;;
-            idle_prompt) STATUS="idle" ;;
-        esac
-        ;;
-esac
-
-if [ -z "$STATUS" ]; then
-    exit 0
-fi
-
-mkdir -p "$STATUS_DIR"
-TIMESTAMP=$(date +%s)
-printf '%s %s' "$STATUS" "$TIMESTAMP" > "${STATUS_DIR}/.${INSTANCE_ID}.tmp"
-mv "${STATUS_DIR}/.${INSTANCE_ID}.tmp" "${STATUS_DIR}/${INSTANCE_ID}"
-"#;
 
 /// Subdirectory name inside each agent's config dir for the shared sandbox config.
 const SANDBOX_SUBDIR: &str = "sandbox";
@@ -325,75 +267,6 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
             std::fs::copy(entry.path(), &target)?;
         }
     }
-    Ok(())
-}
-
-/// Write the hook relay shell script into the sandbox directory.
-///
-/// Always overwrites (not write-once like seed_files) so the script stays
-/// in sync with any future status mapping changes.
-fn seed_hook_relay_script(sandbox_dir: &Path) -> Result<()> {
-    let script_path = sandbox_dir.join("aoe_hook_relay.sh");
-    std::fs::write(&script_path, HOOK_RELAY_SCRIPT)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
-    }
-
-    Ok(())
-}
-
-/// Rewrite AoE hook commands in the sandbox's settings.json to use the
-/// container-local relay script path. Preserves all non-aoe user hooks.
-fn rewrite_hooks_for_container(sandbox_dir: &Path) -> Result<()> {
-    let settings_path = sandbox_dir.join("settings.json");
-    if !settings_path.exists() {
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(&settings_path)?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-
-    let mut changed = false;
-
-    if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        for entries in hooks.values_mut() {
-            if let Some(entries_arr) = entries.as_array_mut() {
-                for entry in entries_arr.iter_mut() {
-                    if let Some(hook_list) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
-                        for hook in hook_list.iter_mut() {
-                            let is_aoe = hook
-                                .get("command")
-                                .and_then(|c| c.as_str())
-                                .map(|cmd| {
-                                    cmd.contains("aoe-hooks")
-                                        || cmd.contains("aoe _hook")
-                                        || cmd.contains("aoe\" _hook")
-                                })
-                                .unwrap_or(false);
-                            if is_aoe {
-                                if let Some(obj) = hook.as_object_mut() {
-                                    obj.insert(
-                                        "command".to_string(),
-                                        serde_json::Value::String(HOOK_RELAY_PATH.to_string()),
-                                    );
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if changed {
-        let new_content = serde_json::to_string_pretty(&settings)?;
-        std::fs::write(&settings_path, new_content)?;
-    }
-
     Ok(())
 }
 
@@ -937,12 +810,6 @@ pub(crate) fn refresh_agent_configs() {
         };
 
         if mount.host_rel == ".claude" {
-            if let Err(e) = seed_hook_relay_script(&sandbox_dir) {
-                tracing::warn!("Failed to seed hook relay script: {}", e);
-            }
-            if let Err(e) = rewrite_hooks_for_container(&sandbox_dir) {
-                tracing::warn!("Failed to rewrite hooks for container: {}", e);
-            }
             if let Err(e) = rewrite_marketplaces_for_container(&sandbox_dir) {
                 tracing::warn!("Failed to rewrite marketplaces for container: {}", e);
             }
@@ -1032,17 +899,11 @@ pub(crate) fn build_container_config(
             }
         };
 
-        // For .claude config: seed the hook relay script, rewrite hook commands,
-        // and generate a per-instance plugin manifest so that Claude Code hooks
-        // and plugins work inside the container.
+        // For .claude config: rewrite paths and generate a per-instance plugin
+        // manifest so that Claude Code plugins work inside the container.
+        // Hook commands are POSIX shell one-liners that work natively in containers.
         let mut plugin_manifest_path = None;
         if mount.host_rel == ".claude" {
-            if let Err(e) = seed_hook_relay_script(&sandbox_dir) {
-                tracing::warn!("Failed to seed hook relay script: {}", e);
-            }
-            if let Err(e) = rewrite_hooks_for_container(&sandbox_dir) {
-                tracing::warn!("Failed to rewrite hooks for container: {}", e);
-            }
             if let Err(e) = rewrite_marketplaces_for_container(&sandbox_dir) {
                 tracing::warn!("Failed to rewrite marketplaces for container: {}", e);
             }
@@ -2136,148 +1997,6 @@ mod tests {
         assert_eq!(
             fs::read_to_string(sandbox.join("auth.json")).unwrap(),
             r#"{"token":"abc"}"#
-        );
-    }
-
-    // --- hook relay and rewrite tests ---
-
-    #[test]
-    fn test_seed_hook_relay_script_creates_executable() {
-        let dir = TempDir::new().unwrap();
-        seed_hook_relay_script(dir.path()).unwrap();
-
-        let script_path = dir.path().join("aoe_hook_relay.sh");
-        assert!(script_path.exists());
-
-        let content = fs::read_to_string(&script_path).unwrap();
-        assert!(content.contains("STATUS_DIR="));
-        assert!(content.contains("AOE_INSTANCE_ID"));
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&script_path).unwrap().permissions().mode();
-            assert!(mode & 0o111 != 0, "Script should be executable");
-        }
-    }
-
-    #[test]
-    fn test_seed_hook_relay_script_always_overwrites() {
-        let dir = TempDir::new().unwrap();
-        let script_path = dir.path().join("aoe_hook_relay.sh");
-
-        fs::write(&script_path, "old-content").unwrap();
-
-        seed_hook_relay_script(dir.path()).unwrap();
-
-        let content = fs::read_to_string(&script_path).unwrap();
-        assert_ne!(content, "old-content");
-        assert!(content.contains("STATUS_DIR="));
-    }
-
-    #[test]
-    fn test_rewrite_hooks_for_container_mixed() {
-        let dir = TempDir::new().unwrap();
-        let settings = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": "/usr/local/bin/aoe _hook", "async": true}]
-                    },
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{"type": "command", "command": "user-linter check"}]
-                    }
-                ],
-                "Stop": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": "/path/to/aoe _hook", "async": true}]
-                    }
-                ]
-            }
-        });
-        fs::write(
-            dir.path().join("settings.json"),
-            serde_json::to_string_pretty(&settings).unwrap(),
-        )
-        .unwrap();
-
-        rewrite_hooks_for_container(dir.path()).unwrap();
-
-        let content = fs::read_to_string(dir.path().join("settings.json")).unwrap();
-        let result: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-        // aoe hooks should be rewritten to relay path
-        assert_eq!(
-            result["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            HOOK_RELAY_PATH
-        );
-        assert_eq!(
-            result["hooks"]["Stop"][0]["hooks"][0]["command"],
-            HOOK_RELAY_PATH
-        );
-
-        // User hook should be preserved unchanged
-        assert_eq!(
-            result["hooks"]["PreToolUse"][1]["hooks"][0]["command"],
-            "user-linter check"
-        );
-    }
-
-    #[test]
-    fn test_rewrite_hooks_for_container_no_hooks_section() {
-        let dir = TempDir::new().unwrap();
-        let settings = serde_json::json!({"env": {"something": "value"}});
-        fs::write(
-            dir.path().join("settings.json"),
-            serde_json::to_string_pretty(&settings).unwrap(),
-        )
-        .unwrap();
-
-        rewrite_hooks_for_container(dir.path()).unwrap();
-
-        // File should be unchanged (no "hooks" key to rewrite)
-        let content = fs::read_to_string(dir.path().join("settings.json")).unwrap();
-        let result: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(!result.as_object().unwrap().contains_key("hooks"));
-        assert_eq!(result["env"]["something"], "value");
-    }
-
-    #[test]
-    fn test_rewrite_hooks_for_container_no_settings_file() {
-        let dir = TempDir::new().unwrap();
-        // No settings.json exists -- should be a no-op
-        rewrite_hooks_for_container(dir.path()).unwrap();
-    }
-
-    #[test]
-    fn test_rewrite_hooks_for_container_quoted_aoe_path() {
-        let dir = TempDir::new().unwrap();
-        let settings = serde_json::json!({
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": "/path/to/aoe\" _hook", "async": true}]
-                    }
-                ]
-            }
-        });
-        fs::write(
-            dir.path().join("settings.json"),
-            serde_json::to_string_pretty(&settings).unwrap(),
-        )
-        .unwrap();
-
-        rewrite_hooks_for_container(dir.path()).unwrap();
-
-        let content = fs::read_to_string(dir.path().join("settings.json")).unwrap();
-        let result: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(
-            result["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            HOOK_RELAY_PATH
         );
     }
 
