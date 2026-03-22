@@ -148,10 +148,8 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     }
 
     let content = std::fs::read_to_string(settings_path)?;
-    let mut settings: Value = serde_json::from_str(&content).unwrap_or_else(|e| {
-        tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
-        serde_json::json!({})
-    });
+    let mut settings: Value = serde_json::from_str(&content)
+        .context(format!("Failed to parse {}", settings_path.display()))?;
 
     let Some(hooks_obj) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return Ok(false);
@@ -549,5 +547,48 @@ mod tests {
             "Expected exactly 1 hook after reinstall, got: {:?}",
             all_cmds
         );
+    }
+
+    #[test]
+    fn test_install_hooks_rejects_corrupted_json() {
+        let tmp = TempDir::new().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+        std::fs::write(&settings_path, "{ invalid json }}}").unwrap();
+        let result = install_hooks(&settings_path, claude_events());
+        assert!(result.is_err());
+        // File should be unchanged
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        assert_eq!(content, "{ invalid json }}}");
+    }
+
+    #[test]
+    fn test_uninstall_hooks_rejects_corrupted_json() {
+        let tmp = TempDir::new().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+        std::fs::write(&settings_path, "{ invalid json }}}").unwrap();
+        let result = uninstall_hooks(&settings_path);
+        assert!(result.is_err());
+        // File should be unchanged
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        assert_eq!(content, "{ invalid json }}}");
+    }
+
+    #[test]
+    fn test_remove_aoe_entries_strips_legacy_patterns() {
+        let mut matchers = vec![
+            serde_json::json!({
+                "hooks": [{"type": "command", "command": "/usr/local/bin/aoe _hook"}]
+            }),
+            serde_json::json!({
+                "hooks": [{"type": "command", "command": "/path/to/aoe\" _hook"}]
+            }),
+            serde_json::json!({
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": "echo user"}]
+            }),
+        ];
+        remove_aoe_entries(&mut matchers);
+        assert_eq!(matchers.len(), 1);
+        assert_eq!(matchers[0]["matcher"], "Bash");
     }
 }
