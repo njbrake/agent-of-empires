@@ -55,25 +55,25 @@ const compactFeatures = [
   <main>
   <!-- Hero Section -->
   <section class="relative pt-32 pb-8 px-6 hero-glow hero-gradient-animated">
-    <div class="max-w-6xl mx-auto text-center">
+    <div class="max-w-6xl mx-auto text-left">
       <div class="mb-8">
-        <img src="/assets/logo.svg" alt="Agent of Empires" class="w-20 h-20 mx-auto mb-8 drop-shadow-2xl" width="80" height="80" fetchpriority="high">
+        <img src="/assets/logo.svg" alt="Agent of Empires" class="w-20 h-20 mb-8 drop-shadow-2xl" width="80" height="80" fetchpriority="high">
         <h1 class="text-5xl md:text-6xl lg:text-7xl font-semibold mb-6 tracking-hero font-display">
           <span class="text-gradient">Agent of Empires</span>
         </h1>
-        <p class="text-xl md:text-2xl text-gray-300 max-w-2xl mx-auto leading-relaxed">
+        <p class="text-xl md:text-2xl text-gray-300 max-w-2xl leading-relaxed">
           Terminal session manager for AI coding agents
         </p>
       </div>
 
-      <p class="text-lg text-gray-300 max-w-3xl mx-auto mb-12 leading-relaxed">
+      <p class="text-lg text-gray-300 max-w-3xl mb-12 leading-relaxed">
         Manage multiple <span class="text-white font-medium">Claude Code</span>, <span class="text-white font-medium">Gemini CLI</span>, <span class="text-white font-medium">OpenCode</span>, <span class="text-white font-medium">Mistral Vibe</span>, and <span class="text-white font-medium">Codex</span> sessions with a beautiful TUI.
         <span class="text-gray-400">Git worktrees for parallel development. Docker sandboxing for safety. Built on tmux.</span>
       </p>
 
       <InstallBlock />
 
-      <div class="flex flex-col sm:flex-row gap-4 justify-center mb-16">
+      <div class="flex flex-col sm:flex-row gap-4 justify-start mb-16">
         <a href="/docs/quick-start/" class="btn-primary text-base px-8 py-3.5 inline-flex items-center justify-center">
           Get Started
         </a>
@@ -104,6 +104,9 @@ const compactFeatures = [
   <!-- Feature Grid -->
   <section class="py-24 px-6">
     <div class="max-w-6xl mx-auto">
+      <div class="mb-8">
+        <span class="font-mono text-xs uppercase tracking-widest text-brand-600">Features</span>
+      </div>
       <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
         {compactFeatures.map((feature, i) => (
           <div class={`delay-${(i + 1) * 100}`}>
@@ -123,7 +126,8 @@ const compactFeatures = [
   <section class="py-24 px-6 bg-surface-900/50">
     <div class="max-w-4xl mx-auto">
       <div class="text-center mb-16 animate-on-scroll">
-        <h2 class="text-3xl md:text-4xl font-semibold mb-4 font-display">Simple workflow</h2>
+        <span class="font-mono text-xs uppercase tracking-widest text-brand-600">How it works</span>
+        <h2 class="text-3xl md:text-4xl font-semibold mb-4 mt-3 font-display">Simple workflow</h2>
         <p class="text-gray-300 text-lg">Get up and running in seconds</p>
       </div>
 
