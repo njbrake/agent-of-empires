@@ -117,6 +117,8 @@ pub struct HomeView {
     pub(super) unified_delete_dialog: Option<UnifiedDeleteDialog>,
     pub(super) group_delete_options_dialog: Option<GroupDeleteOptionsDialog>,
     pub(super) rename_dialog: Option<RenameDialog>,
+    /// Context for group rename: (old_group_path, old_profile)
+    pub(super) group_rename_context: Option<(String, String)>,
     pub(super) hook_trust_dialog: Option<HookTrustDialog>,
     /// Session data pending hook trust approval
     pub(super) pending_hook_trust_data: Option<NewSessionData>,
@@ -254,6 +256,7 @@ impl HomeView {
             unified_delete_dialog: None,
             group_delete_options_dialog: None,
             rename_dialog: None,
+            group_rename_context: None,
             hook_trust_dialog: None,
             pending_hook_trust_data: None,
             hooks_install_dialog: None,

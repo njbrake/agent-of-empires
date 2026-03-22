@@ -192,6 +192,59 @@ impl GroupTree {
             }
         }
     }
+
+    /// Rename a group and all its descendants to a new path.
+    /// If the target path already exists, the old group is merged into it.
+    pub fn rename_group(&mut self, old_path: &str, new_path: &str) {
+        if old_path == new_path || new_path.is_empty() {
+            return;
+        }
+
+        let old_prefix = format!("{}/", old_path);
+
+        // Collect all paths to rename: the group itself + descendants
+        let paths_to_rename: Vec<String> = self
+            .insertion_order
+            .iter()
+            .filter(|p| *p == old_path || p.starts_with(&old_prefix))
+            .cloned()
+            .collect();
+
+        for old in &paths_to_rename {
+            let new = if *old == old_path {
+                new_path.to_string()
+            } else {
+                format!("{}{}", new_path, &old[old_path.len()..])
+            };
+
+            if let Some(mut group) = self.groups_by_path.remove(old) {
+                if self.groups_by_path.contains_key(&new) {
+                    // Target exists: merge (keep existing, drop old)
+                } else {
+                    // Derive new name from the last path segment
+                    let new_name = new.rsplit('/').next().unwrap_or(&new).to_string();
+                    group.name = new_name;
+                    group.path = new.clone();
+                    self.groups_by_path.insert(new.clone(), group);
+                }
+            }
+
+            // Update insertion_order: replace old with new, or remove if merged
+            if let Some(pos) = self.insertion_order.iter().position(|p| p == old) {
+                if self.insertion_order.contains(&new) {
+                    // Target already in order list (merge case)
+                    self.insertion_order.remove(pos);
+                } else {
+                    self.insertion_order[pos] = new;
+                }
+            }
+        }
+
+        // Ensure all parent groups of new_path exist
+        self.ensure_group_exists(new_path);
+
+        self.rebuild_tree();
+    }
 }
 
 /// Item represents either a group or an instance in the flattened tree view
@@ -1023,5 +1076,78 @@ mod tests {
             .map(|g| g.name.as_str().to_string())
             .collect();
         assert_eq!(all_groups, vec!["gamma".to_string(), "alpha".to_string()]);
+    }
+
+    #[test]
+    fn test_rename_group_simple() {
+        let mut inst = Instance::new("test", "/tmp/t");
+        inst.group_path = "work".to_string();
+        let instances = vec![inst];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        tree.rename_group("work", "projects");
+
+        assert!(!tree.group_exists("work"));
+        assert!(tree.group_exists("projects"));
+        assert_eq!(
+            tree.groups_by_path.get("projects").unwrap().name,
+            "projects"
+        );
+    }
+
+    #[test]
+    fn test_rename_group_with_children() {
+        let mut inst1 = Instance::new("test1", "/tmp/1");
+        inst1.group_path = "work".to_string();
+        let mut inst2 = Instance::new("test2", "/tmp/2");
+        inst2.group_path = "work/frontend".to_string();
+        let instances = vec![inst1, inst2];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        tree.rename_group("work", "projects");
+
+        assert!(!tree.group_exists("work"));
+        assert!(!tree.group_exists("work/frontend"));
+        assert!(tree.group_exists("projects"));
+        assert!(tree.group_exists("projects/frontend"));
+    }
+
+    #[test]
+    fn test_rename_group_merge_into_existing() {
+        let mut inst1 = Instance::new("test1", "/tmp/1");
+        inst1.group_path = "old".to_string();
+        let mut inst2 = Instance::new("test2", "/tmp/2");
+        inst2.group_path = "existing".to_string();
+        let instances = vec![inst1, inst2];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        tree.rename_group("old", "existing");
+
+        assert!(!tree.group_exists("old"));
+        assert!(tree.group_exists("existing"));
+    }
+
+    #[test]
+    fn test_rename_group_noop_same_path() {
+        let mut inst = Instance::new("test", "/tmp/t");
+        inst.group_path = "work".to_string();
+        let instances = vec![inst];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        tree.rename_group("work", "work");
+
+        assert!(tree.group_exists("work"));
+    }
+
+    #[test]
+    fn test_rename_group_noop_empty_target() {
+        let mut inst = Instance::new("test", "/tmp/t");
+        inst.group_path = "work".to_string();
+        let instances = vec![inst];
+        let mut tree = GroupTree::new_with_groups(&instances, &[]);
+
+        tree.rename_group("work", "");
+
+        assert!(tree.group_exists("work"));
     }
 }

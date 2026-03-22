@@ -209,6 +209,119 @@ impl HomeView {
         })
     }
 
+    pub(super) fn rename_selected_group(
+        &mut self,
+        new_group: Option<&str>,
+        new_profile: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let (old_path, old_profile) = match self.group_rename_context.take() {
+            Some(ctx) => ctx,
+            None => return Ok(()),
+        };
+
+        let new_path = match new_group {
+            Some(g) if !g.is_empty() && g != old_path => g,
+            _ if new_profile.is_none() => return Ok(()), // Nothing changed
+            _ => &old_path, // Only profile changed, path stays the same
+        };
+
+        let old_prefix = format!("{}/", old_path);
+
+        // Collect sessions belonging to this group and its descendants
+        let affected_ids: Vec<String> = self
+            .instances
+            .iter()
+            .filter(|i| {
+                (i.group_path == old_path || i.group_path.starts_with(&old_prefix))
+                    && i.source_profile == old_profile
+            })
+            .map(|i| i.id.clone())
+            .collect();
+
+        // Update group_path for all affected sessions (prefix replacement)
+        for id in &affected_ids {
+            let new_group_path = if new_path != old_path {
+                let inst = self.get_instance(id);
+                match inst {
+                    Some(i) if i.group_path == old_path => new_path.to_string(),
+                    Some(i) => format!("{}{}", new_path, &i.group_path[old_path.len()..]),
+                    None => continue,
+                }
+            } else {
+                // Path unchanged (profile-only move), keep current group_path
+                match self.get_instance(id) {
+                    Some(i) => i.group_path.clone(),
+                    None => continue,
+                }
+            };
+
+            if let Some(target_profile) = new_profile {
+                self.mutate_instance(id, |inst| {
+                    inst.group_path = new_group_path.clone();
+                    inst.source_profile = target_profile.to_string();
+                });
+            } else {
+                self.mutate_instance(id, |inst| {
+                    inst.group_path = new_group_path.clone();
+                });
+            }
+        }
+
+        // Update group tree
+        let target_profile = new_profile.unwrap_or(&old_profile);
+
+        if new_path != old_path {
+            if let Some(tree) = self.group_trees.get_mut(&old_profile) {
+                tree.rename_group(&old_path, new_path);
+            }
+        }
+
+        // If profile changed, move the group from old to new profile tree
+        if let Some(target) = new_profile {
+            if target != old_profile {
+                // Ensure target profile storage exists
+                if !self.storages.contains_key(target) {
+                    self.storages
+                        .insert(target.to_string(), Storage::new(target)?);
+                }
+
+                // Delete from old tree
+                let effective_path = if new_path != old_path {
+                    new_path
+                } else {
+                    &old_path
+                };
+                if let Some(tree) = self.group_trees.get_mut(&old_profile) {
+                    tree.delete_group(effective_path);
+                }
+
+                // Create in new tree
+                if !self.group_trees.contains_key(target) {
+                    self.group_trees
+                        .insert(target.to_string(), GroupTree::new_with_groups(&[], &[]));
+                }
+                if let Some(tree) = self.group_trees.get_mut(target) {
+                    tree.create_group(if new_path != old_path {
+                        new_path
+                    } else {
+                        &old_path
+                    });
+                }
+            }
+        }
+
+        self.rebuild_group_trees();
+        // Ensure the new group path exists in the target profile tree
+        if new_path != old_path {
+            if let Some(tree) = self.group_trees.get_mut(target_profile) {
+                tree.create_group(new_path);
+            }
+        }
+        self.save()?;
+        self.reload()?;
+        Ok(())
+    }
+
     pub(super) fn rename_selected(
         &mut self,
         new_title: &str,

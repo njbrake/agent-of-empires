@@ -24,7 +24,7 @@ pub use hooks_install::HooksInstallDialog;
 pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
 pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};
-pub use rename::{RenameData, RenameDialog};
+pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
 pub use welcome::WelcomeDialog;
 

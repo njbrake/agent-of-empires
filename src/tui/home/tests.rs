@@ -669,14 +669,15 @@ fn test_r_opens_rename_dialog() {
 
 #[test]
 #[serial]
-fn test_rename_dialog_not_opened_on_group() {
+fn test_rename_dialog_opened_on_group() {
     let mut env = create_test_env_with_groups();
     env.view.cursor = 1;
     env.view.update_selected();
     assert!(env.view.selected_group.is_some());
     assert!(env.view.rename_dialog.is_none());
     env.view.handle_key(key(KeyCode::Char('r')));
-    assert!(env.view.rename_dialog.is_none());
+    assert!(env.view.rename_dialog.is_some());
+    assert!(env.view.group_rename_context.is_some());
 }
 
 #[test]
