@@ -1,14 +1,14 @@
 @font-face {
-  font-family: 'Inter Fallback';
+  font-family: 'DM Sans Fallback';
   src: local('Arial');
-  ascent-override: 90.49%;
-  descent-override: 22.56%;
+  ascent-override: 94.4%;
+  descent-override: 29.56%;
   line-gap-override: 0%;
-  size-adjust: 107.64%;
+  size-adjust: 104.88%;
 }
 
 body {
-  font-family: 'Inter', 'Inter Fallback', system-ui, sans-serif;
+  font-family: 'DM Sans', 'DM Sans Fallback', system-ui, sans-serif;
 }
 
 .gradient-bg {
@@ -107,7 +107,7 @@ kbd {
   transform: translateX(-50%);
   background: #1e293b;
   color: #34d399;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'DM Sans', system-ui, sans-serif;
   font-size: 0.75rem;
   font-weight: 500;
   padding: 0.25rem 0.5rem;

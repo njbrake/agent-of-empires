@@ -4,7 +4,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', 'Inter Fallback', 'system-ui', 'sans-serif'],
+        sans: ['DM Sans', 'DM Sans Fallback', 'system-ui', 'sans-serif'],
+        display: ['Satoshi', 'DM Sans', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
       },
       colors: {
