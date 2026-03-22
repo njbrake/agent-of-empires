@@ -17,7 +17,7 @@ body {
 
 .hero-glow {
   background:
-    radial-gradient(ellipse 60% 40% at 30% -10%, rgba(56, 189, 248, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 30% -10%, rgba(13, 148, 136, 0.08), transparent),
     radial-gradient(ellipse 80% 50% at 50% -20%, rgba(245, 158, 11, 0.15), transparent);
 }
 
@@ -40,7 +40,7 @@ body {
 }
 
 .text-gradient-accent {
-  background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 50%, #0284c7 100%);
+  background: linear-gradient(135deg, #2dd4bf 0%, #14b8a6 50%, #0d9488 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -78,7 +78,7 @@ body {
 }
 
 .feature-tint-accent {
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.05) 0%, rgba(30, 41, 59, 0.5) 30%, rgba(15, 23, 42, 0.3) 100%);
+  background: linear-gradient(180deg, rgba(13, 148, 136, 0.05) 0%, rgba(30, 41, 59, 0.5) 30%, rgba(15, 23, 42, 0.3) 100%);
 }
 
 .feature-tint-green {
@@ -183,13 +183,13 @@ kbd {
 
 .btn-secondary:hover {
   background: rgba(30, 41, 59, 1);
-  border-color: rgba(56, 189, 248, 0.4);
-  box-shadow: 0 4px 14px -2px rgba(56, 189, 248, 0.15);
+  border-color: rgba(13, 148, 136, 0.4);
+  box-shadow: 0 4px 14px -2px rgba(13, 148, 136, 0.15);
   transform: translateY(-1px);
 }
 
 .btn-secondary:focus-visible {
-  outline: 2px solid #38bdf8;
+  outline: 2px solid #2dd4bf;
   outline-offset: 2px;
 }
 
@@ -247,11 +247,11 @@ kbd {
 .callout-warning .callout-icon { color: #fbbf24; }
 
 .callout-info {
-  background: rgba(56, 189, 248, 0.08);
-  border-color: #38bdf8;
+  background: rgba(13, 148, 136, 0.08);
+  border-color: #14b8a6;
 }
 
-.callout-info .callout-icon { color: #38bdf8; }
+.callout-info .callout-icon { color: #14b8a6; }
 
 .callout-note {
   background: rgba(148, 163, 184, 0.08);
@@ -269,7 +269,7 @@ kbd {
 /* Footer gradient border */
 .footer-gradient-border {
   height: 1px;
-  background: linear-gradient(90deg, transparent, #d97706, #38bdf8, transparent);
+  background: linear-gradient(90deg, transparent, #d97706, #0d9488, transparent);
 }
 
 
@@ -640,7 +640,7 @@ kbd {
 
 [data-theme="light"] .hero-glow {
   background:
-    radial-gradient(ellipse 60% 40% at 30% -10%, rgba(56, 189, 248, 0.06), transparent),
+    radial-gradient(ellipse 60% 40% at 30% -10%, rgba(13, 148, 136, 0.06), transparent),
     radial-gradient(ellipse 80% 50% at 50% -20%, rgba(245, 158, 11, 0.1), transparent);
 }
 
@@ -692,7 +692,7 @@ kbd {
 }
 
 [data-theme="light"] .feature-tint-accent {
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.06) 0%, rgba(255, 255, 255, 0.9) 30%, rgba(248, 250, 252, 0.7) 100%);
+  background: linear-gradient(180deg, rgba(13, 148, 136, 0.06) 0%, rgba(255, 255, 255, 0.9) 30%, rgba(248, 250, 252, 0.7) 100%);
 }
 
 [data-theme="light"] .feature-tint-green {
@@ -723,8 +723,8 @@ kbd {
 
 [data-theme="light"] .btn-secondary:hover {
   background: #ffffff;
-  border-color: rgba(14, 165, 233, 0.5);
-  box-shadow: 0 4px 14px -2px rgba(14, 165, 233, 0.1);
+  border-color: rgba(13, 148, 136, 0.5);
+  box-shadow: 0 4px 14px -2px rgba(13, 148, 136, 0.1);
 }
 
 /* Keyboard */
@@ -750,7 +750,7 @@ kbd {
 }
 
 [data-theme="light"] .callout-info {
-  background: rgba(56, 189, 248, 0.1);
+  background: rgba(13, 148, 136, 0.1);
 }
 
 [data-theme="light"] .callout-note {
