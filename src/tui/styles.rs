@@ -77,8 +77,8 @@ impl Theme {
             background: Color::Rgb(15, 23, 42),
             border: Color::Rgb(51, 65, 85),
             terminal_border: Color::Rgb(13, 148, 136),
-            selection: Color::Rgb(23, 32, 51),
-            session_selection: Color::Rgb(30, 41, 59),
+            selection: Color::Rgb(38, 50, 75),
+            session_selection: Color::Rgb(55, 65, 92),
 
             title: Color::Rgb(251, 191, 36),
             text: Color::Rgb(203, 213, 225),
