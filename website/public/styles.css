@@ -940,6 +940,10 @@ kbd {
   color: #1e293b;
 }
 
+[data-theme="light"] .text-gray-200 {
+  color: #1e293b;
+}
+
 [data-theme="light"] .text-gray-300 {
   color: #334155;
 }
