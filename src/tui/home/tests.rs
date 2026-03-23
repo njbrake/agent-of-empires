@@ -819,6 +819,46 @@ fn test_enter_returns_attach_terminal_in_terminal_view() {
 
 #[test]
 #[serial]
+fn test_shift_t_attaches_terminal_from_agent_view() {
+    let env = create_test_env_with_sessions(1);
+    let mut view = env.view;
+
+    // Should be in Agent view by default
+    assert_eq!(view.view_mode, ViewMode::Agent);
+
+    // Shift+T should return AttachTerminal without switching view mode
+    let action = view.handle_key(key(KeyCode::Char('T')));
+    assert!(matches!(action, Some(Action::AttachTerminal(_, _))));
+    assert_eq!(view.view_mode, ViewMode::Agent);
+}
+
+#[test]
+#[serial]
+fn test_shift_t_attaches_terminal_from_terminal_view() {
+    let env = create_test_env_with_sessions(1);
+    let mut view = env.view;
+
+    // Switch to Terminal view
+    view.handle_key(key(KeyCode::Char('t')));
+    assert_eq!(view.view_mode, ViewMode::Terminal);
+
+    // Shift+T should also work from Terminal view
+    let action = view.handle_key(key(KeyCode::Char('T')));
+    assert!(matches!(action, Some(Action::AttachTerminal(_, _))));
+}
+
+#[test]
+#[serial]
+fn test_shift_t_noop_with_no_sessions() {
+    let env = create_test_env_empty();
+    let mut view = env.view;
+
+    let action = view.handle_key(key(KeyCode::Char('T')));
+    assert!(action.is_none());
+}
+
+#[test]
+#[serial]
 fn test_d_shows_info_dialog_in_terminal_view() {
     let env = create_test_env_with_sessions(1);
     let mut view = env.view;

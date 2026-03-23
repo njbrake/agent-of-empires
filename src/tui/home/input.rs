@@ -478,6 +478,26 @@ impl HomeView {
                     ViewMode::Terminal => ViewMode::Agent,
                 };
             }
+            KeyCode::Char('T') => {
+                // Quick-attach to paired terminal from any view
+                if let Some(id) = &self.selected_session {
+                    if let Some(inst) = self.get_instance(id) {
+                        if inst.status == Status::Deleting {
+                            return None;
+                        }
+                    }
+                    let terminal_mode = if let Some(inst) = self.get_instance(id) {
+                        if inst.is_sandboxed() {
+                            self.get_terminal_mode(id)
+                        } else {
+                            TerminalMode::Host
+                        }
+                    } else {
+                        TerminalMode::Host
+                    };
+                    return Some(Action::AttachTerminal(id.clone(), terminal_mode));
+                }
+            }
             KeyCode::Char('c') => {
                 // Toggle container/host terminal mode (only in Terminal view for sandboxed sessions)
                 if self.view_mode == ViewMode::Terminal {
