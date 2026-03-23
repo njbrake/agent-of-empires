@@ -214,37 +214,47 @@ impl HomeView {
         new_group: Option<&str>,
         new_profile: Option<&str>,
     ) -> anyhow::Result<()> {
-        let (old_path, old_profile) = match self.group_rename_context.take() {
+        let ctx = match self.group_rename_context.take() {
             Some(ctx) => ctx,
             None => return Ok(()),
         };
 
         let new_path = match new_group {
-            Some(g) if !g.is_empty() && g != old_path => g,
+            Some(g) if !g.is_empty() && g != ctx.old_path => g,
             _ if new_profile.is_none() => return Ok(()), // Nothing changed
-            _ => &old_path, // Only profile changed, path stays the same
+            _ => &ctx.old_path, // Only profile changed, path stays the same
         };
 
-        let old_prefix = format!("{}/", old_path);
+        // Validate target profile exists
+        if let Some(target) = new_profile {
+            if target != ctx.old_profile {
+                let profiles = list_profiles()?;
+                if !profiles.contains(&target.to_string()) {
+                    anyhow::bail!("Profile '{}' does not exist", target);
+                }
+            }
+        }
+
+        let old_prefix = format!("{}/", ctx.old_path);
 
         // Collect sessions belonging to this group and its descendants
         let affected_ids: Vec<String> = self
             .instances
             .iter()
             .filter(|i| {
-                (i.group_path == old_path || i.group_path.starts_with(&old_prefix))
-                    && i.source_profile == old_profile
+                (i.group_path == ctx.old_path || i.group_path.starts_with(&old_prefix))
+                    && i.source_profile == ctx.old_profile
             })
             .map(|i| i.id.clone())
             .collect();
 
         // Update group_path for all affected sessions (prefix replacement)
         for id in &affected_ids {
-            let new_group_path = if new_path != old_path {
+            let new_group_path = if new_path != ctx.old_path {
                 let inst = self.get_instance(id);
                 match inst {
-                    Some(i) if i.group_path == old_path => new_path.to_string(),
-                    Some(i) => format!("{}{}", new_path, &i.group_path[old_path.len()..]),
+                    Some(i) if i.group_path == ctx.old_path => new_path.to_string(),
+                    Some(i) => format!("{}{}", new_path, &i.group_path[ctx.old_path.len()..]),
                     None => continue,
                 }
             } else {
@@ -267,56 +277,31 @@ impl HomeView {
             }
         }
 
-        // Update group tree
-        let target_profile = new_profile.unwrap_or(&old_profile);
+        let target_profile = new_profile.unwrap_or(&ctx.old_profile);
 
-        if new_path != old_path {
-            if let Some(tree) = self.group_trees.get_mut(&old_profile) {
-                tree.rename_group(&old_path, new_path);
-            }
-        }
-
-        // If profile changed, move the group from old to new profile tree
+        // Ensure target profile storage exists when moving across profiles
         if let Some(target) = new_profile {
-            if target != old_profile {
-                // Ensure target profile storage exists
-                if !self.storages.contains_key(target) {
-                    self.storages
-                        .insert(target.to_string(), Storage::new(target)?);
-                }
-
-                // Delete from old tree
-                let effective_path = if new_path != old_path {
-                    new_path
-                } else {
-                    &old_path
-                };
-                if let Some(tree) = self.group_trees.get_mut(&old_profile) {
-                    tree.delete_group(effective_path);
-                }
-
-                // Create in new tree
-                if !self.group_trees.contains_key(target) {
-                    self.group_trees
-                        .insert(target.to_string(), GroupTree::new_with_groups(&[], &[]));
-                }
-                if let Some(tree) = self.group_trees.get_mut(target) {
-                    tree.create_group(if new_path != old_path {
-                        new_path
-                    } else {
-                        &old_path
-                    });
-                }
+            if target != ctx.old_profile && !self.storages.contains_key(target) {
+                self.storages
+                    .insert(target.to_string(), Storage::new(target)?);
             }
         }
 
+        // Rebuild trees from the updated instance list (authoritative source)
         self.rebuild_group_trees();
+
         // Ensure the new group path exists in the target profile tree
-        if new_path != old_path {
-            if let Some(tree) = self.group_trees.get_mut(target_profile) {
-                tree.create_group(new_path);
-            }
+        // (rebuild derives groups from instances, but the group node itself
+        // may not exist if all sessions were in child groups)
+        let effective_path = if new_path != ctx.old_path {
+            new_path
+        } else {
+            &ctx.old_path
+        };
+        if let Some(tree) = self.group_trees.get_mut(target_profile) {
+            tree.create_group(effective_path);
         }
+
         self.save()?;
         self.reload()?;
         Ok(())

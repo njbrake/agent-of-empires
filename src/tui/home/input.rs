@@ -764,7 +764,10 @@ impl HomeView {
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     let existing_groups: Vec<String> =
                         self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    self.group_rename_context = Some((group_path.clone(), current_profile.clone()));
+                    self.group_rename_context = Some(super::GroupRenameContext {
+                        old_path: group_path.clone(),
+                        old_profile: current_profile.clone(),
+                    });
                     self.rename_dialog = Some(RenameDialog::new_for_group(
                         &group_path,
                         &current_profile,
