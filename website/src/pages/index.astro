@@ -4,6 +4,7 @@ import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import InstallBlock from '../components/InstallBlock.astro';
 import FeatureCard from '../components/FeatureCard.astro';
+import YouTubeCard from '../components/YouTubeCard.astro';
 
 const compactFeatures = [
   {
@@ -116,20 +117,15 @@ const compactFeatures = [
   </section>
 
   <!-- YouTube Section -->
-  <section class="py-12 px-6 bg-surface-900/50">
+  <section class="py-12 px-6">
     <div class="max-w-6xl mx-auto">
       <div class="mb-8">
         <span class="font-mono text-xs uppercase tracking-widest text-brand-600">Learn</span>
+        <h2 class="text-3xl md:text-4xl font-semibold mt-3 mb-4 font-display">Tutorials & help videos</h2>
+        <p class="text-gray-100 text-lg leading-relaxed mb-8 max-w-xl">Watch walkthroughs, setup guides, and tips for getting the most out of aoe on our YouTube channel.</p>
       </div>
-      <div class="flex flex-col md:flex-row items-start gap-8">
-        <div class="flex-1">
-          <h2 class="text-3xl md:text-4xl font-semibold mb-4 font-display">Tutorials & help videos</h2>
-          <p class="text-gray-100 text-lg leading-relaxed mb-8 max-w-xl">Watch walkthroughs, setup guides, and tips for getting the most out of aoe on our YouTube channel.</p>
-          <a href="https://www.youtube.com/@agent-of-empires" target="_blank" rel="noopener" class="btn-primary text-base px-8 py-3.5 inline-flex items-center justify-center gap-3">
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
-            Watch on YouTube
-          </a>
-        </div>
+      <div class="max-w-3xl">
+        <YouTubeCard />
       </div>
     </div>
   </section>
