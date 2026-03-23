@@ -210,6 +210,28 @@ kbd {
 .animate-on-scroll.delay-300 { transition-delay: 0.3s; }
 .animate-on-scroll.delay-400 { transition-delay: 0.4s; }
 
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .hero-gradient-animated { animation: none; }
+  .animate-on-scroll {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .feature-card,
+  .btn-primary,
+  .btn-secondary {
+    transition: none;
+  }
+  .feature-card:hover {
+    transform: none;
+  }
+  .btn-primary:hover,
+  .btn-secondary:hover {
+    transform: none;
+  }
+}
+
 
 /* Callout */
 .callout {
