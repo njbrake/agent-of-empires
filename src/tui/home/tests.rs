@@ -669,14 +669,15 @@ fn test_r_opens_rename_dialog() {
 
 #[test]
 #[serial]
-fn test_rename_dialog_not_opened_on_group() {
+fn test_rename_dialog_opened_on_group() {
     let mut env = create_test_env_with_groups();
     env.view.cursor = 1;
     env.view.update_selected();
     assert!(env.view.selected_group.is_some());
     assert!(env.view.rename_dialog.is_none());
     env.view.handle_key(key(KeyCode::Char('r')));
-    assert!(env.view.rename_dialog.is_none());
+    assert!(env.view.rename_dialog.is_some());
+    assert!(env.view.group_rename_context.is_some());
 }
 
 #[test]
@@ -2126,4 +2127,94 @@ fn effective_list_width_clamps_on_small_screens() {
 
     // User-resized list to 50 on a 70-col screen: capped to 30, but min 10
     assert_eq!(clamp(50, 70), 30);
+}
+
+#[test]
+#[serial]
+fn test_rename_selected_group_path() {
+    let mut env = create_test_env_with_groups();
+
+    // Set up rename context for the "work" group
+    env.view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    // Rename "work" -> "projects"
+    env.view
+        .rename_selected_group(Some("projects"), None)
+        .unwrap();
+
+    // Verify the session's group_path was updated
+    let work_session = env
+        .view
+        .instances()
+        .iter()
+        .find(|i| i.title == "work-project")
+        .unwrap();
+    assert_eq!(work_session.group_path, "projects");
+}
+
+#[test]
+#[serial]
+fn test_rename_selected_group_with_children() {
+    use crate::session::GroupTree;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("parent-session", "/tmp/p");
+    inst1.group_path = "work".to_string();
+    let mut inst2 = Instance::new("child-session", "/tmp/c");
+    inst2.group_path = "work/frontend".to_string();
+    let instances = vec![inst1, inst2];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.save_with_groups(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+
+    view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    view.rename_selected_group(Some("projects"), None).unwrap();
+
+    let parent = view
+        .instances()
+        .iter()
+        .find(|i| i.title == "parent-session")
+        .unwrap();
+    assert_eq!(parent.group_path, "projects");
+
+    let child = view
+        .instances()
+        .iter()
+        .find(|i| i.title == "child-session")
+        .unwrap();
+    assert_eq!(child.group_path, "projects/frontend");
+}
+
+#[test]
+#[serial]
+fn test_rename_selected_group_noop_when_unchanged() {
+    let mut env = create_test_env_with_groups();
+
+    env.view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    // Same path, no profile change -> noop
+    env.view.rename_selected_group(Some("work"), None).unwrap();
+
+    let work_session = env
+        .view
+        .instances()
+        .iter()
+        .find(|i| i.title == "work-project")
+        .unwrap();
+    assert_eq!(work_session.group_path, "work");
 }

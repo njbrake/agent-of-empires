@@ -1,4 +1,4 @@
-//! Rename session dialog
+//! Rename session / group dialog
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
@@ -24,7 +24,14 @@ pub struct RenameData {
     pub profile: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameMode {
+    Session,
+    Group,
+}
+
 pub struct RenameDialog {
+    mode: RenameMode,
     current_title: String,
     current_group: String,
     current_profile: String,
@@ -32,13 +39,17 @@ pub struct RenameDialog {
     new_title: Input,
     new_group: Input,
     profile_index: usize,
-    focused_field: usize, // 0 = title, 1 = group, 2 = profile
+    focused_field: usize, // Session: 0=title, 1=group, 2=profile; Group: 0=group, 1=profile
     existing_groups: Vec<String>,
     group_picker: ListPicker,
     group_ghost: Option<GroupGhostCompletion>,
 }
 
 impl RenameDialog {
+    pub fn mode(&self) -> RenameMode {
+        self.mode
+    }
+
     pub fn new(
         current_title: &str,
         current_group: &str,
@@ -52,6 +63,7 @@ impl RenameDialog {
             .unwrap_or(0);
 
         Self {
+            mode: RenameMode::Session,
             current_title: current_title.to_string(),
             current_group: current_group.to_string(),
             current_profile: current_profile.to_string(),
@@ -66,21 +78,76 @@ impl RenameDialog {
         }
     }
 
+    pub fn new_for_group(
+        current_group: &str,
+        current_profile: &str,
+        available_profiles: Vec<String>,
+        existing_groups: Vec<String>,
+    ) -> Self {
+        let profile_index = available_profiles
+            .iter()
+            .position(|p| p == current_profile)
+            .unwrap_or(0);
+
+        Self {
+            mode: RenameMode::Group,
+            current_title: String::new(),
+            current_group: current_group.to_string(),
+            current_profile: current_profile.to_string(),
+            available_profiles,
+            new_title: Input::default(),
+            new_group: Input::new(current_group.to_string()),
+            profile_index,
+            focused_field: 0,
+            existing_groups,
+            group_picker: ListPicker::new("Select Group"),
+            group_ghost: None,
+        }
+    }
+
+    fn field_count(&self) -> usize {
+        match self.mode {
+            RenameMode::Session => 3, // title, group, profile
+            RenameMode::Group => 2,   // group, profile
+        }
+    }
+
     fn focused_input(&mut self) -> Option<&mut Input> {
-        match self.focused_field {
-            0 => Some(&mut self.new_title),
-            1 => Some(&mut self.new_group),
-            _ => None, // Profile field uses index selection, not text input
+        match self.mode {
+            RenameMode::Session => match self.focused_field {
+                0 => Some(&mut self.new_title),
+                1 => Some(&mut self.new_group),
+                _ => None,
+            },
+            RenameMode::Group => match self.focused_field {
+                0 => Some(&mut self.new_group),
+                _ => None,
+            },
+        }
+    }
+
+    fn is_group_field(&self) -> bool {
+        match self.mode {
+            RenameMode::Session => self.focused_field == 1,
+            RenameMode::Group => self.focused_field == 0,
+        }
+    }
+
+    fn is_profile_field(&self) -> bool {
+        match self.mode {
+            RenameMode::Session => self.focused_field == 2,
+            RenameMode::Group => self.focused_field == 1,
         }
     }
 
     fn next_field(&mut self) {
-        self.focused_field = (self.focused_field + 1) % 3;
+        self.focused_field = (self.focused_field + 1) % self.field_count();
     }
 
     fn prev_field(&mut self) {
+        let count = self.field_count();
         self.focused_field = if self.focused_field == 0 {
-            2
+            count - 1
         } else {
             self.focused_field - 1
         };
@@ -120,7 +187,7 @@ impl RenameDialog {
         // Ctrl+P opens group picker on group field
         if key.code == KeyCode::Char('p')
             && key.modifiers.contains(KeyModifiers::CONTROL)
-            && self.focused_field == 1
+            && self.is_group_field()
             && !self.existing_groups.is_empty()
         {
             self.group_picker.activate(self.existing_groups.clone());
@@ -128,7 +195,7 @@ impl RenameDialog {
         }
 
         // Right/End arrow at end of group input with ghost: accept ghost text
-        if self.focused_field == 1
+        if self.is_group_field()
             && matches!(key.code, KeyCode::Right | KeyCode::End)
             && key.modifiers == KeyModifiers::NONE
             && self.group_ghost.is_some()
@@ -185,7 +252,7 @@ impl RenameDialog {
                 } else {
                     self.next_field();
                 }
-                if self.focused_field == 1 {
+                if self.is_group_field() {
                     self.recompute_group_ghost();
                 } else {
                     self.group_ghost = None;
@@ -194,7 +261,7 @@ impl RenameDialog {
             }
             KeyCode::Down => {
                 self.next_field();
-                if self.focused_field == 1 {
+                if self.is_group_field() {
                     self.recompute_group_ghost();
                 } else {
                     self.group_ghost = None;
@@ -203,14 +270,14 @@ impl RenameDialog {
             }
             KeyCode::Up => {
                 self.prev_field();
-                if self.focused_field == 1 {
+                if self.is_group_field() {
                     self.recompute_group_ghost();
                 } else {
                     self.group_ghost = None;
                 }
                 DialogResult::Continue
             }
-            KeyCode::Left if self.focused_field == 2 => {
+            KeyCode::Left if self.is_profile_field() => {
                 // Cycle profile backwards
                 if self.profile_index == 0 {
                     self.profile_index = self.available_profiles.len().saturating_sub(1);
@@ -219,7 +286,7 @@ impl RenameDialog {
                 }
                 DialogResult::Continue
             }
-            KeyCode::Right | KeyCode::Char(' ') if self.focused_field == 2 => {
+            KeyCode::Right | KeyCode::Char(' ') if self.is_profile_field() => {
                 // Cycle profile forwards
                 self.profile_index = (self.profile_index + 1) % self.available_profiles.len();
                 DialogResult::Continue
@@ -228,7 +295,7 @@ impl RenameDialog {
                 if let Some(input) = self.focused_input() {
                     input.handle_event(&crossterm::event::Event::Key(key));
                 }
-                if self.focused_field == 1 {
+                if self.is_group_field() {
                     self.recompute_group_ghost();
                 }
                 DialogResult::Continue
@@ -237,6 +304,13 @@ impl RenameDialog {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        match self.mode {
+            RenameMode::Session => self.render_session(frame, area, theme),
+            RenameMode::Group => self.render_group(frame, area, theme),
+        }
+    }
+
+    fn render_session(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = 50;
         let dialog_area = super::centered_rect(area, dialog_width, 15);
 
@@ -276,23 +350,10 @@ impl RenameDialog {
         frame.render_widget(Paragraph::new(current_title_line), chunks[0]);
 
         // Current group
-        let group_display = if self.current_group.is_empty() {
-            "(none)".to_string()
-        } else {
-            self.current_group.clone()
-        };
-        let current_group_line = Line::from(vec![
-            Span::styled("Current group: ", Style::default().fg(theme.dimmed)),
-            Span::styled(group_display, Style::default().fg(theme.text)),
-        ]);
-        frame.render_widget(Paragraph::new(current_group_line), chunks[1]);
+        self.render_current_group(frame, chunks[1], theme);
 
         // Current profile
-        let current_profile_line = Line::from(vec![
-            Span::styled("Current profile: ", Style::default().fg(theme.dimmed)),
-            Span::styled(&self.current_profile, Style::default().fg(theme.text)),
-        ]);
-        frame.render_widget(Paragraph::new(current_profile_line), chunks[2]);
+        self.render_current_profile(frame, chunks[2], theme);
 
         // New title field
         render_text_field(
@@ -306,24 +367,111 @@ impl RenameDialog {
         );
 
         // New group field
-        let group_hint = if self.focused_field == 1 && !self.existing_groups.is_empty() {
+        self.render_group_field(frame, chunks[5], theme);
+
+        // Profile selector
+        self.render_profile_selector(frame, chunks[6], theme);
+
+        // Hint
+        self.render_hints(frame, chunks[8], theme);
+
+        // Render group picker overlay
+        if self.group_picker.is_active() {
+            self.group_picker.render(frame, area, theme);
+        }
+    }
+
+    fn render_group(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let dialog_width = 50;
+        let dialog_area = super::centered_rect(area, dialog_width, 13);
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent))
+            .title(" Edit Group ")
+            .title_style(Style::default().fg(theme.title).bold());
+
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([
+                Constraint::Length(1), // Current group
+                Constraint::Length(1), // Current profile
+                Constraint::Length(1), // Spacer
+                Constraint::Length(1), // New group field
+                Constraint::Length(1), // Profile selector
+                Constraint::Length(1), // Spacer
+                Constraint::Min(1),    // Hint
+            ])
+            .split(inner);
+
+        // Current group
+        self.render_current_group(frame, chunks[0], theme);
+
+        // Current profile
+        self.render_current_profile(frame, chunks[1], theme);
+
+        // New group field
+        self.render_group_field(frame, chunks[3], theme);
+
+        // Profile selector
+        self.render_profile_selector(frame, chunks[4], theme);
+
+        // Hint
+        self.render_hints(frame, chunks[6], theme);
+
+        // Render group picker overlay
+        if self.group_picker.is_active() {
+            self.group_picker.render(frame, area, theme);
+        }
+    }
+
+    fn render_current_group(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let group_display = if self.current_group.is_empty() {
+            "(none)".to_string()
+        } else {
+            self.current_group.clone()
+        };
+        let line = Line::from(vec![
+            Span::styled("Current group: ", Style::default().fg(theme.dimmed)),
+            Span::styled(group_display, Style::default().fg(theme.text)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_current_profile(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let line = Line::from(vec![
+            Span::styled("Current profile: ", Style::default().fg(theme.dimmed)),
+            Span::styled(&self.current_profile, Style::default().fg(theme.text)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_group_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let group_hint = if self.is_group_field() && !self.existing_groups.is_empty() {
             Some("Ctrl+P to browse")
         } else {
             None
         };
         render_text_field_with_ghost(
             frame,
-            chunks[5],
+            area,
             "New group:",
             &self.new_group,
-            self.focused_field == 1,
+            self.is_group_field(),
             group_hint,
             self.group_ghost_text(),
             theme,
         );
+    }
 
-        // Profile selector
-        let profile_focused = self.focused_field == 2;
+    fn render_profile_selector(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let profile_focused = self.is_profile_field();
         let selected_profile = self.selected_profile();
         let profile_style = if profile_focused {
             Style::default().fg(theme.accent)
@@ -344,14 +492,15 @@ impl RenameDialog {
             Span::styled(selected_profile, profile_style),
             Span::styled(" >", Style::default().fg(theme.dimmed)),
         ]);
-        frame.render_widget(Paragraph::new(profile_line), chunks[6]);
+        frame.render_widget(Paragraph::new(profile_line), area);
+    }
 
-        // Hint
+    fn render_hints(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let mut hint_spans = vec![
             Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" switch  "),
         ];
-        if self.focused_field == 1 && !self.existing_groups.is_empty() {
+        if self.is_group_field() && !self.existing_groups.is_empty() {
             if self.group_ghost_text().is_some() {
                 hint_spans.push(Span::styled("→", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" accept  "));
@@ -364,12 +513,7 @@ impl RenameDialog {
         hint_spans.push(Span::styled("Esc", Style::default().fg(theme.hint)));
         hint_spans.push(Span::raw(" cancel"));
         let hint = Line::from(hint_spans);
-        frame.render_widget(Paragraph::new(hint), chunks[8]);
-
-        // Render group picker overlay
-        if self.group_picker.is_active() {
-            self.group_picker.render(frame, area, theme);
-        }
+        frame.render_widget(Paragraph::new(hint), area);
     }
 }
 

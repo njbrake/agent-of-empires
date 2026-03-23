@@ -11,7 +11,7 @@ use crate::tui::app::Action;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
     HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction,
-    RenameDialog, SendMessageDialog, UnifiedDeleteDialog,
+    RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -323,19 +323,33 @@ impl HomeView {
         }
 
         if let Some(dialog) = &mut self.rename_dialog {
+            let mode = dialog.mode();
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
                 DialogResult::Cancel => {
                     self.rename_dialog = None;
+                    self.group_rename_context = None;
                 }
                 DialogResult::Submit(data) => {
                     self.rename_dialog = None;
-                    if let Err(e) = self.rename_selected(
-                        &data.title,
-                        data.group.as_deref(),
-                        data.profile.as_deref(),
-                    ) {
-                        tracing::error!("Failed to rename session: {}", e);
+                    match mode {
+                        RenameMode::Session => {
+                            if let Err(e) = self.rename_selected(
+                                &data.title,
+                                data.group.as_deref(),
+                                data.profile.as_deref(),
+                            ) {
+                                tracing::error!("Failed to rename session: {}", e);
+                            }
+                        }
+                        RenameMode::Group => {
+                            if let Err(e) = self.rename_selected_group(
+                                data.group.as_deref(),
+                                data.profile.as_deref(),
+                            ) {
+                                tracing::error!("Failed to rename group: {}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -759,6 +773,27 @@ impl HomeView {
                             existing_groups,
                         ));
                     }
+                } else if let Some(group_path) = &self.selected_group {
+                    let group_path = group_path.clone();
+                    let current_profile = self
+                        .selected_group_profile
+                        .clone()
+                        .or_else(|| self.active_profile.clone())
+                        .unwrap_or_else(|| "default".to_string());
+                    let profiles =
+                        list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+                    let existing_groups: Vec<String> =
+                        self.all_groups().iter().map(|g| g.path.clone()).collect();
+                    self.group_rename_context = Some(super::GroupRenameContext {
+                        old_path: group_path.clone(),
+                        old_profile: current_profile.clone(),
+                    });
+                    self.rename_dialog = Some(RenameDialog::new_for_group(
+                        &group_path,
+                        &current_profile,
+                        profiles,
+                        existing_groups,
+                    ));
                 }
             }
             KeyCode::Char('m') => {

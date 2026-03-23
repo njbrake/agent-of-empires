@@ -30,6 +30,11 @@ use super::diff::DiffView;
 use super::settings::SettingsView;
 use super::status_poller::StatusPoller;
 
+pub(super) struct GroupRenameContext {
+    pub(super) old_path: String,
+    pub(super) old_profile: String,
+}
+
 /// View mode for the home screen
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -117,6 +122,7 @@ pub struct HomeView {
     pub(super) unified_delete_dialog: Option<UnifiedDeleteDialog>,
     pub(super) group_delete_options_dialog: Option<GroupDeleteOptionsDialog>,
     pub(super) rename_dialog: Option<RenameDialog>,
+    pub(super) group_rename_context: Option<GroupRenameContext>,
     pub(super) hook_trust_dialog: Option<HookTrustDialog>,
     /// Session data pending hook trust approval
     pub(super) pending_hook_trust_data: Option<NewSessionData>,
@@ -254,6 +260,7 @@ impl HomeView {
             unified_delete_dialog: None,
             group_delete_options_dialog: None,
             rename_dialog: None,
+            group_rename_context: None,
             hook_trust_dialog: None,
             pending_hook_trust_data: None,
             hooks_install_dialog: None,
