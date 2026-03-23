@@ -123,8 +123,8 @@ Replace the Phosphor theme as default. Phosphor's bright lime green on dark gree
 | background        | RGB(16, 20, 18) green-gray  | RGB(15, 23, 42) warm navy `#0f172a`  |
 | border            | RGB(45, 70, 55) dark green  | RGB(51, 65, 85) slate `#334155`      |
 | terminal_border   | RGB(70, 130, 180) blue      | RGB(13, 148, 136) teal `#0d9488`     |
-| selection         | RGB(30, 50, 40) dark green  | RGB(23, 32, 51) elevated `#172033`   |
-| session_selection | RGB(60, 60, 60) gray        | RGB(30, 41, 59) slate `#1e293b`      |
+| selection         | RGB(30, 50, 40) dark green  | RGB(38, 50, 75) elevated `#26324b`   |
+| session_selection | RGB(60, 60, 60) gray        | RGB(55, 65, 92) slate `#37415c`      |
 | title             | RGB(57, 255, 20) lime green | RGB(251, 191, 36) amber `#fbbf24`    |
 | text              | RGB(180, 255, 180) lt green | RGB(203, 213, 225) cool gray `#cbd5e1`|
 | dimmed            | RGB(80, 120, 90) muted grn  | RGB(100, 116, 139) slate `#64748b`   |
