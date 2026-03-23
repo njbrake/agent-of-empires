@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
+  <defs>
+    <linearGradient id="prompt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Circular background -->
+  <circle cx="400" cy="400" r="400" fill="#0f172a"/>
+
+  <!-- Terminal prompt > (centered in circle) -->
+  <path d="M 220,260 L 480,400 L 220,540"
+        stroke="url(#prompt)" stroke-width="62"
+        stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- Cursor _ -->
+  <line x1="510" y1="540" x2="600" y2="540"
+        stroke="#0d9488" stroke-width="62" stroke-linecap="round"/>
+</svg>
