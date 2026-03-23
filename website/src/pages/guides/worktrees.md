@@ -1,12 +1,11 @@
 ---
-layout: ../../../layouts/Docs.astro
+layout: ../../layouts/Docs.astro
 title: Worktrees Reference
 description: Git worktree commands and configuration reference for Agent of Empires.
 ---
 
 Reference documentation for git worktree commands and configuration in `aoe`.
 
-For workflow guidance, see the [Workflow Guide](/docs/guides/workflow/).
 
 ## CLI vs TUI Behavior
 

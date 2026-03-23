@@ -1,5 +1,5 @@
 ---
-layout: ../../../layouts/Docs.astro
+layout: ../../layouts/Docs.astro
 title: "Docker Sandbox: Quick Reference"
 description: Run AI coding agents in isolated Docker containers with Agent of Empires.
 ---
@@ -305,7 +305,6 @@ git fetch origin
 git worktree add main main
 ```
 
-See the [Workflow Guide](/docs/guides/workflow/) for detailed bare repo setup instructions.
 
 ## Troubleshooting
 

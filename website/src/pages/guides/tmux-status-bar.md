@@ -1,5 +1,5 @@
 ---
-layout: ../../../layouts/Docs.astro
+layout: ../../layouts/Docs.astro
 title: tmux Status Bar
 description: Configure the tmux status bar to display Agent of Empires session information.
 ---

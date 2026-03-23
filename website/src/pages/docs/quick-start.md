@@ -89,7 +89,6 @@ In the TUI, select the tool from the dropdown in the new session dialog.
 
 ## Next Steps
 
-- [Workflow Guide](/docs/guides/workflow/) -- recommended setup with bare repos and parallel agents
-- [Docker Sandbox](/docs/guides/sandbox/) -- container configuration and custom images
-- [Repo Config & Hooks](/docs/guides/repo-config/) -- per-project settings
+- [Docker Sandbox](/guides/sandbox/) -- container configuration and custom images
+- [Repo Config & Hooks](/guides/repo-config/) -- per-project settings
 - [CLI Reference](/docs/cli/reference/) -- every command and flag

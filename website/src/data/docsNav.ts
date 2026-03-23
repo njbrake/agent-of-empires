@@ -20,12 +20,11 @@ export const docsNav: NavSection[] = [
   {
     title: "Guides",
     items: [
-      { title: "Workflow", href: "/docs/guides/workflow/" },
-      { title: "Docker Sandbox", href: "/docs/guides/sandbox/" },
-      { title: "Repo Config & Hooks", href: "/docs/guides/repo-config/" },
-      { title: "Git Worktrees", href: "/docs/guides/worktrees/" },
-      { title: "Diff View", href: "/docs/guides/diff-view/" },
-      { title: "tmux Status Bar", href: "/docs/guides/tmux-status-bar/" },
+      { title: "Docker Sandbox", href: "/guides/sandbox/" },
+      { title: "Repo Config & Hooks", href: "/guides/repo-config/" },
+      { title: "Git Worktrees", href: "/guides/worktrees/" },
+      { title: "Diff View", href: "/guides/diff-view/" },
+      { title: "tmux Status Bar", href: "/guides/tmux-status-bar/" },
       { title: "Sound Effects", href: "/docs/sounds/" },
     ],
   },
