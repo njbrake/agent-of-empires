@@ -3,7 +3,6 @@ import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import InstallBlock from '../components/InstallBlock.astro';
-import Step from '../components/Step.astro';
 import FeatureCard from '../components/FeatureCard.astro';
 
 const compactFeatures = [
@@ -30,12 +29,6 @@ const compactFeatures = [
     title: 'Status Detection',
     description: 'Know when agents are working, waiting for input, or idle without switching sessions.',
     tint: 'brand' as const,
-  },
-  {
-    icon: 'groups',
-    title: 'Session Groups',
-    description: 'Organize sessions into hierarchical folders. Keep work projects separate from personal experiments.',
-    tint: 'accent' as const,
   },
   {
     icon: 'tmux',
@@ -67,7 +60,7 @@ const compactFeatures = [
       </div>
 
       <p class="text-lg text-gray-300 max-w-3xl mb-12 leading-relaxed">
-        Manage multiple <span class="text-white font-medium">Claude Code</span>, <span class="text-white font-medium">Gemini CLI</span>, <span class="text-white font-medium">OpenCode</span>, <span class="text-white font-medium">Mistral Vibe</span>, and <span class="text-white font-medium">Codex</span> sessions with a beautiful TUI.
+        Manage multiple <span class="text-white font-medium">Claude Code</span>, <span class="text-white font-medium">OpenCode</span>, and many more AI coding agent sessions with a beautiful TUI.
         <span class="text-gray-400">Git worktrees for parallel development. Docker sandboxing for safety. Built on tmux.</span>
       </p>
 
@@ -88,7 +81,7 @@ const compactFeatures = [
 
   <!-- Demo Section -->
   <section class="py-8 px-6 animate-on-scroll">
-    <div class="max-w-5xl mx-auto">
+    <div class="max-w-[90%] md:max-w-4xl mx-auto">
       <div class="terminal-window rounded-2xl overflow-hidden">
         <div class="flex items-center gap-2 px-5 py-4 bg-surface-850 border-b border-surface-700/50">
           <div class="w-3 h-3 rounded-full bg-red-500"></div>
@@ -102,20 +95,19 @@ const compactFeatures = [
   </section>
 
   <!-- Feature Grid -->
-  <section class="py-24 px-6">
+  <section class="py-12 px-6">
     <div class="max-w-6xl mx-auto">
       <div class="mb-8">
         <span class="font-mono text-xs uppercase tracking-widest text-brand-600">Features</span>
       </div>
       <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
         {compactFeatures.map((feature, i) => (
-          <div class={`delay-${(i + 1) * 100}${i === 0 ? ' lg:row-span-2' : ''}`}>
+          <div class={`delay-${(i + 1) * 100}`}>
             <FeatureCard
               icon={feature.icon}
               title={feature.title}
               description={feature.description}
               tint={feature.tint}
-              featured={i === 0}
             />
           </div>
         ))}
@@ -123,32 +115,25 @@ const compactFeatures = [
     </div>
   </section>
 
-  <!-- How it Works Section -->
-  <section class="py-24 px-6 bg-surface-900/50">
-    <div class="max-w-4xl mx-auto">
-      <div class="text-center mb-16 animate-on-scroll">
-        <span class="font-mono text-xs uppercase tracking-widest text-brand-600">How it works</span>
-        <h2 class="text-3xl md:text-4xl font-semibold mb-4 mt-3 font-display">Simple workflow</h2>
-        <p class="text-gray-300 text-lg">Get up and running in seconds</p>
+  <!-- YouTube Section -->
+  <section class="py-12 px-6 bg-surface-900/50">
+    <div class="max-w-6xl mx-auto">
+      <div class="mb-8">
+        <span class="font-mono text-xs uppercase tracking-widest text-brand-600">Learn</span>
       </div>
-
-      <div class="space-y-12">
-        <Step number={1} title="Launch the TUI">
-          <div class="code-block rounded-xl px-5 py-3 font-mono text-base inline-block">
-            <span class="text-gray-500">$</span> <span class="text-white">aoe</span>
-          </div>
-        </Step>
-
-        <Step number={2} title="Add a session">
-          <p class="text-gray-400 leading-relaxed">Press <kbd class="px-2.5 py-1 rounded text-sm font-mono mx-1">a</kbd> and enter the path to your project. Optionally enable worktrees or Docker sandboxing.</p>
-        </Step>
-
-        <Step number={3} title="Attach and work" showLine={false}>
-          <p class="text-gray-400 leading-relaxed">Press <kbd class="px-2.5 py-1 rounded text-sm font-mono mx-1">Enter</kbd> to attach. You're now in tmux with your AI agent. Press <kbd class="px-2.5 py-1 rounded text-sm font-mono mx-1">Ctrl+b d</kbd> to detach back to aoe.</p>
-        </Step>
+      <div class="flex flex-col md:flex-row items-start gap-8">
+        <div class="flex-1">
+          <h2 class="text-3xl md:text-4xl font-semibold mb-4 font-display">Tutorials & help videos</h2>
+          <p class="text-gray-300 text-lg leading-relaxed mb-8 max-w-xl">Watch walkthroughs, setup guides, and tips for getting the most out of aoe on our YouTube channel.</p>
+          <a href="https://www.youtube.com/@agent-of-empires" target="_blank" rel="noopener" class="btn-primary text-base px-8 py-3.5 inline-flex items-center justify-center gap-3">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+            Watch on YouTube
+          </a>
+        </div>
       </div>
     </div>
   </section>
+
   </main>
 
   <Footer />
