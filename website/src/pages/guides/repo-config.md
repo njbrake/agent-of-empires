@@ -1,5 +1,5 @@
 ---
-layout: ../../../layouts/Docs.astro
+layout: ../../layouts/Docs.astro
 title: Repository Configuration & Hooks
 description: Per-repo configuration and hooks for Agent of Empires sessions.
 ---

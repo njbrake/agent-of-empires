@@ -1,5 +1,5 @@
 ---
-layout: ../../../layouts/Docs.astro
+layout: ../../layouts/Docs.astro
 title: Diff View
 description: Review git changes and edit files directly from the Agent of Empires TUI.
 ---
