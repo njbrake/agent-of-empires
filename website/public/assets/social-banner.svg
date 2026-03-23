@@ -9,12 +9,17 @@
       <stop offset="50%" stop-color="#f59e0b"/>
       <stop offset="100%" stop-color="#d97706"/>
     </linearGradient>
+    <linearGradient id="prompt-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
     <linearGradient id="accent-line" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#d97706"/>
       <stop offset="50%" stop-color="#0d9488"/>
       <stop offset="100%" stop-color="#0d9488" stop-opacity="0"/>
     </linearGradient>
-    <radialGradient id="glow" cx="30%" cy="30%" r="60%">
+    <radialGradient id="glow" cx="30%" cy="40%" r="60%">
       <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.12"/>
       <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
     </radialGradient>
@@ -39,29 +44,38 @@
     <line x1="960" y1="0" x2="960" y2="640"/>
   </g>
 
+  <!-- Logo mark (>_ prompt) -->
+  <g transform="translate(120, 180)">
+    <!-- > prompt -->
+    <path d="M 0,0 L 50,35 L 0,70"
+          stroke="url(#prompt-grad)" stroke-width="8"
+          stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <!-- _ cursor -->
+    <line x1="54" y1="70" x2="78" y2="70"
+          stroke="#0d9488" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
   <!-- Accent line -->
-  <rect x="120" y="290" width="200" height="2" fill="url(#accent-line)" rx="1"/>
+  <rect x="120" y="310" width="200" height="2" fill="url(#accent-line)" rx="1"/>
 
   <!-- Terminal bracket decoration -->
-  <text x="120" y="260" font-family="'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" font-size="14" fill="#64748b" letter-spacing="0.1em">TERMINAL SESSION MANAGER</text>
+  <text x="120" y="290" font-family="'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" font-size="14" fill="#64748b" letter-spacing="0.1em">TERMINAL SESSION MANAGER</text>
 
   <!-- Title -->
-  <text x="120" y="370" font-family="'Satoshi', 'DM Sans', 'Inter', system-ui, sans-serif" font-size="72" font-weight="900" fill="url(#brand)">Agent of Empires</text>
+  <text x="120" y="400" font-family="'Satoshi', 'DM Sans', 'Inter', system-ui, sans-serif" font-size="72" font-weight="900" fill="url(#brand)">Agent of Empires</text>
 
   <!-- Tagline -->
-  <text x="120" y="420" font-family="'DM Sans', 'Inter', system-ui, sans-serif" font-size="24" fill="#cbd5e1">Terminal session manager for AI coding agents</text>
+  <text x="120" y="450" font-family="'DM Sans', 'Inter', system-ui, sans-serif" font-size="24" fill="#cbd5e1">Terminal session manager for AI coding agents</text>
 
-  <!-- Agent names -->
-  <g font-family="'JetBrains Mono', 'SF Mono', monospace" font-size="14" fill="#64748b">
-    <text x="120" y="480">Claude Code</text>
-    <text x="120" y="480" dx="130" fill="#334155">|</text>
-    <text x="120" y="480" dx="145">Gemini CLI</text>
-    <text x="120" y="480" dx="260" fill="#334155">|</text>
-    <text x="120" y="480" dx="275">OpenCode</text>
-    <text x="120" y="480" dx="375" fill="#334155">|</text>
-    <text x="120" y="480" dx="390">Codex</text>
-    <text x="120" y="480" dx="460" fill="#334155">|</text>
-    <text x="120" y="480" dx="475">Mistral Vibe</text>
+  <!-- Feature pills -->
+  <g font-family="'JetBrains Mono', 'SF Mono', monospace" font-size="13" fill="#94a3b8">
+    <text x="120" y="510">Git worktrees</text>
+    <text x="120" y="510" dx="130" fill="#334155">|</text>
+    <text x="120" y="510" dx="145">Docker sandbox</text>
+    <text x="120" y="510" dx="295" fill="#334155">|</text>
+    <text x="120" y="510" dx="310">TUI dashboard</text>
+    <text x="120" y="510" dx="445" fill="#334155">|</text>
+    <text x="120" y="510" dx="460">tmux</text>
   </g>
 
   <!-- Teal agent node decorations -->
