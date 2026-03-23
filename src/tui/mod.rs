@@ -9,7 +9,7 @@ pub mod diff;
 mod home;
 pub mod settings;
 mod status_poller;
-mod styles;
+pub(crate) mod styles;
 
 pub use app::*;
 

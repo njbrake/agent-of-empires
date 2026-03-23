@@ -1,22 +1,34 @@
 //! tmux status bar configuration for aoe sessions
 
 use anyhow::Result;
+use ratatui::style::Color;
 use std::process::Command;
+
+use crate::tui::styles::Theme;
 
 /// Information about a sandboxed session for status bar display.
 pub struct SandboxDisplay {
     pub container_name: String,
 }
 
+/// Convert a ratatui Color to a tmux-compatible hex color string (e.g. "#0f172a").
+fn color_to_tmux(color: Color) -> String {
+    match color {
+        Color::Rgb(r, g, b) => format!("#{:02x}{:02x}{:02x}", r, g, b),
+        _ => "default".to_string(),
+    }
+}
+
 /// Apply aoe-styled status bar configuration to a tmux session.
 ///
 /// Sets tmux user options (@aoe_title, @aoe_branch, @aoe_sandbox) and configures
-/// the status-right to display session information.
+/// the status-right to display session information using theme colors.
 pub fn apply_status_bar(
     session_name: &str,
     title: &str,
     branch: Option<&str>,
     sandbox: Option<&SandboxDisplay>,
+    theme: &Theme,
 ) -> Result<()> {
     // Set the session title as a tmux user option
     set_session_option(session_name, "@aoe_title", title)?;
@@ -31,31 +43,32 @@ pub fn apply_status_bar(
         set_session_option(session_name, "@aoe_sandbox", &sandbox_info.container_name)?;
     }
 
-    // Configure the status bar format
-    // colour46 = bright green (accent), colour48 = cyan (matches running)
-    // colour235 = dark background
-    //
+    let accent = color_to_tmux(theme.accent);
+    let fg = color_to_tmux(theme.text);
+    let bg = color_to_tmux(theme.background);
+    let branch_color = color_to_tmux(theme.branch);
+    let sandbox_color = color_to_tmux(theme.sandbox);
+    let hint = color_to_tmux(theme.dimmed);
+
     // Format: "aoe: Title | branch | [container] | 14:30"
-    // - #{@aoe_title}: session title
-    // - #{?#{@aoe_branch}, | #{@aoe_branch},}: conditional branch display
-    // - #{?#{@aoe_sandbox}, [#{@aoe_sandbox}],}: conditional sandbox container display
-    let status_format = concat!(
-        " #[fg=colour46,bold]aoe#[fg=colour252,nobold]: ",
-        "#{@aoe_title}",
-        "#{?#{@aoe_branch}, #[fg=colour48]| #{@aoe_branch}#[fg=colour252],}",
-        "#{?#{@aoe_sandbox}, #[fg=colour214]⬡ #{@aoe_sandbox}#[fg=colour252],}",
-        " | %H:%M "
+    let status_format = format!(
+        " #[fg={accent},bold]aoe#[fg={fg},nobold]: \
+         #{{@aoe_title}}\
+         #{{?#{{@aoe_branch}}, #[fg={branch_color}]| #{{@aoe_branch}}#[fg={fg}],}}\
+         #{{?#{{@aoe_sandbox}}, #[fg={sandbox_color}]\u{2b21} #{{@aoe_sandbox}}#[fg={fg}],}}\
+          | %H:%M ",
     );
 
-    set_session_option(session_name, "status-right", status_format)?;
+    set_session_option(session_name, "status-right", &status_format)?;
     set_session_option(session_name, "status-right-length", "80")?;
 
-    // Dark background with light text
-    set_session_option(session_name, "status-style", "bg=colour235,fg=colour252")?;
+    set_session_option(session_name, "status-style", &format!("bg={bg},fg={fg}"))?;
     set_session_option(
         session_name,
         "status-left",
-        " #[fg=colour46,bold]#S#[fg=colour252,nobold] │ #[fg=colour245]Ctrl+b d#[fg=colour240] to detach ",
+        &format!(
+            " #[fg={accent},bold]#S#[fg={fg},nobold] \u{2502} #[fg={hint}]Ctrl+b d#[fg={hint}] to detach ",
+        ),
     )?;
     set_session_option(session_name, "status-left-length", "50")?;
 
@@ -93,9 +106,18 @@ pub fn apply_all_tmux_options(
     sandbox: Option<&SandboxDisplay>,
 ) {
     use crate::session::config::{should_apply_tmux_mouse, should_apply_tmux_status_bar};
+    use crate::tui::styles::load_theme;
 
     if should_apply_tmux_status_bar() {
-        if let Err(e) = apply_status_bar(session_name, title, branch, sandbox) {
+        let config = crate::session::config::Config::load().unwrap_or_default();
+        let theme_name = if config.theme.name.is_empty() {
+            "empire"
+        } else {
+            &config.theme.name
+        };
+        let theme = load_theme(theme_name);
+
+        if let Err(e) = apply_status_bar(session_name, title, branch, sandbox, &theme) {
             tracing::debug!("Failed to apply tmux status bar: {}", e);
         }
     }
@@ -188,6 +210,7 @@ fn get_session_option(session_name: &str, option: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::styles::load_theme;
 
     #[test]
     fn test_get_status_returns_none_for_non_tmux() {
@@ -195,5 +218,44 @@ mod tests {
         // so get_status_for_current_session should also return None
         // This test just verifies the function doesn't panic
         let _ = get_status_for_current_session();
+    }
+
+    #[test]
+    fn test_color_to_tmux_rgb() {
+        assert_eq!(color_to_tmux(Color::Rgb(15, 23, 42)), "#0f172a");
+        assert_eq!(color_to_tmux(Color::Rgb(255, 255, 255)), "#ffffff");
+        assert_eq!(color_to_tmux(Color::Rgb(0, 0, 0)), "#000000");
+    }
+
+    #[test]
+    fn test_color_to_tmux_non_rgb_fallback() {
+        assert_eq!(color_to_tmux(Color::Red), "default");
+    }
+
+    #[test]
+    fn test_all_themes_produce_valid_status_bar_colors() {
+        for theme_name in &[
+            "empire",
+            "phosphor",
+            "tokyo-night-storm",
+            "catppuccin-latte",
+            "dracula",
+        ] {
+            let theme = load_theme(theme_name);
+            let colors = [
+                ("background", color_to_tmux(theme.background)),
+                ("text", color_to_tmux(theme.text)),
+                ("accent", color_to_tmux(theme.accent)),
+                ("branch", color_to_tmux(theme.branch)),
+                ("sandbox", color_to_tmux(theme.sandbox)),
+                ("dimmed", color_to_tmux(theme.dimmed)),
+            ];
+            for (field, hex) in &colors {
+                assert!(
+                    hex.starts_with('#'),
+                    "{theme_name}: {field} should be hex, got {hex}"
+                );
+            }
+        }
     }
 }
