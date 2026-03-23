@@ -541,7 +541,7 @@ kbd {
 .docs-content {
   flex: 1;
   min-width: 0;
-  max-width: 52rem;
+  max-width: 45rem;
   padding: 2rem 3rem 4rem;
 }
 
