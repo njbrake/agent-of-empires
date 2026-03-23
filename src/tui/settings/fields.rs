@@ -895,7 +895,8 @@ fn build_session_fields(
         SettingField {
             key: FieldKey::AgentExtraArgs,
             label: "Agent Extra Args",
-            description: "Per-agent extra arguments (agent=args, e.g. opencode=--port 8080)",
+            description:
+                "Per-agent extra arguments appended after the binary (e.g. opencode=--port 8080)",
             value: FieldValue::List(extra_args_list),
             category: SettingsCategory::Session,
             has_override: extra_args_override,
@@ -907,7 +908,7 @@ fn build_session_fields(
         SettingField {
             key: FieldKey::AgentCommandOverride,
             label: "Agent Command Override",
-            description: "Per-agent command override replacing the binary (agent=command)",
+            description: "Per-agent command override replacing the binary (e.g. claude=my-wrapper)",
             value: FieldValue::List(cmd_override_list),
             category: SettingsCategory::Session,
             has_override: cmd_override_override,

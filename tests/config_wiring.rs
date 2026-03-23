@@ -4,6 +4,8 @@
 //! that uses them, specifically the auto_cleanup settings for worktrees and
 //! sandbox containers.
 
+use std::collections::HashMap;
+
 use agent_of_empires::session::{save_config, Config, SandboxConfig, WorktreeConfig};
 use agent_of_empires::tui::dialogs::{DeleteDialogConfig, UnifiedDeleteDialog};
 use serial_test::serial;
@@ -159,4 +161,69 @@ fn test_all_sandbox_config_fields_accessible() {
     let _ = config.auto_cleanup;
     let _ = &config.cpu_limit;
     let _ = &config.memory_limit;
+}
+
+#[test]
+#[serial]
+fn test_agent_command_override_roundtrip() {
+    let _temp = setup_temp_home();
+
+    let mut config = Config::default();
+    config
+        .session
+        .agent_command_override
+        .insert("claude".to_string(), "my-wrapper".to_string());
+    config
+        .session
+        .agent_extra_args
+        .insert("opencode".to_string(), "--port 8080".to_string());
+    save_config(&config).unwrap();
+
+    let loaded = Config::load().unwrap();
+    assert_eq!(
+        loaded.session.agent_command_override.get("claude"),
+        Some(&"my-wrapper".to_string()),
+        "agent_command_override should survive save/load roundtrip"
+    );
+    assert_eq!(
+        loaded.session.agent_extra_args.get("opencode"),
+        Some(&"--port 8080".to_string()),
+        "agent_extra_args should survive save/load roundtrip"
+    );
+}
+
+#[test]
+fn test_parse_key_value_list_via_field_apply() {
+    // Simulate the settings TUI flow: list of "key=value" strings -> HashMap -> TOML -> load back
+    let mut config = Config::default();
+
+    // Simulate what apply_field_to_global does for AgentCommandOverride
+    let list_items = vec!["claude=my-wrapper".to_string()];
+    let map: HashMap<String, String> = list_items
+        .iter()
+        .filter_map(|item| {
+            let (k, v) = item.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect();
+    config.session.agent_command_override = map;
+
+    assert_eq!(
+        config.session.agent_command_override.get("claude"),
+        Some(&"my-wrapper".to_string()),
+    );
+
+    // Verify entries WITHOUT '=' are silently dropped (the root cause of the bug)
+    let bad_items = vec!["just-a-command".to_string()];
+    let bad_map: HashMap<String, String> = bad_items
+        .iter()
+        .filter_map(|item| {
+            let (k, v) = item.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect();
+    assert!(
+        bad_map.is_empty(),
+        "Entries without '=' should be dropped by parse_key_value_list"
+    );
 }

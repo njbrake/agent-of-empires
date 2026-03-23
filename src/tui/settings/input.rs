@@ -449,6 +449,7 @@ impl SettingsView {
             KeyCode::Esc => {
                 state.editing_item = None;
                 state.adding_new = false;
+                self.error_message = None;
             }
             KeyCode::Enter => {
                 // Take the input and flags out to avoid borrow conflict
@@ -460,8 +461,26 @@ impl SettingsView {
                 if let Some(input) = input {
                     let text = input.value().to_string();
                     if !text.is_empty() {
+                        let field_key = self.fields[self.selected_field].key;
+
+                        // Validate key=value format for agent override fields
+                        if matches!(
+                            field_key,
+                            FieldKey::AgentExtraArgs | FieldKey::AgentCommandOverride
+                        ) {
+                            if let Err(msg) = validate_agent_key_value(&text) {
+                                self.error_message = Some(msg);
+                                // Re-open the editor so the user can fix the entry
+                                if let Some(ref mut s) = self.list_edit_state {
+                                    s.editing_item = Some(tui_input::Input::new(text));
+                                    s.adding_new = adding_new;
+                                }
+                                return SettingsAction::Continue;
+                            }
+                        }
+
                         // Validate env var references before accepting
-                        if self.fields[self.selected_field].key == FieldKey::Environment {
+                        if field_key == FieldKey::Environment {
                             self.error_message = crate::session::validate_env_entry(&text);
                         }
 
@@ -478,6 +497,7 @@ impl SettingsView {
                             }
                         }
                         self.apply_field_to_config(self.selected_field);
+                        self.error_message = None;
                     }
                 }
             }
@@ -735,5 +755,69 @@ impl SettingsView {
         self.has_changes = false;
         self.rebuild_fields();
         Ok(())
+    }
+}
+
+/// Validate that an entry for AgentExtraArgs or AgentCommandOverride is in `agent_name=value` format.
+fn validate_agent_key_value(text: &str) -> Result<(), String> {
+    let Some((key, value)) = text.split_once('=') else {
+        let names = crate::agents::agent_names().join(", ");
+        return Err(format!(
+            "Must be in agent_name=value format (e.g. claude=my-command). Known agents: {}",
+            names
+        ));
+    };
+
+    if key.is_empty() {
+        return Err("Agent name cannot be empty".to_string());
+    }
+
+    if value.is_empty() {
+        return Err("Value cannot be empty".to_string());
+    }
+
+    if crate::agents::get_agent(key).is_none() {
+        let names = crate::agents::agent_names().join(", ");
+        return Err(format!(
+            "'{}' is not a known agent. Known agents: {}",
+            key, names
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_agent_key_value_valid() {
+        assert!(validate_agent_key_value("claude=my-wrapper").is_ok());
+        assert!(validate_agent_key_value("opencode=--port 8080").is_ok());
+    }
+
+    #[test]
+    fn test_validate_agent_key_value_missing_equals() {
+        let err = validate_agent_key_value("just-a-command").unwrap_err();
+        assert!(err.contains("agent_name=value"));
+    }
+
+    #[test]
+    fn test_validate_agent_key_value_empty_key() {
+        let err = validate_agent_key_value("=some-value").unwrap_err();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_agent_key_value_empty_value() {
+        let err = validate_agent_key_value("claude=").unwrap_err();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_agent_key_value_unknown_agent() {
+        let err = validate_agent_key_value("nonexistent=cmd").unwrap_err();
+        assert!(err.contains("not a known agent"));
     }
 }

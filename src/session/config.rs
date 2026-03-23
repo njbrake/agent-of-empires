@@ -935,4 +935,30 @@ mod tests {
         assert_eq!(config.diff.default_branch, Some("main".to_string()));
         assert_eq!(config.diff.context_lines, 10);
     }
+
+    #[test]
+    fn test_session_config_agent_override_roundtrip() {
+        let mut config = Config::default();
+        config
+            .session
+            .agent_command_override
+            .insert("claude".to_string(), "safehouse".to_string());
+        config
+            .session
+            .agent_extra_args
+            .insert("opencode".to_string(), "--port 8080".to_string());
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.session.agent_command_override.get("claude"),
+            Some(&"safehouse".to_string()),
+            "agent_command_override should survive roundtrip"
+        );
+        assert_eq!(
+            deserialized.session.agent_extra_args.get("opencode"),
+            Some(&"--port 8080".to_string()),
+            "agent_extra_args should survive roundtrip"
+        );
+    }
 }
