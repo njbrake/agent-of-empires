@@ -131,7 +131,7 @@ kbd {
 
 /* Install tabs */
 .install-tab {
-  color: #64748b;
+  color: #94a3b8;
   background: transparent;
   border: 1px solid transparent;
   border-bottom: none;
@@ -139,7 +139,7 @@ kbd {
 }
 
 .install-tab:hover {
-  color: #94a3b8;
+  color: #e2e8f0;
 }
 
 .install-tab-active {
@@ -293,13 +293,13 @@ kbd {
 }
 
 .prose-content p {
-  color: #cbd5e1;
+  color: #e2e8f0;
   line-height: 1.8;
   margin-bottom: 1.25rem;
 }
 
 .prose-content ul, .prose-content ol {
-  color: #cbd5e1;
+  color: #e2e8f0;
   line-height: 1.8;
   margin-bottom: 1.25rem;
   padding-left: 1.5rem;
@@ -364,7 +364,7 @@ kbd {
   border-left: 3px solid #d97706;
   padding-left: 1rem;
   margin: 1.5rem 0;
-  color: #cbd5e1;
+  color: #e2e8f0;
   font-style: italic;
 }
 
@@ -380,7 +380,7 @@ kbd {
 .prose-content h5 {
   font-size: 1rem;
   font-weight: 600;
-  color: #cbd5e1;
+  color: #e2e8f0;
   margin-top: 1.5rem;
   margin-bottom: 0.5rem;
   line-height: 1.4;
@@ -389,7 +389,7 @@ kbd {
 .prose-content h6 {
   font-size: 0.95rem;
   font-weight: 600;
-  color: #94a3b8;
+  color: #cbd5e1;
   margin-top: 1.25rem;
   margin-bottom: 0.5rem;
   line-height: 1.4;
@@ -422,7 +422,7 @@ kbd {
 .prose-content table td {
   padding: 0.7rem 1.1rem;
   border-bottom: 1px solid rgba(30, 41, 59, 0.6);
-  color: #cbd5e1;
+  color: #e2e8f0;
 }
 
 .prose-content table tbody tr:last-child td {
@@ -483,7 +483,7 @@ kbd {
 }
 
 .sidebar-section-title {
-  color: #475569;
+  color: #64748b;
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -493,7 +493,7 @@ kbd {
 
 .sidebar-link {
   display: block;
-  color: #94a3b8;
+  color: #cbd5e1;
   padding: 0.35rem 1.25rem;
   font-size: 0.875rem;
   text-decoration: none;
@@ -591,7 +591,7 @@ kbd {
 }
 
 .mobile-sidebar-section-title {
-  color: #475569;
+  color: #64748b;
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -601,7 +601,7 @@ kbd {
 
 .mobile-sidebar-link {
   display: block;
-  color: #94a3b8;
+  color: #cbd5e1;
   padding: 0.5rem 0.875rem;
   font-size: 0.875rem;
   text-decoration: none;
