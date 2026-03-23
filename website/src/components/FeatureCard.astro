@@ -35,12 +35,24 @@ const iconColor = tint ? iconColorMap[tint] : 'text-brand-500';
 const iconBg = tint ? iconBgMap[tint] : 'bg-brand-600/15';
 ---
 
-<div class={`feature-card rounded-2xl p-8 animate-on-scroll ${tintClass}${featured ? ' h-full flex flex-col justify-center' : ''}`}>
-  <div class={`${featured ? 'w-16 h-16' : 'w-14 h-14'} ${iconBg} rounded-xl flex items-center justify-center mb-5`}>
-    <svg class={`${featured ? 'w-8 h-8' : 'w-7 h-7'} ${iconColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <Fragment set:html={icons[icon]} />
-    </svg>
+{featured ? (
+  <div class={`feature-card rounded-2xl p-10 animate-on-scroll h-full flex flex-col justify-center ${tintClass}`}>
+    <h3 class="text-2xl font-semibold mb-4 font-display flex items-center gap-3">
+      <svg class={`w-6 h-6 ${iconColor} shrink-0`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <Fragment set:html={icons[icon]} />
+      </svg>
+      {title}
+    </h3>
+    <p class="text-gray-100 leading-relaxed text-lg">{description}</p>
   </div>
-  <h3 class={`${featured ? 'text-2xl' : 'text-xl'} font-semibold mb-3 font-display`}>{title}</h3>
-  <p class={`text-gray-100 leading-relaxed${featured ? ' text-lg' : ''}`}>{description}</p>
-</div>
+) : (
+  <div class={`feature-card rounded-2xl p-6 animate-on-scroll ${tintClass}`}>
+    <h3 class="text-lg font-semibold mb-2 font-display flex items-center gap-2.5">
+      <svg class={`w-5 h-5 ${iconColor} shrink-0`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <Fragment set:html={icons[icon]} />
+      </svg>
+      {title}
+    </h3>
+    <p class="text-gray-100 leading-relaxed text-sm">{description}</p>
+  </div>
+)}

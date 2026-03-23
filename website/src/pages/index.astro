@@ -100,9 +100,20 @@ const compactFeatures = [
       <div class="mb-8">
         <span class="font-mono text-xs uppercase tracking-widest text-brand-600">Features</span>
       </div>
-      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {compactFeatures.map((feature, i) => (
-          <div class={`delay-${(i + 1) * 100}`}>
+      <div class="grid lg:grid-cols-[1.4fr_1fr] gap-6">
+        <!-- Featured card spanning 2 rows -->
+        <div class="lg:row-span-2 delay-100">
+          <FeatureCard
+            icon={compactFeatures[0].icon}
+            title={compactFeatures[0].title}
+            description={compactFeatures[0].description}
+            tint={compactFeatures[0].tint}
+            featured={true}
+          />
+        </div>
+        <!-- Supporting cards -->
+        {compactFeatures.slice(1).map((feature, i) => (
+          <div class={`delay-${(i + 2) * 100}`}>
             <FeatureCard
               icon={feature.icon}
               title={feature.title}
