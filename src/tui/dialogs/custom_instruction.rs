@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use tui_textarea::TextArea;
+use ratatui_textarea::TextArea;
 
 use super::DialogResult;
 use crate::tui::styles::Theme;

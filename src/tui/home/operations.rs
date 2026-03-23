@@ -92,7 +92,7 @@ impl HomeView {
                     (i.group_path == group_path || i.group_path.starts_with(&prefix))
                         && owning_profile
                             .as_ref()
-                            .map_or(true, |p| p == &i.source_profile)
+                            .is_none_or(|p| p == &i.source_profile)
                 })
                 .map(|i| i.id.clone())
                 .collect();
@@ -133,7 +133,7 @@ impl HomeView {
                     (i.group_path == group_path || i.group_path.starts_with(&prefix))
                         && owning_profile
                             .as_ref()
-                            .map_or(true, |p| p == &i.source_profile)
+                            .is_none_or(|p| p == &i.source_profile)
                 })
                 .map(|i| i.id.clone())
                 .collect();
