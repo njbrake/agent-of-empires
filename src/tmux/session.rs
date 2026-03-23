@@ -223,7 +223,9 @@ impl Session {
     }
 
     /// Send literal text to the session's first window pane, followed by Enter.
-    /// Multi-line text is sent line by line, each followed by Enter.
+    /// For multi-line text, newlines are sent as ESC+CR (the same sequence
+    /// terminals send for Shift+Enter) so the coding agent inserts a newline
+    /// rather than submitting after each line.
     pub fn send_keys(&self, text: &str) -> Result<()> {
         if !self.exists() {
             bail!("Session does not exist: {}", self.name);
@@ -231,24 +233,31 @@ impl Session {
 
         let target = format!("{}:^.0", self.name);
 
-        for line in text.lines() {
-            let output = Command::new("tmux")
-                .args(["send-keys", "-t", &target, "-l", line])
-                .output()?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("Failed to send keys: {}", stderr);
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            Self::tmux_send(&target, &["-l", line])?;
+            if i < lines.len() - 1 {
+                // ESC + CR: what terminals send for Shift+Enter (inserts newline)
+                Self::tmux_send(&target, &["-H", "1b", "0d"])?;
             }
+        }
 
-            let output = Command::new("tmux")
-                .args(["send-keys", "-t", &target, "Enter"])
-                .output()?;
+        // Enter to submit
+        Self::tmux_send(&target, &["Enter"])?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("Failed to send Enter: {}", stderr);
-            }
+        Ok(())
+    }
+
+    fn tmux_send(target: &str, args: &[&str]) -> Result<()> {
+        let output = Command::new("tmux")
+            .arg("send-keys")
+            .args(["-t", target])
+            .args(args)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Failed to send keys: {}", stderr);
         }
 
         Ok(())

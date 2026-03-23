@@ -31,8 +31,13 @@ impl SendMessageDialog {
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<String> {
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
-            // Shift+Enter inserts a newline
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            // Shift+Enter inserts a newline.
+            // Most terminals send Shift+Enter as ESC + CR (\x1b\r), which crossterm
+            // decodes as Alt+Enter, so we accept both ALT and SHIFT modifiers.
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.text_area.insert_newline();
                 DialogResult::Continue
             }
@@ -99,6 +104,10 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
 
+    fn alt_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
     #[test]
     fn test_esc_cancels() {
         let mut dialog = SendMessageDialog::new("Test Session");
@@ -134,6 +143,16 @@ mod tests {
         let mut dialog = SendMessageDialog::new("Test Session");
         dialog.handle_key(key(KeyCode::Char('a')));
         let result = dialog.handle_key(shift_key(KeyCode::Enter));
+        assert!(matches!(result, DialogResult::Continue));
+        dialog.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(dialog.get_text(), "a\nb");
+    }
+
+    #[test]
+    fn test_alt_enter_adds_newline() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('a')));
+        let result = dialog.handle_key(alt_key(KeyCode::Enter));
         assert!(matches!(result, DialogResult::Continue));
         dialog.handle_key(key(KeyCode::Char('b')));
         assert_eq!(dialog.get_text(), "a\nb");
