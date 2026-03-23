@@ -97,6 +97,7 @@ function initThemeToggle() {
     btn.addEventListener('click', function() {
       var next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
       document.documentElement.dataset.theme = next;
+      document.documentElement.style.colorScheme = next;
       localStorage.setItem('theme', next);
       updateIcons(next);
     });

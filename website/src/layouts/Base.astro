@@ -45,12 +45,13 @@ const structuredData = {
 ---
 
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" style="color-scheme: dark">
 <head>
   <script is:inline>
     (function() {
       var theme = localStorage.getItem('theme') || 'dark';
       document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
     })();
   </script>
   <meta charset="UTF-8">
