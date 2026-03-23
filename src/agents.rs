@@ -94,6 +94,11 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
         matcher: Some("permission_prompt|elicitation_dialog"),
         status: Some("waiting"),
     },
+    HookEvent {
+        name: "ElicitationResult",
+        matcher: None,
+        status: Some("running"),
+    },
 ];
 
 pub const AGENTS: &[AgentDef] = &[

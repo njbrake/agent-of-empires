@@ -261,6 +261,7 @@ mod tests {
         assert!(hooks.contains_key("UserPromptSubmit"));
         assert!(hooks.contains_key("Stop"));
         assert!(hooks.contains_key("Notification"));
+        assert!(hooks.contains_key("ElicitationResult"));
     }
 
     #[test]
@@ -376,6 +377,19 @@ mod tests {
         assert!(
             cmd.contains("printf idle"),
             "Stop hook should write idle status: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_elicitation_result_hook_writes_running() {
+        let hooks = build_aoe_hooks(claude_events());
+        let er = hooks["ElicitationResult"].as_array().unwrap();
+        assert_eq!(er.len(), 1);
+        let cmd = er[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            cmd.contains("printf running"),
+            "ElicitationResult hook should write running status: {}",
             cmd
         );
     }
