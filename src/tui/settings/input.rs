@@ -497,7 +497,10 @@ impl SettingsView {
                             }
                         }
                         self.apply_field_to_config(self.selected_field);
-                        self.error_message = None;
+                        // Clear stale errors, but preserve env validation warnings set above
+                        if field_key != FieldKey::Environment {
+                            self.error_message = None;
+                        }
                     }
                 }
             }
