@@ -233,6 +233,14 @@ kbd {
 }
 
 
+/* Focus visibility for all interactive elements */
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid #fbbf24;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* Callout */
 .callout {
   border-radius: 0.75rem;
