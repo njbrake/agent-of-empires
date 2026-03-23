@@ -31,8 +31,8 @@ pub fn apply_status_bar(
         set_session_option(session_name, "@aoe_sandbox", &sandbox_info.container_name)?;
     }
 
-    // Configure the status bar format using aoe's phosphor green theme
-    // colour46 = bright green (matches aoe accent), colour48 = cyan (matches running)
+    // Configure the status bar format
+    // colour46 = bright green (accent), colour48 = cyan (matches running)
     // colour235 = dark background
     //
     // Format: "aoe: Title | branch | [container] | 14:30"
@@ -50,7 +50,7 @@ pub fn apply_status_bar(
     set_session_option(session_name, "status-right", status_format)?;
     set_session_option(session_name, "status-right-length", "80")?;
 
-    // Dark background with light text - matches aoe phosphor theme
+    // Dark background with light text
     set_session_option(session_name, "status-style", "bg=colour235,fg=colour252")?;
     set_session_option(
         session_name,

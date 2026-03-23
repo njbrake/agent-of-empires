@@ -127,6 +127,7 @@ impl HooksInstallDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
             .title(" Agent Status Hooks ")
             .title_style(Style::default().fg(theme.accent).bold());

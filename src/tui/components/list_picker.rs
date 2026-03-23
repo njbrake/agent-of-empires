@@ -111,6 +111,7 @@ impl ListPicker {
         let title = format!(" {} ", self.title);
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
             .title(title)
             .title_style(Style::default().fg(theme.title).bold());

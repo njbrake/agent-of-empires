@@ -239,6 +239,7 @@ impl UnifiedDeleteDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.error))
             .title(" Delete Session ")
             .title_style(Style::default().fg(theme.error).bold());

@@ -102,6 +102,7 @@ impl HelpOverlay {
         let block = Block::default()
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .title(Line::styled(
                 " Keyboard Shortcuts ",

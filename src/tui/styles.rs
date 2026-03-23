@@ -4,6 +4,7 @@ use ratatui::style::Color;
 use tracing::warn;
 
 pub const AVAILABLE_THEMES: &[&str] = &[
+    "empire",
     "phosphor",
     "tokyo-night-storm",
     "catppuccin-latte",
@@ -12,13 +13,14 @@ pub const AVAILABLE_THEMES: &[&str] = &[
 
 pub fn load_theme(name: &str) -> Theme {
     match name {
+        "empire" => Theme::empire(),
         "phosphor" => Theme::phosphor(),
         "tokyo-night-storm" => Theme::tokyo_night_storm(),
         "catppuccin-latte" => Theme::catppuccin_latte(),
         "dracula" => Theme::dracula(),
         _ => {
-            warn!("Unknown theme '{}', falling back to phosphor", name);
-            Theme::phosphor()
+            warn!("Unknown theme '{}', falling back to empire", name);
+            Theme::empire()
         }
     }
 }
@@ -64,11 +66,48 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::phosphor()
+        Self::empire()
     }
 }
 
 impl Theme {
+    /// Empire theme -- warm amber/copper on navy, aligned with DESIGN.md
+    pub fn empire() -> Self {
+        Self {
+            background: Color::Rgb(15, 23, 42),
+            border: Color::Rgb(51, 65, 85),
+            terminal_border: Color::Rgb(13, 148, 136),
+            selection: Color::Rgb(23, 32, 51),
+            session_selection: Color::Rgb(30, 41, 59),
+
+            title: Color::Rgb(251, 191, 36),
+            text: Color::Rgb(203, 213, 225),
+            dimmed: Color::Rgb(100, 116, 139),
+            hint: Color::Rgb(148, 163, 184),
+
+            running: Color::Rgb(34, 197, 94),
+            waiting: Color::Rgb(251, 191, 36),
+            idle: Color::Rgb(100, 116, 139),
+            error: Color::Rgb(239, 68, 68),
+            terminal_active: Color::Rgb(13, 148, 136),
+
+            group: Color::Rgb(203, 213, 225),
+            search: Color::Rgb(251, 191, 36),
+            accent: Color::Rgb(217, 119, 6),
+
+            diff_add: Color::Rgb(34, 197, 94),
+            diff_delete: Color::Rgb(239, 68, 68),
+            diff_modified: Color::Rgb(251, 191, 36),
+            diff_context: Color::Rgb(100, 116, 139),
+            diff_header: Color::Rgb(13, 148, 136),
+
+            help_key: Color::Rgb(217, 119, 6),
+
+            branch: Color::Rgb(13, 148, 136),
+            sandbox: Color::Rgb(148, 163, 184),
+        }
+    }
+
     pub fn phosphor() -> Self {
         Self {
             background: Color::Rgb(16, 20, 18),
@@ -235,10 +274,17 @@ mod tests {
     }
 
     #[test]
+    fn test_load_empire() {
+        let theme = load_theme("empire");
+        assert_eq!(theme.title, Color::Rgb(251, 191, 36));
+        assert_eq!(theme.background, Color::Rgb(15, 23, 42));
+    }
+
+    #[test]
     fn test_load_invalid_fallback() {
         let theme = load_theme("nonexistent-theme");
-        assert_eq!(theme.title, Color::Rgb(57, 255, 20));
-        assert_eq!(theme.background, Color::Rgb(16, 20, 18));
+        assert_eq!(theme.title, Color::Rgb(251, 191, 36));
+        assert_eq!(theme.background, Color::Rgb(15, 23, 42));
     }
 
     #[test]
@@ -257,7 +303,8 @@ mod tests {
 
     #[test]
     fn test_available_themes_count() {
-        assert_eq!(AVAILABLE_THEMES.len(), 4);
+        assert_eq!(AVAILABLE_THEMES.len(), 5);
+        assert!(AVAILABLE_THEMES.contains(&"empire"));
         assert!(AVAILABLE_THEMES.contains(&"phosphor"));
         assert!(AVAILABLE_THEMES.contains(&"tokyo-night-storm"));
         assert!(AVAILABLE_THEMES.contains(&"catppuccin-latte"));

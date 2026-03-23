@@ -62,6 +62,7 @@ impl SendMessageDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
             .title(format!(" > {} ", self.session_title))
             .title_style(Style::default().fg(theme.accent).bold())

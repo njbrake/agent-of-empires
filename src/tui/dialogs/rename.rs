@@ -244,6 +244,7 @@ impl RenameDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
             .title(" Edit Session ")
             .title_style(Style::default().fg(theme.title).bold());

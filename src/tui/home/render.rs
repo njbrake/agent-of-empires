@@ -145,10 +145,12 @@ impl HomeView {
             ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
         };
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP | Borders::LEFT | Borders::BOTTOM)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
             .title(title)
-            .title_style(Style::default().fg(title_color).bold());
+            .title_style(Style::default().fg(title_color).bold())
+            .padding(Padding::horizontal(1));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -483,9 +485,11 @@ impl HomeView {
         };
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
             .title(title)
-            .title_style(Style::default().fg(title_color));
+            .title_style(Style::default().fg(title_color))
+            .padding(Padding::horizontal(1));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
