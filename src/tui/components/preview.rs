@@ -117,9 +117,8 @@ impl Preview {
         cached_output: &str,
         theme: &Theme,
     ) {
-        // 3 base lines (path/tool/status) + optional profile + optional worktree block
-        let has_profile = !instance.source_profile.is_empty();
-        let base = if has_profile { 4 } else { 3 };
+        // 3 base lines (profile+tool / path / status) + optional worktree block
+        let base = 3;
         let info_height = if instance.worktree_info.is_some() {
             base + 4 // blank + header + branch + main
         } else {
@@ -141,12 +140,22 @@ impl Preview {
     fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
         let mut info_lines = Vec::new();
 
+        // Profile and Tool on the same row to save vertical space
+        let mut profile_tool_spans = Vec::new();
         if !instance.source_profile.is_empty() {
-            info_lines.push(Line::from(vec![
-                Span::styled("Profile: ", Style::default().fg(theme.dimmed)),
-                Span::styled(&instance.source_profile, Style::default().fg(theme.accent)),
-            ]));
+            profile_tool_spans.push(Span::styled("Profile: ", Style::default().fg(theme.dimmed)));
+            profile_tool_spans.push(Span::styled(
+                &instance.source_profile,
+                Style::default().fg(theme.accent),
+            ));
+            profile_tool_spans.push(Span::raw("  "));
         }
+        profile_tool_spans.push(Span::styled("Tool: ", Style::default().fg(theme.dimmed)));
+        profile_tool_spans.push(Span::styled(
+            &instance.tool,
+            Style::default().fg(theme.accent),
+        ));
+        info_lines.push(Line::from(profile_tool_spans));
 
         info_lines.extend([
             Line::from(vec![
@@ -155,10 +164,6 @@ impl Preview {
                     shorten_path(&instance.project_path),
                     Style::default().fg(theme.text),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Tool:    ", Style::default().fg(theme.dimmed)),
-                Span::styled(&instance.tool, Style::default().fg(theme.accent)),
             ]),
             Line::from(vec![
                 Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
