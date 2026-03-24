@@ -586,6 +586,7 @@ impl HomeView {
 
     pub fn has_dialog(&self) -> bool {
         self.show_help
+            || self.search_active
             || self.new_dialog.is_some()
             || self.confirm_dialog.is_some()
             || self.unified_delete_dialog.is_some()

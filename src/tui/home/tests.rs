@@ -2218,3 +2218,29 @@ fn test_rename_selected_group_noop_when_unchanged() {
         .unwrap();
     assert_eq!(work_session.group_path, "work");
 }
+
+#[test]
+#[serial]
+fn test_q_in_search_mode_types_q_not_quit() {
+    let env = create_test_env_with_sessions(3);
+    let mut view = env.view;
+
+    view.handle_key(key(KeyCode::Char('/')));
+    assert!(view.search_active);
+
+    let action = view.handle_key(key(KeyCode::Char('q')));
+    assert_eq!(action, None);
+    assert!(view.search_active);
+    assert_eq!(view.search_query.value(), "q");
+}
+
+#[test]
+#[serial]
+fn test_has_dialog_true_when_search_active() {
+    let env = create_test_env_empty();
+    let mut view = env.view;
+
+    assert!(!view.has_dialog());
+    view.handle_key(key(KeyCode::Char('/')));
+    assert!(view.has_dialog());
+}
