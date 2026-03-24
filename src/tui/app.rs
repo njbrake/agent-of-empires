@@ -301,7 +301,11 @@ impl App {
     ) -> Result<()> {
         // Global keybindings
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) | (KeyCode::Char('q'), _) => {
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+                return Ok(());
+            }
+            (KeyCode::Char('q'), _) => {
                 if !self.home.has_dialog() {
                     self.should_quit = true;
                     return Ok(());
