@@ -61,7 +61,8 @@ impl SendMessageDialog {
         // 2 for borders + 1 per content line, min 3 (single line), max 12
         let content_lines = self.text_area.lines().len() as u16;
         let height = (content_lines + 2).clamp(3, 12);
-        let dialog_area = super::centered_rect(area, 60, height);
+        let dialog_width = (area.width * 80 / 100).max(60).min(area.width);
+        let dialog_area = super::centered_rect(area, dialog_width, height);
 
         frame.render_widget(Clear, dialog_area);
 
