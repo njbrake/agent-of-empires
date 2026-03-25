@@ -6,7 +6,7 @@ use super::utils::strip_ansi;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
+pub fn detect_status_from_content(content: &str, tool: &str) -> Status {
     let status = crate::agents::get_agent(tool)
         .map(|a| (a.detect_status)(content))
         .unwrap_or(Status::Idle);
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_detect_status_from_content_unknown_tool_returns_idle() {
-        let status = detect_status_from_content("Processing ⠋", "unknown_tool", None);
+        let status = detect_status_from_content("Processing ⠋", "unknown_tool");
         assert_eq!(status, Status::Idle);
     }
 
