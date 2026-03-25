@@ -216,9 +216,8 @@ impl Session {
 
     pub fn detect_status(&self, tool: &str) -> Result<Status> {
         let content = self.capture_pane(50)?;
-        let fg_pid = self.get_foreground_pid();
         Ok(super::status_detection::detect_status_from_content(
-            &content, tool, fg_pid,
+            &content, tool, None,
         ))
     }
 

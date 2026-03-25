@@ -1,7 +1,17 @@
 //! Background status polling for TUI performance
 //!
 //! This module provides non-blocking status updates for sessions by running
-//! tmux subprocess calls in a background thread.
+//! tmux subprocess calls in a background thread. Two optimizations reduce
+//! per-cycle overhead:
+//!
+//! 1. **Batched metadata**: A single `tmux list-panes -a` call fetches pane
+//!    metadata (dead, current command, PID) for all sessions at once, replacing
+//!    O(3N) per-instance `display-message` subprocesses with O(1).
+//!
+//! 2. **Adaptive polling tiers**: Sessions are polled at different frequencies
+//!    based on their status. Hot (Running/Waiting/Starting) every cycle, Warm
+//!    (Idle/Unknown) every 5 cycles, Cold (Error) every 60 cycles, Frozen
+//!    (Stopped/Deleting) never.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -9,6 +19,20 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::session::{Instance, Status};
+
+/// Adaptive polling intervals (in cycles). 0 = never poll.
+const TIER_HOT: u64 = 1;
+const TIER_WARM: u64 = 5;
+const TIER_COLD: u64 = 60;
+
+fn polling_tier(status: Status) -> u64 {
+    match status {
+        Status::Running | Status::Waiting | Status::Starting => TIER_HOT,
+        Status::Idle | Status::Unknown => TIER_WARM,
+        Status::Error => TIER_COLD,
+        Status::Stopped | Status::Deleting => 0,
+    }
+}
 
 /// Result of a status check for a single session
 #[derive(Debug)]
@@ -49,9 +73,15 @@ impl StatusPoller {
         // Initialize to the past so the first check runs immediately
         let mut last_container_check = Instant::now() - container_check_interval;
         let mut container_states: HashMap<String, bool> = HashMap::new();
+        let mut cycle_count: u64 = 0;
 
         while let Ok(instances) = request_rx.recv() {
+            cycle_count = cycle_count.wrapping_add(1);
+
             crate::tmux::refresh_session_cache();
+
+            // Batch-fetch pane metadata for all aoe sessions (1 subprocess)
+            let pane_metadata = crate::tmux::batch_pane_metadata();
 
             // Refresh container health if any sandboxed session exists and interval elapsed
             let has_sandboxed = instances.iter().any(|i| i.is_sandboxed());
@@ -62,7 +92,13 @@ impl StatusPoller {
 
             let updates: Vec<StatusUpdate> = instances
                 .into_iter()
-                .map(|mut inst| {
+                .filter_map(|mut inst| {
+                    // Adaptive polling: skip instances whose tier interval hasn't elapsed
+                    let tier = polling_tier(inst.status);
+                    if tier == 0 || cycle_count % tier != 0 {
+                        return None;
+                    }
+
                     // For sandboxed sessions, check if the container is dead before
                     // falling through to tmux-based status detection.
                     if inst.is_sandboxed()
@@ -74,23 +110,27 @@ impl StatusPoller {
                         if let Some(sandbox) = &inst.sandbox_info {
                             if let Some(&running) = container_states.get(&sandbox.container_name) {
                                 if !running {
-                                    return StatusUpdate {
+                                    return Some(StatusUpdate {
                                         id: inst.id,
                                         status: Status::Error,
                                         last_error: Some("Container is not running".to_string()),
-                                    };
+                                    });
                                 }
                             }
                         }
                     }
 
-                    inst.update_status();
+                    // Look up pre-fetched metadata for this instance's tmux session
+                    let session_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+                    let metadata = pane_metadata.get(&session_name);
 
-                    StatusUpdate {
+                    inst.update_status_with_metadata(metadata);
+
+                    Some(StatusUpdate {
                         id: inst.id,
                         status: inst.status,
                         last_error: inst.last_error,
-                    }
+                    })
                 })
                 .collect();
 
@@ -115,5 +155,51 @@ impl StatusPoller {
 impl Default for StatusPoller {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_polling_tier_hot() {
+        assert_eq!(polling_tier(Status::Running), TIER_HOT);
+        assert_eq!(polling_tier(Status::Waiting), TIER_HOT);
+        assert_eq!(polling_tier(Status::Starting), TIER_HOT);
+    }
+
+    #[test]
+    fn test_polling_tier_warm() {
+        assert_eq!(polling_tier(Status::Idle), TIER_WARM);
+        assert_eq!(polling_tier(Status::Unknown), TIER_WARM);
+    }
+
+    #[test]
+    fn test_polling_tier_cold() {
+        assert_eq!(polling_tier(Status::Error), TIER_COLD);
+    }
+
+    #[test]
+    fn test_polling_tier_frozen() {
+        assert_eq!(polling_tier(Status::Stopped), 0);
+        assert_eq!(polling_tier(Status::Deleting), 0);
+    }
+
+    #[test]
+    fn test_tier_cycle_alignment() {
+        // Hot sessions are polled every cycle
+        for cycle in 1..=10u64 {
+            assert_eq!(cycle % TIER_HOT, 0);
+        }
+        // Warm sessions are polled every 5 cycles
+        assert_ne!(1u64 % TIER_WARM, 0);
+        assert_ne!(2u64 % TIER_WARM, 0);
+        assert_eq!(5u64 % TIER_WARM, 0);
+        assert_eq!(10u64 % TIER_WARM, 0);
+        // Cold sessions are polled every 60 cycles
+        assert_ne!(1u64 % TIER_COLD, 0);
+        assert_eq!(60u64 % TIER_COLD, 0);
+        assert_eq!(120u64 % TIER_COLD, 0);
     }
 }

@@ -639,6 +639,89 @@ impl Instance {
         Ok(())
     }
 
+    /// Update status using pre-fetched pane metadata to avoid per-instance
+    /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
+    pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
+        if self.status == Status::Stopped {
+            return;
+        }
+
+        if self.status == Status::Error {
+            if let Some(last_check) = self.last_error_check {
+                if last_check.elapsed().as_secs() < 30 {
+                    return;
+                }
+            }
+        }
+
+        if let Some(start_time) = self.last_start_time {
+            if start_time.elapsed().as_secs() < 3 {
+                self.status = Status::Starting;
+                return;
+            }
+        }
+
+        let session = match self.tmux_session() {
+            Ok(s) => s,
+            Err(_) => {
+                self.status = Status::Error;
+                self.last_error_check = Some(std::time::Instant::now());
+                return;
+            }
+        };
+
+        if !session.exists() {
+            self.status = Status::Error;
+            self.last_error_check = Some(std::time::Instant::now());
+            return;
+        }
+
+        let is_dead = metadata
+            .map(|m| m.pane_dead)
+            .unwrap_or_else(|| session.is_pane_dead());
+
+        if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
+            tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
+            self.status = if is_dead { Status::Error } else { hook_status };
+            self.last_error = None;
+            return;
+        }
+
+        let detected = match session.detect_status(&self.tool) {
+            Ok(status) => status,
+            Err(_) => Status::Idle,
+        };
+        tracing::trace!(
+            "status detection '{}' (tool={}, custom_cmd={}): {:?}",
+            self.title,
+            self.tool,
+            self.has_custom_command(),
+            detected
+        );
+        let is_shell_stale = || {
+            if self.expects_shell() {
+                return false;
+            }
+            metadata
+                .and_then(|m| m.pane_current_command.as_deref())
+                .map(tmux::utils::is_shell_command)
+                .unwrap_or_else(|| session.is_pane_running_shell())
+        };
+        self.status = match detected {
+            Status::Idle if self.has_custom_command() => {
+                if is_dead || is_shell_stale() {
+                    Status::Error
+                } else {
+                    Status::Unknown
+                }
+            }
+            Status::Idle if is_dead || is_shell_stale() => Status::Error,
+            other => other,
+        };
+
+        self.last_error = None;
+    }
+
     pub fn update_status(&mut self) {
         if self.status == Status::Stopped {
             return;
