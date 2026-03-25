@@ -7,12 +7,16 @@ use super::utils::strip_ansi;
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn detect_status_from_content(content: &str, tool: &str) -> Status {
+    // Strip ANSI escape codes before passing to detectors. capture-pane is
+    // called with -e (to preserve colors for the TUI preview), but color codes
+    // interspersed in text like "esc interrupt" break plain substring matches.
+    let clean = strip_ansi(content);
     let status = crate::agents::get_agent(tool)
-        .map(|a| (a.detect_status)(content))
+        .map(|a| (a.detect_status)(&clean))
         .unwrap_or(Status::Idle);
 
     if status == Status::Idle {
-        let last_lines: Vec<&str> = content.lines().rev().take(5).collect();
+        let last_lines: Vec<&str> = clean.lines().rev().take(5).collect();
         tracing::debug!(
             "status detection returned Idle for tool '{}', last 5 lines: {:?}",
             tool,
@@ -558,6 +562,28 @@ mod tests {
     fn test_detect_status_from_content_unknown_tool_returns_idle() {
         let status = detect_status_from_content("Processing ⠋", "unknown_tool");
         assert_eq!(status, Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_status_strips_ansi_before_matching() {
+        // capture-pane -e injects ANSI color codes between characters, which
+        // can split signal strings like "esc interrupt" so they no longer match
+        // as plain substrings. The dispatcher must strip ANSI before calling
+        // any agent detector.
+        let ansi_running =
+            "\x1b[38;2;39;62;94m⬝⬝⬝⬝⬝⬝⬝⬝\x1b[0m  \x1b[38;2;238;238;238mesc \x1b[38;2;128;128;128minterrupt\x1b[0m";
+        assert_eq!(
+            detect_status_from_content(ansi_running, "opencode"),
+            Status::Running,
+            "ANSI codes around 'esc interrupt' should not prevent Running detection"
+        );
+
+        let ansi_spinner = "\x1b[38;2;255;255;255m⠋\x1b[0m generating";
+        assert_eq!(
+            detect_status_from_content(ansi_spinner, "opencode"),
+            Status::Running,
+            "ANSI codes around spinner chars should not prevent Running detection"
+        );
     }
 
     #[test]
