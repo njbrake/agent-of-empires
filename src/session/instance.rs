@@ -738,7 +738,7 @@ fn generate_id() -> String {
 
 /// Format an environment variable assignment as a shell-safe command prefix.
 ///
-/// Uses `shell_escape` (double-quote escaping) so the value is preserved
+/// Uses `shell_escape` (single-quote escaping) so the value is preserved
 /// verbatim when parsed by the inner `bash -c '...'` shell created by
 /// `wrap_command_ignore_suspend`.
 fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
@@ -823,20 +823,20 @@ mod tests {
         // EnvVar values containing JSON must be shell-escaped to prevent
         // the inner bash from expanding special characters ({, *, ").
         let result = format_env_var_prefix("OPENCODE_PERMISSION", r#"{"*":"allow"}"#, "opencode");
-        assert_eq!(
-            result,
-            r#"OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode"#
-        );
+        assert_eq!(result, r#"OPENCODE_PERMISSION='{"*":"allow"}' opencode"#);
     }
 
     #[test]
     fn test_yolo_envvar_survives_suspend_wrapper() {
         // The full chain: format_env_var_prefix -> wrap_command_ignore_suspend
         // must preserve the JSON value through both quoting layers.
+        // Single quotes from shell_escape are escaped by wrap_command_ignore_suspend
+        // via the '\'' technique, which correctly round-trips through the shell.
         let cmd = format_env_var_prefix("OPENCODE_PERMISSION", r#"{"*":"allow"}"#, "opencode");
         let wrapped = wrap_command_ignore_suspend(&cmd);
+        // The inner single quotes from shell_escape become '\'' in the outer wrapper
         assert!(
-            wrapped.contains(r#"OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode"#),
+            wrapped.contains(r#"OPENCODE_PERMISSION='\''{"*":"allow"}'\'' opencode"#),
             "wrapped command should contain the escaped env var assignment: {}",
             wrapped,
         );

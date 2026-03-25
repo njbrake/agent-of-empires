@@ -43,17 +43,18 @@ pub(crate) fn user_posix_shell() -> String {
 }
 
 /// Shell-escape a value for safe interpolation into a shell command string.
-/// Uses double-quote escaping so values can be nested inside a `shell -c '...'`
-/// wrapper (single quotes in the outer wrapper are literal, double quotes work inside).
+///
+/// Uses single-quote escaping: inside single quotes ALL characters are literal
+/// except `'` itself, which is escaped via the POSIX `'\''` technique. This is
+/// the most robust approach -- it prevents expansion of `$`, `` ` ``, `\`, `!`,
+/// and every other shell metacharacter in one shot.
+///
+/// Newlines and carriage returns are replaced with literal `\n` / `\r` text to
+/// keep the command on a single line (required for tmux session commands).
 pub(crate) fn shell_escape(val: &str) -> String {
-    let escaped = val
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('$', "\\$")
-        .replace('`', "\\`")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
-    format!("\"{}\"", escaped)
+    let val = val.replace('\n', "\\n").replace('\r', "\\r");
+    let escaped = val.replace('\'', "'\\''");
+    format!("'{}'", escaped)
 }
 
 /// Resolve an environment value. If the value starts with `$`, read the
@@ -221,37 +222,52 @@ mod tests {
 
     #[test]
     fn test_shell_escape_simple() {
-        assert_eq!(shell_escape("hello"), "\"hello\"");
+        assert_eq!(shell_escape("hello"), "'hello'");
     }
 
     #[test]
-    fn test_shell_escape_quotes() {
-        assert_eq!(shell_escape("say \"hello\""), "\"say \\\"hello\\\"\"");
+    fn test_shell_escape_apostrophe() {
+        assert_eq!(shell_escape("Don't do that"), "'Don'\\''t do that'");
+    }
+
+    #[test]
+    fn test_shell_escape_double_quotes() {
+        // Double quotes are literal inside single quotes -- no escaping needed
+        assert_eq!(shell_escape("say \"hello\""), "'say \"hello\"'");
     }
 
     #[test]
     fn test_shell_escape_backslash() {
-        assert_eq!(shell_escape("path\\to\\file"), "\"path\\\\to\\\\file\"");
+        // Backslashes are literal inside single quotes -- no escaping needed
+        assert_eq!(shell_escape("path\\to\\file"), "'path\\to\\file'");
     }
 
     #[test]
     fn test_shell_escape_dollar() {
-        assert_eq!(shell_escape("$HOME/path"), "\"\\$HOME/path\"");
+        // $ is literal inside single quotes -- no expansion
+        assert_eq!(shell_escape("$HOME/path"), "'$HOME/path'");
     }
 
     #[test]
     fn test_shell_escape_backtick() {
-        assert_eq!(shell_escape("run `cmd`"), "\"run \\`cmd\\`\"");
+        // Backticks are literal inside single quotes -- no command substitution
+        assert_eq!(shell_escape("run `cmd`"), "'run `cmd`'");
+    }
+
+    #[test]
+    fn test_shell_escape_exclamation() {
+        // ! is literal inside single quotes -- no history expansion
+        assert_eq!(shell_escape("hello!"), "'hello!'");
     }
 
     #[test]
     fn test_shell_escape_newline() {
-        assert_eq!(shell_escape("line1\nline2"), "\"line1\\nline2\"");
+        assert_eq!(shell_escape("line1\nline2"), "'line1\\nline2'");
     }
 
     #[test]
     fn test_shell_escape_carriage_return() {
-        assert_eq!(shell_escape("line1\rline2"), "\"line1\\rline2\"");
+        assert_eq!(shell_escape("line1\rline2"), "'line1\\rline2'");
     }
 
     #[test]
@@ -260,22 +276,30 @@ mod tests {
         let escaped = shell_escape(instruction);
         assert_eq!(
             escaped,
-            "\"First instruction.\\nSecond instruction.\\nThird instruction.\""
+            "'First instruction.\\nSecond instruction.\\nThird instruction.'"
         );
         assert!(!escaped.contains('\n'));
     }
 
     #[test]
     fn test_shell_escape_crlf() {
-        assert_eq!(shell_escape("line1\r\nline2"), "\"line1\\r\\nline2\"");
+        assert_eq!(shell_escape("line1\r\nline2"), "'line1\\r\\nline2'");
     }
 
     #[test]
     fn test_shell_escape_combined() {
         let input = "Say \"hello\"\nRun `echo $HOME`";
         let escaped = shell_escape(input);
-        assert_eq!(escaped, "\"Say \\\"hello\\\"\\nRun \\`echo \\$HOME\\`\"");
+        assert_eq!(escaped, "'Say \"hello\"\\nRun `echo $HOME`'");
         assert!(!escaped.contains('\n'));
+    }
+
+    #[test]
+    fn test_shell_escape_mixed_quotes() {
+        // Both apostrophes and double quotes
+        let input = "He said \"don't\"";
+        let escaped = shell_escape(input);
+        assert_eq!(escaped, "'He said \"don'\\''t\"'");
     }
 
     #[test]
