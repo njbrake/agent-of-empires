@@ -5,7 +5,7 @@
 //! per-cycle overhead:
 //!
 //! 1. **Batched metadata**: A single `tmux list-panes -a` call fetches pane
-//!    metadata (dead, current command, PID) for all sessions at once, replacing
+//!    metadata (dead flag, current command) for all sessions at once, replacing
 //!    O(3N) per-instance `display-message` subprocesses with O(1).
 //!
 //! 2. **Adaptive polling tiers**: Sessions are polled at different frequencies
@@ -73,21 +73,35 @@ impl StatusPoller {
         // Initialize to the past so the first check runs immediately
         let mut last_container_check = Instant::now() - container_check_interval;
         let mut container_states: HashMap<String, bool> = HashMap::new();
-        let mut cycle_count: u64 = 0;
+        // Start at TIER_COLD - 1 so the first wrapping_add produces TIER_COLD,
+        // which is divisible by all tier intervals -- ensuring every session is
+        // polled on the very first cycle.
+        let mut cycle_count: u64 = TIER_COLD - 1;
 
         while let Ok(instances) = request_rx.recv() {
             cycle_count = cycle_count.wrapping_add(1);
 
-            crate::tmux::refresh_session_cache();
+            // Pre-scan: check if any instance would actually be polled this cycle.
+            // If not, skip the batch subprocess calls entirely.
+            let any_pollable = instances.iter().any(|inst| {
+                let tier = polling_tier(inst.status);
+                tier != 0 && cycle_count % tier == 0
+            });
 
-            // Batch-fetch pane metadata for all aoe sessions (1 subprocess)
-            let pane_metadata = crate::tmux::batch_pane_metadata();
+            let pane_metadata = if any_pollable {
+                crate::tmux::refresh_session_cache();
+                crate::tmux::batch_pane_metadata()
+            } else {
+                HashMap::new()
+            };
 
             // Refresh container health if any sandboxed session exists and interval elapsed
-            let has_sandboxed = instances.iter().any(|i| i.is_sandboxed());
-            if has_sandboxed && last_container_check.elapsed() >= container_check_interval {
-                container_states = crate::containers::batch_container_health();
-                last_container_check = Instant::now();
+            if any_pollable {
+                let has_sandboxed = instances.iter().any(|i| i.is_sandboxed());
+                if has_sandboxed && last_container_check.elapsed() >= container_check_interval {
+                    container_states = crate::containers::batch_container_health();
+                    last_container_check = Instant::now();
+                }
             }
 
             let updates: Vec<StatusUpdate> = instances
@@ -201,5 +215,14 @@ mod tests {
         assert_ne!(1u64 % TIER_COLD, 0);
         assert_eq!(60u64 % TIER_COLD, 0);
         assert_eq!(120u64 % TIER_COLD, 0);
+    }
+
+    #[test]
+    fn test_first_cycle_polls_all_tiers() {
+        // cycle_count starts at TIER_COLD - 1, first cycle wraps to TIER_COLD
+        let first_cycle = (TIER_COLD - 1).wrapping_add(1);
+        assert_eq!(first_cycle % TIER_HOT, 0, "first cycle must poll hot");
+        assert_eq!(first_cycle % TIER_WARM, 0, "first cycle must poll warm");
+        assert_eq!(first_cycle % TIER_COLD, 0, "first cycle must poll cold");
     }
 }

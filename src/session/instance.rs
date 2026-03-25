@@ -642,7 +642,7 @@ impl Instance {
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
-        if self.status == Status::Stopped {
+        if matches!(self.status, Status::Stopped | Status::Deleting) {
             return;
         }
 
@@ -723,85 +723,7 @@ impl Instance {
     }
 
     pub fn update_status(&mut self) {
-        if self.status == Status::Stopped {
-            return;
-        }
-
-        // Skip expensive checks for recently errored sessions
-        if self.status == Status::Error {
-            if let Some(last_check) = self.last_error_check {
-                if last_check.elapsed().as_secs() < 30 {
-                    return;
-                }
-            }
-        }
-
-        // Grace period for starting sessions
-        if let Some(start_time) = self.last_start_time {
-            if start_time.elapsed().as_secs() < 3 {
-                self.status = Status::Starting;
-                return;
-            }
-        }
-
-        let session = match self.tmux_session() {
-            Ok(s) => s,
-            Err(_) => {
-                self.status = Status::Error;
-                self.last_error_check = Some(std::time::Instant::now());
-                return;
-            }
-        };
-
-        if !session.exists() {
-            self.status = Status::Error;
-            self.last_error_check = Some(std::time::Instant::now());
-            return;
-        }
-
-        // Check hook-based status first (more reliable than tmux pane parsing)
-        if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
-            tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
-            // Trust hook status over shell detection. Wrapper scripts (e.g.
-            // Devbox, version managers) run agents via a shell process, so
-            // `is_pane_running_shell()` returns true even though the agent is
-            // healthy. Only check if the pane is actually dead.
-            self.status = if session.is_pane_dead() {
-                Status::Error
-            } else {
-                hook_status
-            };
-            self.last_error = None;
-            return;
-        }
-
-        // Fall back to tmux pane content detection
-        let detected = match session.detect_status(&self.tool) {
-            Ok(status) => status,
-            Err(_) => Status::Idle,
-        };
-        tracing::trace!(
-            "status detection '{}' (tool={}, custom_cmd={}): {:?}",
-            self.title,
-            self.tool,
-            self.has_custom_command(),
-            detected
-        );
-        let is_shell_stale = || !self.expects_shell() && session.is_pane_running_shell();
-        self.status = match detected {
-            Status::Idle if self.has_custom_command() => {
-                if session.is_pane_dead() || is_shell_stale() {
-                    Status::Error
-                } else {
-                    Status::Unknown
-                }
-            }
-            Status::Idle if session.is_pane_dead() || is_shell_stale() => Status::Error,
-            other => other,
-        };
-
-        // Clear stale error now that the session is healthy
-        self.last_error = None;
+        self.update_status_with_metadata(None);
     }
 
     pub fn capture_output_with_size(
