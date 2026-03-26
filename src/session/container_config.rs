@@ -275,6 +275,41 @@ fn parse_credential_expires_at(content: &str) -> Option<u64> {
     value.get("claudeAiOauth")?.get("expiresAt")?.as_u64()
 }
 
+/// Check if any agent's sandbox credential is expiring within `threshold_secs`.
+/// Only meaningful on macOS where Keychain extraction is available.
+#[cfg(target_os = "macos")]
+pub(crate) fn any_credential_expiring_soon(threshold_secs: u64) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    for mount in AGENT_CONFIG_MOUNTS {
+        if let Some((_, filename)) = mount.keychain_credential {
+            let cred_path = home
+                .join(mount.host_rel)
+                .join(SANDBOX_SUBDIR)
+                .join(filename);
+            if let Ok(content) = std::fs::read_to_string(&cred_path) {
+                if let Some(expires_at) = parse_credential_expires_at(&content) {
+                    if expires_at < now + threshold_secs {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn any_credential_expiring_soon(_threshold_secs: u64) -> bool {
+    false
+}
+
 /// Decide whether an incoming credential should overwrite the existing one,
 /// based on `expiresAt` timestamps. Returns `true` if the incoming credential
 /// should be written.

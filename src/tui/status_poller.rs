@@ -73,6 +73,12 @@ impl StatusPoller {
         // Initialize to the past so the first check runs immediately
         let mut last_container_check = Instant::now() - container_check_interval;
         let mut container_states: HashMap<String, bool> = HashMap::new();
+
+        // Credential refresh: check every 5 minutes, refresh if expiring within 10 minutes
+        let credential_check_interval = Duration::from_secs(300);
+        let credential_expiry_threshold: u64 = 600;
+        let mut last_credential_check = Instant::now();
+
         // Start at TIER_COLD - 1 so the first wrapping_add produces TIER_COLD,
         // which is divisible by all tier intervals -- ensuring every session is
         // polled on the very first cycle.
@@ -96,11 +102,26 @@ impl StatusPoller {
             };
 
             // Refresh container health if any sandboxed session exists and interval elapsed
-            if any_pollable {
-                let has_sandboxed = instances.iter().any(|i| i.is_sandboxed());
-                if has_sandboxed && last_container_check.elapsed() >= container_check_interval {
+            let has_sandboxed = if any_pollable {
+                let sandboxed = instances.iter().any(|i| i.is_sandboxed());
+                if sandboxed && last_container_check.elapsed() >= container_check_interval {
                     container_states = crate::containers::batch_container_health();
                     last_container_check = Instant::now();
+                }
+                sandboxed
+            } else {
+                false
+            };
+
+            // Periodically refresh sandbox credentials from the macOS Keychain
+            // so long-lived sessions don't lose auth mid-run.
+            if has_sandboxed && last_credential_check.elapsed() >= credential_check_interval {
+                last_credential_check = Instant::now();
+                if crate::session::container_config::any_credential_expiring_soon(
+                    credential_expiry_threshold,
+                ) {
+                    tracing::info!("Sandbox credential expiring soon, refreshing from Keychain");
+                    crate::session::container_config::refresh_agent_configs();
                 }
             }
 
