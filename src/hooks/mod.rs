@@ -9,7 +9,6 @@
 mod status_file;
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -35,74 +34,16 @@ fn is_aoe_hook_command(cmd: &str) -> bool {
     cmd.contains(AOE_HOOK_MARKER)
 }
 
-/// Parse a version string like "2.1.84 (Claude Code)" into (major, minor, patch).
-fn parse_version(output: &str) -> Option<(u16, u16, u16)> {
-    let version_str = output.split_whitespace().next()?;
-    let parts: Vec<&str> = version_str.split('.').collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    Some((
-        parts[0].parse().ok()?,
-        parts[1].parse().ok()?,
-        parts[2].parse().ok()?,
-    ))
-}
-
-/// Detect the installed version of an agent binary.
-/// Returns None if the binary is not found or the version cannot be parsed.
-pub fn detect_agent_version(binary: &str) -> Option<(u16, u16, u16)> {
-    let output = Command::new(binary).arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_version(stdout.trim())
-}
-
-/// Check if a version meets a minimum requirement.
-fn version_satisfies(actual: (u16, u16, u16), min: (u16, u16, u16)) -> bool {
-    actual >= min
-}
-
 /// Build the AoE hooks JSON structure from agent-defined events.
 ///
 /// Events with `status: None` (lifecycle-only) are skipped since shell
 /// one-liners can only write a status string.
-/// Events with a `min_version` that exceeds the detected agent version are skipped.
-#[cfg(test)]
 fn build_aoe_hooks(events: &[crate::agents::HookEvent]) -> Value {
-    build_aoe_hooks_for_version(events, None)
-}
-
-/// Build hooks, filtering by agent version when provided.
-fn build_aoe_hooks_for_version(
-    events: &[crate::agents::HookEvent],
-    agent_version: Option<(u16, u16, u16)>,
-) -> Value {
     let mut hooks_obj = serde_json::Map::new();
     for event in events {
         let Some(status) = event.status else {
             continue;
         };
-        // Skip hooks that require a newer agent version than what's installed.
-        // If version detection failed (None), skip version-gated hooks to be safe.
-        if let Some(min) = event.min_version {
-            match agent_version {
-                Some(actual) if version_satisfies(actual, min) => {}
-                _ => {
-                    tracing::info!(
-                        "Skipping hook '{}': requires version {}.{}.{}, agent version: {:?}",
-                        event.name,
-                        min.0,
-                        min.1,
-                        min.2,
-                        agent_version,
-                    );
-                    continue;
-                }
-            }
-        }
         let mut entry = serde_json::Map::new();
         if let Some(m) = event.matcher {
             entry.insert("matcher".to_string(), Value::String(m.to_string()));
@@ -144,17 +85,7 @@ fn remove_aoe_entries(matchers: &mut Vec<Value>) {
 /// any user-defined hooks. Existing AoE hooks are replaced (idempotent).
 ///
 /// If the file doesn't exist, it will be created with just the hooks.
-/// Pass `agent_binary` to enable version-gated hook filtering.
 pub fn install_hooks(settings_path: &Path, events: &[crate::agents::HookEvent]) -> Result<()> {
-    install_hooks_for_agent(settings_path, events, None)
-}
-
-/// Install hooks with version-aware filtering.
-pub fn install_hooks_for_agent(
-    settings_path: &Path,
-    events: &[crate::agents::HookEvent],
-    agent_binary: Option<&str>,
-) -> Result<()> {
     let mut settings: Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)?;
         serde_json::from_str(&content).unwrap_or_else(|e| {
@@ -165,8 +96,7 @@ pub fn install_hooks_for_agent(
         serde_json::json!({})
     };
 
-    let agent_version = agent_binary.and_then(detect_agent_version);
-    let aoe_hooks = build_aoe_hooks_for_version(events, agent_version);
+    let aoe_hooks = build_aoe_hooks(events);
 
     if !settings.get("hooks").is_some_and(|h| h.is_object()) {
         settings
@@ -332,39 +262,6 @@ mod tests {
         assert!(hooks.contains_key("Stop"));
         assert!(hooks.contains_key("Notification"));
         assert!(hooks.contains_key("ElicitationResult"));
-    }
-
-    #[test]
-    fn test_version_gated_hooks_excluded_when_version_unknown() {
-        use crate::agents::HookEvent;
-
-        let events = &[
-            HookEvent {
-                name: "Always",
-                matcher: None,
-                status: Some("running"),
-                min_version: None,
-            },
-            HookEvent {
-                name: "Gated",
-                matcher: None,
-                status: Some("running"),
-                min_version: Some((3, 0, 0)),
-            },
-        ];
-
-        // Without version, gated hooks are excluded
-        let hooks = build_aoe_hooks_for_version(events, None);
-        assert!(hooks.as_object().unwrap().contains_key("Always"));
-        assert!(!hooks.as_object().unwrap().contains_key("Gated"));
-
-        // With a version meeting the requirement, gated hooks are included
-        let hooks = build_aoe_hooks_for_version(events, Some((3, 0, 0)));
-        assert!(hooks.as_object().unwrap().contains_key("Gated"));
-
-        // With a version below the requirement, gated hooks are excluded
-        let hooks = build_aoe_hooks_for_version(events, Some((2, 9, 99)));
-        assert!(!hooks.as_object().unwrap().contains_key("Gated"));
     }
 
     #[test]
@@ -659,28 +556,5 @@ mod tests {
             "Expected exactly 1 hook after reinstall, got: {:?}",
             all_cmds
         );
-    }
-
-    #[test]
-    fn test_parse_version_standard() {
-        assert_eq!(parse_version("2.1.84 (Claude Code)"), Some((2, 1, 84)));
-        assert_eq!(parse_version("2.1.76"), Some((2, 1, 76)));
-        assert_eq!(parse_version("1.0.0"), Some((1, 0, 0)));
-    }
-
-    #[test]
-    fn test_parse_version_invalid() {
-        assert_eq!(parse_version(""), None);
-        assert_eq!(parse_version("abc"), None);
-        assert_eq!(parse_version("2.1"), None);
-    }
-
-    #[test]
-    fn test_version_satisfies_basic() {
-        assert!(version_satisfies((2, 1, 84), (2, 1, 83)));
-        assert!(version_satisfies((2, 1, 83), (2, 1, 83)));
-        assert!(!version_satisfies((2, 1, 82), (2, 1, 83)));
-        assert!(version_satisfies((3, 0, 0), (2, 1, 83)));
-        assert!(!version_satisfies((1, 9, 99), (2, 0, 0)));
     }
 }

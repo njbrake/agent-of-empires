@@ -397,14 +397,10 @@ impl Instance {
                     // For sandboxed sessions, hooks are installed via build_container_config
                 } else {
                     // Install hooks in the user's home directory settings
-                    let binary = agent.map(|a| a.binary);
                     if let Some(home) = dirs::home_dir() {
                         let settings_path = home.join(hook_cfg.settings_rel_path);
-                        if let Err(e) = crate::hooks::install_hooks_for_agent(
-                            &settings_path,
-                            hook_cfg.events,
-                            binary,
-                        ) {
+                        if let Err(e) = crate::hooks::install_hooks(&settings_path, hook_cfg.events)
+                        {
                             tracing::warn!("Failed to install agent hooks: {}", e);
                         }
                     }
