@@ -486,6 +486,84 @@ pub fn detect_pi_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+/// Factory Droid CLI status detection via tmux pane parsing.
+/// Droid uses an interactive REPL similar to other coding agents. It shows
+/// activity indicators while processing and prompts for input when idle.
+pub fn detect_droid_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: Spinners indicate active processing
+    for line in &lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+        || last_lines_lower.contains("thinking")
+        || last_lines_lower.contains("working")
+        || last_lines_lower.contains("executing")
+    {
+        return Status::Running;
+    }
+
+    // WAITING: Approval prompts
+    let approval_prompts = [
+        "approve",
+        "allow",
+        "(y/n)",
+        "[y/n]",
+        "continue?",
+        "proceed?",
+        "execute?",
+    ];
+    for prompt in &approval_prompts {
+        if last_lines_lower.contains(prompt) {
+            return Status::Waiting;
+        }
+    }
+
+    // WAITING: Selection menus
+    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+        return Status::Waiting;
+    }
+
+    // WAITING: Input prompt ready
+    for line in non_empty_lines.iter().rev().take(10) {
+        let clean_line = strip_ansi(line).trim().to_string();
+        if clean_line == ">" || clean_line == "> " || clean_line == "droid>" {
+            return Status::Waiting;
+        }
+        if clean_line.starts_with("> ")
+            && !clean_line.to_lowercase().contains("esc")
+            && clean_line.len() < 100
+        {
+            return Status::Waiting;
+        }
+    }
+
+    Status::Idle
+}
+
 pub fn detect_gemini_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -824,5 +902,41 @@ mod tests {
     fn test_detect_pi_status_idle() {
         assert_eq!(detect_pi_status("file saved"), Status::Idle);
         assert_eq!(detect_pi_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_droid_status_running() {
+        assert_eq!(
+            detect_droid_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_droid_status("thinking about your request"),
+            Status::Running
+        );
+        assert_eq!(detect_droid_status("working on task"), Status::Running);
+        assert_eq!(detect_droid_status("executing command"), Status::Running);
+        assert_eq!(detect_droid_status("generating ⠋"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_droid_status_waiting() {
+        assert_eq!(
+            detect_droid_status("run this command? (y/n)"),
+            Status::Waiting
+        );
+        assert_eq!(detect_droid_status("approve changes?"), Status::Waiting);
+        assert_eq!(
+            detect_droid_status("execute this action? [y/n]"),
+            Status::Waiting
+        );
+        assert_eq!(detect_droid_status("ready\ndroid>"), Status::Waiting);
+        assert_eq!(detect_droid_status("done\n>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_droid_status_idle() {
+        assert_eq!(detect_droid_status("file saved"), Status::Idle);
+        assert_eq!(detect_droid_status("random output text"), Status::Idle);
     }
 }

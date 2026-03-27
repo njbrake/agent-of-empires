@@ -62,6 +62,7 @@ RUN mkdir -p /root/.claude \
     /root/.cursor \
     /root/.copilot \
     /root/.pi \
+    /root/.factory \
     /root/.ssh
 
 # Allow Claude Code to use --dangerously-skip-permissions as root

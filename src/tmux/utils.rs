@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn test_is_shell_command_rejects_agent_binaries() {
         for cmd in [
-            "claude", "opencode", "codex", "gemini", "cursor", "sleep", "python",
+            "claude", "opencode", "codex", "gemini", "cursor", "droid", "sleep", "python",
         ] {
             assert!(
                 !is_shell_command(cmd),

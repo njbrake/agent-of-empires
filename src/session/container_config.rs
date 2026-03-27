@@ -157,6 +157,17 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         home_seed_files: &[],
         preserve_files: &[],
     },
+    AgentConfigMount {
+        tool_name: "droid",
+        host_rel: ".factory",
+        container_suffix: ".factory",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+    },
 ];
 
 /// Sync host agent config into the shared sandbox directory. Copies top-level files

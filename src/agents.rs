@@ -239,6 +239,19 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
         hook_config: None,
     },
+    AgentDef {
+        name: "droid",
+        binary: "droid",
+        aliases: &["factory-droid"],
+        detection: DetectionMethod::Which("droid"),
+        yolo: Some(YoloMode::EnvVar("FACTORY_AUTO_APPROVE", "true")),
+        instruction_flag: None,
+        set_default_command: false,
+        supports_host_launch: true,
+        detect_status: status_detection::detect_droid_status,
+        container_env: &[],
+        hook_config: None,
+    },
 ];
 
 /// Look up an agent by canonical name.
@@ -306,6 +319,7 @@ mod tests {
         assert_eq!(get_agent("cursor").unwrap().binary, "agent");
         assert_eq!(get_agent("copilot").unwrap().binary, "copilot");
         assert_eq!(get_agent("pi").unwrap().binary, "pi");
+        assert_eq!(get_agent("droid").unwrap().binary, "droid");
     }
 
     #[test]
@@ -318,7 +332,9 @@ mod tests {
         let names = agent_names();
         assert_eq!(
             names,
-            vec!["claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi"]
+            vec![
+                "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi", "droid"
+            ]
         );
     }
 
@@ -333,6 +349,8 @@ mod tests {
         assert_eq!(resolve_tool_name("github-copilot"), Some("copilot"));
         assert_eq!(resolve_tool_name("copilot"), Some("copilot"));
         assert_eq!(resolve_tool_name("pi"), Some("pi"));
+        assert_eq!(resolve_tool_name("droid"), Some("droid"));
+        assert_eq!(resolve_tool_name("factory-droid"), Some("droid"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -346,6 +364,7 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("cursor")), 6);
         assert_eq!(settings_index_from_name(Some("copilot")), 7);
         assert_eq!(settings_index_from_name(Some("pi")), 8);
+        assert_eq!(settings_index_from_name(Some("droid")), 9);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
@@ -353,6 +372,7 @@ mod tests {
         assert_eq!(name_from_settings_index(6), Some("cursor"));
         assert_eq!(name_from_settings_index(7), Some("copilot"));
         assert_eq!(name_from_settings_index(8), Some("pi"));
+        assert_eq!(name_from_settings_index(9), Some("droid"));
         assert_eq!(name_from_settings_index(99), None);
     }
 
