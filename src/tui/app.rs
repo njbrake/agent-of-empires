@@ -4,6 +4,8 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::prelude::*;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
@@ -149,12 +151,37 @@ impl App {
             });
         }
 
+        // Listen for SIGHUP/SIGTERM so we exit cleanly when the terminal
+        // emulator is force-quit, preventing PTY slot leaks (#541).
+        let signal_quit = Arc::new(AtomicBool::new(false));
+        #[cfg(unix)]
+        {
+            let quit = signal_quit.clone();
+            tokio::spawn(async move {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sighup =
+                    signal(SignalKind::hangup()).expect("failed to register SIGHUP handler");
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = sighup.recv() => {}
+                    _ = sigterm.recv() => {}
+                }
+                quit.store(true, Ordering::SeqCst);
+            });
+        }
+
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
         loop {
+            // Check for OS signals (SIGHUP/SIGTERM) each iteration
+            if signal_quit.load(Ordering::Relaxed) {
+                self.should_quit = true;
+                break;
+            }
             // Force full redraw if needed (e.g., after returning from tmux)
             if self.needs_redraw {
                 terminal.clear()?;

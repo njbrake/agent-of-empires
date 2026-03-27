@@ -161,6 +161,75 @@ pub fn get_current_session_name() -> Option<String> {
     None
 }
 
+/// Kill aoe-owned tmux sessions that have no attached clients and a dead pane.
+/// These are leftovers from a previous `aoe` process that exited without cleanup
+/// (e.g., terminal force-quit). Each stale session holds a PTY slot; reaping them
+/// prevents PTY exhaustion on macOS (#541).
+pub fn reap_stale_sessions() {
+    let output = Command::new("tmux")
+        .args([
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_attached}",
+        ])
+        .output();
+
+    let sessions: Vec<(String, bool)> = match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .filter_map(|line| {
+                    let (name, attached) = line.split_once('\t')?;
+                    if !name.starts_with(SESSION_PREFIX) {
+                        return None;
+                    }
+                    let has_clients = attached != "0";
+                    Some((name.to_string(), has_clients))
+                })
+                .collect()
+        }
+        _ => return,
+    };
+
+    // Only check sessions with zero attached clients
+    let unattached: Vec<&str> = sessions
+        .iter()
+        .filter(|(_, has_clients)| !*has_clients)
+        .map(|(name, _)| name.as_str())
+        .collect();
+
+    if unattached.is_empty() {
+        return;
+    }
+
+    // Batch-fetch pane metadata to identify dead panes
+    let pane_meta = batch_pane_metadata();
+
+    let mut reaped = 0u32;
+    for name in unattached {
+        let is_dead = pane_meta.get(name).map(|m| m.pane_dead).unwrap_or(false);
+        if !is_dead {
+            continue;
+        }
+
+        // This session has no clients and a dead pane - it's stale.
+        // Kill the process tree first, then the tmux session.
+        if let Some(pid) = crate::process::get_pane_pid(name) {
+            crate::process::kill_process_tree(pid);
+        }
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", name])
+            .output();
+        reaped += 1;
+    }
+
+    if reaped > 0 {
+        tracing::info!("Reaped {} stale tmux session(s)", reaped);
+        refresh_session_cache();
+    }
+}
+
 pub fn is_tmux_available() -> bool {
     Command::new("tmux").arg("-V").output().is_ok()
 }
@@ -339,5 +408,123 @@ aoe_proj_c_ghi11111\t0\t1\tbash\n";
             Some("opencode")
         );
         assert!(map.get("aoe_proj_c_ghi11111").unwrap().pane_dead);
+    }
+
+    /// Regression test for #541: reap_stale_sessions kills aoe sessions that
+    /// have no attached clients and a dead pane, but leaves live sessions alone.
+    #[test]
+    #[serial_test::serial]
+    fn test_reap_stale_sessions_kills_dead_unattached() {
+        fn tmux_available() -> bool {
+            Command::new("tmux")
+                .arg("-V")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let dead_name = format!("aoe_test_dead_{}", std::process::id());
+        let live_name = format!("aoe_test_live_{}", std::process::id());
+
+        // Create a session that will die immediately (dead pane, no clients)
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &dead_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "true", // exits immediately
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &dead_name,
+                "remain-on-exit",
+                "on",
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                &dead_name,
+                "pane-base-index",
+                "0",
+            ])
+            .output()
+            .expect("tmux new-session for dead session");
+        assert!(output.status.success());
+
+        // Create a session that stays alive (live pane, no clients)
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &live_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 30",
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                &live_name,
+                "pane-base-index",
+                "0",
+            ])
+            .output()
+            .expect("tmux new-session for live session");
+        assert!(output.status.success());
+
+        // Wait for the dead session's pane to actually die
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Verify preconditions
+        let has_dead = Command::new("tmux")
+            .args(["has-session", "-t", &dead_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(has_dead, "Dead session should exist before reaping");
+
+        let has_live = Command::new("tmux")
+            .args(["has-session", "-t", &live_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(has_live, "Live session should exist before reaping");
+
+        // Run the reaper
+        reap_stale_sessions();
+
+        // Dead session should be gone
+        let has_dead = Command::new("tmux")
+            .args(["has-session", "-t", &dead_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(!has_dead, "Dead session should be reaped");
+
+        // Live session should still exist
+        let has_live = Command::new("tmux")
+            .args(["has-session", "-t", &live_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(has_live, "Live session should survive reaping");
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &live_name])
+            .output();
     }
 }
