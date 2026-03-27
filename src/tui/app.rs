@@ -159,10 +159,14 @@ impl App {
             let quit = signal_quit.clone();
             tokio::spawn(async move {
                 use tokio::signal::unix::{signal, SignalKind};
-                let mut sighup =
-                    signal(SignalKind::hangup()).expect("failed to register SIGHUP handler");
-                let mut sigterm =
-                    signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+                let Ok(mut sighup) = signal(SignalKind::hangup()) else {
+                    tracing::warn!("Failed to register SIGHUP handler");
+                    return;
+                };
+                let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
+                    tracing::warn!("Failed to register SIGTERM handler");
+                    return;
+                };
                 tokio::select! {
                     _ = sighup.recv() => {}
                     _ = sigterm.recv() => {}
