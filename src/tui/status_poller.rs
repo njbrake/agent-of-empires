@@ -74,13 +74,11 @@ impl StatusPoller {
         let mut last_container_check = Instant::now() - container_check_interval;
         let mut container_states: HashMap<String, bool> = HashMap::new();
 
-        // Credential refresh: check every 30 minutes, refresh if expiring within 10 minutes.
-        // 30 min is frequent enough to catch ~1-hour OAuth tokens before they expire,
-        // without unnecessary work.
-        let credential_check_interval = Duration::from_secs(1800);
-        let credential_expiry_threshold: u64 = 600;
+        // Credential refresh: re-sync every 30 minutes so long-lived sandbox
+        // sessions pick up rotated OAuth tokens from the macOS Keychain.
+        let credential_refresh_interval = Duration::from_secs(1800);
         // Start at now (not in the past) -- credentials are fresh from container creation
-        let mut last_credential_check = Instant::now();
+        let mut last_credential_refresh = Instant::now();
 
         // Start at TIER_COLD - 1 so the first wrapping_add produces TIER_COLD,
         // which is divisible by all tier intervals -- ensuring every session is
@@ -116,16 +114,11 @@ impl StatusPoller {
                 false
             };
 
-            // Periodically refresh sandbox credentials from the macOS Keychain
+            // Periodically re-sync sandbox credentials from the macOS Keychain
             // so long-lived sessions don't lose auth mid-run.
-            if has_sandboxed && last_credential_check.elapsed() >= credential_check_interval {
-                last_credential_check = Instant::now();
-                if crate::session::container_config::any_credential_expiring_soon(
-                    credential_expiry_threshold,
-                ) {
-                    tracing::info!("Sandbox credential expiring soon, refreshing from Keychain");
-                    crate::session::container_config::refresh_agent_configs();
-                }
+            if has_sandboxed && last_credential_refresh.elapsed() >= credential_refresh_interval {
+                last_credential_refresh = Instant::now();
+                crate::session::container_config::refresh_agent_configs();
             }
 
             let updates: Vec<StatusUpdate> = instances

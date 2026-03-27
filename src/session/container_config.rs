@@ -275,41 +275,6 @@ fn parse_credential_expires_at(content: &str) -> Option<u64> {
     value.get("claudeAiOauth")?.get("expiresAt")?.as_u64()
 }
 
-/// Check if any agent's sandbox credential is expiring within `threshold_secs`.
-/// Only meaningful on macOS where Keychain extraction is available.
-#[cfg(target_os = "macos")]
-pub(crate) fn any_credential_expiring_soon(threshold_secs: u64) -> bool {
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    for mount in AGENT_CONFIG_MOUNTS {
-        if let Some((_, filename)) = mount.keychain_credential {
-            let cred_path = home
-                .join(mount.host_rel)
-                .join(SANDBOX_SUBDIR)
-                .join(filename);
-            if let Ok(content) = std::fs::read_to_string(&cred_path) {
-                if let Some(expires_at) = parse_credential_expires_at(&content) {
-                    if expires_at < now + threshold_secs {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn any_credential_expiring_soon(_threshold_secs: u64) -> bool {
-    false
-}
-
 /// Decide whether an incoming credential should overwrite the existing one,
 /// based on `expiresAt` timestamps. Returns `true` if the incoming credential
 /// should be written.
@@ -1866,45 +1831,5 @@ mod tests {
     fn test_should_overwrite_when_only_keychain_parseable() {
         let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
         assert!(should_overwrite_credential("not-json", keychain));
-    }
-
-    #[test]
-    fn test_credential_expiry_detection_logic() {
-        // Verify the expiry check logic used by any_credential_expiring_soon:
-        // a credential is "expiring soon" when expiresAt < now + threshold.
-        let threshold_secs: u64 = 600; // 10 minutes
-        let now: u64 = 1_700_000_000;
-
-        // Credential expires in 5 minutes (within threshold) -- should trigger
-        let soon_json = r#"{"claudeAiOauth":{"expiresAt":1700000300}}"#;
-        let expires_at = parse_credential_expires_at(soon_json).unwrap();
-        assert!(
-            expires_at < now + threshold_secs,
-            "5 min out should be within 10 min threshold"
-        );
-
-        // Credential expires in 30 minutes (outside threshold) -- should not trigger
-        let later_json = r#"{"claudeAiOauth":{"expiresAt":1700001800}}"#;
-        let expires_at = parse_credential_expires_at(later_json).unwrap();
-        assert!(
-            expires_at >= now + threshold_secs,
-            "30 min out should be outside 10 min threshold"
-        );
-
-        // Already expired -- should trigger
-        let expired_json = r#"{"claudeAiOauth":{"expiresAt":1699999000}}"#;
-        let expires_at = parse_credential_expires_at(expired_json).unwrap();
-        assert!(
-            expires_at < now + threshold_secs,
-            "already-expired credential should trigger"
-        );
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn test_any_credential_expiring_soon_noop_on_non_macos() {
-        // On non-macOS, always returns false (no Keychain available).
-        assert!(!any_credential_expiring_soon(600));
-        assert!(!any_credential_expiring_soon(0));
     }
 }
