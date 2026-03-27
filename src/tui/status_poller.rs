@@ -74,9 +74,12 @@ impl StatusPoller {
         let mut last_container_check = Instant::now() - container_check_interval;
         let mut container_states: HashMap<String, bool> = HashMap::new();
 
-        // Credential refresh: check every 5 minutes, refresh if expiring within 10 minutes
-        let credential_check_interval = Duration::from_secs(300);
+        // Credential refresh: check every 30 minutes, refresh if expiring within 10 minutes.
+        // 30 min is frequent enough to catch ~1-hour OAuth tokens before they expire,
+        // without unnecessary work.
+        let credential_check_interval = Duration::from_secs(1800);
         let credential_expiry_threshold: u64 = 600;
+        // Start at now (not in the past) -- credentials are fresh from container creation
         let mut last_credential_check = Instant::now();
 
         // Start at TIER_COLD - 1 so the first wrapping_add produces TIER_COLD,
