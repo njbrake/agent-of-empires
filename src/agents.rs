@@ -244,7 +244,7 @@ pub const AGENTS: &[AgentDef] = &[
         binary: "droid",
         aliases: &["factory-droid"],
         detection: DetectionMethod::Which("droid"),
-        yolo: Some(YoloMode::EnvVar("FACTORY_AUTO_APPROVE", "true")),
+        yolo: Some(YoloMode::CliFlag("--skip-permissions-unsafe")),
         instruction_flag: None,
         set_default_command: false,
         supports_host_launch: true,
