@@ -243,13 +243,17 @@ impl HomeView {
                         .is_some();
 
                     if has_hooks {
-                        let acknowledged = crate::session::config::load_config()
-                            .ok()
-                            .flatten()
+                        let config = crate::session::config::load_config().ok().flatten();
+                        let hooks_enabled = config
+                            .as_ref()
+                            .map(|c| c.session.agent_status_hooks)
+                            .unwrap_or(true);
+                        let acknowledged = config
+                            .as_ref()
                             .map(|c| c.app_state.has_acknowledged_agent_hooks)
                             .unwrap_or(false);
 
-                        if !acknowledged {
+                        if hooks_enabled && !acknowledged {
                             self.hooks_install_dialog = Some(HooksInstallDialog::new(&tool_name));
                             self.pending_hooks_install_data = Some(data);
                             return None;

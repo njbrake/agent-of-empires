@@ -130,6 +130,12 @@ pub struct SessionConfig {
     /// Per-agent command override replacing the binary entirely (e.g., claude = "happy cli claude")
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_command_override: HashMap<String, String>,
+
+    /// Install status-detection hooks into the agent's settings file (e.g. ~/.claude/settings.json).
+    /// When disabled, AoE will not modify the agent's settings file. Status detection falls back
+    /// to tmux pane content parsing, which is less reliable.
+    #[serde(default = "default_true")]
+    pub agent_status_hooks: bool,
 }
 
 /// Diff view configuration

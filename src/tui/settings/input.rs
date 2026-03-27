@@ -630,6 +630,11 @@ impl SettingsView {
                     s.agent_command_override = None;
                 }
             }
+            FieldKey::AgentStatusHooks => {
+                if let Some(ref mut s) = config.session {
+                    s.agent_status_hooks = None;
+                }
+            }
             FieldKey::DefaultTerminalMode => {
                 if let Some(ref mut s) = config.sandbox {
                     s.default_terminal_mode = None;

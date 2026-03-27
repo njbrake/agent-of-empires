@@ -32,6 +32,10 @@ pub struct HookEvent {
     pub matcher: Option<&'static str>,
     /// AoE status to write when this event fires (`"running"`, `"idle"`, `"waiting"`).
     pub status: Option<&'static str>,
+    /// Minimum agent version required to support this hook event.
+    /// If set and the detected version is below this, the hook is skipped.
+    /// Format: (major, minor, patch).
+    pub min_version: Option<(u16, u16, u16)>,
 }
 
 /// Configuration for installing status-detection hooks into an agent's settings file.
@@ -78,26 +82,31 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
         name: "PreToolUse",
         matcher: None,
         status: Some("running"),
+        min_version: None,
     },
     HookEvent {
         name: "UserPromptSubmit",
         matcher: None,
         status: Some("running"),
+        min_version: None,
     },
     HookEvent {
         name: "Stop",
         matcher: None,
         status: Some("idle"),
+        min_version: None,
     },
     HookEvent {
         name: "Notification",
         matcher: Some("permission_prompt|elicitation_dialog"),
         status: Some("waiting"),
+        min_version: None,
     },
     HookEvent {
         name: "ElicitationResult",
         matcher: None,
         status: Some("running"),
+        min_version: None,
     },
 ];
 
@@ -177,21 +186,25 @@ pub const AGENTS: &[AgentDef] = &[
                     name: "BeforeTool",
                     matcher: None,
                     status: Some("running"),
+                    min_version: None,
                 },
                 HookEvent {
                     name: "BeforeAgent",
                     matcher: None,
                     status: Some("running"),
+                    min_version: None,
                 },
                 HookEvent {
                     name: "AfterAgent",
                     matcher: None,
                     status: Some("idle"),
+                    min_version: None,
                 },
                 HookEvent {
                     name: "Notification",
                     matcher: Some("ToolPermission"),
                     status: Some("waiting"),
+                    min_version: None,
                 },
             ],
         }),

@@ -74,6 +74,7 @@ pub enum FieldKey {
     DefaultTool,
     AgentExtraArgs,
     AgentCommandOverride,
+    AgentStatusHooks,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -807,6 +808,12 @@ fn build_session_fields(
         session.and_then(|s| s.yolo_mode_default),
     );
 
+    let (agent_status_hooks, status_hooks_override) = resolve_value(
+        scope,
+        global.session.agent_status_hooks,
+        session.and_then(|s| s.agent_status_hooks),
+    );
+
     // Agent extra args: HashMap -> Vec<String> of "key=value" items for List field
     let (extra_args_map, extra_args_override) = resolve_value(
         scope,
@@ -915,6 +922,18 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 cmd_override_override,
                 FieldValue::List(global_cmd_override_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentStatusHooks,
+            label: "Agent Status Hooks",
+            description: "Install status-detection hooks into the agent's settings file",
+            value: FieldValue::Bool(agent_status_hooks),
+            category: SettingsCategory::Session,
+            has_override: status_hooks_override,
+            inherited_display: inherited_if(
+                status_hooks_override,
+                FieldValue::Bool(global.session.agent_status_hooks),
             ),
         },
     ]
@@ -1159,6 +1178,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.sandbox.enabled_by_default = *v
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
+        (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
+            config.session.agent_status_hooks = *v;
+        }
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
         (FieldKey::ExtraVolumes, FieldValue::List(v)) => config.sandbox.extra_volumes = v.clone(),
@@ -1392,6 +1414,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| s.yolo_mode_default = val);
+        }
+        (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.session, |s, val| {
+                s.agent_status_hooks = val;
+            });
         }
         (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
             let map = parse_key_value_list(v);
