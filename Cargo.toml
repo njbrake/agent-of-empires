@@ -15,7 +15,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 # CLI
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 clap_complete = "4.5"
 
 # TUI
