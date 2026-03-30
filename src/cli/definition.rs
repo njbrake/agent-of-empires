@@ -16,6 +16,7 @@ use super::send::SendArgs;
 use super::session::SessionCommands;
 use super::sounds::SoundsCommands;
 use super::status::StatusArgs;
+use super::theme::ThemeCommands;
 use super::tmux::TmuxCommands;
 use super::uninstall::UninstallArgs;
 use super::worktree::WorktreeCommands;
@@ -96,6 +97,12 @@ pub enum Commands {
     Sounds {
         #[command(subcommand)]
         command: SoundsCommands,
+    },
+
+    /// Manage color themes (list, export, customize)
+    Theme {
+        #[command(subcommand)]
+        command: ThemeCommands,
     },
 
     /// Uninstall Agent of Empires

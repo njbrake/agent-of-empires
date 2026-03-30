@@ -11,6 +11,7 @@ pub mod send;
 pub mod session;
 pub mod sounds;
 pub mod status;
+pub mod theme;
 pub mod tmux;
 pub mod uninstall;
 pub mod worktree;

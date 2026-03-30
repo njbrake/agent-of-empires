@@ -41,6 +41,10 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe sounds install`↴](#aoe-sounds-install)
 * [`aoe sounds list`↴](#aoe-sounds-list)
 * [`aoe sounds test`↴](#aoe-sounds-test)
+* [`aoe theme`↴](#aoe-theme)
+* [`aoe theme list`↴](#aoe-theme-list)
+* [`aoe theme export`↴](#aoe-theme-export)
+* [`aoe theme dir`↴](#aoe-theme-dir)
 * [`aoe uninstall`↴](#aoe-uninstall)
 * [`aoe completion`↴](#aoe-completion)
 
@@ -66,6 +70,7 @@ Run without arguments to launch the TUI dashboard.
 * `worktree` — Manage git worktrees for parallel development
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
+* `theme` — Manage color themes (list, export, customize)
 * `uninstall` — Uninstall Agent of Empires
 * `completion` — Generate shell completions
 
@@ -570,6 +575,52 @@ Test a sound by playing it
 ###### **Arguments:**
 
 * `<NAME>` — Sound file name (without extension)
+
+
+
+## `aoe theme`
+
+Manage color themes (list, export, customize)
+
+**Usage:** `aoe theme <COMMAND>`
+
+###### **Subcommands:**
+
+* `list` — List all available themes (built-in and custom)
+* `export` — Export a built-in theme as a TOML file for customization
+* `dir` — Show the custom themes directory path
+
+
+
+## `aoe theme list`
+
+List all available themes (built-in and custom)
+
+**Usage:** `aoe theme list`
+
+
+
+## `aoe theme export`
+
+Export a built-in theme as a TOML file for customization
+
+**Usage:** `aoe theme export [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — Theme name to export
+
+###### **Options:**
+
+* `-o`, `--output <OUTPUT>` — Output file path (defaults to <name>.toml in the themes directory)
+
+
+
+## `aoe theme dir`
+
+Show the custom themes directory path
+
+**Usage:** `aoe theme dir`
 
 
 

@@ -5,7 +5,7 @@ use crate::session::{
     TmuxMouseMode, TmuxStatusBarMode,
 };
 use crate::sound::{validate_sound_exists, SoundMode};
-use crate::tui::styles::AVAILABLE_THEMES;
+use crate::tui::styles::available_themes;
 
 use super::SettingsScope;
 
@@ -262,7 +262,7 @@ fn build_theme_fields(
         theme.and_then(|t| t.name.clone()),
     );
 
-    let options: Vec<String> = AVAILABLE_THEMES.iter().map(|s| s.to_string()).collect();
+    let options: Vec<String> = available_themes();
     let selected = options.iter().position(|s| s == &name).unwrap_or(0);
 
     let global_selected = options
