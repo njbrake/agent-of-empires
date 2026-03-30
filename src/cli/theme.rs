@@ -81,10 +81,12 @@ pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
             let path = dir.join(&filename);
             std::fs::write(&path, &toml_str)?;
             println!("Exported '{}' to {}", name, path.display());
-            println!(
-                "Edit the file and it will appear as '{}' in the theme selector.",
-                path.file_stem().unwrap().to_string_lossy()
-            );
+            if let Some(stem) = path.file_stem() {
+                println!(
+                    "Edit the file and it will appear as '{}' in the theme selector.",
+                    stem.to_string_lossy()
+                );
+            }
         }
     }
 

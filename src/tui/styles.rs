@@ -130,7 +130,7 @@ mod hex_color {
 
     pub fn parse_hex_color(s: &str) -> Result<Color, String> {
         let hex = s.strip_prefix('#').unwrap_or(s);
-        if hex.len() != 6 {
+        if !hex.is_ascii() || hex.len() != 6 {
             return Err(format!(
                 "invalid hex color '{}': expected 6 hex digits (e.g. #ff0000)",
                 s
@@ -482,6 +482,9 @@ mod tests {
         assert!(hex_color::parse_hex_color("#fff").is_err());
         assert!(hex_color::parse_hex_color("#gggggg").is_err());
         assert!(hex_color::parse_hex_color("").is_err());
+        // Multi-byte UTF-8 that happens to be 6 bytes must not panic
+        assert!(hex_color::parse_hex_color("\u{00e9}\u{00e9}\u{00e9}").is_err());
+        assert!(hex_color::parse_hex_color("#\u{00e9}\u{00e9}\u{00e9}").is_err());
     }
 
     #[test]
