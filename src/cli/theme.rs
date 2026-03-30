@@ -67,13 +67,24 @@ pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
             println!("Exported '{}' to {}", name, path);
         }
         None => {
-            // Default: write to themes directory
             let dir = custom_themes_dir()
                 .ok_or_else(|| anyhow::anyhow!("Cannot determine themes directory"))?;
             std::fs::create_dir_all(&dir)?;
-            let path = dir.join(format!("{}.toml", name));
+
+            // Use a "custom-" prefix when exporting a builtin so the file is
+            // recognized as a custom theme (builtin names are filtered out).
+            let filename = if BUILTIN_THEMES.contains(&name) {
+                format!("custom-{}.toml", name)
+            } else {
+                format!("{}.toml", name)
+            };
+            let path = dir.join(&filename);
             std::fs::write(&path, &toml_str)?;
             println!("Exported '{}' to {}", name, path.display());
+            println!(
+                "Edit the file and it will appear as '{}' in the theme selector.",
+                path.file_stem().unwrap().to_string_lossy()
+            );
         }
     }
 
