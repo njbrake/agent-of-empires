@@ -147,6 +147,7 @@ mod hex_color {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Theme {
     // Background and borders
     #[serde(with = "hex_color")]
@@ -620,13 +621,18 @@ sandbox = "#bb9af7"
     }
 
     #[test]
-    fn test_custom_theme_missing_field_errors() {
+    fn test_custom_theme_partial_uses_defaults() {
         let toml_str = r##"
 background = "#1a1b26"
 border = "#414868"
 "##;
-        // Missing required fields should fail
-        assert!(toml::from_str::<Theme>(toml_str).is_err());
+        // Missing fields fall back to empire defaults (forward-compatible)
+        let theme: Theme = toml::from_str(toml_str).unwrap();
+        assert_eq!(theme.background, Color::Rgb(26, 27, 38));
+        assert_eq!(theme.border, Color::Rgb(65, 72, 104));
+        // Missing fields get empire defaults
+        assert_eq!(theme.title, Theme::empire().title);
+        assert_eq!(theme.running, Theme::empire().running);
     }
 
     #[test]

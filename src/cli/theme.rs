@@ -91,9 +91,12 @@ pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn run_dir() {
+pub fn run_dir() -> Result<()> {
     match custom_themes_dir() {
-        Some(dir) => println!("{}", dir.display()),
-        None => eprintln!("Cannot determine themes directory"),
+        Some(dir) => {
+            println!("{}", dir.display());
+            Ok(())
+        }
+        None => bail!("Cannot determine themes directory"),
     }
 }
