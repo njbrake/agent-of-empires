@@ -764,6 +764,19 @@ impl SettingsView {
         self.rebuild_fields();
         Ok(())
     }
+
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Some(ref mut dialog) = self.custom_instruction_dialog {
+            dialog.handle_paste(text);
+            return;
+        }
+        if let Some(ref mut input) = self.editing_input {
+            let sanitized: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            for ch in sanitized.chars() {
+                input.handle(tui_input::InputRequest::InsertChar(ch));
+            }
+        }
+    }
 }
 
 /// Validate that an entry for AgentExtraArgs or AgentCommandOverride is in `agent_name=value` format.

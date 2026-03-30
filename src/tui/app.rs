@@ -1,7 +1,10 @@
 //! Main TUI application
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseEvent,
+};
 use ratatui::prelude::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +32,7 @@ where
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
         crossterm::event::DisableMouseCapture,
+        DisableBracketedPaste,
         crossterm::cursor::Show
     )?;
     std::io::Write::flush(terminal.backend_mut())?;
@@ -40,6 +44,7 @@ where
         terminal.backend_mut(),
         crossterm::terminal::EnterAlternateScreen,
         crossterm::event::EnableMouseCapture,
+        EnableBracketedPaste,
         crossterm::cursor::Hide
     )?;
     std::io::Write::flush(terminal.backend_mut())?;
@@ -210,6 +215,13 @@ impl App {
                         self.handle_mouse(mouse, terminal).await?;
 
                         // Draw immediately after input for responsiveness
+                        terminal.draw(|f| self.render(f))?;
+
+                        continue;
+                    }
+                    Event::Paste(text) => {
+                        self.home.handle_paste(&text);
+
                         terminal.draw(|f| self.render(f))?;
 
                         continue;

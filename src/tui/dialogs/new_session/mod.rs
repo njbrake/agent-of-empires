@@ -1379,6 +1379,30 @@ impl NewSessionDialog {
         }
     }
 
+    pub fn handle_paste(&mut self, text: &str) {
+        let sanitized: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+
+        // Route to the active sub-mode input if one is open
+        let target: &mut Input = if let Some(ref mut input) = self.env_editing_input {
+            input
+        } else if let Some(ref mut input) = self.workspace_repo_editing_input {
+            input
+        } else if self.tool_config_mode {
+            if self.tool_config_focused_field == 0 {
+                &mut self.command_override
+            } else {
+                &mut self.extra_args
+            }
+        } else if self.sandbox_config_mode && self.sandbox_focused_field == 0 {
+            &mut self.sandbox_image
+        } else {
+            self.current_input_mut()
+        };
+        for ch in sanitized.chars() {
+            target.handle(tui_input::InputRequest::InsertChar(ch));
+        }
+    }
+
     fn build_submit_result(&self) -> DialogResult<NewSessionData> {
         let title_value = self.title.value().trim();
         let final_title = if title_value.is_empty() {

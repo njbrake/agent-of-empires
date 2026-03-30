@@ -303,6 +303,15 @@ impl RenameDialog {
         }
     }
 
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Some(input) = self.focused_input() {
+            let sanitized: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            for ch in sanitized.chars() {
+                input.handle(tui_input::InputRequest::InsertChar(ch));
+            }
+        }
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         match self.mode {
             RenameMode::Session => self.render_session(frame, area, theme),

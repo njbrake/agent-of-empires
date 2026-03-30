@@ -966,6 +966,25 @@ impl HomeView {
         }
     }
 
+    /// Route a bracketed paste event to the active text input dialog.
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Some(ref mut settings) = self.settings_view {
+            settings.handle_paste(text);
+            return;
+        }
+        if let Some(ref mut dialog) = self.rename_dialog {
+            dialog.handle_paste(text);
+            return;
+        }
+        if let Some(ref mut dialog) = self.send_message_dialog {
+            dialog.handle_paste(text);
+            return;
+        }
+        if let Some(ref mut dialog) = self.new_dialog {
+            dialog.handle_paste(text);
+        }
+    }
+
     /// Re-score matches after a reload without moving the cursor.
     pub(super) fn refresh_search_matches(&mut self) {
         let query = self.search_query.value();
