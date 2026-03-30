@@ -29,14 +29,16 @@ pub enum ThemeCommands {
 
 pub fn run_list() {
     let themes = available_themes();
-    let builtin_count = BUILTIN_THEMES.len();
 
     println!("Built-in themes:");
     for name in BUILTIN_THEMES {
         println!("  {}", name);
     }
 
-    let custom: Vec<_> = themes.iter().skip(builtin_count).collect();
+    let custom: Vec<_> = themes
+        .iter()
+        .filter(|name| !BUILTIN_THEMES.contains(&name.as_str()))
+        .collect();
     if !custom.is_empty() {
         println!("\nCustom themes:");
         for name in &custom {
@@ -44,13 +46,14 @@ pub fn run_list() {
         }
     }
 
-    println!("\n{} built-in, {} custom", builtin_count, custom.len());
+    println!(
+        "\n{} built-in, {} custom",
+        BUILTIN_THEMES.len(),
+        custom.len()
+    );
 }
 
 pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
-    let theme = load_theme(name);
-
-    // Verify the theme actually loaded (not a fallback due to unknown name)
     let all = available_themes();
     if !all.iter().any(|t| t == name) {
         bail!(
@@ -59,6 +62,7 @@ pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
         );
     }
 
+    let theme = load_theme(name);
     let toml_str = export_theme_toml(&theme)?;
 
     match output {
