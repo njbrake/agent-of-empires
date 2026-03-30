@@ -143,7 +143,6 @@ Replace the Phosphor theme as default. Phosphor's bright lime green on dark gree
 | diff_add          | RGB(0, 255, 180) bright cyn | RGB(34, 197, 94) green `#22c55e`     |
 | diff_delete       | RGB(255, 100, 80) coral     | RGB(239, 68, 68) red `#ef4444`       |
 | diff_modified     | RGB(255, 180, 60) orange    | RGB(251, 191, 36) amber `#fbbf24`    |
-| diff_context      | RGB(80, 120, 90) muted grn  | RGB(100, 116, 139) slate `#64748b`   |
 | diff_header       | RGB(100, 160, 200) blue     | RGB(13, 148, 136) teal `#0d9488`     |
 
 Keep Phosphor, Tokyo Night Storm, Catppuccin Latte, and Dracula as options. Add Empire and make it the default.

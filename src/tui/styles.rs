@@ -198,8 +198,6 @@ pub struct Theme {
     #[serde(with = "hex_color")]
     pub diff_modified: Color,
     #[serde(with = "hex_color")]
-    pub diff_context: Color,
-    #[serde(with = "hex_color")]
     pub diff_header: Color,
 
     #[serde(with = "hex_color")]
@@ -245,7 +243,6 @@ impl Theme {
             diff_add: Color::Rgb(34, 197, 94),
             diff_delete: Color::Rgb(239, 68, 68),
             diff_modified: Color::Rgb(251, 191, 36),
-            diff_context: Color::Rgb(100, 116, 139),
             diff_header: Color::Rgb(13, 148, 136),
 
             help_key: Color::Rgb(217, 119, 6),
@@ -281,7 +278,6 @@ impl Theme {
             diff_add: Color::Rgb(0, 255, 180),
             diff_delete: Color::Rgb(255, 100, 80),
             diff_modified: Color::Rgb(255, 180, 60),
-            diff_context: Color::Rgb(80, 120, 90),
             diff_header: Color::Rgb(100, 160, 200),
 
             help_key: Color::Rgb(255, 180, 60),
@@ -317,7 +313,6 @@ impl Theme {
             diff_add: Color::Rgb(158, 206, 106),
             diff_delete: Color::Rgb(247, 118, 142),
             diff_modified: Color::Rgb(224, 175, 104),
-            diff_context: Color::Rgb(86, 95, 137),
             diff_header: Color::Rgb(125, 207, 255),
 
             help_key: Color::Rgb(224, 175, 104),
@@ -353,7 +348,6 @@ impl Theme {
             diff_add: Color::Rgb(64, 160, 43),
             diff_delete: Color::Rgb(210, 15, 57),
             diff_modified: Color::Rgb(223, 142, 29),
-            diff_context: Color::Rgb(156, 160, 176),
             diff_header: Color::Rgb(4, 165, 229),
 
             help_key: Color::Rgb(223, 142, 29),
@@ -391,7 +385,6 @@ impl Theme {
             diff_add: Color::Rgb(80, 250, 123),
             diff_delete: Color::Rgb(255, 85, 85),
             diff_modified: Color::Rgb(255, 184, 108),
-            diff_context: Color::Rgb(98, 114, 164),
             diff_header: Color::Rgb(189, 147, 249),
 
             help_key: Color::Rgb(255, 121, 198),
@@ -608,7 +601,6 @@ accent = "#7aa2f7"
 diff_add = "#9ece6a"
 diff_delete = "#f7768e"
 diff_modified = "#e0af68"
-diff_context = "#565f89"
 diff_header = "#7dcfff"
 help_key = "#e0af68"
 branch = "#7dcfff"
