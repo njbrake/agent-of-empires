@@ -94,7 +94,7 @@ sha2 = "0.10"
 fs2 = "0.4"
 
 [dev-dependencies]
-tempfile = "3.14"
+tempfile = "3.27"
 serial_test = "3.4"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 
