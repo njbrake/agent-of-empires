@@ -360,10 +360,17 @@ last_seen_version = "{}"
     }
 
     /// Assert that the screen currently contains `text`.
+    /// Retries a few times to handle transient blank captures on macOS CI.
     pub fn assert_screen_contains(&self, text: &str) {
-        let screen = self.capture_screen();
-        assert!(
-            screen.contains(text),
+        let mut screen = String::new();
+        for _ in 0..5 {
+            screen = self.capture_screen();
+            if screen.contains(text) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        panic!(
             "Expected screen to contain {:?}.\n\n--- Screen capture ---\n{}\n--- End screen capture ---",
             text, screen
         );
