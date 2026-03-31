@@ -46,7 +46,7 @@ pub enum Commands {
     /// Add a new session
     Add(AddArgs),
 
-    /// Initialize .aoe/config.toml in a repository
+    /// Initialize .agent-of-empires/config.toml in a repository
     Init(InitArgs),
 
     /// List all sessions

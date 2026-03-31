@@ -48,7 +48,7 @@
 
 **Goal**: Global hooks execute for sessions when no repo-level hooks exist. Hooks follow the session's sandbox setting for execution location (FR-011). `on_create` failures abort creation; `on_launch` failures are non-fatal (FR-012). Duplicate `on_launch` execution is prevented (FR-013).
 
-**Independent Test**: Create a session for a repo without `.aoe/config.toml` and verify global hooks run in the correct environment (local or container).
+**Independent Test**: Create a session for a repo without `.agent-of-empires/config.toml` and verify global hooks run in the correct environment (local or container).
 
 ### Implementation for User Story 1
 
@@ -61,7 +61,7 @@
 - [ ] T016 [P] [US1] Add unit test in `tests/hooks_config.rs`: verify that global/profile hooks are NOT subject to trust checking. Only repo hooks should go through `check_hook_trust()`.
 - [ ] T017 [US1] Run `cargo fmt`, `cargo clippy`, and `cargo test` to validate US1.
 
-**Checkpoint**: Global default hooks work. Sessions without `.aoe/config.toml` use global hooks. Hooks execute in the correct environment (sandbox or local). Failure semantics and duplicate prevention work correctly.
+**Checkpoint**: Global default hooks work. Sessions without `.agent-of-empires/config.toml` use global hooks. Hooks execute in the correct environment (sandbox or local). Failure semantics and duplicate prevention work correctly.
 
 ---
 
@@ -106,26 +106,26 @@
 
 ## Phase 6: User Story 4 - Edit Repo-Level Settings in TUI (Priority: P4)
 
-**Goal**: Users can view and edit `.aoe/config.toml` from a "Repo" tab in settings TUI.
+**Goal**: Users can view and edit `.agent-of-empires/config.toml` from a "Repo" tab in settings TUI.
 
-**Independent Test**: Select session, open settings, edit repo hooks in Repo tab, save, verify `.aoe/config.toml` updated.
+**Independent Test**: Select session, open settings, edit repo hooks in Repo tab, save, verify `.agent-of-empires/config.toml` updated.
 
 ### Implementation for User Story 4
 
 - [ ] T031 [US4] Add `Repo` variant to `SettingsCategory` enum in `src/tui/settings/fields.rs`. Add display name mapping.
 - [ ] T032 [US4] Add `RepoHookOnCreate` and `RepoHookOnLaunch` variants to `FieldKey` enum in `src/tui/settings/fields.rs`.
 - [ ] T033 [US4] Add `project_path: Option<String>` and `repo_config: Option<RepoConfig>` fields to `SettingsView` struct in `src/tui/settings/mod.rs`.
-- [ ] T034 [US4] Update `SettingsView::new()` in `src/tui/settings/mod.rs` to accept `project_path: Option<String>` parameter. If Some, load `RepoConfig` from `.aoe/config.toml` at that path (use `load_repo_config()`). Add `SettingsCategory::Repo` to categories list.
+- [ ] T034 [US4] Update `SettingsView::new()` in `src/tui/settings/mod.rs` to accept `project_path: Option<String>` parameter. If Some, load `RepoConfig` from `.agent-of-empires/config.toml` at that path (use `load_repo_config()`). Add `SettingsCategory::Repo` to categories list.
 - [ ] T035 [US4] Implement `build_repo_fields()` function in `src/tui/settings/fields.rs`. Create `SettingField` entries for repo-level `on_create` and `on_launch` using `FieldValue::List`. Source values from `RepoConfig.hooks` (or empty defaults). These fields do NOT use the global/profile scope toggle.
 - [ ] T036 [US4] Add `SettingsCategory::Repo` case to `build_fields_for_category()` dispatcher in `src/tui/settings/fields.rs`. When `repo_config` is None (no project path), return empty fields.
 - [ ] T037 [US4] Add `FieldKey::RepoHookOnCreate` and `FieldKey::RepoHookOnLaunch` cases to field apply logic. These should update `self.repo_config` rather than global/profile config. Add a dedicated `apply_field_to_repo()` function or handle in the existing dispatcher.
-- [ ] T038 [US4] Update `save()` in `src/tui/settings/mod.rs` to also save `repo_config` changes. If `repo_config` has changes, serialize to `.aoe/config.toml` at `project_path`. Create `.aoe/` directory if it does not exist. Implement `save_repo_config()` function in `src/session/repo_config.rs` if one does not already exist.
+- [ ] T038 [US4] Update `save()` in `src/tui/settings/mod.rs` to also save `repo_config` changes. If `repo_config` has changes, serialize to `.agent-of-empires/config.toml` at `project_path`. Create `.agent-of-empires/` directory if it does not exist. Implement `save_repo_config()` function in `src/session/repo_config.rs` if one does not already exist.
 - [ ] T039 [US4] Handle Repo tab disabled state in `src/tui/settings/render.rs`. When `project_path` is None, render a placeholder message in the fields area (e.g., "No session selected - select a session to edit repo settings"). Prevent field editing when disabled.
 - [ ] T040 [US4] Update the call site that opens SettingsView (in `src/tui/home/input.rs` or wherever settings are opened) to pass the currently selected session's `project_path` to `SettingsView::new()`.
 - [ ] T041 [US4] Handle scope toggle behavior: when Repo tab is selected, hide or disable the Global/Profile scope tabs since repo settings are scope-independent. Restore normal scope toggle when switching back to other tabs.
 - [ ] T042 [US4] Run `cargo fmt`, `cargo clippy`, and `cargo test` to validate US4.
 
-**Checkpoint**: Repo tab works. Users can edit `.aoe/config.toml` from the TUI.
+**Checkpoint**: Repo tab works. Users can edit `.agent-of-empires/config.toml` from the TUI.
 
 ---
 

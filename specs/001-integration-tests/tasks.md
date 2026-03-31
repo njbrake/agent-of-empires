@@ -104,7 +104,7 @@
 
 **Independent Test**: Run `cargo test --test repo_config` -- all tests (old and new) pass.
 
-- [ ] T034 [US6] Implement `test_hook_trust_invalidated_on_change` in `tests/repo_config.rs`: trust hooks, modify `.aoe/config.toml` hook content, call `check_hook_trust()`, assert untrusted
+- [ ] T034 [US6] Implement `test_hook_trust_invalidated_on_change` in `tests/repo_config.rs`: trust hooks, modify `.agent-of-empires/config.toml` hook content, call `check_hook_trust()`, assert untrusted
 - [ ] T035 [US6] Implement `test_hook_re_trust_after_change` in `tests/repo_config.rs`: after invalidation, re-trust, assert `check_hook_trust()` returns trusted and `execute_hooks()` succeeds
 
 **Checkpoint**: `cargo test --test repo_config` passes. Full hook trust lifecycle verified.

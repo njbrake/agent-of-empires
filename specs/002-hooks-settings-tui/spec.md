@@ -11,31 +11,31 @@
 
 As a user, I want to define default `on_create` and `on_launch` hooks at
 the global config level so that every new session automatically runs my
-preferred setup commands without requiring a per-repo `.aoe/config.toml`.
+preferred setup commands without requiring a per-repo `.agent-of-empires/config.toml`.
 
 **Why this priority**: This is the foundational change. Hooks must exist
 in the global config before profiles or TUI editing can layer on top.
 
 **Independent Test**: Create a session for a repo that has no
-`.aoe/config.toml`. Verify the global hooks execute during creation and
+`.agent-of-empires/config.toml`. Verify the global hooks execute during creation and
 launch.
 
 **Acceptance Scenarios**:
 
 1. **Given** a user has `on_create = ["echo hello"]` in their global
    config, **When** they create a non-sandboxed session for a repo with
-   no `.aoe/config.toml`, **Then** the `echo hello` command runs locally
+   no `.agent-of-empires/config.toml`, **Then** the `echo hello` command runs locally
    in the project directory during session creation.
 2. **Given** a user has `on_create = ["echo hello"]` in their global
    config, **When** they create a sandboxed session for a repo with no
-   `.aoe/config.toml`, **Then** the `echo hello` command runs inside the
+   `.agent-of-empires/config.toml`, **Then** the `echo hello` command runs inside the
    sandbox container in the container's working directory.
 3. **Given** a user has `on_launch = ["echo launching"]` globally,
    **When** they launch any session, **Then** the command runs on every
    launch in the appropriate environment (local or container) matching
    the session's sandbox setting.
 4. **Given** a user has global hooks and the repo also defines hooks in
-   `.aoe/config.toml`, **When** the session is created/launched,
+   `.agent-of-empires/config.toml`, **When** the session is created/launched,
    **Then** only the repo-level hooks execute (the most specific level
    wins; global hooks are not appended).
 
@@ -98,7 +98,7 @@ a hook command, save, and verify the config file is updated.
 ### User Story 4 - Edit Repo-Level Settings in TUI (Priority: P4)
 
 As a user, I want a new "Repo" tab (or scope) in the settings TUI that
-lets me view and edit the `.aoe/config.toml` for the currently selected
+lets me view and edit the `.agent-of-empires/config.toml` for the currently selected
 session's project directory, so I can manage repo-level hooks without
 manually editing files.
 
@@ -107,24 +107,24 @@ which is a larger UX change. It depends on the hooks fields being
 defined (US3) and extends the pattern to repo-level config.
 
 **Independent Test**: Select a session, open settings, navigate to the
-Repo tab, edit hooks, save, and verify `.aoe/config.toml` is updated in
+Repo tab, edit hooks, save, and verify `.agent-of-empires/config.toml` is updated in
 the project directory.
 
 **Acceptance Scenarios**:
 
 1. **Given** the user has a session selected on the home screen,
    **When** they open settings and navigate to the Repo tab, **Then**
-   they see the repo-level hooks from `.aoe/config.toml` (or empty
+   they see the repo-level hooks from `.agent-of-empires/config.toml` (or empty
    fields if no config exists).
 2. **Given** the user edits repo-level hooks and saves, **When** they
-   inspect `.aoe/config.toml` in the project directory, **Then** the
+   inspect `.agent-of-empires/config.toml` in the project directory, **Then** the
    file reflects the changes.
 3. **Given** no session is selected (or the session has no project
    path), **When** the user tries to access the Repo tab, **Then** the
    tab is disabled or shows a message indicating no project is
    available.
-4. **Given** the user adds hooks to a repo that had no `.aoe/config.toml`,
-   **When** they save, **Then** the file and `.aoe/` directory are
+4. **Given** the user adds hooks to a repo that had no `.agent-of-empires/config.toml`,
+   **When** they save, **Then** the file and `.agent-of-empires/` directory are
    created automatically.
 
 ---
@@ -134,7 +134,7 @@ the project directory.
 - What happens when the global config defines hooks but the user has
   never trusted them? Global/profile hooks are user-authored, so they
   are implicitly trusted (no trust dialog needed). Only repo-level hooks
-  from `.aoe/config.toml` require trust approval.
+  from `.agent-of-empires/config.toml` require trust approval.
 - What happens when a hook command contains special characters (quotes,
   pipes, semicolons)? The list editor accepts freeform text; commands
   are passed to the shell as-is, matching current repo-hook behavior.
@@ -193,11 +193,11 @@ the project directory.
 - **FR-005**: The settings TUI MUST include a "Hooks" tab with
   `on_create` and `on_launch` fields displayed as editable lists.
 - **FR-006**: The settings TUI MUST include a "Repo" tab that loads and
-  saves `.aoe/config.toml` from the currently selected session's project
+  saves `.agent-of-empires/config.toml` from the currently selected session's project
   directory.
 - **FR-007**: The Repo tab MUST be disabled or show a placeholder when
   no session is selected or the session has no associated project path.
-- **FR-008**: Saving repo settings MUST create the `.aoe/` directory and
+- **FR-008**: Saving repo settings MUST create the `.agent-of-empires/` directory and
   `config.toml` file if they do not exist.
 - **FR-009**: The Hooks tab MUST support both Global and Profile scopes,
   using the existing scope-switching mechanism (Tab key).
@@ -224,7 +224,7 @@ the project directory.
   Currently exists for repo config; will be reused at global and profile
   levels.
 - **RepoConfig**: The per-repository configuration loaded from
-  `.aoe/config.toml`. Currently contains hooks; the Repo tab exposes
+  `.agent-of-empires/config.toml`. Currently contains hooks; the Repo tab exposes
   this for TUI editing.
 - **SettingsCategory::Hooks**: New tab in the settings TUI for hook
   management at global/profile scope.

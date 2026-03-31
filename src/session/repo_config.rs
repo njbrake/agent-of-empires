@@ -1,4 +1,4 @@
-//! Repository-level configuration (`.aoe/config.toml`)
+//! Repository-level configuration (`.agent-of-empires/config.toml`)
 //!
 //! Allows repos to define hooks and override session/sandbox/worktree settings.
 //! Settings that are personal/global (theme, updates, tmux, claude config_dir) are
@@ -26,7 +26,7 @@ use super::profile_config::{
     TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
 
-/// Repository-level configuration loaded from `.aoe/config.toml`.
+/// Repository-level configuration loaded from `.agent-of-empires/config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,14 +76,31 @@ impl HooksConfig {
 }
 
 /// Path to the repo config file relative to the project root.
-const REPO_CONFIG_PATH: &str = ".aoe/config.toml";
+const REPO_CONFIG_PATH: &str = ".agent-of-empires/config.toml";
 
-/// Load repo config from `<project_path>/.aoe/config.toml`.
-/// Returns `None` if the file doesn't exist.
+/// Legacy path (pre-1.1) for backwards compatibility.
+const LEGACY_REPO_CONFIG_PATH: &str = ".aoe/config.toml";
+
+/// Load repo config from `<project_path>/.agent-of-empires/config.toml`.
+/// Falls back to the legacy `.aoe/config.toml` path with a deprecation warning.
+/// Returns `None` if neither file exists.
 pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
     let config_path = project_path.join(REPO_CONFIG_PATH);
-    if !config_path.exists() {
-        return Ok(None);
+    let (config_path, is_legacy) = if config_path.exists() {
+        (config_path, false)
+    } else {
+        let legacy_path = project_path.join(LEGACY_REPO_CONFIG_PATH);
+        if legacy_path.exists() {
+            (legacy_path, true)
+        } else {
+            return Ok(None);
+        }
+    };
+
+    if is_legacy {
+        tracing::warn!(
+            "Found repo config at legacy path .aoe/config.toml -- please rename to .agent-of-empires/config.toml"
+        );
     }
 
     let content = fs::read_to_string(&config_path)
@@ -99,13 +116,13 @@ pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
     Ok(Some(config))
 }
 
-/// Save repo config to `<project_path>/.aoe/config.toml`.
-/// Creates the `.aoe/` directory if it does not exist.
+/// Save repo config to `<project_path>/.agent-of-empires/config.toml`.
+/// Creates the `.agent-of-empires/` directory if it does not exist.
 pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> {
-    let aoe_dir = project_path.join(".aoe");
-    if !aoe_dir.exists() {
-        fs::create_dir_all(&aoe_dir)
-            .with_context(|| format!("Failed to create {}", aoe_dir.display()))?;
+    let config_dir = project_path.join(".agent-of-empires");
+    if !config_dir.exists() {
+        fs::create_dir_all(&config_dir)
+            .with_context(|| format!("Failed to create {}", config_dir.display()))?;
     }
 
     let config_path = project_path.join(REPO_CONFIG_PATH);

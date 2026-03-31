@@ -196,10 +196,12 @@ pub fn build_instance(
         }
     }
 
-    let config = super::profile_config::resolve_config(profile).unwrap_or_else(|e| {
-        tracing::warn!("Failed to load config, using defaults: {}", e);
-        Config::default()
-    });
+    let config =
+        super::repo_config::resolve_config_with_repo(profile, std::path::Path::new(&params.path))
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to load config, using defaults: {}", e);
+                Config::default()
+            });
 
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()

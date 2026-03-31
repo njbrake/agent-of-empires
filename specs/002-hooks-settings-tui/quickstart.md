@@ -11,7 +11,7 @@
    on_launch = ["echo 'global launch hook ran'"]
    ```
 3. Launch `aoe` and create a new session for a repo without
-   `.aoe/config.toml`.
+   `.agent-of-empires/config.toml`.
 4. Verify "global create hook ran" appears during creation.
 5. Verify "global launch hook ran" appears on launch.
 
@@ -34,7 +34,7 @@
 3. Navigate to the "Repo" tab.
 4. Add an `on_create` hook: `["echo 'repo hook ran'"]`.
 5. Save (Ctrl-s).
-6. Verify `.aoe/config.toml` was created/updated in the project
+6. Verify `.agent-of-empires/config.toml` was created/updated in the project
    directory.
 7. Create a new session for the same repo - verify "repo hook ran"
    appears and global/profile hooks do NOT run.
@@ -45,7 +45,7 @@
 2. Set profile `on_create = ["echo profile"]`.
 3. Set repo `on_create = ["echo repo"]`.
 4. Create session: expect "repo".
-5. Remove repo hooks (clear `.aoe/config.toml` hooks section).
+5. Remove repo hooks (clear `.agent-of-empires/config.toml` hooks section).
 6. Create session: expect "profile".
 7. Clear profile override (press 'r' on the field in Profile scope).
 8. Create session: expect "global".

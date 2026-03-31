@@ -37,7 +37,7 @@ on_create = ["pip install -r requirements.txt"]
 - Each sub-field is `Option<Vec<String>>`; None = inherit from global
 - If all sub-fields are None, the entire section is omitted
 
-## Repo Config (`.aoe/config.toml`)
+## Repo Config (`.agent-of-empires/config.toml`)
 
 Existing schema, unchanged:
 

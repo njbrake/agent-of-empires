@@ -8,7 +8,7 @@ AoE uses a layered configuration system. Settings are resolved in this order:
 
 1. **Global config** -- `~/.agent-of-empires/config.toml` (or `~/.config/agent-of-empires/config.toml` on Linux)
 2. **Profile config** -- `~/.agent-of-empires/profiles/<name>/config.toml`
-3. **Repo config** -- `.aoe/config.toml` in the project root
+3. **Repo config** -- `.agent-of-empires/config.toml` in the project root
 
 Later layers override earlier ones. Only explicitly set fields override; unset fields inherit from the previous layer.
 
@@ -186,7 +186,7 @@ Profile overrides go in `~/.agent-of-empires/profiles/<name>/config.toml` and us
 
 ## Repo Config
 
-Per-repo settings go in `.aoe/config.toml` at your project root. Run `aoe init` to generate a template.
+Per-repo settings go in `.agent-of-empires/config.toml` at your project root. Run `aoe init` to generate a template.
 
 Repo config supports: `[hooks]`, `[session]`, `[sandbox]`, and `[worktree]` sections. It does not support `[tmux]`, `[updates]`, `[claude]`, or `[diff]` -- those are personal settings.
 

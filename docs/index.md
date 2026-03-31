@@ -29,7 +29,7 @@ allowfullscreen
 - **One dashboard for all agents.** See status (running, waiting, idle, error) at a glance. Toggle to paired shell terminals with `t`.
 - **Git worktrees built in.** Create a session and AoE creates a branch + worktree automatically. Delete the session and AoE cleans up.
 - **Docker sandboxing.** Run agents in isolated containers with your project mounted and auth credentials shared across containers.
-- **Per-repo configuration.** Drop a `.aoe/config.toml` in your repo for project-specific settings and hooks that run on session creation or launch.
+- **Per-repo configuration.** Drop a `.agent-of-empires/config.toml` in your repo for project-specific settings and hooks that run on session creation or launch.
 - **Sessions survive everything.** AoE wraps tmux, so agents keep running when you close the TUI, disconnect SSH, or your terminal crashes.
 
 ## Supported Agents

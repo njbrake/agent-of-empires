@@ -48,7 +48,7 @@ New variants:
 | Variant | Description |
 |---------|-------------|
 | Hooks | Tab for global/profile hook configuration |
-| Repo | Tab for repo-level `.aoe/config.toml` editing |
+| Repo | Tab for repo-level `.agent-of-empires/config.toml` editing |
 
 ### FieldKey (modified enum)
 
@@ -106,7 +106,7 @@ For each hook field (on_create, on_launch) independently:
 | Tab | Global scope | Profile scope | Notes |
 |-----|-------------|---------------|-------|
 | Hooks | Edits Config.hooks | Edits ProfileConfig.hooks | Standard scope toggle |
-| Repo | N/A (scope ignored) | N/A (scope ignored) | Always edits project .aoe/config.toml |
+| Repo | N/A (scope ignored) | N/A (scope ignored) | Always edits project .agent-of-empires/config.toml |
 
 ### Repo Tab Availability
 

@@ -271,7 +271,7 @@ impl Instance {
         let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox);
+        let env_args = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
         let env_part = if env_args.is_empty() {
             String::new()
         } else {
@@ -455,7 +455,8 @@ impl Instance {
                 }
             }
 
-            let mut env_args = build_docker_env_args(sandbox);
+            let mut env_args =
+                build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
             // Pass AOE_INSTANCE_ID into the container
             env_args = format!("{} -e AOE_INSTANCE_ID={}", env_args, self.id);
             let env_part = format!("{} ", env_args);

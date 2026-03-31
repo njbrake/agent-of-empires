@@ -91,11 +91,11 @@ When the app starts with an old schema version, pending migrations run in order,
 
 ### User Story 6 - Repo Config and Hook Trust (Priority: P3)
 
-When a developer initializes `aoe` in a repo with `.aoe/config.toml`, hooks are detected. Hooks require trust verification before execution. Changing hooks invalidates trust.
+When a developer initializes `aoe` in a repo with `.agent-of-empires/config.toml`, hooks are detected. Hooks require trust verification before execution. Changing hooks invalidates trust.
 
 **Why this priority**: Already partially tested in `repo_config.rs` but missing the full trust lifecycle: detect hooks, trust, execute, detect change, re-verify.
 
-**Independent Test**: Can be tested by creating a temp git repo with `.aoe/config.toml` containing hooks, and verifying trust/untrust/execute behavior.
+**Independent Test**: Can be tested by creating a temp git repo with `.agent-of-empires/config.toml` containing hooks, and verifying trust/untrust/execute behavior.
 
 **Acceptance Scenarios**:
 

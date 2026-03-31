@@ -59,7 +59,7 @@ Run without arguments to launch the TUI dashboard.
 ###### **Subcommands:**
 
 * `add` — Add a new session
-* `init` — Initialize .aoe/config.toml in a repository
+* `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
 * `remove` — Remove a session
 * `send` — Send a message to a running agent session
@@ -113,7 +113,7 @@ Add a new session
 
 ## `aoe init`
 
-Initialize .aoe/config.toml in a repository
+Initialize .agent-of-empires/config.toml in a repository
 
 **Usage:** `aoe init [PATH]`
 

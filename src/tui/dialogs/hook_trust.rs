@@ -146,7 +146,7 @@ impl HookTrustDialog {
 
         // Header
         let header = Paragraph::new(
-            "This repo has hooks defined in .aoe/config.toml.\nAllow these commands to run?",
+            "This repo has hooks defined in .agent-of-empires/config.toml.\nAllow these commands to run?",
         )
         .style(Style::default().fg(theme.text))
         .wrap(Wrap { trim: true });

@@ -59,12 +59,12 @@ the resolved global+profile hooks.
 
 **Decision**: Global and profile hooks are implicitly trusted. The trust
 check in `check_hook_trust()` only applies to repo-level hooks from
-`.aoe/config.toml`. No changes to the trust system are needed.
+`.agent-of-empires/config.toml`. No changes to the trust system are needed.
 
 **Rationale**: Global/profile hooks are written by the user in their own
 config directory (which they control). Repo hooks come from cloned
 repositories and may contain untrusted commands. This distinction already
-exists - the trust system only reads `.aoe/config.toml`.
+exists - the trust system only reads `.agent-of-empires/config.toml`.
 
 **Alternatives considered**:
 - Trust all hooks: Rejected. Repo hooks from untrusted repos must still
@@ -76,7 +76,7 @@ exists - the trust system only reads `.aoe/config.toml`.
 
 **Decision**: Add `SettingsCategory::Repo` as a new tab. This tab
 operates differently from other tabs: it does NOT use the Global/Profile
-scope toggle. Instead, it loads/saves `.aoe/config.toml` from the
+scope toggle. Instead, it loads/saves `.agent-of-empires/config.toml` from the
 currently selected session's project path. The tab is only available when
 a session with a project path is selected.
 
@@ -96,10 +96,10 @@ makes this distinction clear in the UI.
 
 **Decision**: The Repo tab will:
 1. Accept a `project_path: Option<String>` in `SettingsView::new()`.
-2. Load `RepoConfig` from `.aoe/config.toml` at that path (or empty
+2. Load `RepoConfig` from `.agent-of-empires/config.toml` at that path (or empty
    defaults if file doesn't exist).
 3. Store it as `repo_config: Option<RepoConfig>` on `SettingsView`.
-4. On save, serialize and write to `.aoe/config.toml`, creating the
+4. On save, serialize and write to `.agent-of-empires/config.toml`, creating the
    directory if needed.
 5. If `project_path` is None, the Repo tab shows a disabled placeholder.
 

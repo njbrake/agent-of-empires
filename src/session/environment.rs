@@ -178,10 +178,10 @@ pub(crate) fn collect_environment(
     result
 }
 
-/// Resolve the effective sandbox config by merging global + active profile.
-fn resolved_sandbox_config() -> super::config::SandboxConfig {
+/// Resolve the effective sandbox config by merging global + active profile + repo.
+fn resolved_sandbox_config(project_path: &std::path::Path) -> super::config::SandboxConfig {
     let profile = super::config::resolve_default_profile();
-    super::profile_config::resolve_config(&profile)
+    super::repo_config::resolve_config_with_repo(&profile, project_path)
         .map(|c| c.sandbox)
         .unwrap_or_default()
 }
@@ -189,8 +189,11 @@ fn resolved_sandbox_config() -> super::config::SandboxConfig {
 /// Build docker exec environment flags from config and optional per-session extra entries.
 /// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
 /// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
-pub(crate) fn build_docker_env_args(sandbox: &SandboxInfo) -> String {
-    let sandbox_config = resolved_sandbox_config();
+pub(crate) fn build_docker_env_args(
+    sandbox: &SandboxInfo,
+    project_path: &std::path::Path,
+) -> String {
+    let sandbox_config = resolved_sandbox_config(project_path);
 
     tracing::debug!(
         "build_docker_env_args: config.sandbox.environment={:?}, extra_env={:?}",
@@ -510,7 +513,7 @@ mod tests {
             extra_env: Some(vec!["MY_TOKEN=$AOE_TEST_TOKEN".to_string()]),
             custom_instruction: None,
         };
-        let result = build_docker_env_args(&sandbox);
+        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(
             result.contains("MY_TOKEN"),
             "Expected MY_TOKEN in args: {}",
@@ -536,7 +539,7 @@ mod tests {
             extra_env: Some(vec!["AOE_TEST_BARE".to_string()]),
             custom_instruction: None,
         };
-        let result = build_docker_env_args(&sandbox);
+        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(
             result.contains("AOE_TEST_BARE"),
             "Expected AOE_TEST_BARE in args: {}",

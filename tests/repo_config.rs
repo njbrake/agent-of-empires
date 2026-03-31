@@ -16,8 +16,17 @@ fn setup_temp_home(temp: &Path) {
     std::env::set_var("XDG_CONFIG_HOME", temp.join(".config"));
 }
 
-/// Helper to set up a temp dir with `.aoe/config.toml`.
+/// Helper to set up a temp dir with `.agent-of-empires/config.toml`.
 fn setup_repo_config(content: &str) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let config_dir = tmp.path().join(".agent-of-empires");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(config_dir.join("config.toml"), content).unwrap();
+    tmp
+}
+
+/// Helper to set up a temp dir with legacy `.aoe/config.toml`.
+fn setup_legacy_repo_config(content: &str) -> TempDir {
     let tmp = TempDir::new().unwrap();
     let aoe_dir = tmp.path().join(".aoe");
     fs::create_dir_all(&aoe_dir).unwrap();
@@ -184,9 +193,9 @@ on_create = ["echo setup"]
     );
 
     // Modify the hooks config
-    let aoe_dir = repo.path().join(".aoe");
+    let config_dir = repo.path().join(".agent-of-empires");
     fs::write(
-        aoe_dir.join("config.toml"),
+        config_dir.join("config.toml"),
         r#"
 [hooks]
 on_create = ["echo setup", "echo extra"]
@@ -224,9 +233,9 @@ on_create = ["echo v1"]
     }
 
     // Modify to v2
-    let aoe_dir = repo.path().join(".aoe");
+    let config_dir = repo.path().join(".agent-of-empires");
     fs::write(
-        aoe_dir.join("config.toml"),
+        config_dir.join("config.toml"),
         r#"
 [hooks]
 on_create = ["echo v2"]
@@ -246,5 +255,106 @@ on_create = ["echo v2"]
     assert!(
         matches!(status, HookTrustStatus::Trusted(_)),
         "Re-trusted hooks should be trusted"
+    );
+}
+
+/// Regression test for #557: repo-level sandbox config (environment, volume_ignores,
+/// extra_volumes) must be included in the resolved config, not silently dropped.
+#[test]
+#[serial]
+fn test_repo_sandbox_config_merged_into_resolved_config() {
+    let temp_home = TempDir::new().unwrap();
+    setup_temp_home(temp_home.path());
+
+    let repo = setup_repo_config(
+        r#"
+[sandbox]
+volume_ignores = [".venv", "node_modules"]
+environment = ["CI=true", "MY_VAR=hello"]
+extra_volumes = ["/data:/data:ro"]
+mount_ssh = true
+"#,
+    );
+
+    let config =
+        agent_of_empires::session::repo_config::resolve_config_with_repo("default", repo.path())
+            .unwrap();
+
+    assert_eq!(
+        config.sandbox.volume_ignores,
+        vec![".venv", "node_modules"],
+        "volume_ignores from repo config should be present"
+    );
+    assert_eq!(
+        config.sandbox.environment,
+        vec!["CI=true", "MY_VAR=hello"],
+        "environment from repo config should be present"
+    );
+    assert_eq!(
+        config.sandbox.extra_volumes,
+        vec!["/data:/data:ro"],
+        "extra_volumes from repo config should be present"
+    );
+    assert!(
+        config.sandbox.mount_ssh,
+        "mount_ssh from repo config should be true"
+    );
+}
+
+/// Legacy `.aoe/config.toml` should still be loaded via backwards compat fallback.
+#[test]
+fn test_legacy_aoe_path_still_loads() {
+    let repo = setup_legacy_repo_config(
+        r#"
+[hooks]
+on_create = ["echo legacy"]
+"#,
+    );
+
+    let config = agent_of_empires::session::repo_config::load_repo_config(repo.path())
+        .unwrap()
+        .unwrap();
+
+    let hooks = config.hooks.unwrap();
+    assert_eq!(hooks.on_create, vec!["echo legacy"]);
+}
+
+/// New `.agent-of-empires/config.toml` takes priority over legacy `.aoe/config.toml`.
+#[test]
+fn test_new_path_takes_priority_over_legacy() {
+    let tmp = TempDir::new().unwrap();
+
+    // Create both paths with different content
+    let new_dir = tmp.path().join(".agent-of-empires");
+    fs::create_dir_all(&new_dir).unwrap();
+    fs::write(
+        new_dir.join("config.toml"),
+        r#"
+[hooks]
+on_create = ["echo new"]
+"#,
+    )
+    .unwrap();
+
+    let legacy_dir = tmp.path().join(".aoe");
+    fs::create_dir_all(&legacy_dir).unwrap();
+    fs::write(
+        legacy_dir.join("config.toml"),
+        r#"
+[hooks]
+on_create = ["echo legacy"]
+"#,
+    )
+    .unwrap();
+
+    let config = agent_of_empires::session::repo_config::load_repo_config(tmp.path())
+        .unwrap()
+        .unwrap();
+
+    let hooks = config.hooks.unwrap();
+    assert_eq!(
+        hooks.on_create,
+        vec!["echo new"],
+        "new path should take priority over legacy"
     );
 }

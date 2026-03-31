@@ -303,7 +303,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 let should_trust = if args.trust_hooks {
                     true
                 } else {
-                    println!("\nRepository hooks detected in .aoe/config.toml:");
+                    println!("\nRepository hooks detected in .agent-of-empires/config.toml:");
                     if !hooks.on_create.is_empty() {
                         println!("  on_create:");
                         for cmd in &hooks.on_create {

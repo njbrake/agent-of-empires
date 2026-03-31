@@ -7,7 +7,7 @@
 
 Add `on_create` and `on_launch` hooks to global and profile config
 levels (currently repo-only), wire them into the settings TUI as a new
-"Hooks" tab, and add a "Repo" tab for editing `.aoe/config.toml` from
+"Hooks" tab, and add a "Repo" tab for editing `.agent-of-empires/config.toml` from
 the TUI. Hook resolution uses per-field override semantics:
 repo > profile > global. All hooks follow the session's sandbox setting
 for execution location (container vs local). Failure semantics and
@@ -104,7 +104,7 @@ NOT affect execution location. This works naturally because:
 ### Trust Semantics (FR-004)
 
 Global/profile hooks are implicitly trusted (user-authored in app config
-dir). Only repo hooks from `.aoe/config.toml` trigger the trust dialog.
+dir). Only repo hooks from `.agent-of-empires/config.toml` trigger the trust dialog.
 The hook resolution must happen in two stages:
 
 1. Resolve global + profile hooks (always trusted)
