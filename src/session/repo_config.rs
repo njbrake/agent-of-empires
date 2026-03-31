@@ -118,12 +118,12 @@ pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
 
 /// Save repo config to `<project_path>/.agent-of-empires/config.toml`.
 /// Creates the `.agent-of-empires/` directory if it does not exist.
+/// If a legacy `.aoe/config.toml` exists, it is removed after a successful save
+/// to prevent stale config from silently reactivating.
 pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> {
     let config_dir = project_path.join(".agent-of-empires");
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir)
-            .with_context(|| format!("Failed to create {}", config_dir.display()))?;
-    }
+    fs::create_dir_all(&config_dir)
+        .with_context(|| format!("Failed to create {}", config_dir.display()))?;
 
     let config_path = project_path.join(REPO_CONFIG_PATH);
     let content = toml::to_string_pretty(config)
@@ -131,6 +131,21 @@ pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> 
 
     fs::write(&config_path, content)
         .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+    // Clean up legacy .aoe/config.toml to prevent stale config from reactivating
+    let legacy_config = project_path.join(LEGACY_REPO_CONFIG_PATH);
+    if legacy_config.exists() {
+        if let Err(e) = fs::remove_file(&legacy_config) {
+            tracing::warn!("Failed to remove legacy {}: {}", legacy_config.display(), e);
+        } else {
+            tracing::info!("Removed legacy .aoe/config.toml after migrating to .agent-of-empires/");
+        }
+        // Also remove the .aoe/ directory if it's now empty
+        let legacy_dir = project_path.join(".aoe");
+        if legacy_dir.exists() {
+            let _ = fs::remove_dir(&legacy_dir); // only succeeds if empty
+        }
+    }
 
     Ok(())
 }
