@@ -1849,4 +1849,96 @@ mod tests {
         let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
         assert!(should_overwrite_credential("not-json", keychain));
     }
+
+    /// End-to-end test: repo-level sandbox config (environment, volume_ignores,
+    /// extra_volumes) flows through build_container_config into the final ContainerConfig.
+    /// Regression test for #557.
+    #[test]
+    #[serial_test::serial]
+    fn test_build_container_config_includes_repo_sandbox_settings() {
+        // Isolate HOME so global/profile config doesn't interfere
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        // Create a project directory with repo config
+        let project_dir = TempDir::new().unwrap();
+        let config_dir = project_dir.path().join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+environment = ["MY_VAR=hello", "CI=true"]
+volume_ignores = [".venv", "node_modules"]
+extra_volumes = ["/host/data:/container/data:ro"]
+"#,
+        )
+        .unwrap();
+
+        // Initialize a git repo so compute_volume_paths works
+        git2::Repository::init(project_dir.path()).unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let project_path_str = project_dir.path().to_str().unwrap();
+        let config = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+        )
+        .unwrap();
+
+        // Verify environment variables from repo config are present
+        let env_keys: Vec<&str> = config.environment.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            env_keys.contains(&"MY_VAR"),
+            "MY_VAR should be in environment, got: {:?}",
+            config.environment
+        );
+        assert!(
+            env_keys.contains(&"CI"),
+            "CI should be in environment, got: {:?}",
+            config.environment
+        );
+
+        // Verify volume_ignores became anonymous volumes
+        let dir_name = project_dir.path().file_name().unwrap().to_string_lossy();
+        let expected_venv = format!("/workspace/{}/.venv", dir_name);
+        let expected_node = format!("/workspace/{}/node_modules", dir_name);
+        assert!(
+            config.anonymous_volumes.contains(&expected_venv),
+            "anonymous_volumes should contain .venv path, got: {:?}",
+            config.anonymous_volumes
+        );
+        assert!(
+            config.anonymous_volumes.contains(&expected_node),
+            "anonymous_volumes should contain node_modules path, got: {:?}",
+            config.anonymous_volumes
+        );
+
+        // Verify extra_volumes from repo config are present
+        let volume_pairs: Vec<(&str, &str)> = config
+            .volumes
+            .iter()
+            .map(|v| (v.host_path.as_str(), v.container_path.as_str()))
+            .collect();
+        assert!(
+            volume_pairs.contains(&("/host/data", "/container/data")),
+            "extra_volumes should include /host/data:/container/data, got: {:?}",
+            volume_pairs
+        );
+    }
 }
