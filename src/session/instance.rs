@@ -706,9 +706,10 @@ impl Instance {
             Err(_) => Status::Idle,
         };
         tracing::trace!(
-            "status detection '{}' (tool={}, custom_cmd={}): {:?}",
+            "status detection '{}' (tool={}, cmd_override={}, custom_cmd={}): {:?}",
             self.title,
             self.tool,
+            self.has_command_override(),
             self.has_custom_command(),
             detected
         );
@@ -1156,6 +1157,15 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "unknown_agent".to_string();
         inst.command = "some-binary".to_string();
+        assert!(inst.has_custom_command());
+    }
+
+    #[test]
+    fn test_has_command_override_extra_args_only() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.extra_args = "--model opus".to_string();
+        assert!(!inst.has_command_override());
         assert!(inst.has_custom_command());
     }
 
