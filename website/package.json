@@ -8,9 +8,9 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "@astrojs/sitemap": "3.7.0",
+    "@astrojs/sitemap": "3.7.1",
     "@astrojs/tailwind": "^6.0.2",
-    "astro": "^5.17.2",
+    "astro": "^5.18.1",
     "tailwindcss": "^3.4.0"
   }
 }
