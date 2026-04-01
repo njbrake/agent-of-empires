@@ -31,7 +31,7 @@ allow = [
 exceptions = [
     # UEFI-only crate, not linked into the final binary on Linux/macOS
     { allow = ["LGPL-2.1-or-later"], crate = "r-efi" },
-# CDLA-Permissive-2.0 is a permissive data license
+    # CDLA-Permissive-2.0 is a permissive data license
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
 ]
 
