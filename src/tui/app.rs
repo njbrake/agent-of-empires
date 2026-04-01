@@ -437,14 +437,19 @@ impl App {
 
         let tmux_session = instance.tmux_session()?;
 
-        // Decide whether to restart: if hook status is available, trust it over
-        // shell detection. Wrapper scripts (Devbox, version managers) run agents
-        // via a shell process, so is_pane_running_shell() returns true even when
-        // the agent is healthy. This mirrors the fix in instance.rs status detection.
+        // Decide whether to restart: if hook status is available or the instance
+        // uses a custom command, trust that over shell detection. Wrapper scripts
+        // (Devbox, version managers, custom command overrides) run agents via a
+        // shell process, so is_pane_running_shell() returns true even when the
+        // agent is healthy.
         let needs_restart = if !tmux_session.exists() || tmux_session.is_pane_dead() {
             true
         } else if crate::hooks::read_hook_status(&instance.id).is_some() {
             // Hook status is tracking this session; shell detection is unreliable
+            false
+        } else if instance.has_custom_command() {
+            // Custom commands may run agents through wrapper scripts that appear
+            // as shell processes to tmux. Don't restart based on shell detection.
             false
         } else {
             !instance.expects_shell() && tmux_session.is_pane_running_shell()

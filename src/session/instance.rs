@@ -179,7 +179,7 @@ impl Instance {
         self.yolo_mode
     }
 
-    fn has_custom_command(&self) -> bool {
+    pub fn has_custom_command(&self) -> bool {
         if !self.extra_args.is_empty() {
             return true;
         }
@@ -716,7 +716,11 @@ impl Instance {
         };
         self.status = match detected {
             Status::Idle if self.has_custom_command() => {
-                if is_dead || is_shell_stale() {
+                // Custom commands run agents through wrapper scripts that appear
+                // as shell processes to tmux. Only declare Error when the pane is
+                // actually dead -- don't use is_shell_stale() since the shell IS
+                // the expected wrapper process.
+                if is_dead {
                     Status::Error
                 } else {
                     Status::Unknown

@@ -126,7 +126,7 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::EnvVar("OPENCODE_PERMISSION", r#"{"*":"allow"}"#)),
         instruction_flag: None,
         set_default_command: true,
-        supports_host_launch: false,
+        supports_host_launch: true,
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
         hook_config: None,
