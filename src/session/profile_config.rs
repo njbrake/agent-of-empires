@@ -103,13 +103,25 @@ pub struct SandboxConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_image: Option<String>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub extra_volumes: Option<Vec<String>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub port_mappings: Option<Vec<String>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub environment: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,7 +136,11 @@ pub struct SandboxConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_terminal_mode: Option<DefaultTerminalMode>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub volume_ignores: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,10 +182,18 @@ pub struct SessionConfigOverride {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfigOverride {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub on_create: Option<Vec<String>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub on_launch: Option<Vec<String>>,
 }
 

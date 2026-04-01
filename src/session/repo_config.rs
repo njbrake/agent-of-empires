@@ -58,14 +58,25 @@ pub struct RepoConfig {
 /// - `on_launch`: failures are logged as warnings but do not prevent the session
 ///   from starting, since blocking an existing session on a transient hook failure
 ///   would be disruptive.
+///
+/// Both fields accept either a single string or an array of strings in TOML:
+///   `on_launch = "npm start"`  or  `on_launch = ["npm install", "npm start"]`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfig {
     /// Commands run once when a session is first created.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
     pub on_create: Vec<String>,
 
     /// Commands run every time a session starts (failures are non-fatal).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
     pub on_launch: Vec<String>,
 }
 
@@ -738,6 +749,67 @@ mod tests {
         );
         assert_eq!(config.sandbox.unwrap().enabled_by_default, Some(true));
         assert_eq!(config.worktree.unwrap().enabled, Some(true));
+    }
+
+    #[test]
+    fn test_hooks_string_instead_of_array_parses_ok() {
+        // Regression test for #561: user writes on_launch as a plain string
+        // instead of an array. Previously this caused the entire RepoConfig to
+        // fail deserialization, silently dropping all settings including sandbox
+        // env vars. Now string_or_vec accepts both formats.
+        let toml = r#"
+            [sandbox]
+            environment = ["ANTHROPIC_API_KEY", "UV_LINK_MODE=copy", "CI=true"]
+
+            [hooks]
+            on_launch = "uv python install 3.11 && uv venv /opt/venv --python 3.11"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(
+            hooks.on_launch,
+            vec!["uv python install 3.11 && uv venv /opt/venv --python 3.11"]
+        );
+        assert!(hooks.on_create.is_empty());
+
+        // Verify the sandbox config is also preserved
+        let sandbox = config.sandbox.unwrap();
+        assert_eq!(
+            sandbox.environment,
+            Some(vec![
+                "ANTHROPIC_API_KEY".to_string(),
+                "UV_LINK_MODE=copy".to_string(),
+                "CI=true".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_hooks_on_create_string_parses_ok() {
+        let toml = r#"
+            [hooks]
+            on_create = "npm install"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(hooks.on_create, vec!["npm install"]);
+        assert!(hooks.on_launch.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_array_still_works() {
+        let toml = r#"
+            [hooks]
+            on_create = ["npm install", "cp .env.example .env"]
+            on_launch = ["npm start"]
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(hooks.on_create, vec!["npm install", "cp .env.example .env"]);
+        assert_eq!(hooks.on_launch, vec!["npm start"]);
     }
 
     #[test]
