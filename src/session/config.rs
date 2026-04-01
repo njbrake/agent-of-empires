@@ -691,6 +691,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sandbox_config_string_shorthand() {
+        // Regression test: all Vec<String> sandbox fields accept a plain string
+        let toml = r#"
+            environment = "ANTHROPIC_API_KEY"
+            extra_volumes = "/data:/data:ro"
+            volume_ignores = "node_modules"
+            port_mappings = "3000:3000"
+        "#;
+        let sb: SandboxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(sb.environment, vec!["ANTHROPIC_API_KEY"]);
+        assert_eq!(sb.extra_volumes, vec!["/data:/data:ro"]);
+        assert_eq!(sb.volume_ignores, vec!["node_modules"]);
+        assert_eq!(sb.port_mappings, vec!["3000:3000"]);
+    }
+
     // Tests for ClaudeConfig
     #[test]
     fn test_claude_config_default() {

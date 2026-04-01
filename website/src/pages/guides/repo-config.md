@@ -33,6 +33,13 @@ on_create = ["npm install", "cp .env.example .env"]
 on_launch = ["npm install"]
 ```
 
+For single commands, you can use a plain string instead of an array:
+
+```toml
+[hooks]
+on_launch = "npm install"
+```
+
 **`on_create`** runs only once, when the session is first created. If any command fails, session creation is aborted. Use this for one-time setup like installing dependencies or generating config files.
 
 **`on_launch`** runs every time a session starts (including the first time, and every restart). Failures are logged as warnings but don't prevent the session from starting. Use this for things like ensuring dependencies are up to date.
@@ -63,6 +70,14 @@ cpu_limit = "8"
 memory_limit = "16g"
 auto_cleanup = true
 default_terminal_mode = "host"   # "host" or "container"
+```
+
+List fields (`environment`, `volume_ignores`, `extra_volumes`, `port_mappings`) accept either an array or a single string:
+
+```toml
+[sandbox]
+environment = "ANTHROPIC_API_KEY"          # single value
+volume_ignores = ["node_modules", ".next"] # multiple values
 ```
 
 ### Worktree
