@@ -183,6 +183,13 @@ impl Instance {
         if !self.extra_args.is_empty() {
             return true;
         }
+        self.has_command_override()
+    }
+
+    /// True only when the launch command differs from the agent's default
+    /// binary (ignores extra_args). Use this for status-detection and
+    /// restart guards where only a wrapper script matters.
+    pub fn has_command_override(&self) -> bool {
         if self.command.is_empty() {
             return false;
         }
@@ -715,7 +722,7 @@ impl Instance {
                 .unwrap_or_else(|| session.is_pane_running_shell())
         };
         self.status = match detected {
-            Status::Idle if self.has_custom_command() => {
+            Status::Idle if self.has_command_override() => {
                 // Custom commands run agents through wrapper scripts that appear
                 // as shell processes to tmux. Only declare Error when the pane is
                 // actually dead -- don't use is_shell_stale() since the shell IS

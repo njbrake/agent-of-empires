@@ -447,9 +447,10 @@ impl App {
         } else if crate::hooks::read_hook_status(&instance.id).is_some() {
             // Hook status is tracking this session; shell detection is unreliable
             false
-        } else if instance.has_custom_command() {
-            // Custom commands may run agents through wrapper scripts that appear
-            // as shell processes to tmux. Don't restart based on shell detection.
+        } else if instance.has_command_override() {
+            // Custom command overrides run agents through wrapper scripts that
+            // appear as shell processes to tmux. Don't restart based on shell
+            // detection. (extra_args alone should not suppress this check.)
             false
         } else {
             !instance.expects_shell() && tmux_session.is_pane_running_shell()
