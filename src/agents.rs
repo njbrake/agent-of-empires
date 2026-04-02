@@ -60,8 +60,6 @@ pub struct AgentDef {
     pub instruction_flag: Option<&'static str>,
     /// If true, `builder.rs` sets `instance.command = binary` for this agent.
     pub set_default_command: bool,
-    /// If true, the agent can be launched directly on the host (non-sandboxed).
-    pub supports_host_launch: bool,
     /// Status detection function pointer. Takes raw (non-lowercased) pane content.
     pub detect_status: fn(&str) -> Status,
     /// Environment variables always injected into the container for this agent.
@@ -110,7 +108,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--dangerously-skip-permissions")),
         instruction_flag: Some("--append-system-prompt {}"),
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_claude_status,
         container_env: &[("CLAUDE_CONFIG_DIR", "/root/.claude")],
         hook_config: Some(AgentHookConfig {
@@ -126,7 +123,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::EnvVar("OPENCODE_PERMISSION", r#"{"*":"allow"}"#)),
         instruction_flag: None,
         set_default_command: true,
-        supports_host_launch: true,
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
         hook_config: None,
@@ -139,7 +135,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--agent auto-approve")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_vibe_status,
         container_env: &[],
         hook_config: None,
@@ -154,7 +149,6 @@ pub const AGENTS: &[AgentDef] = &[
         )),
         instruction_flag: Some("--config developer_instructions={}"),
         set_default_command: true,
-        supports_host_launch: true,
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
         hook_config: None,
@@ -167,7 +161,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--approval-mode yolo")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_gemini_status,
         container_env: &[],
         hook_config: Some(AgentHookConfig {
@@ -204,7 +197,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_cursor_status,
         container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
         hook_config: Some(AgentHookConfig {
@@ -220,7 +212,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_copilot_status,
         container_env: &[("COPILOT_CONFIG_DIR", "/root/.copilot")],
         hook_config: None,
@@ -234,7 +225,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::AlwaysYolo),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_pi_status,
         container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
         hook_config: None,
@@ -247,7 +237,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--skip-permissions-unsafe")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_droid_status,
         container_env: &[],
         hook_config: None,

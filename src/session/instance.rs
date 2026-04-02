@@ -488,28 +488,26 @@ impl Instance {
             };
 
             if self.command.is_empty() {
-                crate::agents::get_agent(&self.tool)
-                    .filter(|a| a.supports_host_launch)
-                    .map(|a| {
-                        let mut cmd = a.binary.to_string();
-                        if !self.extra_args.is_empty() {
-                            cmd = format!("{} {}", cmd, self.extra_args);
-                        }
-                        if self.is_yolo_mode() {
-                            if let Some(ref yolo) = a.yolo {
-                                match yolo {
-                                    crate::agents::YoloMode::CliFlag(flag) => {
-                                        cmd = format!("{} {}", cmd, flag);
-                                    }
-                                    crate::agents::YoloMode::EnvVar(key, value) => {
-                                        cmd = format_env_var_prefix(key, value, &cmd);
-                                    }
-                                    crate::agents::YoloMode::AlwaysYolo => {}
+                crate::agents::get_agent(&self.tool).map(|a| {
+                    let mut cmd = a.binary.to_string();
+                    if !self.extra_args.is_empty() {
+                        cmd = format!("{} {}", cmd, self.extra_args);
+                    }
+                    if self.is_yolo_mode() {
+                        if let Some(ref yolo) = a.yolo {
+                            match yolo {
+                                crate::agents::YoloMode::CliFlag(flag) => {
+                                    cmd = format!("{} {}", cmd, flag);
                                 }
+                                crate::agents::YoloMode::EnvVar(key, value) => {
+                                    cmd = format_env_var_prefix(key, value, &cmd);
+                                }
+                                crate::agents::YoloMode::AlwaysYolo => {}
                             }
                         }
-                        wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
-                    })
+                    }
+                    wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
+                })
             } else {
                 let mut cmd = self.command.clone();
                 if !self.extra_args.is_empty() {
