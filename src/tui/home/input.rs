@@ -354,14 +354,6 @@ impl HomeView {
                                 tracing::error!("Failed to rename group: {}", e);
                             }
                         }
-                        RenameMode::GroupRename => {
-                            if let Err(e) = self.rename_selected_group_inplace(
-                                data.group.as_deref(),
-                                data.profile.as_deref(),
-                            ) {
-                                tracing::error!("Failed to rename group in-place: {}", e);
-                            }
-                        }
                     }
                 }
             }
@@ -763,7 +755,7 @@ impl HomeView {
                     }
                 }
             }
-            KeyCode::Char('r') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Char('r') => {
                 if let Some(id) = &self.selected_session {
                     if let Some(inst) = self.get_instance(id) {
                         if inst.status == Status::Deleting {
@@ -801,30 +793,6 @@ impl HomeView {
                         old_profile: current_profile.clone(),
                     });
                     self.rename_dialog = Some(RenameDialog::new_for_group(
-                        &group_path,
-                        &current_profile,
-                        profiles,
-                        existing_groups,
-                    ));
-                }
-            }
-            KeyCode::Char('R') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                if let Some(group_path) = &self.selected_group {
-                    let group_path = group_path.clone();
-                    let current_profile = self
-                        .selected_group_profile
-                        .clone()
-                        .or_else(|| self.active_profile.clone())
-                        .unwrap_or_else(|| "default".to_string());
-                    let profiles =
-                        list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                    let existing_groups: Vec<String> =
-                        self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    self.group_rename_context = Some(super::GroupRenameContext {
-                        old_path: group_path.clone(),
-                        old_profile: current_profile.clone(),
-                    });
-                    self.rename_dialog = Some(RenameDialog::new_for_group_rename(
                         &group_path,
                         &current_profile,
                         profiles,

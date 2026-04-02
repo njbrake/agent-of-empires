@@ -28,8 +28,6 @@ pub struct RenameData {
 pub enum RenameMode {
     Session,
     Group,
-    /// In-place rename: old path is removed, all sessions/sub-groups follow the new name.
-    GroupRename,
 }
 
 pub struct RenameDialog {
@@ -41,11 +39,11 @@ pub struct RenameDialog {
     new_title: Input,
     new_group: Input,
     profile_index: usize,
-    focused_field: usize, // Session: 0=title, 1=group, 2=profile; Group/GroupRename: 0=group, 1=profile
+    focused_field: usize, // Session: 0=title, 1=group, 2=profile; Group: 0=group, 1=profile
     existing_groups: Vec<String>,
     group_picker: ListPicker,
     group_ghost: Option<GroupGhostCompletion>,
-    /// Inline validation error shown for GroupRename mode when a duplicate name is entered.
+    /// Inline validation error shown in Group mode when a duplicate name is entered.
     validation_error: Option<String>,
 }
 
@@ -111,38 +109,10 @@ impl RenameDialog {
         }
     }
 
-    pub fn new_for_group_rename(
-        current_group: &str,
-        current_profile: &str,
-        available_profiles: Vec<String>,
-        existing_groups: Vec<String>,
-    ) -> Self {
-        let profile_index = available_profiles
-            .iter()
-            .position(|p| p == current_profile)
-            .unwrap_or(0);
-
-        Self {
-            mode: RenameMode::GroupRename,
-            current_title: String::new(),
-            current_group: current_group.to_string(),
-            current_profile: current_profile.to_string(),
-            available_profiles,
-            new_title: Input::default(),
-            new_group: Input::new(current_group.to_string()),
-            profile_index,
-            focused_field: 0,
-            existing_groups,
-            group_picker: ListPicker::new("Select Group"),
-            group_ghost: None,
-            validation_error: None,
-        }
-    }
-
     fn field_count(&self) -> usize {
         match self.mode {
-            RenameMode::Session => 3,                         // title, group, profile
-            RenameMode::Group | RenameMode::GroupRename => 2, // group, profile
+            RenameMode::Session => 3, // title, group, profile
+            RenameMode::Group => 2,   // group, profile
         }
     }
 
@@ -153,7 +123,7 @@ impl RenameDialog {
                 1 => Some(&mut self.new_group),
                 _ => None,
             },
-            RenameMode::Group | RenameMode::GroupRename => match self.focused_field {
+            RenameMode::Group => match self.focused_field {
                 0 => Some(&mut self.new_group),
                 _ => None,
             },
@@ -163,14 +133,14 @@ impl RenameDialog {
     fn is_group_field(&self) -> bool {
         match self.mode {
             RenameMode::Session => self.focused_field == 1,
-            RenameMode::Group | RenameMode::GroupRename => self.focused_field == 0,
+            RenameMode::Group => self.focused_field == 0,
         }
     }
 
     fn is_profile_field(&self) -> bool {
         match self.mode {
             RenameMode::Session => self.focused_field == 2,
-            RenameMode::Group | RenameMode::GroupRename => self.focused_field == 1,
+            RenameMode::Group => self.focused_field == 1,
         }
     }
 
@@ -255,8 +225,8 @@ impl RenameDialog {
                     return DialogResult::Cancel;
                 }
 
-                // GroupRename: validate that the new name does not already exist
-                if self.mode == RenameMode::GroupRename
+                // Validate that the new group name does not already exist
+                if self.mode == RenameMode::Group
                     && !group_value.is_empty()
                     && group_value != self.current_group
                     && self.existing_groups.iter().any(|g| g == group_value)
@@ -363,7 +333,7 @@ impl RenameDialog {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         match self.mode {
             RenameMode::Session => self.render_session(frame, area, theme),
-            RenameMode::Group | RenameMode::GroupRename => self.render_group(frame, area, theme),
+            RenameMode::Group => self.render_group(frame, area, theme),
         }
     }
 
@@ -446,15 +416,10 @@ impl RenameDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let title = if self.mode == RenameMode::GroupRename {
-            " Rename Group "
-        } else {
-            " Edit Group "
-        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
-            .title(title)
+            .title(" Rename Group ")
             .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
@@ -1389,7 +1354,7 @@ mod tests {
         assert_eq!(dialog.new_group.value(), "work");
     }
 
-    // --- GroupRename mode (Shift+R) dialog tests ---
+    // --- Group rename duplicate validation tests ---
 
     fn existing_groups_with_personal() -> Vec<String> {
         vec![
@@ -1400,22 +1365,8 @@ mod tests {
     }
 
     #[test]
-    fn test_new_for_group_rename_mode() {
-        let dialog = RenameDialog::new_for_group_rename(
-            "work",
-            "default",
-            default_profiles(),
-            existing_groups_with_personal(),
-        );
-        assert_eq!(dialog.mode(), RenameMode::GroupRename);
-        assert_eq!(dialog.new_group.value(), "work");
-        assert_eq!(dialog.current_group, "work");
-        assert!(dialog.validation_error.is_none());
-    }
-
-    #[test]
-    fn test_group_rename_dialog_duplicate_shows_error() {
-        let mut dialog = RenameDialog::new_for_group_rename(
+    fn test_group_rename_duplicate_shows_error() {
+        let mut dialog = RenameDialog::new_for_group(
             "work",
             "default",
             default_profiles(),
@@ -1442,8 +1393,8 @@ mod tests {
     }
 
     #[test]
-    fn test_group_rename_dialog_error_clears_on_edit() {
-        let mut dialog = RenameDialog::new_for_group_rename(
+    fn test_group_rename_error_clears_on_edit() {
+        let mut dialog = RenameDialog::new_for_group(
             "work",
             "default",
             default_profiles(),
@@ -1468,8 +1419,8 @@ mod tests {
     }
 
     #[test]
-    fn test_group_rename_dialog_allows_own_name() {
-        let mut dialog = RenameDialog::new_for_group_rename(
+    fn test_group_rename_allows_own_name() {
+        let mut dialog = RenameDialog::new_for_group(
             "work",
             "default",
             default_profiles(),
@@ -1489,8 +1440,8 @@ mod tests {
     }
 
     #[test]
-    fn test_group_rename_dialog_submit_new_unique_name() {
-        let mut dialog = RenameDialog::new_for_group_rename(
+    fn test_group_rename_submit_new_unique_name() {
+        let mut dialog = RenameDialog::new_for_group(
             "work",
             "default",
             default_profiles(),
@@ -1510,16 +1461,5 @@ mod tests {
             "unique name should submit"
         );
         assert!(dialog.validation_error.is_none());
-    }
-
-    #[test]
-    fn test_group_rename_dialog_title_is_rename_group() {
-        let dialog = RenameDialog::new_for_group_rename(
-            "work",
-            "default",
-            default_profiles(),
-            existing_groups_with_personal(),
-        );
-        assert_eq!(dialog.mode(), RenameMode::GroupRename);
     }
 }
