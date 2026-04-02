@@ -307,6 +307,119 @@ impl HomeView {
         Ok(())
     }
 
+    /// Rename a group in-place: the old group path is removed and all sessions and
+    /// sub-groups follow the new name. Re-sorting happens automatically on reload.
+    pub(super) fn rename_selected_group_inplace(
+        &mut self,
+        new_group: Option<&str>,
+        new_profile: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let ctx = match self.group_rename_context.take() {
+            Some(ctx) => ctx,
+            None => return Ok(()),
+        };
+
+        let new_path = match new_group {
+            Some(g) if !g.is_empty() && g != ctx.old_path => g,
+            _ if new_profile.is_none() => return Ok(()), // nothing changed
+            _ => &ctx.old_path,                          // profile-only change
+        };
+
+        // Defense-in-depth: reject duplicate names (dialog validates inline, but guard here too)
+        let target_profile = new_profile.unwrap_or(&ctx.old_profile);
+        if new_path != ctx.old_path {
+            if let Some(tree) = self.group_trees.get(target_profile) {
+                if tree.group_exists(new_path) {
+                    anyhow::bail!(
+                        "A group named '{}' already exists in profile '{}'",
+                        new_path,
+                        target_profile
+                    );
+                }
+            }
+        }
+
+        // Validate target profile exists when moving across profiles
+        if let Some(target) = new_profile {
+            if target != ctx.old_profile {
+                let profiles = list_profiles()?;
+                if !profiles.contains(&target.to_string()) {
+                    anyhow::bail!("Profile '{}' does not exist", target);
+                }
+            }
+        }
+
+        let old_prefix = format!("{}/", ctx.old_path);
+
+        // Collect sessions belonging to this group and its descendants
+        let affected_ids: Vec<String> = self
+            .instances
+            .iter()
+            .filter(|i| {
+                (i.group_path == ctx.old_path || i.group_path.starts_with(&old_prefix))
+                    && i.source_profile == ctx.old_profile
+            })
+            .map(|i| i.id.clone())
+            .collect();
+
+        // Update group_path (and optionally source_profile) for all affected sessions
+        for id in &affected_ids {
+            let new_group_path = if new_path != ctx.old_path {
+                let inst = self.get_instance(id);
+                match inst {
+                    Some(i) if i.group_path == ctx.old_path => new_path.to_string(),
+                    Some(i) => format!("{}{}", new_path, &i.group_path[ctx.old_path.len()..]),
+                    None => continue,
+                }
+            } else {
+                match self.get_instance(id) {
+                    Some(i) => i.group_path.clone(),
+                    None => continue,
+                }
+            };
+
+            if let Some(tp) = new_profile {
+                self.mutate_instance(id, |inst| {
+                    inst.group_path = new_group_path.clone();
+                    inst.source_profile = tp.to_string();
+                });
+            } else {
+                self.mutate_instance(id, |inst| {
+                    inst.group_path = new_group_path.clone();
+                });
+            }
+        }
+
+        // Ensure target profile storage exists when moving across profiles
+        if let Some(tp) = new_profile {
+            if tp != ctx.old_profile && !self.storages.contains_key(tp) {
+                self.storages.insert(tp.to_string(), Storage::new(tp)?);
+            }
+        }
+
+        // Rebuild trees from the updated instance list
+        self.rebuild_group_trees();
+
+        // Rename the group node in the source tree so the old path is removed
+        // and the new path is established (including all descendant nodes).
+        if new_path != ctx.old_path {
+            if let Some(tree) = self.group_trees.get_mut(&ctx.old_profile) {
+                tree.rename_group(&ctx.old_path, new_path);
+            }
+        }
+
+        // When moving to a different profile, ensure the new path exists in the target tree
+        if let Some(tp) = new_profile {
+            if let Some(tree) = self.group_trees.get_mut(tp) {
+                tree.create_group(new_path);
+            }
+        }
+
+        self.save()?;
+        self.reload()?;
+        Ok(())
+    }
+
     pub(super) fn rename_selected(
         &mut self,
         new_title: &str,

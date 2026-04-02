@@ -2219,6 +2219,323 @@ fn test_rename_selected_group_noop_when_unchanged() {
     assert_eq!(work_session.group_path, "work");
 }
 
+// --- Shift+R (rename group in-place) keypress tests ---
+
+#[test]
+#[serial]
+fn test_shift_r_opens_rename_dialog_on_group() {
+    let mut env = create_test_env_with_groups();
+    env.view.cursor = 1;
+    env.view.update_selected();
+    assert!(env.view.selected_group.is_some());
+    assert!(env.view.rename_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    assert!(env.view.rename_dialog.is_some());
+    assert!(env.view.group_rename_context.is_some());
+}
+
+#[test]
+#[serial]
+fn test_shift_r_no_op_on_session() {
+    let mut env = create_test_env_with_sessions(3);
+    env.view.update_selected();
+    assert!(env.view.selected_session.is_some());
+    assert!(env.view.rename_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    assert!(env.view.rename_dialog.is_none());
+}
+
+#[test]
+#[serial]
+fn test_shift_r_no_op_when_nothing_selected() {
+    let mut env = create_test_env_empty();
+    assert!(env.view.rename_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    assert!(env.view.rename_dialog.is_none());
+}
+
+#[test]
+#[serial]
+fn test_shift_r_sets_group_rename_mode() {
+    use crate::tui::dialogs::RenameMode;
+    let mut env = create_test_env_with_groups();
+    env.view.cursor = 1;
+    env.view.update_selected();
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    let dialog = env.view.rename_dialog.as_ref().unwrap();
+    assert_eq!(dialog.mode(), RenameMode::GroupRename);
+}
+
+#[test]
+#[serial]
+fn test_r_still_opens_group_mode_not_group_rename() {
+    use crate::tui::dialogs::RenameMode;
+    let mut env = create_test_env_with_groups();
+    env.view.cursor = 1;
+    env.view.update_selected();
+    env.view.handle_key(key(KeyCode::Char('r')));
+    let dialog = env.view.rename_dialog.as_ref().unwrap();
+    assert_eq!(dialog.mode(), RenameMode::Group);
+}
+
+#[test]
+#[serial]
+fn test_shift_r_no_op_in_search_mode() {
+    let mut env = create_test_env_with_groups();
+    env.view.cursor = 1;
+    env.view.update_selected();
+    assert!(env.view.selected_group.is_some());
+    env.view.handle_key(key(KeyCode::Char('/')));
+    assert!(env.view.search_active);
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    assert!(env.view.rename_dialog.is_none());
+}
+
+// --- rename_selected_group_inplace operation tests ---
+
+#[test]
+#[serial]
+fn test_rename_group_inplace_basic() {
+    let mut env = create_test_env_with_groups();
+
+    env.view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    env.view
+        .rename_selected_group_inplace(Some("projects"), None)
+        .unwrap();
+
+    let session = env
+        .view
+        .instances()
+        .iter()
+        .find(|i| i.title == "work-project")
+        .unwrap();
+    assert_eq!(session.group_path, "projects");
+}
+
+#[test]
+#[serial]
+fn test_rename_group_inplace_with_children() {
+    use crate::session::GroupTree;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("parent-session", "/tmp/p");
+    inst1.group_path = "work".to_string();
+    let mut inst2 = Instance::new("child-session", "/tmp/c");
+    inst2.group_path = "work/frontend".to_string();
+    let instances = vec![inst1, inst2];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.save_with_groups(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+
+    view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    view.rename_selected_group_inplace(Some("projects"), None)
+        .unwrap();
+
+    let parent = view
+        .instances()
+        .iter()
+        .find(|i| i.title == "parent-session")
+        .unwrap();
+    assert_eq!(parent.group_path, "projects");
+
+    let child = view
+        .instances()
+        .iter()
+        .find(|i| i.title == "child-session")
+        .unwrap();
+    assert_eq!(child.group_path, "projects/frontend");
+}
+
+#[test]
+#[serial]
+fn test_rename_group_inplace_noop_same_name() {
+    let mut env = create_test_env_with_groups();
+
+    env.view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    env.view
+        .rename_selected_group_inplace(Some("work"), None)
+        .unwrap();
+
+    let session = env
+        .view
+        .instances()
+        .iter()
+        .find(|i| i.title == "work-project")
+        .unwrap();
+    assert_eq!(session.group_path, "work");
+}
+
+#[test]
+#[serial]
+fn test_rename_group_inplace_removes_old_path() {
+    use crate::session::GroupTree;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst = Instance::new("work-session", "/tmp/w");
+    inst.group_path = "work".to_string();
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.save_with_groups(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+
+    view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    view.rename_selected_group_inplace(Some("projects"), None)
+        .unwrap();
+
+    let tree = view.group_trees.get("test").unwrap();
+    assert!(!tree.group_exists("work"), "old group path should be gone");
+    assert!(tree.group_exists("projects"), "new group path should exist");
+}
+
+#[test]
+#[serial]
+fn test_rename_group_inplace_empty_group() {
+    use crate::session::GroupTree;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let instances: Vec<Instance> = vec![];
+    let mut group_tree = GroupTree::new_with_groups(&instances, &[]);
+    group_tree.create_group("empty-group");
+    storage.save_with_groups(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+
+    view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "empty-group".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    view.rename_selected_group_inplace(Some("renamed-group"), None)
+        .unwrap();
+
+    let tree = view.group_trees.get("test").unwrap();
+    assert!(
+        !tree.group_exists("empty-group"),
+        "old empty group path should be gone"
+    );
+    assert!(
+        tree.group_exists("renamed-group"),
+        "new group path should exist"
+    );
+}
+
+#[test]
+#[serial]
+fn test_rename_group_inplace_duplicate_returns_error() {
+    use crate::session::GroupTree;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("work-session", "/tmp/w");
+    inst1.group_path = "work".to_string();
+    let mut inst2 = Instance::new("personal-session", "/tmp/p");
+    inst2.group_path = "personal".to_string();
+    let instances = vec![inst1, inst2];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.save_with_groups(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+
+    view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "work".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    let result = view.rename_selected_group_inplace(Some("personal"), None);
+    assert!(result.is_err(), "renaming to an existing group should fail");
+}
+
+#[test]
+#[serial]
+fn test_rename_group_inplace_resort_az() {
+    use crate::session::config::{save_config, Config, SortOrder};
+    use crate::session::GroupTree;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let mut config = Config::default();
+    config.app_state.sort_order = Some(SortOrder::AZ);
+    save_config(&config).unwrap();
+
+    let storage = Storage::new("test").unwrap();
+
+    let mut inst1 = Instance::new("s1", "/tmp/1");
+    inst1.group_path = "zzz".to_string();
+    let mut inst2 = Instance::new("s2", "/tmp/2");
+    inst2.group_path = "mmm".to_string();
+    let instances = vec![inst1, inst2];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.save_with_groups(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+
+    view.group_rename_context = Some(super::GroupRenameContext {
+        old_path: "zzz".to_string(),
+        old_profile: "test".to_string(),
+    });
+
+    view.rename_selected_group_inplace(Some("aaa"), None)
+        .unwrap();
+
+    let group_items: Vec<&str> = view
+        .flat_items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Group { name, .. } = item {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        group_items,
+        vec!["aaa", "mmm"],
+        "groups should be sorted alphabetically after rename"
+    );
+}
+
 #[test]
 #[serial]
 fn test_q_in_search_mode_types_q_not_quit() {
