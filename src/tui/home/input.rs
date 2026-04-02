@@ -711,6 +711,7 @@ impl HomeView {
                                 .map(|wt| wt.branch.clone())
                                 .or_else(|| inst.workspace_info.as_ref().map(|w| w.branch.clone())),
                             has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
+                            project_path: Some(inst.project_path.clone()),
                         };
 
                         let profile = self.active_profile.as_deref().unwrap_or("default");

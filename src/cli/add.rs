@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::builder;
 use crate::session::repo_config;
-use crate::session::{civilizations, resolve_config, GroupTree, Instance, SandboxInfo, Storage};
+use crate::session::{civilizations, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -87,7 +87,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("--repo requires --worktree to specify a branch\nTip: aoe add /path --repo /other -w branch-name");
     }
 
-    let config = resolve_config(profile).unwrap_or_default();
+    let config = repo_config::resolve_config_with_repo(profile, &path).unwrap_or_default();
 
     let mut worktree_info_opt = None;
     let mut workspace_info_opt = None;

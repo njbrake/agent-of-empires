@@ -315,8 +315,12 @@ impl NewSessionDialog {
         let available_tools = tools.available_list();
         let docker_available = containers::get_container_runtime().is_available();
 
-        // Load resolved config (global merged with profile overrides)
-        let config = resolve_config(profile).unwrap_or_default();
+        // Load resolved config (global + profile + repo overrides from cwd)
+        let config = crate::session::repo_config::resolve_config_with_repo(
+            profile,
+            std::path::Path::new(&current_dir),
+        )
+        .unwrap_or_else(|_| resolve_config(profile).unwrap_or_default());
 
         // Determine default tool index based on config
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {

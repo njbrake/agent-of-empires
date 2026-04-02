@@ -40,7 +40,10 @@ fn needs_worktree_cleanup(inst: &Instance, args: &RemoveArgs) -> bool {
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (instances, groups) = storage.load_with_groups()?;
-    let config = crate::session::resolve_config(profile).unwrap_or_default();
+    // Config is resolved per-session inside the loop (see below) so that
+    // repo-level overrides (e.g. delete_branch_on_cleanup) are respected.
+    // We keep a fallback for the case where no session matches.
+    let fallback_config = crate::session::resolve_config(profile).unwrap_or_default();
 
     let mut found = false;
     let mut removed_title = String::new();
@@ -53,6 +56,12 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
         {
             found = true;
             removed_title = inst.title.clone();
+
+            let config = crate::session::repo_config::resolve_config_with_repo(
+                profile,
+                std::path::Path::new(&inst.project_path),
+            )
+            .unwrap_or_else(|_| fallback_config.clone());
 
             let will_cleanup_worktree = needs_worktree_cleanup(&inst, &args);
             // Delete branch if explicitly requested, or if worktree is being

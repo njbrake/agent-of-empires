@@ -301,6 +301,31 @@ mount_ssh = true
     );
 }
 
+/// Regression test for #568: repo-level bare_repo_path_template must be included
+/// in the resolved config, not silently dropped.
+#[test]
+#[serial]
+fn test_repo_worktree_config_merged_into_resolved_config() {
+    let temp_home = TempDir::new().unwrap();
+    setup_temp_home(temp_home.path());
+
+    let repo = setup_repo_config(
+        r#"
+[worktree]
+bare_repo_path_template = "../{branch}"
+"#,
+    );
+
+    let config =
+        agent_of_empires::session::repo_config::resolve_config_with_repo("default", repo.path())
+            .unwrap();
+
+    assert_eq!(
+        config.worktree.bare_repo_path_template, "../{branch}",
+        "bare_repo_path_template from repo config should override the default"
+    );
+}
+
 /// Legacy `.aoe/config.toml` should still be loaded via backwards compat fallback.
 #[test]
 fn test_legacy_aoe_path_still_loads() {
