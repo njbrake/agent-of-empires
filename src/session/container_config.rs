@@ -258,13 +258,6 @@ fn sync_agent_config(
         }
     }
 
-    if host_dir.file_name().map(|n| n == ".claude").unwrap_or(false) {
-        if let Some(host_home) = host_dir.parent() {
-            let container_home = Path::new("/root");
-            rewrite_claude_plugin_paths(sandbox_dir, host_home, container_home);
-        }
-    }
-
     Ok(())
 }
 
@@ -278,10 +271,14 @@ fn rewrite_claude_plugin_paths(sandbox_dir: &Path, host_home: &Path) -> Result<(
 
     let host_home_str = host_home.to_string_lossy();
     let targets = [
+        plugins_dir.join("known_marketplaces.json"),
+        plugins_dir.join("installed_plugins.json"),
         plugins_dir
             .join("marketplaces")
             .join("known_marketplaces.json"),
-        plugins_dir.join("installed_plugins.json"),
+        plugins_dir
+            .join("marketplaces")
+            .join("installed_plugins.json"),
     ];
 
     for path in targets {
@@ -363,71 +360,6 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn rewrite_claude_plugin_paths(sandbox_dir: &Path, host_home: &Path, container_home: &Path) {
-    let candidates = [
-        sandbox_dir.join("plugins/known_marketplaces.json"),
-        sandbox_dir.join("plugins/installed_plugins.json"),
-        sandbox_dir.join("plugins/marketplaces/known_marketplaces.json"),
-        sandbox_dir.join("plugins/marketplaces/installed_plugins.json"),
-    ];
-
-    for path in candidates {
-        if !path.exists() {
-            continue;
-        }
-
-        if let Err(e) = rewrite_json_path_prefixes(&path, host_home, container_home) {
-            tracing::warn!("Failed to rewrite Claude plugin paths in {}: {}", path.display(), e);
-        }
-    }
-}
-
-fn rewrite_json_path_prefixes(
-    path: &Path,
-    host_home: &Path,
-    container_home: &Path,
-) -> Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    let mut value: serde_json::Value = serde_json::from_str(&content)?;
-    let host_prefix = host_home.to_string_lossy();
-    let container_prefix = container_home.to_string_lossy();
-
-    let changed = rewrite_json_value_paths(&mut value, &host_prefix, &container_prefix);
-    if changed {
-        let updated = serde_json::to_string_pretty(&value)?;
-        std::fs::write(path, updated)?;
-    }
-
-    Ok(())
-}
-
-fn rewrite_json_value_paths(
-    value: &mut serde_json::Value,
-    host_prefix: &str,
-    container_prefix: &str,
-) -> bool {
-    match value {
-        serde_json::Value::String(value) => {
-            if value.starts_with(host_prefix) {
-                let suffix = &value[host_prefix.len()..];
-                *value = format!("{}{}", container_prefix, suffix);
-                true
-            } else {
-                false
-            }
-        }
-        serde_json::Value::Array(values) => values
-            .iter_mut()
-            .map(|item| rewrite_json_value_paths(item, host_prefix, container_prefix))
-            .any(|changed| changed),
-        serde_json::Value::Object(entries) => entries
-            .values_mut()
-            .map(|item| rewrite_json_value_paths(item, host_prefix, container_prefix))
-            .any(|changed| changed),
-        _ => false,
-    }
 }
 
 /// Parse the `expiresAt` timestamp from a Claude Code credential JSON string.
@@ -1566,16 +1498,19 @@ mod tests {
 
         let sandbox = dir.path().join("sandbox");
         sync_agent_config(&host, &sandbox, &[], &[], &["plugins"], &[]).unwrap();
+        rewrite_claude_plugin_paths(&sandbox, &host_home).unwrap();
 
         let host_prefix = host_home.to_string_lossy();
-        let known_out = fs::read_to_string(sandbox.join("plugins/known_marketplaces.json")).unwrap();
+        let known_out =
+            fs::read_to_string(sandbox.join("plugins/known_marketplaces.json")).unwrap();
         assert!(known_out.contains("/root/.claude/plugins/marketplaces/claude-plugins-official"));
         assert!(!known_out.contains(host_prefix.as_ref()));
 
         let installed_out =
             fs::read_to_string(sandbox.join("plugins/installed_plugins.json")).unwrap();
-        assert!(installed_out
-            .contains("/root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0"));
+        assert!(installed_out.contains(
+            "/root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0"
+        ));
         assert!(!installed_out.contains(host_prefix.as_ref()));
     }
 
@@ -1804,7 +1739,11 @@ mod tests {
             host_home.display()
         );
         let installed = format!(r#"{{"plugins":[{{"installPath":"{}"}}]}}"#, host_install);
-        fs::write(sandbox.join("plugins").join("installed_plugins.json"), installed).unwrap();
+        fs::write(
+            sandbox.join("plugins").join("installed_plugins.json"),
+            installed,
+        )
+        .unwrap();
 
         rewrite_claude_plugin_paths(&sandbox, &host_home).unwrap();
 
