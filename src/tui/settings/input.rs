@@ -727,6 +727,11 @@ impl SettingsView {
                     h.on_launch = None;
                 }
             }
+            FieldKey::HookOnDestroy => {
+                if let Some(ref mut h) = config.hooks {
+                    h.on_destroy = None;
+                }
+            }
         }
 
         // Sync repo_config when in Repo scope

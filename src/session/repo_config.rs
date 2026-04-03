@@ -58,8 +58,11 @@ pub struct RepoConfig {
 /// - `on_launch`: failures are logged as warnings but do not prevent the session
 ///   from starting, since blocking an existing session on a transient hook failure
 ///   would be disruptive.
+/// - `on_destroy`: failures are logged as warnings but do not prevent session
+///   deletion. Runs before worktree/sandbox cleanup so resources are still
+///   available for teardown commands (e.g. `docker-compose down`).
 ///
-/// Both fields accept either a single string or an array of strings in TOML:
+/// All fields accept either a single string or an array of strings in TOML:
 ///   `on_launch = "npm start"`  or  `on_launch = ["npm install", "npm start"]`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfig {
@@ -78,11 +81,20 @@ pub struct HooksConfig {
         deserialize_with = "super::serde_helpers::string_or_vec"
     )]
     pub on_launch: Vec<String>,
+
+    /// Commands run when a session is deleted (failures are non-fatal).
+    /// Executed before worktree and sandbox cleanup.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
+    pub on_destroy: Vec<String>,
 }
 
 impl HooksConfig {
     pub fn is_empty(&self) -> bool {
-        self.on_create.is_empty() && self.on_launch.is_empty()
+        self.on_create.is_empty() && self.on_launch.is_empty() && self.on_destroy.is_empty()
     }
 }
 
@@ -187,6 +199,9 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
         if !hooks.on_launch.is_empty() {
             config.hooks.on_launch = hooks.on_launch.clone();
         }
+        if !hooks.on_destroy.is_empty() {
+            config.hooks.on_destroy = hooks.on_destroy.clone();
+        }
     }
 
     if let Some(ref updates_override) = repo.updates {
@@ -237,6 +252,11 @@ pub fn repo_config_to_profile(repo: &RepoConfig) -> ProfileConfig {
             } else {
                 Some(h.on_launch.clone())
             },
+            on_destroy: if h.on_destroy.is_empty() {
+                None
+            } else {
+                Some(h.on_destroy.clone())
+            },
         }),
         ..Default::default()
     }
@@ -248,6 +268,7 @@ pub fn profile_to_repo_config(profile: &ProfileConfig) -> RepoConfig {
         hooks: profile.hooks.as_ref().map(|h| HooksConfig {
             on_create: h.on_create.clone().unwrap_or_default(),
             on_launch: h.on_launch.clone().unwrap_or_default(),
+            on_destroy: h.on_destroy.clone().unwrap_or_default(),
         }),
         session: profile.session.clone(),
         sandbox: profile.sandbox.clone(),
@@ -297,6 +318,11 @@ pub fn compute_hooks_hash(hooks: &HooksConfig) -> String {
     }
     for cmd in &hooks.on_launch {
         hasher.update(b"on_launch:");
+        hasher.update(cmd.as_bytes());
+        hasher.update(b"\n");
+    }
+    for cmd in &hooks.on_destroy {
+        hasher.update(b"on_destroy:");
         hasher.update(cmd.as_bytes());
         hasher.update(b"\n");
     }
@@ -604,6 +630,75 @@ pub fn execute_hooks_in_container(
     )
 }
 
+/// Execute hooks with best-effort semantics: all commands are attempted even if
+/// some fail. Returns collected error messages. Designed for teardown hooks
+/// (on_destroy) where partial cleanup is better than aborting on first failure.
+fn run_hooks_best_effort(commands: &[String], target: &HookTarget) -> Vec<String> {
+    let in_container = matches!(target, HookTarget::Container { .. });
+    let mut errors = Vec::new();
+
+    for cmd in commands {
+        tracing::info!("Running hook (best-effort): {}", cmd);
+        let mut command = build_hook_command(cmd, target, false);
+        match command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+        {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let err = format_hook_error(
+                        cmd,
+                        output.status.code(),
+                        &stderr,
+                        &stdout,
+                        in_container,
+                    );
+                    tracing::warn!("{}", err);
+                    errors.push(err);
+                } else {
+                    tracing::debug!(
+                        "Hook completed: {} (stdout: {} bytes, stderr: {} bytes)",
+                        cmd,
+                        output.stdout.len(),
+                        output.stderr.len()
+                    );
+                }
+            }
+            Err(e) => {
+                let err = format!("Failed to execute hook: {}: {}", cmd, e);
+                tracing::warn!("{}", err);
+                errors.push(err);
+            }
+        }
+    }
+    errors
+}
+
+/// Execute hooks locally with best-effort semantics (all commands attempted).
+/// Returns a list of error messages for any hooks that failed.
+pub fn execute_hooks_best_effort(commands: &[String], project_path: &Path) -> Vec<String> {
+    run_hooks_best_effort(commands, &HookTarget::Local { project_path })
+}
+
+/// Execute hooks in a container with best-effort semantics (all commands attempted).
+/// Returns a list of error messages for any hooks that failed.
+pub fn execute_hooks_in_container_best_effort(
+    commands: &[String],
+    container_name: &str,
+    workdir: &str,
+) -> Vec<String> {
+    run_hooks_best_effort(
+        commands,
+        &HookTarget::Container {
+            container_name,
+            workdir,
+        },
+    )
+}
+
 /// Execute a list of hook commands with streamed output.
 pub fn execute_hooks_streamed(
     commands: &[String],
@@ -640,6 +735,8 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 # on_create = ["npm install", "cp .env.example .env"]
 # Commands run every time a session starts
 # on_launch = ["npm install"]
+# Commands run when a session is deleted (before cleanup)
+# on_destroy = ["docker-compose down"]
 
 # [session]
 # default_tool = "claude"
@@ -679,7 +776,16 @@ mod tests {
     fn test_hooks_config_not_empty() {
         let hooks = HooksConfig {
             on_create: vec!["npm install".to_string()],
-            on_launch: vec![],
+            ..Default::default()
+        };
+        assert!(!hooks.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_config_not_empty_on_destroy() {
+        let hooks = HooksConfig {
+            on_destroy: vec!["docker-compose down".to_string()],
+            ..Default::default()
         };
         assert!(!hooks.is_empty());
     }
@@ -689,6 +795,7 @@ mod tests {
         let hooks = HooksConfig {
             on_create: vec!["npm install".to_string()],
             on_launch: vec!["echo hello".to_string()],
+            ..Default::default()
         };
         let hash1 = compute_hooks_hash(&hooks);
         let hash2 = compute_hooks_hash(&hooks);
@@ -699,11 +806,11 @@ mod tests {
     fn test_compute_hooks_hash_differs_on_change() {
         let hooks1 = HooksConfig {
             on_create: vec!["npm install".to_string()],
-            on_launch: vec![],
+            ..Default::default()
         };
         let hooks2 = HooksConfig {
             on_create: vec!["yarn install".to_string()],
-            on_launch: vec![],
+            ..Default::default()
         };
         assert_ne!(compute_hooks_hash(&hooks1), compute_hooks_hash(&hooks2));
     }
@@ -712,12 +819,22 @@ mod tests {
     fn test_compute_hooks_hash_distinguishes_hook_types() {
         let hooks1 = HooksConfig {
             on_create: vec!["echo hello".to_string()],
-            on_launch: vec![],
+            ..Default::default()
         };
         let hooks2 = HooksConfig {
-            on_create: vec![],
             on_launch: vec!["echo hello".to_string()],
+            ..Default::default()
         };
+        assert_ne!(compute_hooks_hash(&hooks1), compute_hooks_hash(&hooks2));
+    }
+
+    #[test]
+    fn test_compute_hooks_hash_includes_on_destroy() {
+        let hooks1 = HooksConfig {
+            on_destroy: vec!["cleanup".to_string()],
+            ..Default::default()
+        };
+        let hooks2 = HooksConfig::default();
         assert_ne!(compute_hooks_hash(&hooks1), compute_hooks_hash(&hooks2));
     }
 
@@ -796,6 +913,35 @@ mod tests {
         let hooks = config.hooks.unwrap();
         assert_eq!(hooks.on_create, vec!["npm install"]);
         assert!(hooks.on_launch.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_on_destroy_string_parses_ok() {
+        let toml = r#"
+            [hooks]
+            on_destroy = "docker-compose down"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(hooks.on_destroy, vec!["docker-compose down"]);
+        assert!(hooks.on_create.is_empty());
+        assert!(hooks.on_launch.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_on_destroy_array_parses_ok() {
+        let toml = r#"
+            [hooks]
+            on_destroy = ["docker-compose down", "rm -rf /tmp/cache"]
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(
+            hooks.on_destroy,
+            vec!["docker-compose down", "rm -rf /tmp/cache"]
+        );
     }
 
     #[test]

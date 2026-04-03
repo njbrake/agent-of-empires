@@ -63,6 +63,56 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
             )
             .unwrap_or_else(|_| fallback_config.clone());
 
+            // Run on_destroy hooks before cleanup so resources are still available.
+            // Global/profile hooks are implicitly trusted; repo hooks require trust.
+            {
+                let project_path = std::path::Path::new(&inst.project_path);
+                let mut on_destroy = config.hooks.on_destroy.clone();
+
+                // If the resolved config included repo hooks, verify they're still trusted.
+                // Re-check trust to avoid running hooks that changed since approval.
+                match crate::session::repo_config::check_hook_trust(project_path) {
+                    Ok(crate::session::repo_config::HookTrustStatus::Trusted(hooks))
+                        if !hooks.on_destroy.is_empty() =>
+                    {
+                        on_destroy = hooks.on_destroy.clone();
+                    }
+                    Ok(crate::session::repo_config::HookTrustStatus::NeedsTrust { .. }) => {
+                        // Repo hooks changed; fall back to global/profile only.
+                        on_destroy = crate::session::resolve_config(profile)
+                            .map(|c| c.hooks.on_destroy)
+                            .unwrap_or_default();
+                    }
+                    _ => {}
+                }
+
+                if !on_destroy.is_empty() {
+                    let is_sandboxed = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+
+                    let errors = if is_sandboxed {
+                        if let Some(ref sandbox) = inst.sandbox_info {
+                            let workdir = inst.container_workdir();
+                            crate::session::repo_config::execute_hooks_in_container_best_effort(
+                                &on_destroy,
+                                &sandbox.container_name,
+                                &workdir,
+                            )
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        crate::session::repo_config::execute_hooks_best_effort(
+                            &on_destroy,
+                            project_path,
+                        )
+                    };
+
+                    for err in &errors {
+                        eprintln!("Warning: on_destroy hook: {}", err);
+                    }
+                }
+            }
+
             let will_cleanup_worktree = needs_worktree_cleanup(&inst, &args);
             // Delete branch if explicitly requested, or if worktree is being
             // deleted and config says to also delete the branch.

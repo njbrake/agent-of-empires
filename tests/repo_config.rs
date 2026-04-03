@@ -142,11 +142,11 @@ fn test_changed_hooks_invalidate_trust() {
 
     let hooks_v1 = HooksConfig {
         on_create: vec!["npm install".to_string()],
-        on_launch: vec![],
+        ..Default::default()
     };
     let hooks_v2 = HooksConfig {
         on_create: vec!["npm install".to_string(), "npm run build".to_string()],
-        on_launch: vec![],
+        ..Default::default()
     };
 
     let hash_v1 = compute_hooks_hash(&hooks_v1);
