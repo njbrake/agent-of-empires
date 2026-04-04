@@ -169,7 +169,12 @@ impl HomeView {
         }
 
         // Manual scroll with "N more above/below" indicators (matches dir_picker pattern)
-        let visible_height = inner.height as usize;
+        let visible_height = if self.search_active {
+            // Reserve 1 line for the search bar overlay at the bottom
+            (inner.height as usize).saturating_sub(1)
+        } else {
+            inner.height as usize
+        };
         let total = self.flat_items.len();
         let scroll_offset = if total <= visible_height || visible_height == 0 {
             0
@@ -187,14 +192,19 @@ impl HomeView {
         };
 
         let has_more_above = scroll_offset > 0;
-        let has_more_below = total > scroll_offset + visible_height;
 
-        let list_visible = if has_more_above && has_more_below {
-            visible_height.saturating_sub(2)
-        } else if has_more_above || has_more_below {
+        // Calculate available space after the "above" indicator, then determine
+        // whether a "below" indicator is needed from the remaining item count.
+        let available = if has_more_above {
             visible_height.saturating_sub(1)
         } else {
             visible_height
+        };
+        let items_from_offset = total.saturating_sub(scroll_offset);
+        let (list_visible, has_more_below) = if items_from_offset > available {
+            (available.saturating_sub(1), true)
+        } else {
+            (items_from_offset.min(available), false)
         };
 
         let mut lines: Vec<Line> = Vec::new();
