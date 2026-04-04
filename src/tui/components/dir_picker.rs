@@ -290,28 +290,8 @@ impl DirPicker {
         ]);
         frame.render_widget(Paragraph::new(filter_line), chunks[0]);
 
-        // Directory list with scrolling.
-        // The scroll offset must account for "[N more above/below]" indicator
-        // lines that reduce the number of items we can actually display.
         let visible_height = chunks[2].height as usize;
-        let total = filtered.len();
-        let scroll_offset = if total <= visible_height || visible_height == 0 {
-            0
-        } else {
-            // At offset 0: no "above" indicator, 1 line for "below" indicator
-            let first_page = visible_height.saturating_sub(1);
-            if self.selected < first_page {
-                0
-            } else {
-                // Scrolled: both "above" and "below" indicators take 1 line each
-                let mid_page = visible_height.saturating_sub(2).max(1);
-                let raw_offset = self.selected + 1 - mid_page;
-                // Near the bottom: only "above" indicator (no "below")
-                let last_page = visible_height.saturating_sub(1);
-                let max_offset = total.saturating_sub(last_page);
-                raw_offset.min(max_offset)
-            }
-        };
+        let scroll = super::scroll::calculate_scroll(filtered.len(), self.selected, visible_height);
 
         let mut lines: Vec<Line> = Vec::new();
         if self.read_error {
@@ -325,31 +305,20 @@ impl DirPicker {
                 Style::default().fg(theme.dimmed),
             )));
         } else {
-            let has_more_above = scroll_offset > 0;
-            let has_more_below = filtered.len() > scroll_offset + visible_height;
-
-            if has_more_above {
+            if scroll.has_more_above {
                 lines.push(Line::from(Span::styled(
-                    format!("  [{} more above]", scroll_offset),
+                    format!("  [{} more above]", scroll.scroll_offset),
                     Style::default().fg(theme.dimmed),
                 )));
             }
 
-            let list_visible = if has_more_above && has_more_below {
-                visible_height.saturating_sub(2)
-            } else if has_more_above || has_more_below {
-                visible_height.saturating_sub(1)
-            } else {
-                visible_height
-            };
-
             for (i, item) in filtered
                 .iter()
-                .skip(scroll_offset)
-                .take(list_visible)
+                .skip(scroll.scroll_offset)
+                .take(scroll.list_visible)
                 .enumerate()
             {
-                let abs_idx = i + scroll_offset;
+                let abs_idx = i + scroll.scroll_offset;
                 let is_selected = abs_idx == self.selected;
                 let prefix = if is_selected { "> " } else { "  " };
                 let style = if is_selected {
@@ -368,8 +337,8 @@ impl DirPicker {
                 )));
             }
 
-            if has_more_below {
-                let remaining = filtered.len() - scroll_offset - list_visible;
+            if scroll.has_more_below {
+                let remaining = filtered.len() - scroll.scroll_offset - scroll.list_visible;
                 lines.push(Line::from(Span::styled(
                     format!("  [{} more below]", remaining),
                     Style::default().fg(theme.dimmed),

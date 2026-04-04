@@ -168,56 +168,22 @@ impl HomeView {
             return;
         }
 
-        // Manual scroll with "N more above/below" indicators (matches dir_picker pattern)
         let visible_height = if self.search_active {
-            // Reserve 1 line for the search bar overlay at the bottom
             (inner.height as usize).saturating_sub(1)
         } else {
             inner.height as usize
         };
-        let total = self.flat_items.len();
-        let scroll_offset = if total <= visible_height || visible_height == 0 {
-            0
-        } else {
-            let first_page = visible_height.saturating_sub(1);
-            if self.cursor < first_page {
-                0
-            } else {
-                let mid_page = visible_height.saturating_sub(2).max(1);
-                let raw_offset = self.cursor + 1 - mid_page;
-                let last_page = visible_height.saturating_sub(1);
-                let max_offset = total.saturating_sub(last_page);
-                raw_offset.min(max_offset)
-            }
-        };
-
-        let has_more_above = scroll_offset > 0;
-
-        // Calculate available space after the "above" indicator, then determine
-        // whether a "below" indicator is needed from the remaining item count.
-        // When visible_height <= 1, suppress indicators entirely to ensure at
-        // least the selected item is shown.
-        let items_from_offset = total.saturating_sub(scroll_offset);
-        let (list_visible, has_more_above, has_more_below) = if visible_height <= 1 {
-            (items_from_offset.min(visible_height), false, false)
-        } else {
-            let available = if has_more_above {
-                visible_height - 1
-            } else {
-                visible_height
-            };
-            if items_from_offset > available {
-                (available.saturating_sub(1), has_more_above, true)
-            } else {
-                (items_from_offset.min(available), has_more_above, false)
-            }
-        };
+        let scroll = crate::tui::components::scroll::calculate_scroll(
+            self.flat_items.len(),
+            self.cursor,
+            visible_height,
+        );
 
         let mut lines: Vec<Line> = Vec::new();
 
-        if has_more_above {
+        if scroll.has_more_above {
             lines.push(Line::from(Span::styled(
-                format!("  [{} more above]", scroll_offset),
+                format!("  [{} more above]", scroll.scroll_offset),
                 Style::default().fg(theme.dimmed),
             )));
         }
@@ -225,11 +191,11 @@ impl HomeView {
         for (i, item) in self
             .flat_items
             .iter()
-            .skip(scroll_offset)
-            .take(list_visible)
+            .skip(scroll.scroll_offset)
+            .take(scroll.list_visible)
             .enumerate()
         {
-            let abs_idx = i + scroll_offset;
+            let abs_idx = i + scroll.scroll_offset;
             let is_selected = abs_idx == self.cursor;
             let is_match =
                 !self.search_matches.is_empty() && self.search_matches.contains(&abs_idx);
@@ -240,8 +206,8 @@ impl HomeView {
             lines.push(line);
         }
 
-        if has_more_below {
-            let remaining = total - scroll_offset - list_visible;
+        if scroll.has_more_below {
+            let remaining = self.flat_items.len() - scroll.scroll_offset - scroll.list_visible;
             lines.push(Line::from(Span::styled(
                 format!("  [{} more below]", remaining),
                 Style::default().fg(theme.dimmed),
