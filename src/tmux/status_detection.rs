@@ -564,6 +564,56 @@ pub fn detect_droid_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+/// settl (Settlers of Catan TUI) status detection. Since settl is a full-screen
+/// ratatui game, pane content shows game state rather than a REPL prompt.
+pub fn detect_settl_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: AI player is thinking
+    for line in &lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    if last_lines_lower.contains("thinking") || last_lines_lower.contains("reasoning") {
+        return Status::Running;
+    }
+
+    // WAITING: Human player's turn or game paused.
+    // Avoid matching the title screen's "[Enter] select" / "[q] quit" hint bar --
+    // only match game-specific phrases.
+    if last_lines_lower.contains("your turn")
+        || last_lines_lower.contains("choose a")
+        || last_lines_lower.contains("select a")
+        || last_lines_lower.contains("paused")
+        || last_lines_lower.contains("place a settlement")
+        || last_lines_lower.contains("place a road")
+    {
+        return Status::Waiting;
+    }
+
+    Status::Idle
+}
+
 pub fn detect_gemini_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -938,5 +988,43 @@ mod tests {
     fn test_detect_droid_status_idle() {
         assert_eq!(detect_droid_status("file saved"), Status::Idle);
         assert_eq!(detect_droid_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_settl_status_running() {
+        assert_eq!(detect_settl_status("Player 2 thinking ⠋"), Status::Running);
+        assert_eq!(detect_settl_status("⠹ reasoning..."), Status::Running);
+        assert_eq!(
+            detect_settl_status("Claude is thinking about a trade"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_settl_status_waiting() {
+        assert_eq!(
+            detect_settl_status("Your turn - choose a resource"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_settl_status("Select a hex to place a settlement"),
+            Status::Waiting
+        );
+        assert_eq!(detect_settl_status("Game paused"), Status::Waiting);
+        assert_eq!(
+            detect_settl_status("Place a road between nodes"),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_detect_settl_status_idle() {
+        assert_eq!(detect_settl_status("game board display"), Status::Idle);
+        assert_eq!(detect_settl_status("Player 3 won!"), Status::Idle);
+        // Title screen hint bar should NOT trigger Waiting
+        assert_eq!(
+            detect_settl_status("[↑↓] navigate  [Enter] select  [q] quit"),
+            Status::Idle
+        );
     }
 }
