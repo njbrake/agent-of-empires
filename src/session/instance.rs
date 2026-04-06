@@ -828,13 +828,15 @@ fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
         return true;
     }
 
-    // Only trust a tool-name substring match for names long enough to
-    // avoid false positives (e.g., "pi" matching inside "api").
-    if tool.len() >= 4 {
-        let lower = clean.to_lowercase();
-        if lower.contains(&tool.to_lowercase()) {
-            return true;
-        }
+    // Use word-boundary matching so short names like "pi" don't produce
+    // false positives inside words like "api" or "pipeline".
+    let tool_lower = tool.to_lowercase();
+    let lower = clean.to_lowercase();
+    if lower
+        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+        .any(|word| word == tool_lower)
+    {
+        return true;
     }
 
     false
@@ -1306,7 +1308,11 @@ mod tests {
         assert!(!pane_has_agent_content("api endpoint ready", "pi"));
         assert!(!pane_has_agent_content("pipeline started", "pi"));
 
-        // But longer names like "opencode" should still match.
+        // But "pi" as a standalone word should match.
+        assert!(pane_has_agent_content("pi file saved", "pi"));
+        assert!(pane_has_agent_content("done\npi>", "pi"));
+
+        // Longer names like "opencode" should still match.
         assert!(pane_has_agent_content("OpenCode v1.0", "opencode"));
     }
 }
