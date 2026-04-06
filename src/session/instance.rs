@@ -486,7 +486,10 @@ impl Instance {
             }
 
             // Prepend AOE_INSTANCE_ID env var if this agent supports hooks
-            let env_prefix = if agent.and_then(|a| a.hook_config.as_ref()).is_some() {
+            // (either JSON-based hook_config or settl's TOML hooks)
+            let has_hooks =
+                agent.and_then(|a| a.hook_config.as_ref()).is_some() || self.tool == "settl";
+            let env_prefix = if has_hooks {
                 format!("AOE_INSTANCE_ID={} ", self.id)
             } else {
                 String::new()
