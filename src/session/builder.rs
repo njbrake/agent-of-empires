@@ -186,6 +186,18 @@ pub fn build_instance(
     existing_titles: &[&str],
     profile: &str,
 ) -> Result<BuildResult> {
+    // Host-only agents (e.g. settl) cannot run in a sandbox or use worktrees.
+    let is_host_only = crate::agents::get_agent(&params.tool).is_some_and(|a| a.host_only);
+    if is_host_only && params.sandbox {
+        bail!(
+            "{} can only run on the host, not in a sandbox.",
+            params.tool
+        );
+    }
+    if is_host_only && params.worktree_branch.is_some() {
+        bail!("{} does not support worktree mode.", params.tool);
+    }
+
     if params.sandbox {
         let runtime = containers::get_container_runtime();
         if !runtime.is_available() {

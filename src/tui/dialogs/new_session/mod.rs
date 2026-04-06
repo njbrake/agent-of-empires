@@ -518,6 +518,12 @@ impl NewSessionDialog {
             .is_some_and(|y| matches!(y, crate::agents::YoloMode::AlwaysYolo))
     }
 
+    /// Whether the currently selected tool can only run on the host (no sandbox/worktree).
+    fn selected_tool_host_only(&self) -> bool {
+        let tool_name = self.available_tools[self.tool_index];
+        crate::agents::get_agent(tool_name).is_some_and(|a| a.host_only)
+    }
+
     /// The field index of the path field (shifts based on whether profile picker is visible)
     fn path_field(&self) -> usize {
         if self.has_profile_selection() {
@@ -806,7 +812,8 @@ impl NewSessionDialog {
 
         let has_profile_selection = self.available_profiles.len() > 1;
         let has_tool_selection = self.available_tools.len() > 1;
-        let has_sandbox = self.docker_available;
+        let is_host_only = self.selected_tool_host_only();
+        let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
         // Field order: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
         // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
@@ -829,8 +836,13 @@ impl NewSessionDialog {
         } else {
             usize::MAX
         };
-        let worktree_field = fi;
-        fi += 1;
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if has_sandbox {
             let f = fi;
             fi += 1;
