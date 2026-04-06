@@ -86,6 +86,7 @@ pub enum FieldKey {
     // Hooks
     HookOnCreate,
     HookOnLaunch,
+    HookOnDestroy,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -1104,6 +1105,11 @@ fn build_hooks_fields(
         global.hooks.on_launch.clone(),
         hooks.and_then(|h| h.on_launch.clone()),
     );
+    let (on_destroy, o3) = resolve_value(
+        scope,
+        global.hooks.on_destroy.clone(),
+        hooks.and_then(|h| h.on_destroy.clone()),
+    );
 
     vec![
         SettingField {
@@ -1128,6 +1134,18 @@ fn build_hooks_fields(
             inherited_display: inherited_if(
                 o2,
                 FieldValue::List(global.hooks.on_launch.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::HookOnDestroy,
+            label: "On Destroy",
+            description: "Commands run when a session is deleted, before cleanup. Use for teardown (e.g. docker-compose down).",
+            value: FieldValue::List(on_destroy),
+            category: SettingsCategory::Hooks,
+            has_override: o3,
+            inherited_display: inherited_if(
+                o3,
+                FieldValue::List(global.hooks.on_destroy.clone()),
             ),
         },
     ]
@@ -1261,6 +1279,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => config.hooks.on_create = v.clone(),
         (FieldKey::HookOnLaunch, FieldValue::List(v)) => config.hooks.on_launch = v.clone(),
+        (FieldKey::HookOnDestroy, FieldValue::List(v)) => config.hooks.on_destroy = v.clone(),
         _ => {}
     }
 }
@@ -1483,6 +1502,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::HookOnLaunch, FieldValue::List(v)) => {
             set_profile_override(v.clone(), &mut config.hooks, |s, val| s.on_launch = val);
+        }
+        (FieldKey::HookOnDestroy, FieldValue::List(v)) => {
+            set_profile_override(v.clone(), &mut config.hooks, |s, val| s.on_destroy = val);
         }
         _ => {}
     }

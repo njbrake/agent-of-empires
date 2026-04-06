@@ -4,6 +4,7 @@ mod dir_picker;
 mod help;
 mod list_picker;
 mod preview;
+pub(crate) mod scroll;
 mod text_input;
 
 pub use dir_picker::{DirPicker, DirPickerResult};

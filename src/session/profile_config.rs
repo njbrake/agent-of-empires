@@ -195,6 +195,13 @@ pub struct HooksConfigOverride {
         deserialize_with = "super::serde_helpers::option_string_or_vec"
     )]
     pub on_launch: Option<Vec<String>>,
+
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
+    pub on_destroy: Option<Vec<String>>,
 }
 
 /// Load profile-specific config. Returns empty config if file doesn't exist.
@@ -328,6 +335,9 @@ pub fn apply_hooks_overrides(
     }
     if let Some(ref on_launch) = source.on_launch {
         target.on_launch = on_launch.clone();
+    }
+    if let Some(ref on_destroy) = source.on_destroy {
+        target.on_destroy = on_destroy.clone();
     }
 }
 

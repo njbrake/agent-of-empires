@@ -1,12 +1,13 @@
 //! Background deletion handler for TUI responsiveness
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
 use crate::containers::DockerContainer;
 use crate::git::cleanup::remove_managed_worktree;
 use crate::git::GitWorktree;
+use crate::session::repo_config;
 use crate::session::Instance;
 
 pub struct DeletionRequest {
@@ -61,6 +62,10 @@ impl DeletionPoller {
 
     fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         let mut errors = Vec::new();
+
+        // Execute on_destroy hooks before any cleanup so resources (containers,
+        // worktrees) are still available for teardown commands.
+        Self::run_on_destroy_hooks(&request.instance);
 
         // Track branch info for potential deletion after worktree removal
         let branch_to_delete = if request.delete_branch {
@@ -213,6 +218,72 @@ impl DeletionPoller {
             } else {
                 Some(errors.join("; "))
             },
+        }
+    }
+
+    /// Run on_destroy hooks for an instance. Uses best-effort execution so all
+    /// hooks are attempted even if some fail. Failures are logged as warnings
+    /// and never prevent deletion.
+    ///
+    /// Global/profile hooks are implicitly trusted. Repo-level hooks go through
+    /// the same trust verification as on_launch: if the hooks hash has changed
+    /// since the user last approved, repo hooks are silently skipped.
+    fn run_on_destroy_hooks(instance: &Instance) {
+        let profile = if instance.source_profile.is_empty() {
+            "default"
+        } else {
+            &instance.source_profile
+        };
+
+        let project_path = Path::new(&instance.project_path);
+
+        // Start with global+profile on_destroy hooks (implicitly trusted).
+        let mut resolved_on_destroy = crate::session::profile_config::resolve_config(profile)
+            .map(|c| c.hooks.on_destroy)
+            .unwrap_or_default();
+
+        // Check if repo has trusted hooks that override.
+        match repo_config::check_hook_trust(project_path) {
+            Ok(repo_config::HookTrustStatus::Trusted(hooks)) if !hooks.on_destroy.is_empty() => {
+                resolved_on_destroy = hooks.on_destroy.clone();
+            }
+            Ok(repo_config::HookTrustStatus::NeedsTrust { .. }) => {
+                tracing::warn!(
+                    "Repo hooks changed since last trust approval; skipping repo on_destroy hooks"
+                );
+            }
+            _ => {}
+        }
+
+        if resolved_on_destroy.is_empty() {
+            return;
+        }
+
+        tracing::info!("Running on_destroy hooks for session {}", instance.id);
+
+        let is_sandboxed = instance.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+
+        let errors = if is_sandboxed {
+            if let Some(ref sandbox) = instance.sandbox_info {
+                let workdir = instance.container_workdir();
+                repo_config::execute_hooks_in_container_best_effort(
+                    &resolved_on_destroy,
+                    &sandbox.container_name,
+                    &workdir,
+                )
+            } else {
+                vec![]
+            }
+        } else {
+            repo_config::execute_hooks_best_effort(&resolved_on_destroy, project_path)
+        };
+
+        if !errors.is_empty() {
+            tracing::warn!(
+                "on_destroy hooks had {} failure(s) for session {}",
+                errors.len(),
+                instance.id
+            );
         }
     }
 
