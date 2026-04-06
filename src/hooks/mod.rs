@@ -201,22 +201,20 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Build the hook command for settl's TOML hooks.
-///
-/// A single wildcard hook that reads the JSON event from stdin and writes
-/// "running" for most events, "idle" for GameWon.
-fn settl_hook_command() -> String {
-    // The command reads JSON from stdin, checks the event name, and writes status.
-    // Uses the same /tmp/aoe-hooks/$AOE_INSTANCE_ID/status path as JSON-based hooks.
-    r#"sh -c '[ -n "$AOE_INSTANCE_ID" ] || exit 0; read -r json; mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID; case "$json" in *"\"event\":\"GameWon\""*) printf idle;; *) printf running;; esac > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'"#.to_string()
-}
+/// settl hook events and the AoE status they map to.
+const SETTL_HOOKS: &[(&str, &str)] = &[
+    ("TurnStarted", "running"),
+    ("WaitingForHuman", "waiting"),
+    ("GameWon", "idle"),
+];
 
 /// Install AoE status hooks into settl's `~/.settl/config.toml`.
 ///
 /// settl uses TOML config with `[[hooks]]` array entries instead of JSON
 /// settings files. This function reads the existing config, removes any
-/// previous AoE-managed hooks (identified by the marker), and adds a
-/// single wildcard hook for status detection.
+/// previous AoE-managed hooks (identified by the marker), and adds hooks
+/// for the three status transitions: TurnStarted->running,
+/// WaitingForHuman->waiting, GameWon->idle.
 pub fn install_settl_hooks() -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
     let config_path = home.join(".settl").join("config.toml");
@@ -252,11 +250,13 @@ pub fn install_settl_hooks() -> Result<()> {
             .is_some_and(is_aoe_hook_command)
     });
 
-    // Add the wildcard status hook
-    let mut hook_entry = toml::map::Map::new();
-    hook_entry.insert("event".into(), toml::Value::String("*".into()));
-    hook_entry.insert("command".into(), toml::Value::String(settl_hook_command()));
-    hooks_arr.push(toml::Value::Table(hook_entry));
+    // Add one hook per status transition
+    for (event, status) in SETTL_HOOKS {
+        let mut entry = toml::map::Map::new();
+        entry.insert("event".into(), toml::Value::String((*event).into()));
+        entry.insert("command".into(), toml::Value::String(hook_command(status)));
+        hooks_arr.push(toml::Value::Table(entry));
+    }
 
     // Write back
     if let Some(parent) = config_path.parent() {
