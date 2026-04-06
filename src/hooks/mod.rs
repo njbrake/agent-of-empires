@@ -201,9 +201,121 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Build the hook command for settl's TOML hooks.
+///
+/// A single wildcard hook that reads the JSON event from stdin and writes
+/// "running" for most events, "idle" for GameWon.
+fn settl_hook_command() -> String {
+    // The command reads JSON from stdin, checks the event name, and writes status.
+    // Uses the same /tmp/aoe-hooks/$AOE_INSTANCE_ID/status path as JSON-based hooks.
+    r#"sh -c '[ -n "$AOE_INSTANCE_ID" ] || exit 0; read -r json; mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID; case "$json" in *"\"event\":\"GameWon\""*) printf idle;; *) printf running;; esac > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'"#.to_string()
+}
+
+/// Install AoE status hooks into settl's `~/.settl/config.toml`.
+///
+/// settl uses TOML config with `[[hooks]]` array entries instead of JSON
+/// settings files. This function reads the existing config, removes any
+/// previous AoE-managed hooks (identified by the marker), and adds a
+/// single wildcard hook for status detection.
+pub fn install_settl_hooks() -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
+    let config_path = home.join(".settl").join("config.toml");
+
+    // Parse existing config or start fresh
+    let mut config: toml::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        toml::from_str(&content).unwrap_or_else(|e| {
+            tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
+            toml::Value::Table(toml::map::Map::new())
+        })
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    let table = config
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Config root is not a TOML table"))?;
+
+    // Get or create the hooks array
+    let hooks = table
+        .entry("hooks")
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let hooks_arr = hooks
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("hooks key is not a TOML array"))?;
+
+    // Remove existing AoE hooks
+    hooks_arr.retain(|hook| {
+        !hook
+            .get("command")
+            .and_then(|c| c.as_str())
+            .is_some_and(is_aoe_hook_command)
+    });
+
+    // Add the wildcard status hook
+    let mut hook_entry = toml::map::Map::new();
+    hook_entry.insert("event".into(), toml::Value::String("*".into()));
+    hook_entry.insert("command".into(), toml::Value::String(settl_hook_command()));
+    hooks_arr.push(toml::Value::Table(hook_entry));
+
+    // Write back
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let formatted = toml::to_string_pretty(&config)?;
+    std::fs::write(&config_path, formatted)?;
+
+    tracing::info!("Installed AoE hooks in {}", config_path.display());
+    Ok(())
+}
+
+/// Remove AoE hooks from settl's `~/.settl/config.toml`.
+pub fn uninstall_settl_hooks() -> Result<bool> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
+    let config_path = home.join(".settl").join("config.toml");
+
+    if !config_path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(&config_path)?;
+    let mut config: toml::Value = toml::from_str(&content).unwrap_or_else(|e| {
+        tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
+        toml::Value::Table(toml::map::Map::new())
+    });
+
+    let Some(hooks_arr) = config.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+        return Ok(false);
+    };
+
+    let before = hooks_arr.len();
+    hooks_arr.retain(|hook| {
+        !hook
+            .get("command")
+            .and_then(|c| c.as_str())
+            .is_some_and(is_aoe_hook_command)
+    });
+
+    if hooks_arr.len() == before {
+        return Ok(false);
+    }
+
+    let formatted = toml::to_string_pretty(&config)?;
+    std::fs::write(&config_path, formatted)?;
+    tracing::info!("Removed AoE hooks from {}", config_path.display());
+    Ok(true)
+}
+
 /// Remove all AoE hooks from all known agent settings files and clean up
 /// the hook status base directory. Called during `aoe uninstall`.
 pub fn uninstall_all_hooks() {
+    // Remove settl TOML hooks
+    match uninstall_settl_hooks() {
+        Ok(true) => println!("Removed AoE hooks from ~/.settl/config.toml"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("Failed to remove settl hooks: {}", e),
+    }
+
     if let Some(home) = dirs::home_dir() {
         for agent in crate::agents::AGENTS {
             if let Some(hook_cfg) = &agent.hook_config {
