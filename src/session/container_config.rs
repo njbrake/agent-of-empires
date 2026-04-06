@@ -2156,4 +2156,111 @@ extra_volumes = ["/host/data:/container/data:ro"]
             volume_pairs
         );
     }
+
+    // --- prepare_sandbox_dir / clean_files tests ---
+
+    #[test]
+    fn test_clean_files_deletes_stale_database() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        let sandbox_dir = host_dir.join("sandbox");
+        fs::create_dir_all(&sandbox_dir).unwrap();
+
+        // Simulate stale database files left by a previous sandbox session
+        fs::write(sandbox_dir.join("opencode.db"), "stale").unwrap();
+        fs::write(sandbox_dir.join("opencode.db-wal"), "stale-wal").unwrap();
+        fs::write(sandbox_dir.join("opencode.db-shm"), "stale-shm").unwrap();
+
+        // Create a minimal host dir so sync_agent_config doesn't error
+        fs::create_dir_all(&host_dir).unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &[
+                "sandbox",
+                "opencode.db",
+                "opencode.db-wal",
+                "opencode.db-shm",
+            ],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
+        };
+
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
+
+        assert!(!sandbox_dir.join("opencode.db").exists());
+        assert!(!sandbox_dir.join("opencode.db-wal").exists());
+        assert!(!sandbox_dir.join("opencode.db-shm").exists());
+    }
+
+    #[test]
+    fn test_skip_entries_prevents_host_db_copy() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        let sandbox_dir = host_dir.join("sandbox");
+        fs::create_dir_all(&host_dir).unwrap();
+
+        // Host has a database that should NOT be copied
+        fs::write(host_dir.join("opencode.db"), "host-db").unwrap();
+        // Host also has a config file that SHOULD be copied
+        fs::write(host_dir.join("some-config.txt"), "config").unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &[
+                "sandbox",
+                "opencode.db",
+                "opencode.db-wal",
+                "opencode.db-shm",
+            ],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &[],
+        };
+
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
+
+        assert!(
+            !sandbox_dir.join("opencode.db").exists(),
+            "Host database should not be copied to sandbox"
+        );
+        assert!(
+            sandbox_dir.join("some-config.txt").exists(),
+            "Non-skipped files should still be copied"
+        );
+    }
+
+    #[test]
+    fn test_clean_files_noop_when_no_stale_files() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        fs::create_dir_all(&host_dir).unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &["sandbox"],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
+        };
+
+        // Should not panic or error when files don't exist
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
+    }
 }
