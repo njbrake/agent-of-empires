@@ -699,10 +699,8 @@ impl Instance {
             return;
         }
 
-        let detected = match session.detect_status(&self.tool) {
-            Ok(status) => status,
-            Err(_) => Status::Idle,
-        };
+        let pane_content = session.capture_pane(50).unwrap_or_default();
+        let detected = tmux::detect_status_from_content(&pane_content, &self.tool);
         tracing::trace!(
             "status detection '{}' (tool={}, cmd_override={}, custom_cmd={}): {:?}",
             self.title,
@@ -732,7 +730,21 @@ impl Instance {
                     Status::Unknown
                 }
             }
-            Status::Idle if is_dead || is_shell_stale() => Status::Error,
+            Status::Idle if is_dead => Status::Error,
+            Status::Idle if is_shell_stale() => {
+                // A shell is the foreground process but the pane is alive.
+                // This happens when: (a) tmux-resurrect restored a dead
+                // session, or (b) the agent binary is a shell wrapper / the
+                // agent spawns persistent child shells. Check the captured
+                // pane content: if it contains the agent's UI the agent is
+                // still alive; only declare Error when the content looks
+                // like a bare shell prompt.
+                if pane_has_agent_content(&pane_content, &self.tool) {
+                    Status::Idle
+                } else {
+                    Status::Error
+                }
+            }
             other => other,
         };
 
@@ -783,6 +795,49 @@ fn wrap_command_ignore_suspend(cmd: &str) -> String {
     let escaped = cmd.replace('\'', "'\\''");
     // Use login shell (-l) so version-manager PATHs (NVM, etc.) are available.
     format!("{} -lc 'stty susp undef; exec env {}'", shell, escaped)
+}
+
+/// Check whether captured pane content indicates a living agent rather than
+/// a bare shell prompt. Used to prevent `is_shell_stale()` from producing
+/// false `Error` status when the agent binary is a shell wrapper or spawns
+/// persistent child shell processes.
+fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
+    let clean = crate::tmux::utils::strip_ansi(raw_content);
+    let non_empty: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    if non_empty.is_empty() {
+        return false;
+    }
+
+    // If the last visible line looks like a shell prompt, the agent
+    // likely exited and the shell took over. This catches servers with
+    // verbose MOTD that would otherwise exceed the line-count threshold.
+    let last = non_empty.last().unwrap().trim();
+    if last.ends_with('$')
+        || last.ends_with('#')
+        || last.ends_with('%')
+        || last.ends_with('\u{276f}')
+    {
+        return false;
+    }
+
+    // Agent TUIs fill the screen with UI elements. A bare shell prompt
+    // (after MOTD) rarely exceeds this threshold once the prompt check
+    // above filters out typical shell endings.
+    if non_empty.len() > 5 {
+        return true;
+    }
+
+    // Only trust a tool-name substring match for names long enough to
+    // avoid false positives (e.g., "pi" matching inside "api").
+    if tool.len() >= 4 {
+        let lower = clean.to_lowercase();
+        if lower.contains(&tool.to_lowercase()) {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -1191,5 +1246,67 @@ mod tests {
         assert_eq!(json, "\"unknown\"");
         let deserialized: Status = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, Status::Unknown);
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_bare_shell() {
+        assert!(!pane_has_agent_content("$ ", "opencode"));
+        assert!(!pane_has_agent_content("user@host:~$ ", "opencode"));
+        assert!(!pane_has_agent_content("\n\n$ \n", "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_agent_ui() {
+        let opencode_idle = "ctrl+p commands \u{2022} OpenCode 1.3.13+650d0db";
+        assert!(pane_has_agent_content(opencode_idle, "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_substantial_output() {
+        let many_lines = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(pane_has_agent_content(&many_lines, "vibe"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_empty() {
+        assert!(!pane_has_agent_content("", "opencode"));
+        assert!(!pane_has_agent_content("   \n  \n  ", "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_shell_prompt_at_end() {
+        // Verbose MOTD followed by shell prompt should be detected as a
+        // bare shell, not agent content, even with >5 lines.
+        let motd_then_prompt = "Welcome to Ubuntu 22.04 LTS\n\
+            System load:  0.5\n\
+            Memory usage: 42%\n\
+            Disk usage:   67%\n\
+            Swap usage:   0%\n\
+            Temperature:  45C\n\
+            2 updates available\n\
+            user@host:~$ ";
+        assert!(!pane_has_agent_content(motd_then_prompt, "opencode"));
+
+        // Same with # prompt (root)
+        let root_prompt = "line1\nline2\nline3\nline4\nline5\nline6\n# ";
+        assert!(!pane_has_agent_content(root_prompt, "opencode"));
+
+        // Fish/zsh fancy prompt (❯)
+        let fancy_prompt = "line1\nline2\nline3\nline4\nline5\nline6\n\u{276f}";
+        assert!(!pane_has_agent_content(fancy_prompt, "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_short_tool_name() {
+        // Short tool names like "pi" should NOT match substrings in
+        // unrelated content (e.g., "api" contains "pi").
+        assert!(!pane_has_agent_content("api endpoint ready", "pi"));
+        assert!(!pane_has_agent_content("pipeline started", "pi"));
+
+        // But longer names like "opencode" should still match.
+        assert!(pane_has_agent_content("OpenCode v1.0", "opencode"));
     }
 }
