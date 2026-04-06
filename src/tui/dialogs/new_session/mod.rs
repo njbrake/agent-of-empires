@@ -1387,17 +1387,23 @@ impl NewSessionDialog {
         let has_yolo = !self.selected_tool_always_yolo();
         let base = if self.has_profile_selection() { 1 } else { 0 };
 
-        // Field layout: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
+        let is_host_only = self.selected_tool_host_only();
+        // Field layout: [profile], title, path, [tool], [yolo], [worktree], [sandbox], group
         let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
         if has_yolo {
             fi += 1;
         }
-        let worktree_field = fi;
-        let mut next = worktree_field + 1;
-        if self.docker_available {
-            next += 1; // sandbox checkbox
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        if self.docker_available && !is_host_only {
+            fi += 1; // sandbox checkbox
         }
-        let group_field = next;
+        let group_field = fi;
 
         let path_field = self.path_field();
         let title_field = if self.has_profile_selection() { 1 } else { 0 };
