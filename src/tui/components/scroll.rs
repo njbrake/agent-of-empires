@@ -39,7 +39,7 @@ pub fn calculate_scroll(total: usize, cursor: usize, visible_height: usize) -> S
 
     // When visible_height <= 1, suppress indicators entirely to ensure at
     // least the selected item is shown.
-    let (list_visible, has_more_above, has_more_below) = if visible_height <= 1 {
+    let (mut list_visible, mut has_more_above, mut has_more_below) = if visible_height <= 1 {
         (items_from_offset.min(visible_height), false, false)
     } else {
         let available = if has_more_above {
@@ -53,6 +53,20 @@ pub fn calculate_scroll(total: usize, cursor: usize, visible_height: usize) -> S
             (items_from_offset.min(available), has_more_above, false)
         }
     };
+
+    // When visible_height is very small (e.g., 2), both indicators can
+    // consume all available space. Drop indicators to guarantee at least
+    // 1 item is visible.
+    if list_visible == 0 && total > 0 && visible_height > 0 {
+        if has_more_below {
+            has_more_below = false;
+            list_visible = 1;
+        }
+        if list_visible == 0 && has_more_above {
+            has_more_above = false;
+            list_visible = 1;
+        }
+    }
 
     ScrollLayout {
         scroll_offset,
@@ -140,5 +154,17 @@ mod tests {
         if hidden_below > 0 {
             assert!(s.has_more_below, "hidden items must show below indicator");
         }
+    }
+
+    #[test]
+    fn visible_height_two_shows_at_least_one_item() {
+        // With height=2, both indicators would consume all space.
+        // Must suppress indicators to show at least 1 item.
+        let s = calculate_scroll(10, 5, 2);
+        assert!(
+            s.list_visible >= 1,
+            "must show at least 1 item, got list_visible={}",
+            s.list_visible
+        );
     }
 }

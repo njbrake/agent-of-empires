@@ -201,6 +201,11 @@ impl HomeView {
                 !self.search_matches.is_empty() && self.search_matches.contains(&abs_idx);
             let mut line = self.render_item_line(item, is_selected, is_match, theme);
             if is_selected {
+                // Pad to full width so the selection background fills the entire row
+                let pad = (inner.width as usize).saturating_sub(line.width());
+                if pad > 0 {
+                    line.spans.push(Span::raw(" ".repeat(pad)));
+                }
                 line = line.style(Style::default().bg(theme.session_selection));
             }
             lines.push(line);
