@@ -73,7 +73,16 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         tool_name: "opencode",
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
-        skip_entries: &["sandbox"],
+        // Skip the SQLite database and its WAL/SHM files. The sandbox's opencode
+        // must create its own database -- copying the host's database leads to
+        // migration failures because the host db may have a different migration
+        // state or stale WAL files from a different SQLite process.
+        skip_entries: &[
+            "sandbox",
+            "opencode.db",
+            "opencode.db-wal",
+            "opencode.db-shm",
+        ],
         seed_files: &[],
         copy_dirs: &[],
         keychain_credential: None,
