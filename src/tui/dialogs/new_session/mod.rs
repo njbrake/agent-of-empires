@@ -332,8 +332,13 @@ impl NewSessionDialog {
             0
         };
 
-        // Apply sandbox defaults from config
-        let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
+        // Apply sandbox defaults from config (disabled for host-only agents like settl)
+        let is_default_tool_host_only = available_tools
+            .get(tool_index)
+            .and_then(|&t| crate::agents::get_agent(t))
+            .is_some_and(|a| a.host_only);
+        let sandbox_enabled =
+            docker_available && config.sandbox.enabled_by_default && !is_default_tool_host_only;
         let yolo_mode = config.session.yolo_mode_default;
 
         // Load extra args and command override for the default tool
@@ -554,7 +559,9 @@ impl NewSessionDialog {
         // Reset sandbox/yolo defaults
         self.yolo_mode_default = config.session.yolo_mode_default;
         self.yolo_mode = self.yolo_mode_default;
-        self.sandbox_enabled = self.docker_available && config.sandbox.enabled_by_default;
+        self.sandbox_enabled = self.docker_available
+            && config.sandbox.enabled_by_default
+            && !self.selected_tool_host_only();
 
         // Reset sandbox image from resolved config (includes profile overrides)
         self.sandbox_image = Input::new(config.sandbox.default_image.clone());
@@ -970,6 +977,10 @@ impl NewSessionDialog {
                 } else {
                     self.yolo_mode = self.yolo_mode_default;
                 }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_branch.reset();
+                }
                 self.reload_tool_config();
                 DialogResult::Continue
             }
@@ -979,6 +990,10 @@ impl NewSessionDialog {
                     self.yolo_mode = true;
                 } else {
                     self.yolo_mode = self.yolo_mode_default;
+                }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_branch.reset();
                 }
                 self.reload_tool_config();
                 DialogResult::Continue
