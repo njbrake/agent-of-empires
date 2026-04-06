@@ -44,6 +44,10 @@ struct AgentConfigMount {
     /// sandbox. Protects credentials placed by the v002 migration or by in-container
     /// authentication from being overwritten by stale host copies.
     preserve_files: &'static [&'static str],
+    /// Files to delete from the sandbox dir before each launch. Prevents stale state
+    /// (e.g. SQLite databases from a previous opencode version) from causing failures
+    /// when the container image is updated.
+    clean_files: &'static [&'static str],
 }
 
 /// Agent config definitions. Each entry describes one agent CLI's config directory.
@@ -68,15 +72,16 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
             (".sandbox-gitconfig", ""),
         ],
         preserve_files: &[".credentials.json", "history.jsonl"],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "opencode",
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
-        // Skip the SQLite database and its WAL/SHM files. The sandbox's opencode
-        // must create its own database -- copying the host's database leads to
-        // migration failures because the host db may have a different migration
-        // state or stale WAL files from a different SQLite process.
+        // Never copy or keep the SQLite database in the sandbox. Opencode must
+        // create its own fresh database on each launch -- a stale db from a
+        // previous opencode version (or copied from the host) causes drizzle
+        // migration failures.
         skip_entries: &[
             "sandbox",
             "opencode.db",
@@ -88,6 +93,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
     },
     AgentConfigMount {
         tool_name: "opencode",
@@ -99,6 +105,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "codex",
@@ -110,6 +117,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "gemini",
@@ -121,6 +129,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "vibe",
@@ -132,6 +141,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "cursor",
@@ -143,6 +153,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "copilot",
@@ -154,6 +165,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "pi",
@@ -165,6 +177,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "droid",
@@ -176,6 +189,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
 ];
 
@@ -481,6 +495,18 @@ fn extract_keychain_credential(_service: &str, _dest: &Path) -> Result<bool> {
 fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::path::PathBuf> {
     let host_dir = home.join(mount.host_rel);
     let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
+
+    // Remove stale files before syncing. This prevents leftovers from a previous
+    // session (e.g. a SQLite database created by an older tool version) from
+    // causing failures when the container image is updated.
+    for &name in mount.clean_files {
+        let path = sandbox_dir.join(name);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!("Failed to clean {}: {}", path.display(), e);
+            }
+        }
+    }
 
     if host_dir.exists() {
         sync_agent_config(
