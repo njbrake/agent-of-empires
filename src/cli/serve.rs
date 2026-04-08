@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Result};
 use clap::Args;
+use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct ServeArgs {
@@ -24,9 +25,22 @@ pub struct ServeArgs {
     /// Run as a background daemon (detach from terminal)
     #[arg(long)]
     pub daemon: bool,
+
+    /// Stop a running daemon
+    #[arg(long)]
+    pub stop: bool,
+}
+
+fn pid_file_path() -> Result<PathBuf> {
+    let dir = crate::session::get_app_dir()?;
+    Ok(dir.join("serve.pid"))
 }
 
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
+    if args.stop {
+        return stop_daemon();
+    }
+
     let is_localhost = args.host == "127.0.0.1" || args.host == "localhost" || args.host == "::1";
 
     // Block dangerous combination: no auth on a network-accessible server
@@ -66,11 +80,25 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         return start_daemon(profile, &args);
     }
 
-    crate::server::start_server(profile, &args.host, args.port, args.no_auth, args.read_only).await
+    // Write PID file for non-daemon mode too (so --stop works either way)
+    if let Ok(path) = pid_file_path() {
+        let _ = std::fs::write(&path, std::process::id().to_string());
+    }
+
+    let result =
+        crate::server::start_server(profile, &args.host, args.port, args.no_auth, args.read_only)
+            .await;
+
+    // Clean up PID file on exit
+    if let Ok(path) = pid_file_path() {
+        let _ = std::fs::remove_file(path);
+    }
+
+    result
 }
 
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
@@ -88,20 +116,59 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     if args.read_only {
         cmd.arg("--read-only");
     }
-
-    // Pass profile if set
     if !profile.is_empty() {
         cmd.args(["--profile", profile]);
     }
 
-    // Detach: redirect stdio to /dev/null and spawn
-    use std::process::Stdio;
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
     let child = cmd.spawn()?;
-    println!("aoe serve started as daemon (PID {})", child.id());
-    println!("Stop with: kill {}", child.id());
+    let pid = child.id();
+
+    // Write PID file
+    if let Ok(path) = pid_file_path() {
+        std::fs::write(&path, pid.to_string())?;
+    }
+
+    println!("aoe serve started as daemon (PID {})", pid);
+    println!("Stop with: aoe serve --stop");
+    Ok(())
+}
+
+fn stop_daemon() -> Result<()> {
+    let path = pid_file_path()?;
+
+    if !path.exists() {
+        bail!(
+            "No running daemon found (no PID file at {})",
+            path.display()
+        );
+    }
+
+    let pid_str = std::fs::read_to_string(&path)?;
+    let pid: i32 = pid_str
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid PID in {}: {}", path.display(), pid_str.trim()))?;
+
+    // Send SIGTERM
+    match nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGTERM,
+    ) {
+        Ok(()) => {
+            std::fs::remove_file(&path)?;
+            println!("Stopped aoe serve daemon (PID {})", pid);
+        }
+        Err(nix::errno::Errno::ESRCH) => {
+            // Process doesn't exist -- clean up stale PID file
+            std::fs::remove_file(&path)?;
+            println!("Daemon was not running (stale PID file cleaned up)");
+        }
+        Err(e) => bail!("Failed to stop daemon (PID {}): {}", pid, e),
+    }
+
     Ok(())
 }
