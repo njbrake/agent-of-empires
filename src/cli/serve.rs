@@ -19,5 +19,5 @@ pub struct ServeArgs {
 }
 
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
-    crate::web::start_server(profile, &args.host, args.port, args.no_auth).await
+    crate::server::start_server(profile, &args.host, args.port, args.no_auth).await
 }
