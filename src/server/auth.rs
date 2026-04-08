@@ -93,3 +93,32 @@ pub async fn auth_middleware(
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_time_eq_matching() {
+        assert!(constant_time_eq("abc123", "abc123"));
+        assert!(constant_time_eq("", ""));
+    }
+
+    #[test]
+    fn constant_time_eq_different_content() {
+        assert!(!constant_time_eq("abc123", "abc124"));
+        assert!(!constant_time_eq("abc123", "xyz789"));
+    }
+
+    #[test]
+    fn constant_time_eq_different_length() {
+        assert!(!constant_time_eq("short", "longer_string"));
+        assert!(!constant_time_eq("abc", "ab"));
+    }
+
+    #[test]
+    fn constant_time_eq_empty_vs_nonempty() {
+        assert!(!constant_time_eq("", "x"));
+        assert!(!constant_time_eq("x", ""));
+    }
+}

@@ -189,3 +189,76 @@ pub async fn restart_session(
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_instance() -> Instance {
+        let mut inst = Instance::new("test-session", "/tmp/test-project");
+        inst.tool = "claude".to_string();
+        inst.status = Status::Running;
+        inst.group_path = "work/projects".to_string();
+        inst
+    }
+
+    #[test]
+    fn session_response_from_instance() {
+        let inst = make_test_instance();
+        let resp = SessionResponse::from(&inst);
+
+        assert_eq!(resp.id, inst.id);
+        assert_eq!(resp.title, "test-session");
+        assert_eq!(resp.project_path, "/tmp/test-project");
+        assert_eq!(resp.tool, "claude");
+        assert_eq!(resp.status, "Running");
+        assert_eq!(resp.group_path, "work/projects");
+        assert!(!resp.is_sandboxed);
+        assert!(!resp.has_terminal);
+    }
+
+    #[test]
+    fn session_response_status_variants() {
+        let mut inst = make_test_instance();
+
+        for (status, expected) in [
+            (Status::Running, "Running"),
+            (Status::Waiting, "Waiting"),
+            (Status::Error, "Error"),
+            (Status::Stopped, "Stopped"),
+            (Status::Idle, "Idle"),
+            (Status::Starting, "Starting"),
+        ] {
+            inst.status = status;
+            assert_eq!(SessionResponse::from(&inst).status, expected);
+        }
+    }
+
+    #[test]
+    fn session_response_branch_from_worktree() {
+        let mut inst = make_test_instance();
+        assert!(SessionResponse::from(&inst).branch.is_none());
+
+        inst.worktree_info = Some(crate::session::WorktreeInfo {
+            branch: "feature/test".to_string(),
+            main_repo_path: "/tmp/repo".to_string(),
+            managed_by_aoe: true,
+            created_at: chrono::Utc::now(),
+        });
+        assert_eq!(
+            SessionResponse::from(&inst).branch.as_deref(),
+            Some("feature/test")
+        );
+    }
+
+    #[test]
+    fn session_response_serializes_to_json() {
+        let inst = make_test_instance();
+        let json = serde_json::to_value(SessionResponse::from(&inst)).unwrap();
+
+        assert!(json.get("id").is_some());
+        assert_eq!(json["tool"], "claude");
+        assert_eq!(json["status"], "Running");
+        assert_eq!(json["is_sandboxed"], false);
+    }
+}
