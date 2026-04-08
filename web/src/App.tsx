@@ -21,19 +21,23 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen flex flex-col bg-[#0d1117] text-gray-300">
-      <header className="h-12 bg-[#161b22] border-b border-[#30363d] flex items-center px-4 shrink-0">
-        <h1 className="text-sm font-semibold tracking-wide">
+    <div className="h-screen flex flex-col bg-surface-900 text-slate-200">
+      {/* Header */}
+      <header className="h-12 bg-surface-850 border-b border-surface-700 flex items-center px-4 shrink-0">
+        <h1 className="font-display text-sm font-semibold tracking-wide text-slate-100">
           Agent of Empires
-          <span className="text-gray-500 font-normal ml-1.5">Dashboard</span>
+          <span className="font-body font-normal text-slate-500 ml-1.5">
+            Dashboard
+          </span>
         </h1>
-        <div className="ml-auto text-xs text-gray-500">
+        <div className="ml-auto font-mono text-[11px] text-slate-500">
           {error
-            ? "Connection error"
+            ? "connection error"
             : `${sessions.length} session${sessions.length !== 1 ? "s" : ""}`}
         </div>
       </header>
 
+      {/* Main */}
       <div className="flex flex-1 overflow-hidden">
         <div className={mobileShowTerminal ? "max-md:hidden" : ""}>
           <Sidebar

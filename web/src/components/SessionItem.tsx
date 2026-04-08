@@ -1,14 +1,14 @@
 import type { SessionResponse, SessionStatus } from "../lib/types";
 
 const STATUS_COLORS: Record<SessionStatus, string> = {
-  Running: "bg-green-500",
-  Waiting: "bg-yellow-500",
-  Idle: "bg-gray-500",
-  Error: "bg-red-500",
-  Starting: "bg-orange-500",
-  Stopped: "bg-gray-600 opacity-50",
-  Unknown: "bg-gray-600 opacity-50",
-  Deleting: "bg-red-500 opacity-50",
+  Running: "bg-status-running",
+  Waiting: "bg-status-waiting",
+  Idle: "bg-status-idle",
+  Error: "bg-status-error",
+  Starting: "bg-status-starting",
+  Stopped: "bg-status-stopped opacity-50",
+  Unknown: "bg-status-idle opacity-50",
+  Deleting: "bg-status-error opacity-50",
 };
 
 interface Props {
@@ -21,24 +21,24 @@ export function SessionItem({ session, isActive, onClick }: Props) {
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left px-2.5 py-2 rounded-md cursor-pointer transition-colors mb-0.5 ${
+      className={`w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors duration-100 mb-0.5 ${
         isActive
-          ? "bg-[#1c2129] border-l-2 border-blue-400 pl-2"
-          : "hover:bg-[#1c2129]"
+          ? "bg-surface-800 border-l-2 border-brand-600 pl-2.5"
+          : "hover:bg-surface-800/60"
       }`}
     >
-      <div className="flex items-center gap-1.5 text-sm font-medium text-gray-200 truncate">
+      <div className="flex items-center gap-1.5 font-body text-[13px] font-medium text-slate-200 truncate">
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[session.status]}`}
         />
         {session.title}
       </div>
-      <div className="flex items-center gap-1.5 text-xs text-gray-500 mt-0.5">
+      <div className="flex items-center gap-1.5 font-body text-[11px] text-slate-500 mt-0.5 pl-3">
         <span className="capitalize">{session.tool}</span>
         {session.branch && (
           <>
-            <span>&middot;</span>
-            <span className="truncate">{session.branch}</span>
+            <span className="text-surface-700">&middot;</span>
+            <span className="truncate text-accent-600">{session.branch}</span>
           </>
         )}
       </div>

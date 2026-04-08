@@ -23,17 +23,19 @@ export function Sidebar({ sessions, activeId, onSelect, onRefresh }: Props) {
   };
 
   return (
-    <aside className="w-[280px] min-w-[280px] bg-[#161b22] border-r border-[#30363d] flex flex-col overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-[#30363d]">
-      <div className="px-3.5 pt-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+    <aside className="w-[280px] min-w-[280px] bg-surface-900 border-r border-surface-700 flex flex-col overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700">
+      <div className="px-3.5 pt-3 pb-2 font-mono text-[11px] font-semibold uppercase tracking-widest text-slate-500">
         Sessions
       </div>
 
-      <div className="flex-1 overflow-y-auto px-1.5 pb-1.5 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto px-1.5 pb-1.5">
         {sessions.length === 0 ? (
-          <div className="px-3.5 py-5 text-center text-gray-600 text-xs">
+          <div className="px-3.5 py-5 text-center text-slate-600 text-xs font-body">
             No sessions found.
             <br />
-            Create sessions via CLI.
+            <code className="font-mono text-brand-600 text-[11px]">
+              aoe add /path/to/project
+            </code>
           </div>
         ) : (
           sessions.map((s) => (
@@ -48,11 +50,11 @@ export function Sidebar({ sessions, activeId, onSelect, onRefresh }: Props) {
       </div>
 
       {activeSession && (
-        <div className="px-3.5 py-2.5 border-t border-[#30363d] flex gap-1.5">
+        <div className="px-3.5 py-2.5 border-t border-surface-700 flex gap-1.5">
           {activeSession.status !== "Stopped" && (
             <button
               onClick={() => handleStop(activeSession.id)}
-              className="px-3 py-1 text-xs rounded-md border border-red-800 text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+              className="px-3 py-1 font-body text-xs rounded-md border border-status-error/40 text-status-error hover:bg-status-error/10 transition-colors cursor-pointer"
             >
               Stop
             </button>
@@ -61,7 +63,7 @@ export function Sidebar({ sessions, activeId, onSelect, onRefresh }: Props) {
             activeSession.status === "Error") && (
             <button
               onClick={() => handleRestart(activeSession.id)}
-              className="px-3 py-1 text-xs rounded-md border border-blue-700 text-blue-400 hover:bg-blue-500/10 transition-colors cursor-pointer"
+              className="px-3 py-1 font-body text-xs rounded-md border border-brand-600/40 text-brand-500 hover:bg-brand-600/10 transition-colors cursor-pointer"
             >
               Restart
             </button>
