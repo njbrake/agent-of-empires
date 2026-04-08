@@ -26,6 +26,13 @@ impl Session {
         })
     }
 
+    /// Construct a Session from a pre-computed tmux session name.
+    pub fn from_name(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+
     pub fn generate_name(id: &str, title: &str) -> String {
         let safe_title = sanitize_session_name(title);
         format!("{}{}_{}", SESSION_PREFIX, safe_title, truncate_id(id, 8))
@@ -164,6 +171,35 @@ impl Session {
             if !status.success() {
                 bail!("Failed to attach to tmux session");
             }
+        }
+
+        Ok(())
+    }
+
+    /// Resize the session's first pane to the given dimensions.
+    pub fn resize_pane(&self, cols: u16, rows: u16) -> Result<()> {
+        if !self.exists() {
+            return Ok(());
+        }
+
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let target = format!("{}:^.0", self.name);
+        let output = Command::new("tmux")
+            .args([
+                "resize-pane",
+                "-t",
+                &target,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Failed to resize tmux pane: {}", stderr);
         }
 
         Ok(())

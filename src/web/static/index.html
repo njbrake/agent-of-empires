@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent of Empires</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/vendor/xterm.min.css">
+</head>
+<body>
+  <div id="app">
+    <div id="top-bar">
+      <h1>Agent of Empires<span>Dashboard</span></h1>
+      <div class="right" id="connection-status"></div>
+    </div>
+    <div id="main">
+      <div id="sidebar">
+        <div id="sidebar-header">Sessions</div>
+        <div id="session-list"></div>
+        <div id="sidebar-actions"></div>
+      </div>
+      <div id="content">
+        <div id="content-header" style="display:none;">
+          <span id="mobile-back">&#8592;</span>
+          <span class="session-title" id="selected-title"></span>
+          <span class="session-meta" id="selected-meta"></span>
+          <span class="session-status" id="selected-status"></span>
+        </div>
+        <div id="terminal-area" style="display:none;"></div>
+        <div id="empty-state">
+          <h2>Select a session</h2>
+          <p>Click a session in the sidebar to view its terminal</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/vendor/xterm.min.js"></script>
+  <script src="/static/vendor/xterm-addon-fit.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

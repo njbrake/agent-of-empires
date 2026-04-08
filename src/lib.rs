@@ -13,3 +13,4 @@ pub mod terminal;
 pub mod tmux;
 pub mod tui;
 pub mod update;
+pub mod web;
