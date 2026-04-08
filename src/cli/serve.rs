@@ -89,9 +89,12 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         crate::server::start_server(profile, &args.host, args.port, args.no_auth, args.read_only)
             .await;
 
-    // Clean up PID file on exit
+    // Clean up PID and URL files on exit
     if let Ok(path) = pid_file_path() {
         let _ = std::fs::remove_file(path);
+    }
+    if let Ok(dir) = crate::session::get_app_dir() {
+        let _ = std::fs::remove_file(dir.join("serve.url"));
     }
 
     result
@@ -160,11 +163,17 @@ fn stop_daemon() -> Result<()> {
     ) {
         Ok(()) => {
             std::fs::remove_file(&path)?;
+            if let Ok(dir) = crate::session::get_app_dir() {
+                let _ = std::fs::remove_file(dir.join("serve.url"));
+            }
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
         Err(nix::errno::Errno::ESRCH) => {
             // Process doesn't exist -- clean up stale PID file
             std::fs::remove_file(&path)?;
+            if let Ok(dir) = crate::session::get_app_dir() {
+                let _ = std::fs::remove_file(dir.join("serve.url"));
+            }
             println!("Daemon was not running (stale PID file cleaned up)");
         }
         Err(e) => bail!("Failed to stop daemon (PID {}): {}", pid, e),

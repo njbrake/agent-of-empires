@@ -67,7 +67,10 @@ pub async fn get_session(
     match instances.iter().find(|i| i.id == id) {
         Some(inst) => (
             StatusCode::OK,
-            Json(serde_json::to_value(SessionResponse::from(inst)).unwrap()),
+            Json(
+                serde_json::to_value(SessionResponse::from(inst))
+                    .expect("SessionResponse is always serializable"),
+            ),
         )
             .into_response(),
         None => (

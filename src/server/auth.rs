@@ -63,9 +63,12 @@ pub async fn auth_middleware(
                         "aoe_token={}; HttpOnly; SameSite=Strict; Path=/",
                         expected_token
                     );
-                    response
-                        .headers_mut()
-                        .insert(header::SET_COOKIE, cookie.parse().unwrap());
+                    response.headers_mut().insert(
+                        header::SET_COOKIE,
+                        cookie
+                            .parse()
+                            .expect("hardcoded cookie format must be valid"),
+                    );
                     return response;
                 }
             }

@@ -74,18 +74,26 @@ pub async fn start_server(
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    // Print access URL
-    if let Some(ref token) = auth_token {
-        let display_host = if host == "0.0.0.0" { "localhost" } else { host };
-        println!("aoe web dashboard running at:");
-        println!("  http://{}:{}/?token={}", display_host, port, token);
+    // Build and print access URL
+    let display_host = if host == "0.0.0.0" { "localhost" } else { host };
+    let url = if let Some(ref token) = auth_token {
+        format!("http://{}:{}/?token={}", display_host, port, token)
+    } else {
+        format!("http://{}:{}/", display_host, port)
+    };
+
+    println!("aoe web dashboard running at:");
+    println!("  {}", url);
+    if auth_token.is_some() {
         println!();
         println!(
             "Open this URL in any browser. Share it to access from other devices on your network."
         );
-    } else {
-        println!("aoe web dashboard running at:");
-        println!("  http://{}:{}/", host, port);
+    }
+
+    // Write URL to file so daemon users can retrieve it with `cat ~/.agent-of-empires/serve.url`
+    if let Ok(app_dir) = crate::session::get_app_dir() {
+        let _ = std::fs::write(app_dir.join("serve.url"), &url);
     }
 
     // Spawn background status polling task
