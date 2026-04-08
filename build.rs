@@ -18,16 +18,13 @@ fn main() {
 
     eprintln!("Building web frontend...");
 
-    // Try bun first, fall back to npm
-    let (cmd, install_args, build_args) = if Command::new("bun").arg("--version").output().is_ok() {
-        ("bun", vec!["install"], vec!["run", "build"])
-    } else if Command::new("npm").arg("--version").output().is_ok() {
+    let (cmd, install_args, build_args) = if Command::new("npm").arg("--version").output().is_ok() {
         ("npm", vec!["install"], vec!["run", "build"])
     } else {
         // No JS runtime available -- create a minimal placeholder so compilation succeeds
         eprintln!(
-            "WARNING: Neither bun nor npm found. Creating placeholder web/dist/. \
-             Install bun or npm and run `cd web && bun run build` for the real dashboard."
+            "WARNING: npm not found. Creating placeholder web/dist/. \
+             Install Node.js and run `cd web && npm run build` for the real dashboard."
         );
         std::fs::create_dir_all(web_dist).expect("Failed to create web/dist/");
         std::fs::write(
