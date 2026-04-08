@@ -15,6 +15,7 @@ Thanks for your interest in contributing to aoe (Agent of Empires)! This documen
 - **Rust**: Install via [rustup](https://rustup.rs/)
 - **tmux**: Required for running the application (`brew install tmux` on macOS, `apt install tmux` on Ubuntu)
 - **Git**: For version control
+- **Node.js + npm** (optional): Only needed for the web dashboard feature (`cargo build --features serve`). Not required for TUI-only development.
 
 ### Quick Start
 

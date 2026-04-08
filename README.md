@@ -30,6 +30,7 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 - **Git worktrees** -- run parallel agents on different branches of the same repo
 - **Docker sandboxing** -- isolate agents in containers with shared auth volumes
 - **Diff view** -- review git changes and edit files without leaving the TUI
+- **Web dashboard** -- monitor and control sessions from any browser, installable as a PWA ([experimental](docs/guides/web-dashboard.md))
 - **Per-repo config** -- `.agent-of-empires/config.toml` for project-specific settings and hooks
 - **Profiles** -- separate workspaces for different projects or clients
 - **CLI and TUI** -- full functionality from both interfaces

@@ -18,56 +18,33 @@ fn build_frontend() {
     println!("cargo:rerun-if-changed=web/tsconfig.json");
 
     if web_dist.exists() && web_dist.join("index.html").exists() {
-        // Frontend already built
         return;
     }
 
     eprintln!("Building web frontend...");
 
-    let (cmd, install_args, build_args) = if Command::new("npm").arg("--version").output().is_ok() {
-        ("npm", vec!["install"], vec!["run", "build"])
-    } else {
-        // No JS runtime available -- create a minimal placeholder so compilation succeeds
-        eprintln!(
-            "WARNING: npm not found. Creating placeholder web/dist/. \
-             Install Node.js and run `cd web && npm run build` for the real dashboard."
-        );
-        std::fs::create_dir_all(web_dist).expect("Failed to create web/dist/");
-        std::fs::write(
-            web_dist.join("index.html"),
-            "<html><body><h1>Dashboard not built</h1>\
-             <p>Run <code>cd web && bun install && bun run build</code> then rebuild.</p>\
-             </body></html>",
-        )
-        .expect("Failed to write placeholder");
-        return;
-    };
+    assert!(
+        Command::new("npm").arg("--version").output().is_ok(),
+        "npm is required to build with --features serve. Install Node.js: https://nodejs.org/"
+    );
 
-    let status = Command::new(cmd)
-        .args(&install_args)
+    let status = Command::new("npm")
+        .args(["install"])
         .current_dir("web")
         .status()
-        .expect("Failed to run package install");
+        .expect("Failed to run npm install");
 
     if !status.success() {
-        panic!(
-            "Web frontend install failed. Run `cd web && {} {}` manually.",
-            cmd,
-            install_args.join(" ")
-        );
+        panic!("npm install failed in web/. Run `cd web && npm install` to debug.");
     }
 
-    let status = Command::new(cmd)
-        .args(&build_args)
+    let status = Command::new("npm")
+        .args(["run", "build"])
         .current_dir("web")
         .status()
-        .expect("Failed to run frontend build");
+        .expect("Failed to run npm run build");
 
     if !status.success() {
-        panic!(
-            "Web frontend build failed. Run `cd web && {} {}` manually.",
-            cmd,
-            build_args.join(" ")
-        );
+        panic!("npm run build failed in web/. Run `cd web && npm run build` to debug.");
     }
 }
