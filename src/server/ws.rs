@@ -32,15 +32,17 @@ pub async fn terminal_ws(
         .map(|inst| crate::tmux::Session::generate_name(&inst.id, &inst.title));
     drop(instances);
 
+    let read_only = state.read_only;
+
     match session_info {
         Some(tmux_name) => ws
-            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name))
+            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
 }
 
-async fn handle_terminal_ws(socket: WebSocket, tmux_name: String) {
+async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: bool) {
     use futures_util::{SinkExt, StreamExt};
 
     // Spawn tmux attach inside a PTY
@@ -136,7 +138,10 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String) {
         while let Some(Ok(msg)) = ws_receiver.next().await {
             match msg {
                 Message::Binary(data) => {
-                    // Raw bytes from xterm.js -> PTY stdin
+                    // Raw bytes from xterm.js -> PTY stdin (blocked in read-only mode)
+                    if read_only {
+                        continue;
+                    }
                     let writer = writer_for_input.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(mut w) = writer.lock() {
@@ -147,7 +152,7 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String) {
                     .await;
                 }
                 Message::Text(text) => {
-                    // Could be a JSON control message (resize) or raw text input
+                    // JSON control messages (resize) are always allowed
                     if let Ok(control) = serde_json::from_str::<ControlMessage>(&text) {
                         match control {
                             ControlMessage::Resize { cols, rows } => {
@@ -165,8 +170,8 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String) {
                                 .await;
                             }
                         }
-                    } else {
-                        // Plain text input -> PTY stdin
+                    } else if !read_only {
+                        // Plain text input -> PTY stdin (blocked in read-only mode)
                         let writer = writer_for_input.clone();
                         let bytes: Vec<u8> = text.as_bytes().to_vec();
                         let _ = tokio::task::spawn_blocking(move || {

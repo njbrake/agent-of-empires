@@ -24,6 +24,7 @@ struct StaticAssets;
 pub struct AppState {
     pub profile: String,
     pub auth_token: Option<String>,
+    pub read_only: bool,
     pub instances: RwLock<Vec<Instance>>,
 }
 
@@ -32,6 +33,7 @@ pub async fn start_server(
     host: &str,
     port: u16,
     no_auth: bool,
+    read_only: bool,
 ) -> anyhow::Result<()> {
     // Load initial session data from all profiles
     let instances = load_all_instances()?;
@@ -62,6 +64,7 @@ pub async fn start_server(
     let state = Arc::new(AppState {
         profile: profile.to_string(),
         auth_token: auth_token.clone(),
+        read_only,
         instances: RwLock::new(instances),
     });
 
