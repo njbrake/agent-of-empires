@@ -17,7 +17,7 @@ use crate::session::Instance;
 use crate::session::Storage;
 
 #[derive(Embed)]
-#[folder = "src/web/static/"]
+#[folder = "web/dist/"]
 struct StaticAssets;
 
 /// Shared application state accessible by all request handlers.
@@ -99,14 +99,20 @@ fn build_router(state: Arc<AppState>) -> Router {
     use axum::routing::{get, post};
 
     Router::new()
-        .route("/", get(serve_index))
-        .route("/session/{id}", get(serve_index))
+        // API + WebSocket routes
         .route("/api/sessions", get(api::list_sessions))
         .route("/api/sessions/{id}", get(api::get_session))
         .route("/api/sessions/{id}/stop", post(api::stop_session))
         .route("/api/sessions/{id}/restart", post(api::restart_session))
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
-        .route("/static/{*path}", get(serve_static))
+        // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)
+        .route("/assets/{*path}", get(serve_asset))
+        .route("/manifest.json", get(serve_public_file))
+        .route("/sw.js", get(serve_public_file))
+        .route("/icon-192.png", get(serve_public_file))
+        .route("/icon-512.png", get(serve_public_file))
+        // SPA fallback: all other GET routes serve index.html
+        .fallback(get(serve_index))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -118,10 +124,16 @@ async fn serve_index() -> impl axum::response::IntoResponse {
     serve_embedded_file("index.html")
 }
 
-async fn serve_static(
+async fn serve_asset(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> impl axum::response::IntoResponse {
-    serve_embedded_file(&path)
+    serve_embedded_file(&format!("assets/{}", path))
+}
+
+async fn serve_public_file(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
+    // Strip leading slash to match rust-embed paths
+    let path = uri.path().trim_start_matches('/');
+    serve_embedded_file(path)
 }
 
 fn serve_embedded_file(path: &str) -> axum::response::Response {
