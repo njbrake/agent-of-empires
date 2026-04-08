@@ -176,35 +176,6 @@ impl Session {
         Ok(())
     }
 
-    /// Resize the session's first pane to the given dimensions.
-    pub fn resize_pane(&self, cols: u16, rows: u16) -> Result<()> {
-        if !self.exists() {
-            return Ok(());
-        }
-
-        let cols = cols.max(1);
-        let rows = rows.max(1);
-        let target = format!("{}:^.0", self.name);
-        let output = Command::new("tmux")
-            .args([
-                "resize-pane",
-                "-t",
-                &target,
-                "-x",
-                &cols.to_string(),
-                "-y",
-                &rows.to_string(),
-            ])
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to resize tmux pane: {}", stderr);
-        }
-
-        Ok(())
-    }
-
     pub fn capture_pane(&self, lines: usize) -> Result<String> {
         self.capture_pane_with_size(lines, None, None)
     }
