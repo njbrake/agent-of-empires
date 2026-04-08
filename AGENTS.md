@@ -13,7 +13,9 @@
 - `src/process/`: OS-specific process handling (`macos.rs`, `linux.rs`).
 - `src/docker/`: Docker sandboxing and container management.
 - `src/git/`: git worktree operations and template resolution.
+- `src/server/`: web dashboard backend -- axum server, REST API, WebSocket PTY relay, auth (gated behind `serve` feature).
 - `src/update/`: version checking against GitHub releases.
+- `web/`: React + TypeScript frontend for the web dashboard (built with Vite + Tailwind CSS).
 - `src/migrations/`: versioned data migrations for breaking changes (see below).
 - `tests/`: integration tests (`tests/*.rs`).
 - `tests/e2e/`: end-to-end tests exercising the full `aoe` binary (see E2E Tests below).
@@ -25,13 +27,25 @@
 
 ## Build, Test, and Development Commands
 
-- `cargo build` / `cargo build --release`: compile (release binary at `target/release/aoe`).
+- `cargo build` / `cargo build --release`: compile TUI-only (release binary at `target/release/aoe`).
+- `cargo build --features serve`: compile with web dashboard support (requires Node.js + npm).
 - `cargo run --release`: run from source; requires `tmux` installed.
 - `cargo check`: fast type-checking during development.
 - `cargo test`: run unit + integration tests (some tests skip if `tmux` is unavailable).
 - `cargo fmt`: format with rustfmt (run before pushing).
 - `cargo clippy`: lint (fix warnings unless there’s a strong reason not to).
 - Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes to `debug.log` in app data dir).
+
+### Web Dashboard (experimental)
+
+The web dashboard (`aoe serve`) is behind the `serve` Cargo feature flag. It is experimental and subject to major changes.
+
+- **Build**: `cargo build --features serve` (build.rs auto-runs `npm install && npm run build` in `web/` if needed).
+- **Run**: `aoe serve --host 0.0.0.0` starts the embedded web server with token-based auth.
+- **Frontend dev**: `cd web && npm run dev` for Vite HMR during development. The Rust server must also be running for API/WebSocket requests.
+- **Stack**: React 19, TypeScript, Vite, Tailwind CSS v4, xterm.js v6 for terminal rendering.
+- **PWA**: The dashboard is installable as a Progressive Web App. In Chrome: three-dot menu > "Install Agent of Empires". On iOS: Share > "Add to Home Screen". This creates a standalone window with no browser chrome.
+- **No npm for TUI-only builds**: `cargo build` (without `--features serve`) requires zero JavaScript tooling.
 
 ## Settings & Configuration
 
