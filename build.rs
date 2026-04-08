@@ -1,7 +1,13 @@
-use std::path::Path;
-use std::process::Command;
-
 fn main() {
+    #[cfg(feature = "serve")]
+    build_frontend();
+}
+
+#[cfg(feature = "serve")]
+fn build_frontend() {
+    use std::path::Path;
+    use std::process::Command;
+
     let web_dist = Path::new("web/dist");
 
     // Only rebuild frontend if dist/ is missing or source files changed

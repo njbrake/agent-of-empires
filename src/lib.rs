@@ -7,6 +7,7 @@ pub mod git;
 pub mod hooks;
 pub mod migrations;
 pub mod process;
+#[cfg(feature = "serve")]
 pub mod server;
 pub mod session;
 pub mod sound;
