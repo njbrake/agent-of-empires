@@ -31,3 +31,26 @@ export interface ResizeMessage {
   cols: number;
   rows: number;
 }
+
+/** Agent tool info */
+export interface AgentInfo {
+  name: string;
+  binary: string;
+}
+
+/** Group info */
+export interface GroupInfo {
+  path: string;
+  session_count: number;
+}
+
+/** Diff response */
+export interface DiffResponse {
+  files: DiffFileInfo[];
+  raw: string;
+}
+
+export interface DiffFileInfo {
+  path: string;
+  status: string;
+}

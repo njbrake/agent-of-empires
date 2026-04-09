@@ -1,23 +1,59 @@
 import { useState } from "react";
 import { useSessions } from "./hooks/useSessions";
+import { updateSession } from "./lib/api";
+import type { SessionResponse } from "./lib/types";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
+import { DiffView } from "./components/DiffView";
 import { EmptyState } from "./components/EmptyState";
+import { RenameDialog } from "./components/RenameDialog";
+import { ProfileSelector } from "./components/ProfileSelector";
+
+type ContentView = "terminal" | "diff";
 
 export default function App() {
   const { sessions, error, refresh } = useSessions();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [mobileShowTerminal, setMobileShowTerminal] = useState(false);
+  const [contentView, setContentView] = useState<ContentView>("terminal");
+  const [renameTarget, setRenameTarget] = useState<SessionResponse | null>(
+    null,
+  );
+  const [activeProfile, setActiveProfile] = useState<string | null>(null);
+
+  const filteredSessions = activeProfile
+    ? sessions.filter(
+        (s) =>
+          s.group_path.startsWith(activeProfile) ||
+          s.project_path.includes(activeProfile),
+      )
+    : sessions;
 
   const activeSession = sessions.find((s) => s.id === activeId);
 
   const handleSelect = (id: string) => {
     setActiveId(id);
+    setContentView("terminal");
     setMobileShowTerminal(true);
   };
 
   const handleBack = () => {
     setMobileShowTerminal(false);
+  };
+
+  const handleRename = async (title: string, group: string) => {
+    if (!renameTarget) return;
+    await updateSession(renameTarget.id, {
+      title: title !== renameTarget.title ? title : undefined,
+      group_path: group !== renameTarget.group_path ? group : undefined,
+    });
+    setRenameTarget(null);
+    refresh();
+  };
+
+  const handleDiff = (session: SessionResponse) => {
+    setActiveId(session.id);
+    setContentView("diff");
   };
 
   return (
@@ -30,10 +66,17 @@ export default function App() {
             Dashboard
           </span>
         </h1>
-        <div className="ml-auto font-mono text-[11px] text-slate-500">
-          {error
-            ? "connection error"
-            : `${sessions.length} session${sessions.length !== 1 ? "s" : ""}`}
+
+        <div className="ml-auto flex items-center gap-3">
+          <ProfileSelector
+            activeProfile={activeProfile}
+            onSelect={setActiveProfile}
+          />
+          <span className="font-mono text-[11px] text-slate-500">
+            {error
+              ? "connection error"
+              : `${filteredSessions.length} session${filteredSessions.length !== 1 ? "s" : ""}`}
+          </span>
         </div>
       </header>
 
@@ -41,10 +84,12 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         <div className={mobileShowTerminal ? "max-md:hidden" : ""}>
           <Sidebar
-            sessions={sessions}
+            sessions={filteredSessions}
             activeId={activeId}
             onSelect={handleSelect}
             onRefresh={refresh}
+            onRename={setRenameTarget}
+            onDiff={handleDiff}
           />
         </div>
 
@@ -52,16 +97,33 @@ export default function App() {
           className={`flex-1 flex flex-col overflow-hidden ${!mobileShowTerminal ? "max-md:hidden" : ""}`}
         >
           {activeSession ? (
-            <TerminalView
-              key={activeSession.id}
-              session={activeSession}
-              onBack={handleBack}
-            />
+            contentView === "diff" ? (
+              <DiffView
+                sessionId={activeSession.id}
+                onClose={() => setContentView("terminal")}
+              />
+            ) : (
+              <TerminalView
+                key={activeSession.id}
+                session={activeSession}
+                onBack={handleBack}
+              />
+            )
           ) : (
             <EmptyState />
           )}
         </div>
       </div>
+
+      {/* Rename dialog */}
+      {renameTarget && (
+        <RenameDialog
+          currentTitle={renameTarget.title}
+          currentGroup={renameTarget.group_path}
+          onSave={handleRename}
+          onCancel={() => setRenameTarget(null)}
+        />
+      )}
     </div>
   );
 }

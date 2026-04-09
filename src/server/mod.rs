@@ -107,14 +107,26 @@ pub async fn start_server(
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    use axum::routing::{get, post};
+    use axum::routing::{delete, get, patch, post};
 
     Router::new()
-        // API + WebSocket routes
+        // Session CRUD
         .route("/api/sessions", get(api::list_sessions))
         .route("/api/sessions/{id}", get(api::get_session))
         .route("/api/sessions/{id}/stop", post(api::stop_session))
         .route("/api/sessions/{id}/restart", post(api::restart_session))
+        .route("/api/sessions/{id}", delete(api::delete_session))
+        .route("/api/sessions/{id}", patch(api::update_session))
+        .route("/api/sessions/{id}/diff", get(api::session_diff))
+        // Agents
+        .route("/api/agents", get(api::list_agents))
+        // Groups
+        .route("/api/groups", get(api::list_groups))
+        // Profiles
+        .route("/api/profiles", get(api::list_profiles))
+        .route("/api/profiles", post(api::create_profile))
+        .route("/api/profiles/{name}", delete(api::delete_profile))
+        // Terminal
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)
         .route("/assets/{*path}", get(serve_asset))
