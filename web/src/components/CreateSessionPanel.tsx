@@ -57,14 +57,14 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex justify-end z-50">
+    <div className="fixed inset-0 bg-black/60 flex justify-end z-50 animate-fade-in">
       <form
         onSubmit={handleSubmit}
-        className="w-panel max-w-full bg-surface-800 border-l border-surface-700 h-full overflow-y-auto shadow-2xl"
+        className="w-panel max-w-full bg-surface-800 border-l border-surface-700/30 h-full overflow-y-auto shadow-2xl animate-slide-in-right"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700">
-          <h2 className="font-display text-sm font-semibold text-text-bright">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-surface-700/30">
+          <h2 className="font-display text-base font-semibold text-text-bright">
             New Session
           </h2>
           <button

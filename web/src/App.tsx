@@ -121,22 +121,26 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-surface-900 text-text-primary">
-      {/* Header -- spans full width, sits above sidebar + content */}
-      <header className="h-12 bg-surface-850 border-b border-surface-700/50 flex items-center px-4 shrink-0">
-        <h1 className="font-display text-sm font-semibold tracking-wide text-text-bright">
-          Agent of Empires
-          <span className="font-body font-normal text-text-muted ml-1.5">
-            Dashboard
-          </span>
-        </h1>
+      {/* Header */}
+      <header className="h-14 bg-surface-850 border-b border-surface-700/30 flex items-center px-5 shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="w-6 h-6 rounded-md bg-brand-600/20 flex items-center justify-center">
+            <span className="font-display text-xs font-bold text-brand-500">
+              A
+            </span>
+          </div>
+          <h1 className="font-display text-base font-semibold tracking-tight text-text-bright">
+            Agent of Empires
+          </h1>
+        </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1">
           <button
             onClick={() => setContentView("worktrees")}
-            className="hidden md:inline font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
+            className="hidden md:flex items-center gap-1.5 font-body text-xs text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer px-2.5 py-1.5 rounded-md transition-colors"
             title="Worktrees"
           >
-            wt
+            Worktrees
           </button>
           <button
             onClick={() =>
@@ -144,25 +148,27 @@ export default function App() {
                 v === "settings" ? "terminal" : "settings",
               )
             }
-            className="hidden md:inline font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
+            className="hidden md:flex items-center gap-1.5 font-body text-xs text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer px-2.5 py-1.5 rounded-md transition-colors"
             title="Settings (s)"
           >
-            cfg
+            Settings
           </button>
           <button
             onClick={() => setShowHelp(true)}
-            className="hidden md:inline font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
+            className="hidden md:flex items-center justify-center w-8 h-8 font-mono text-sm text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer rounded-md transition-colors"
             title="Help (?)"
           >
             ?
           </button>
+          <div className="hidden md:block w-px h-5 bg-surface-700/50 mx-1" />
           <ProfileSelector
             activeProfile={activeProfile}
             onSelect={setActiveProfile}
           />
-          <span className="font-mono text-sm text-text-muted">
+          <div className="hidden md:block w-px h-5 bg-surface-700/50 mx-1" />
+          <span className="font-mono text-xs text-text-dim tabular-nums">
             {error
-              ? "connection error"
+              ? "offline"
               : `${filteredSessions.length} session${filteredSessions.length !== 1 ? "s" : ""}`}
           </span>
         </div>

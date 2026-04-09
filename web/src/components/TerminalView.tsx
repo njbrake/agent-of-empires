@@ -23,16 +23,16 @@ export function TerminalView({ session, onBack }: Props) {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="h-10 bg-surface-850 border-b border-surface-700 flex items-center px-4 text-sm shrink-0">
+      <div className="h-11 bg-surface-850 border-b border-surface-700/30 flex items-center px-5 shrink-0">
         {onBack && (
           <button
             onClick={onBack}
-            className="text-brand-500 mr-2.5 md:hidden cursor-pointer"
+            className="text-brand-500 mr-3 md:hidden cursor-pointer font-body text-sm"
           >
             &larr;
           </button>
         )}
-        <span className="font-body font-semibold text-text-primary">
+        <span className="font-display text-sm font-semibold text-text-primary">
           {session.title}
         </span>
         <span className="font-body text-text-muted ml-3 text-xs">
@@ -40,14 +40,19 @@ export function TerminalView({ session, onBack }: Props) {
             .filter(Boolean)
             .join(" \u00b7 ")}
         </span>
-        <span className="ml-auto font-mono text-sm text-text-muted flex items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-2">
           <span
-            className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[session.status]}`}
+            className={`w-2 h-2 rounded-full ${STATUS_DOT[session.status]}`}
           />
-          {session.status}
-        </span>
+          <span className="font-mono text-xs text-text-dim">
+            {session.status}
+          </span>
+        </div>
       </div>
-      <div ref={containerRef} className="flex-1 overflow-hidden bg-surface-950" />
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-hidden bg-surface-950"
+      />
     </div>
   );
 }

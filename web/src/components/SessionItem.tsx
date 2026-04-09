@@ -26,19 +26,19 @@ export const SessionItem = memo(function SessionItem({
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left px-3 py-2 rounded-lg cursor-pointer transition-colors duration-100 mb-0.5 ${
+      className={`w-full text-left px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-100 mb-1 ${
         isActive
-          ? "bg-surface-900 border-l-2 border-brand-600 pl-2.5"
-          : "hover:bg-surface-700/30"
+          ? "bg-surface-900 shadow-sm shadow-black/20 border-l-2 border-brand-500 pl-2.5"
+          : "hover:bg-surface-900/50"
       }`}
     >
-      <div className="flex items-center gap-1.5 font-body text-sm font-medium text-text-primary truncate">
+      <div className="flex items-center gap-2 font-body text-sm font-medium text-text-primary truncate">
         <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[session.status]}`}
+          className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[session.status]}`}
         />
         {session.title}
       </div>
-      <div className="flex items-center gap-1.5 font-body text-sm text-text-muted mt-0.5 pl-3">
+      <div className="flex items-center gap-1.5 font-body text-xs text-text-muted mt-1 pl-4">
         <span className="capitalize">{session.tool}</span>
         {session.branch && (
           <>

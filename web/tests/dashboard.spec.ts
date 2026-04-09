@@ -5,7 +5,6 @@ test.describe("Dashboard layout", () => {
     await page.goto("/");
     await expect(page.locator("header")).toBeVisible();
     await expect(page.locator("header h1")).toContainText("Agent of Empires");
-    await expect(page.locator("header")).toContainText("Dashboard");
   });
 
   test("shows sidebar with Sessions label", async ({ page }) => {
@@ -179,8 +178,8 @@ test.describe("Design system verification", () => {
     expect(fonts.toLowerCase()).toContain("dm sans");
   });
 
-  test("empty state uses terminal prompt icon", async ({ page }) => {
+  test("empty state shows select a session message", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText(">_")).toBeVisible();
+    await expect(page.getByText("Select a session")).toBeVisible();
   });
 });

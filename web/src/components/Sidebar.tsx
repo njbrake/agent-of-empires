@@ -105,25 +105,25 @@ export function Sidebar({
 
   return (
     <aside className="w-sidebar min-w-sidebar bg-surface-800 border-r border-surface-700/50 flex flex-col h-full overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700/50">
-      {/* Header with new + search */}
-      <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
-        <span className="font-mono text-sm font-semibold uppercase tracking-widest text-text-muted">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 pt-4 pb-3">
+        <span className="font-mono text-xs font-medium uppercase tracking-widest text-text-muted">
           Sessions
         </span>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <SortSelect value={sortOrder} onChange={setSortOrder} />
           {onNew && (
             <button
               onClick={onNew}
-              className="font-mono text-sm text-brand-600 hover:text-brand-500 cursor-pointer px-1"
+              className="flex items-center justify-center w-7 h-7 rounded-md text-brand-500 hover:bg-brand-600/10 cursor-pointer transition-colors"
               title="New session (n)"
             >
-              +
+              <span className="text-lg leading-none">+</span>
             </button>
           )}
           <button
             onClick={() => setShowSearch(!showSearch)}
-            className="font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1"
+            className="flex items-center justify-center w-7 h-7 rounded-md font-mono text-sm text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer transition-colors"
             title="Search (/)"
           >
             /
@@ -143,7 +143,7 @@ export function Sidebar({
       )}
 
       {/* Session list with groups */}
-      <div className="flex-1 overflow-y-auto px-1.5 pb-1.5">
+      <div className="flex-1 overflow-y-auto px-2 pb-2">
         {filtered.length === 0 ? (
           <div className="px-3.5 py-5 text-center text-text-dim text-xs font-body">
             {searchQuery ? (
