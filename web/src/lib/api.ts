@@ -51,8 +51,7 @@ export async function createSession(data: {
       throw new Error(err?.message || `HTTP ${res.status}`);
     }
     return await res.json();
-  } catch (e) {
-    console.error("Create session failed:", e);
+  } catch {
     return null;
   }
 }

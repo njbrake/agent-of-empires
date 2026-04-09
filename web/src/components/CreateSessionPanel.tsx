@@ -35,7 +35,8 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
   useEffect(() => {
     fetchAgents().then((a) => {
       setAgents(a);
-      if (a.length > 0) setTool(a[0].name);
+      const first = a[0];
+      if (first) setTool(first.name);
     });
   }, []);
 

@@ -13,11 +13,16 @@ export function DiffView({ sessionId, onClose }: Props) {
   const [selectedFile, setSelectedFile] = useState<number>(0);
 
   useEffect(() => {
-    setLoading(true);
-    getSessionDiff(sessionId).then((d) => {
-      setDiff(d);
-      setLoading(false);
+    let cancelled = false;
+    void getSessionDiff(sessionId).then((d) => {
+      if (!cancelled) {
+        setDiff(d);
+        setLoading(false);
+      }
     });
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   if (loading) {

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { SessionResponse, SessionStatus } from "../lib/types";
 
 const STATUS_COLORS: Record<SessionStatus, string> = {
@@ -17,7 +18,11 @@ interface Props {
   onClick: () => void;
 }
 
-export function SessionItem({ session, isActive, onClick }: Props) {
+export const SessionItem = memo(function SessionItem({
+  session,
+  isActive,
+  onClick,
+}: Props) {
   return (
     <button
       onClick={onClick}
@@ -44,4 +49,4 @@ export function SessionItem({ session, isActive, onClick }: Props) {
       </div>
     </button>
   );
-}
+});
