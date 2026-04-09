@@ -4,6 +4,7 @@ import { stopSession, restartSession, deleteSession } from "../lib/api";
 import { SessionItem } from "./SessionItem";
 import { SearchBar } from "./SearchBar";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { SortSelect, type SortOrder } from "./SortSelect";
 
 interface Props {
   sessions: SessionResponse[];
@@ -26,13 +27,14 @@ export function Sidebar({
 }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
+  const [sortOrder, setSortOrder] = useState<SortOrder>("created-desc");
   const [deleteTarget, setDeleteTarget] = useState<SessionResponse | null>(
     null,
   );
 
   const activeSession = sessions.find((s) => s.id === activeId);
 
-  const filtered = searchQuery
+  const searched = searchQuery
     ? sessions.filter(
         (s) =>
           s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -41,6 +43,29 @@ export function Sidebar({
           (s.branch || "").toLowerCase().includes(searchQuery.toLowerCase()),
       )
     : sessions;
+
+  const filtered = [...searched].sort((a, b) => {
+    switch (sortOrder) {
+      case "created-desc":
+        return b.created_at.localeCompare(a.created_at);
+      case "created-asc":
+        return a.created_at.localeCompare(b.created_at);
+      case "accessed-desc":
+        return (b.last_accessed_at || "").localeCompare(
+          a.last_accessed_at || "",
+        );
+      case "accessed-asc":
+        return (a.last_accessed_at || "").localeCompare(
+          b.last_accessed_at || "",
+        );
+      case "title-asc":
+        return a.title.localeCompare(b.title);
+      case "title-desc":
+        return b.title.localeCompare(a.title);
+      default:
+        return 0;
+    }
+  });
 
   // Group sessions by group_path
   const grouped = new Map<string, SessionResponse[]>();
@@ -74,12 +99,13 @@ export function Sidebar({
         <span className="font-mono text-[11px] font-semibold uppercase tracking-widest text-slate-500">
           Sessions
         </span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
+          <SortSelect value={sortOrder} onChange={setSortOrder} />
           {onNew && (
             <button
               onClick={onNew}
               className="font-mono text-[11px] text-brand-600 hover:text-brand-500 cursor-pointer px-1"
-              title="New session"
+              title="New session (n)"
             >
               +
             </button>
@@ -87,7 +113,7 @@ export function Sidebar({
           <button
             onClick={() => setShowSearch(!showSearch)}
             className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1"
-            title="Search"
+            title="Search (/)"
           >
             /
           </button>
