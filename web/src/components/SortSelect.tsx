@@ -25,7 +25,7 @@ export function SortSelect({ value, onChange }: Props) {
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as SortOrder)}
-      className="bg-transparent font-mono text-label-sm text-text-dim hover:text-text-secondary cursor-pointer border-none focus:outline-none appearance-none"
+      className="bg-transparent font-mono text-xs text-text-dim hover:text-text-secondary cursor-pointer border-none focus:outline-none appearance-none"
       title="Sort sessions"
     >
       {Object.entries(SORT_LABELS).map(([key, label]) => (

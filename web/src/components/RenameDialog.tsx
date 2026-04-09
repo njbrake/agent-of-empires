@@ -32,7 +32,7 @@ export function RenameDialog({
             Rename Session
           </h3>
           <label className="block mb-3">
-            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+            <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
               Title
             </span>
             <input
@@ -44,7 +44,7 @@ export function RenameDialog({
             />
           </label>
           <label className="block">
-            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+            <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
               Group
             </span>
             <input

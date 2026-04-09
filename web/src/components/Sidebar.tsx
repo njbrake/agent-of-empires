@@ -107,7 +107,7 @@ export function Sidebar({
     <aside className="w-sidebar min-w-sidebar bg-surface-900 border-r border-surface-700 flex flex-col overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700">
       {/* Header with new + search */}
       <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
-        <span className="font-mono text-label font-semibold uppercase tracking-widest text-text-muted">
+        <span className="font-mono text-sm font-semibold uppercase tracking-widest text-text-muted">
           Sessions
         </span>
         <div className="flex items-center gap-0.5">
@@ -115,7 +115,7 @@ export function Sidebar({
           {onNew && (
             <button
               onClick={onNew}
-              className="font-mono text-label text-brand-600 hover:text-brand-500 cursor-pointer px-1"
+              className="font-mono text-sm text-brand-600 hover:text-brand-500 cursor-pointer px-1"
               title="New session (n)"
             >
               +
@@ -123,7 +123,7 @@ export function Sidebar({
           )}
           <button
             onClick={() => setShowSearch(!showSearch)}
-            className="font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1"
+            className="font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1"
             title="Search (/)"
           >
             /
@@ -152,7 +152,7 @@ export function Sidebar({
               <>
                 No sessions found.
                 <br />
-                <code className="font-mono text-brand-600 text-label">
+                <code className="font-mono text-brand-600 text-sm">
                   aoe add /path/to/project
                 </code>
               </>
@@ -162,7 +162,7 @@ export function Sidebar({
           Array.from(grouped.entries()).map(([group, groupSessions]) => (
             <div key={group || "__ungrouped__"}>
               {group && (
-                <div className="font-mono text-label-sm uppercase tracking-wider text-text-dim px-3 pt-3 pb-1">
+                <div className="font-mono text-xs uppercase tracking-wider text-text-dim px-3 pt-3 pb-1">
                   {group}
                 </div>
               )}

@@ -58,10 +58,10 @@ export function DiffView({ sessionId, onClose }: Props) {
         >
           &larr; Terminal
         </button>
-        <span className="font-mono text-label uppercase tracking-wider text-text-muted">
+        <span className="font-mono text-sm uppercase tracking-wider text-text-muted">
           Diff
         </span>
-        <span className="font-mono text-label text-text-dim ml-2">
+        <span className="font-mono text-sm text-text-dim ml-2">
           {diff.files.length} file{diff.files.length !== 1 ? "s" : ""} changed
         </span>
       </div>
@@ -73,7 +73,7 @@ export function DiffView({ sessionId, onClose }: Props) {
             <button
               key={file.path}
               onClick={() => setSelectedFile(i)}
-              className={`w-full text-left px-3 py-1.5 font-mono text-code truncate cursor-pointer transition-colors ${
+              className={`w-full text-left px-3 py-1.5 font-mono text-sm truncate cursor-pointer transition-colors ${
                 i === selectedFile
                   ? "bg-surface-800 text-text-primary border-l-2 border-brand-600 pl-2.5"
                   : "text-text-secondary hover:bg-surface-800/50"
@@ -99,7 +99,7 @@ export function DiffView({ sessionId, onClose }: Props) {
 
         {/* Diff content */}
         <div className="flex-1 overflow-auto">
-          <pre className="font-mono text-ui leading-[1.5] p-4 text-text-secondary">
+          <pre className="font-mono text-sm leading-[1.5] p-4 text-text-secondary">
             {diff.raw.split("\n").map((line, i) => {
               let color = "text-text-secondary";
               if (line.startsWith("+") && !line.startsWith("+++"))

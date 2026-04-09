@@ -56,7 +56,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="font-mono text-label text-text-secondary hover:text-text-primary cursor-pointer px-2 py-1 rounded hover:bg-surface-800 transition-colors"
+        className="font-mono text-sm text-text-secondary hover:text-text-primary cursor-pointer px-2 py-1 rounded hover:bg-surface-800 transition-colors"
       >
         [{display}]
       </button>
@@ -94,7 +94,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
               {p !== "default" && (
                 <button
                   onClick={() => handleDelete(p)}
-                  className="px-2 py-1 text-label-sm text-status-error opacity-0 group-hover:opacity-100 cursor-pointer"
+                  className="px-2 py-1 text-xs text-status-error opacity-0 group-hover:opacity-100 cursor-pointer"
                   title="Delete profile"
                 >
                   &times;
@@ -116,7 +116,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
                 />
                 <button
                   onClick={handleCreate}
-                  className="px-2 py-1 font-body text-label-sm text-brand-500 hover:bg-brand-600/10 rounded cursor-pointer"
+                  className="px-2 py-1 font-body text-xs text-brand-500 hover:bg-brand-600/10 rounded cursor-pointer"
                 >
                   Add
                 </button>

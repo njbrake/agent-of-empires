@@ -39,7 +39,7 @@ export function MobileNav({
         }`}
       >
         <span className="text-lg">&#9632;</span>
-        <span className="font-mono text-label-sm">
+        <span className="font-mono text-xs">
           {activeSessionTitle ? (
             <span className="flex items-center gap-1">
               {activeStatus && (
@@ -61,7 +61,7 @@ export function MobileNav({
         }`}
       >
         <span className="font-mono text-sm">wt</span>
-        <span className="font-mono text-label-sm">Worktrees</span>
+        <span className="font-mono text-xs">Worktrees</span>
       </button>
       <button
         onClick={onSettingsTab}
@@ -70,7 +70,7 @@ export function MobileNav({
         }`}
       >
         <span className="font-mono text-sm">cfg</span>
-        <span className="font-mono text-label-sm">Settings</span>
+        <span className="font-mono text-xs">Settings</span>
       </button>
     </nav>
   );

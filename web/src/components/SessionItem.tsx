@@ -32,13 +32,13 @@ export const SessionItem = memo(function SessionItem({
           : "hover:bg-surface-800/60"
       }`}
     >
-      <div className="flex items-center gap-1.5 font-body text-ui font-medium text-text-primary truncate">
+      <div className="flex items-center gap-1.5 font-body text-sm font-medium text-text-primary truncate">
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[session.status]}`}
         />
         {session.title}
       </div>
-      <div className="flex items-center gap-1.5 font-body text-label text-text-muted mt-0.5 pl-3">
+      <div className="flex items-center gap-1.5 font-body text-sm text-text-muted mt-0.5 pl-3">
         <span className="capitalize">{session.tool}</span>
         {session.branch && (
           <>

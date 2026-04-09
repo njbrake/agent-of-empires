@@ -39,11 +39,8 @@
   --font-body: 'DM Sans', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  /* Custom sizes -- named tokens for repeated values */
-  --text-label: 11px;
-  --text-label-sm: 10px;
-  --text-ui: 13px;
-  --text-code: 12px;
+  /* Font sizes: use Tailwind's built-in scale (text-xs=12px, text-sm=14px, text-base=16px).
+     No custom size tokens -- the standard scale handles everything. */
 
   /* Layout widths */
   --width-sidebar: 280px;

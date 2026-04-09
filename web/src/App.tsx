@@ -133,7 +133,7 @@ export default function App() {
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => setContentView("worktrees")}
-            className="hidden md:inline font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
             title="Worktrees"
           >
             wt
@@ -144,14 +144,14 @@ export default function App() {
                 v === "settings" ? "terminal" : "settings",
               )
             }
-            className="hidden md:inline font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
             title="Settings (s)"
           >
             cfg
           </button>
           <button
             onClick={() => setShowHelp(true)}
-            className="hidden md:inline font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-sm text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
             title="Help (?)"
           >
             ?
@@ -160,7 +160,7 @@ export default function App() {
             activeProfile={activeProfile}
             onSelect={setActiveProfile}
           />
-          <span className="font-mono text-label text-text-muted">
+          <span className="font-mono text-sm text-text-muted">
             {error
               ? "connection error"
               : `${filteredSessions.length} session${filteredSessions.length !== 1 ? "s" : ""}`}

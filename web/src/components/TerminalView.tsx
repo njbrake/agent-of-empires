@@ -40,7 +40,7 @@ export function TerminalView({ session, onBack }: Props) {
             .filter(Boolean)
             .join(" \u00b7 ")}
         </span>
-        <span className="ml-auto font-mono text-label text-text-muted flex items-center gap-1.5">
+        <span className="ml-auto font-mono text-sm text-text-muted flex items-center gap-1.5">
           <span
             className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[session.status]}`}
           />

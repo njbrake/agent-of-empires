@@ -79,7 +79,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
         <div className="p-5 space-y-4">
           {/* Project Path -- required */}
           <label className="block">
-            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+            <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
               Project Path *
             </span>
             <input
@@ -94,7 +94,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
 
           {/* Agent Tool */}
           <label className="block">
-            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+            <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
               Agent
             </span>
             <div className="grid grid-cols-3 gap-1.5">
@@ -117,7 +117,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
 
           {/* Title */}
           <label className="block">
-            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+            <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
               Title
               <span className="text-text-dim ml-1 normal-case tracking-normal">
                 (auto-generated if empty)
@@ -134,7 +134,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
 
           {/* Group */}
           <label className="block">
-            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+            <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
               Group
             </span>
             <input
@@ -182,7 +182,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
           {showAdvanced && (
             <div className="space-y-3 border-t border-surface-700 pt-3">
               <label className="block">
-                <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+                <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
                   Worktree Branch
                 </span>
                 <input
@@ -207,7 +207,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
                 </label>
               )}
               <label className="block">
-                <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
+                <span className="font-mono text-sm uppercase tracking-wider text-text-muted block mb-1">
                   Extra Args
                 </span>
                 <input

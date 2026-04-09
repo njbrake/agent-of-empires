@@ -22,7 +22,7 @@ export function SearchBar({ value, onChange, onClose }: Props) {
   return (
     <div className="px-2 pb-2">
       <div className="flex items-center bg-surface-900 border border-surface-700 rounded px-2 py-1">
-        <span className="font-mono text-label text-text-muted mr-1.5">/</span>
+        <span className="font-mono text-sm text-text-muted mr-1.5">/</span>
         <input
           ref={inputRef}
           type="text"

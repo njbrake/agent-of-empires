@@ -43,13 +43,13 @@ export function HelpOverlay({ onClose }: Props) {
 
         <div className="p-5">
           <div className="mb-5">
-            <h3 className="font-mono text-label uppercase tracking-widest text-text-muted mb-2">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-2">
               Dashboard
             </h3>
             <div className="space-y-1">
               {SHORTCUTS.map((s) => (
                 <div key={s.key} className="flex items-center gap-3">
-                  <kbd className="font-mono text-code bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-brand-500 min-w-[32px] text-center">
+                  <kbd className="font-mono text-sm bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-brand-500 min-w-[32px] text-center">
                     {s.key}
                   </kbd>
                   <span className="font-body text-sm text-text-secondary">
@@ -61,13 +61,13 @@ export function HelpOverlay({ onClose }: Props) {
           </div>
 
           <div>
-            <h3 className="font-mono text-label uppercase tracking-widest text-text-muted mb-2">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-2">
               Terminal
             </h3>
             <div className="space-y-1">
               {TERMINAL_SHORTCUTS.map((s) => (
                 <div key={s.key} className="flex items-center gap-3">
-                  <kbd className="font-mono text-code bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-accent-600 min-w-[32px] text-center">
+                  <kbd className="font-mono text-sm bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-accent-600 min-w-[32px] text-center">
                     {s.key}
                   </kbd>
                   <span className="font-body text-sm text-text-secondary">
@@ -80,7 +80,7 @@ export function HelpOverlay({ onClose }: Props) {
         </div>
 
         <div className="px-5 py-3 border-t border-surface-700">
-          <p className="font-body text-label text-text-dim">
+          <p className="font-body text-sm text-text-dim">
             Shortcuts are disabled when typing in input fields or the terminal.
           </p>
         </div>

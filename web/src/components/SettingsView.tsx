@@ -86,7 +86,7 @@ export function SettingsView({ onClose }: Props) {
         </span>
         <div className="ml-auto flex items-center gap-2">
           {dirty && (
-            <span className="font-mono text-label text-status-warning">
+            <span className="font-mono text-sm text-status-warning">
               unsaved
             </span>
           )}
@@ -273,7 +273,7 @@ function Section({
 }) {
   return (
     <div>
-      <h3 className="font-mono text-label uppercase tracking-widest text-text-muted mb-4">
+      <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
         {title}
       </h3>
       <div className="space-y-4">{children}</div>
