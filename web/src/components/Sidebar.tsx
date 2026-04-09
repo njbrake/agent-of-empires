@@ -12,6 +12,7 @@ interface Props {
   onRefresh: () => void;
   onRename: (session: SessionResponse) => void;
   onDiff: (session: SessionResponse) => void;
+  onNew?: () => void;
 }
 
 export function Sidebar({
@@ -21,6 +22,7 @@ export function Sidebar({
   onRefresh,
   onRename,
   onDiff,
+  onNew,
 }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
@@ -67,18 +69,29 @@ export function Sidebar({
 
   return (
     <aside className="w-[280px] min-w-[280px] bg-surface-900 border-r border-surface-700 flex flex-col overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700">
-      {/* Header with search toggle */}
+      {/* Header with new + search */}
       <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
         <span className="font-mono text-[11px] font-semibold uppercase tracking-widest text-slate-500">
           Sessions
         </span>
-        <button
-          onClick={() => setShowSearch(!showSearch)}
-          className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer"
-          title="Search (Ctrl+/)"
-        >
-          /
-        </button>
+        <div className="flex items-center gap-1">
+          {onNew && (
+            <button
+              onClick={onNew}
+              className="font-mono text-[11px] text-brand-600 hover:text-brand-500 cursor-pointer px-1"
+              title="New session"
+            >
+              +
+            </button>
+          )}
+          <button
+            onClick={() => setShowSearch(!showSearch)}
+            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1"
+            title="Search"
+          >
+            /
+          </button>
+        </div>
       </div>
 
       {showSearch && (

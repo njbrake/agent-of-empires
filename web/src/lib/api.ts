@@ -29,6 +29,34 @@ export async function getSession(
   }
 }
 
+export async function createSession(data: {
+  title?: string;
+  path: string;
+  tool: string;
+  group?: string;
+  yolo_mode?: boolean;
+  worktree_branch?: string;
+  create_new_branch?: boolean;
+  sandbox?: boolean;
+  extra_args?: string;
+}): Promise<SessionResponse | null> {
+  try {
+    const res = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.message || `HTTP ${res.status}`);
+    }
+    return await res.json();
+  } catch (e) {
+    console.error("Create session failed:", e);
+    return null;
+  }
+}
+
 export async function stopSession(id: string): Promise<boolean> {
   try {
     const res = await fetch(`/api/sessions/${id}/stop`, { method: "POST" });

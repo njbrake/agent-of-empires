@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSessions } from "./hooks/useSessions";
-import { updateSession } from "./lib/api";
+import { updateSession, createSession } from "./lib/api";
 import type { SessionResponse } from "./lib/types";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
@@ -8,6 +8,10 @@ import { DiffView } from "./components/DiffView";
 import { EmptyState } from "./components/EmptyState";
 import { RenameDialog } from "./components/RenameDialog";
 import { ProfileSelector } from "./components/ProfileSelector";
+import {
+  CreateSessionPanel,
+  type CreateSessionData,
+} from "./components/CreateSessionPanel";
 
 type ContentView = "terminal" | "diff";
 
@@ -20,6 +24,7 @@ export default function App() {
     null,
   );
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   const filteredSessions = activeProfile
     ? sessions.filter(
@@ -56,6 +61,16 @@ export default function App() {
     setContentView("diff");
   };
 
+  const handleCreate = async (data: CreateSessionData) => {
+    const result = await createSession(data);
+    if (result) {
+      setShowCreate(false);
+      setActiveId(result.id);
+      setContentView("terminal");
+      refresh();
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col bg-surface-900 text-slate-200">
       {/* Header */}
@@ -90,6 +105,7 @@ export default function App() {
             onRefresh={refresh}
             onRename={setRenameTarget}
             onDiff={handleDiff}
+            onNew={() => setShowCreate(true)}
           />
         </div>
 
@@ -114,6 +130,14 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {/* Create session panel */}
+      {showCreate && (
+        <CreateSessionPanel
+          onSubmit={handleCreate}
+          onCancel={() => setShowCreate(false)}
+        />
+      )}
 
       {/* Rename dialog */}
       {renameTarget && (

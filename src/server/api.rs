@@ -193,6 +193,114 @@ pub async fn restart_session(
     }
 }
 
+// --- Create session ---
+
+#[derive(Deserialize)]
+pub struct CreateSessionBody {
+    pub title: Option<String>,
+    pub path: String,
+    pub tool: String,
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub yolo_mode: bool,
+    pub worktree_branch: Option<String>,
+    #[serde(default)]
+    pub create_new_branch: bool,
+    #[serde(default)]
+    pub sandbox: bool,
+    #[serde(default)]
+    pub extra_args: String,
+}
+
+pub async fn create_session(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateSessionBody>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+
+    let profile = state.profile.clone();
+    let instances = state.instances.read().await;
+    let existing_titles: Vec<String> = instances.iter().map(|i| i.title.clone()).collect();
+    drop(instances);
+
+    let result = tokio::task::spawn_blocking(move || {
+        use crate::session::builder::{self, InstanceParams};
+        use crate::session::Config;
+
+        let config = Config::load().unwrap_or_default();
+        let sandbox_image = if config.sandbox.default_image.is_empty() {
+            "ubuntu:latest".to_string()
+        } else {
+            config.sandbox.default_image.clone()
+        };
+
+        let title_refs: Vec<&str> = existing_titles.iter().map(|s| s.as_str()).collect();
+        let params = InstanceParams {
+            title: body.title.unwrap_or_default(),
+            path: body.path,
+            group: body.group,
+            tool: body.tool,
+            worktree_branch: body.worktree_branch,
+            create_new_branch: body.create_new_branch,
+            sandbox: body.sandbox,
+            sandbox_image,
+            yolo_mode: body.yolo_mode,
+            extra_env: vec![],
+            extra_args: body.extra_args,
+            command_override: String::new(),
+            extra_repo_paths: vec![],
+        };
+
+        let build_result = builder::build_instance(params, &title_refs, &profile)?;
+        let mut instance = build_result.instance;
+
+        // Save to disk
+        let storage = Storage::new(&profile)?;
+        let mut all = storage.load().unwrap_or_default();
+        all.push(instance.clone());
+        storage.save(&all)?;
+
+        // Start the session
+        instance.start()?;
+
+        Ok::<Instance, anyhow::Error>(instance)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(instance)) => {
+            let resp = SessionResponse::from(&instance);
+            // Update in-memory cache
+            let mut instances = state.instances.write().await;
+            instances.push(instance);
+            (
+                StatusCode::CREATED,
+                Json(serde_json::to_value(resp).expect("SessionResponse is always serializable")),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 // --- Delete session ---
 
 #[derive(Deserialize)]

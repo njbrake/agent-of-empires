@@ -111,7 +111,10 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         // Session CRUD
-        .route("/api/sessions", get(api::list_sessions))
+        .route(
+            "/api/sessions",
+            get(api::list_sessions).post(api::create_session),
+        )
         .route("/api/sessions/{id}", get(api::get_session))
         .route("/api/sessions/{id}/stop", post(api::stop_session))
         .route("/api/sessions/{id}/restart", post(api::restart_session))
