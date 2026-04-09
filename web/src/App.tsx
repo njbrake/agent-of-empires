@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
-import { updateSession, createSession } from "./lib/api";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { updateSession, createSession, deleteSession } from "./lib/api";
 import type { SessionResponse } from "./lib/types";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
@@ -8,12 +9,16 @@ import { DiffView } from "./components/DiffView";
 import { EmptyState } from "./components/EmptyState";
 import { RenameDialog } from "./components/RenameDialog";
 import { ProfileSelector } from "./components/ProfileSelector";
+import { HelpOverlay } from "./components/HelpOverlay";
+import { SettingsView } from "./components/SettingsView";
+import { WorktreeList } from "./components/WorktreeList";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import {
   CreateSessionPanel,
   type CreateSessionData,
 } from "./components/CreateSessionPanel";
 
-type ContentView = "terminal" | "diff";
+type ContentView = "terminal" | "diff" | "settings" | "worktrees";
 
 export default function App() {
   const { sessions, error, refresh } = useSessions();
@@ -23,8 +28,12 @@ export default function App() {
   const [renameTarget, setRenameTarget] = useState<SessionResponse | null>(
     null,
   );
+  const [deleteTarget, setDeleteTarget] = useState<SessionResponse | null>(
+    null,
+  );
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   const filteredSessions = activeProfile
     ? sessions.filter(
@@ -71,6 +80,49 @@ export default function App() {
     }
   };
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    await deleteSession(deleteTarget.id);
+    setDeleteTarget(null);
+    if (activeId === deleteTarget.id) setActiveId(null);
+    refresh();
+  };
+
+  // Keyboard shortcuts
+  useKeyboardShortcuts(
+    useCallback(
+      () => ({
+        onSearch: () => {
+          // Search is handled by Sidebar internally via the / button
+          // This shortcut focuses the sidebar search by triggering a click
+          document
+            .querySelector<HTMLButtonElement>('[title="Search"]')
+            ?.click();
+        },
+        onNew: () => setShowCreate(true),
+        onDelete: () => {
+          if (activeSession) setDeleteTarget(activeSession);
+        },
+        onRename: () => {
+          if (activeSession) setRenameTarget(activeSession);
+        },
+        onDiff: () => {
+          if (activeSession) handleDiff(activeSession);
+        },
+        onEscape: () => {
+          setShowCreate(false);
+          setShowHelp(false);
+          setRenameTarget(null);
+          setDeleteTarget(null);
+        },
+        onHelp: () => setShowHelp((h) => !h),
+        onSettings: () =>
+          setContentView((v) => (v === "settings" ? "terminal" : "settings")),
+      }),
+      [activeSession],
+    ),
+  );
+
   return (
     <div className="h-screen flex flex-col bg-surface-900 text-slate-200">
       {/* Header */}
@@ -82,7 +134,32 @@ export default function App() {
           </span>
         </h1>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setContentView("worktrees")}
+            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            title="Worktrees"
+          >
+            wt
+          </button>
+          <button
+            onClick={() =>
+              setContentView((v) =>
+                v === "settings" ? "terminal" : "settings",
+              )
+            }
+            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            title="Settings (s)"
+          >
+            cfg
+          </button>
+          <button
+            onClick={() => setShowHelp(true)}
+            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            title="Help (?)"
+          >
+            ?
+          </button>
           <ProfileSelector
             activeProfile={activeProfile}
             onSelect={setActiveProfile}
@@ -97,22 +174,34 @@ export default function App() {
 
       {/* Main */}
       <div className="flex flex-1 overflow-hidden">
-        <div className={mobileShowTerminal ? "max-md:hidden" : ""}>
-          <Sidebar
-            sessions={filteredSessions}
-            activeId={activeId}
-            onSelect={handleSelect}
-            onRefresh={refresh}
-            onRename={setRenameTarget}
-            onDiff={handleDiff}
-            onNew={() => setShowCreate(true)}
-          />
-        </div>
+        {contentView !== "settings" && contentView !== "worktrees" && (
+          <div className={mobileShowTerminal ? "max-md:hidden" : ""}>
+            <Sidebar
+              sessions={filteredSessions}
+              activeId={activeId}
+              onSelect={handleSelect}
+              onRefresh={refresh}
+              onRename={setRenameTarget}
+              onDiff={handleDiff}
+              onNew={() => setShowCreate(true)}
+            />
+          </div>
+        )}
 
         <div
-          className={`flex-1 flex flex-col overflow-hidden ${!mobileShowTerminal ? "max-md:hidden" : ""}`}
+          className={`flex-1 flex flex-col overflow-hidden ${!mobileShowTerminal && contentView !== "settings" && contentView !== "worktrees" ? "max-md:hidden" : ""}`}
         >
-          {activeSession ? (
+          {contentView === "settings" ? (
+            <SettingsView onClose={() => setContentView("terminal")} />
+          ) : contentView === "worktrees" ? (
+            <WorktreeList
+              onClose={() => setContentView("terminal")}
+              onNavigateToSession={(id) => {
+                setActiveId(id);
+                setContentView("terminal");
+              }}
+            />
+          ) : activeSession ? (
             contentView === "diff" ? (
               <DiffView
                 sessionId={activeSession.id}
@@ -131,7 +220,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Create session panel */}
+      {/* Overlays */}
       {showCreate && (
         <CreateSessionPanel
           onSubmit={handleCreate}
@@ -139,7 +228,6 @@ export default function App() {
         />
       )}
 
-      {/* Rename dialog */}
       {renameTarget && (
         <RenameDialog
           currentTitle={renameTarget.title}
@@ -148,6 +236,19 @@ export default function App() {
           onCancel={() => setRenameTarget(null)}
         />
       )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Delete Session"
+          message={`Delete "${deleteTarget.title}"? This will stop the session and remove it.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={handleDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+
+      {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
     </div>
   );
 }

@@ -129,6 +129,14 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/profiles", get(api::list_profiles))
         .route("/api/profiles", post(api::create_profile))
         .route("/api/profiles/{name}", delete(api::delete_profile))
+        // Settings + themes
+        .route(
+            "/api/settings",
+            get(api::get_settings).patch(api::update_settings),
+        )
+        .route("/api/themes", get(api::list_themes))
+        // Worktrees
+        .route("/api/worktrees", get(api::list_worktrees))
         // Terminal
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)

@@ -7,13 +7,15 @@ interface ShortcutActions {
   onRename: () => void;
   onDiff: () => void;
   onEscape: () => void;
+  onHelp: () => void;
+  onSettings: () => void;
 }
 
 /**
  * Global keyboard shortcuts for the dashboard.
  * Only fires when no input/textarea is focused (to avoid conflicts with typing).
  */
-export function useKeyboardShortcuts(actions: ShortcutActions) {
+export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -21,6 +23,8 @@ export function useKeyboardShortcuts(actions: ShortcutActions) {
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
         target.isContentEditable;
+
+      const actions = getActions();
 
       // Escape always works
       if (e.key === "Escape") {
@@ -48,10 +52,16 @@ export function useKeyboardShortcuts(actions: ShortcutActions) {
         case "D":
           actions.onDiff();
           break;
+        case "?":
+          actions.onHelp();
+          break;
+        case "s":
+          actions.onSettings();
+          break;
       }
     };
 
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [actions]);
+  }, [getActions]);
 }

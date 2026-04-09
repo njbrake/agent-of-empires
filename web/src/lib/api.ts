@@ -170,3 +170,62 @@ export async function deleteProfile(name: string): Promise<boolean> {
     return false;
   }
 }
+
+// --- Settings ---
+
+export async function getSettings(): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch("/api/settings");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function updateSettings(
+  updates: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const res = await fetch("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// --- Themes ---
+
+export async function fetchThemes(): Promise<string[]> {
+  try {
+    const res = await fetch("/api/themes");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+// --- Worktrees ---
+
+export interface WorktreeInfo {
+  session_id: string;
+  session_title: string;
+  branch: string;
+  main_repo_path: string;
+  managed_by_aoe: boolean;
+}
+
+export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
+  try {
+    const res = await fetch("/api/worktrees");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}

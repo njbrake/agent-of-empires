@@ -627,6 +627,105 @@ pub async fn delete_profile(Path(name): Path<String>) -> impl IntoResponse {
     }
 }
 
+// --- Settings ---
+
+pub async fn get_settings() -> impl IntoResponse {
+    match crate::session::Config::load() {
+        Ok(config) => match serde_json::to_value(&config) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
+            )
+                .into_response(),
+        },
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "load_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn update_settings(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
+    // Load current config, merge updates, save
+    let result = tokio::task::spawn_blocking(move || {
+        let mut config = crate::session::Config::load().unwrap_or_default();
+
+        // Merge the incoming JSON into the existing config
+        let mut current = serde_json::to_value(&config)?;
+        if let (Some(current_obj), Some(update_obj)) = (current.as_object_mut(), body.as_object()) {
+            for (key, value) in update_obj {
+                current_obj.insert(key.clone(), value.clone());
+            }
+        }
+        config = serde_json::from_value(current)?;
+        crate::session::save_config(&config)?;
+        Ok::<_, anyhow::Error>(config)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(config)) => match serde_json::to_value(&config) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
+            )
+                .into_response(),
+        },
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+// --- Themes ---
+
+pub async fn list_themes() -> Json<Vec<String>> {
+    Json(
+        crate::tui::styles::available_themes()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
+}
+
+// --- Worktrees ---
+
+#[derive(Serialize)]
+pub struct WorktreeInfo {
+    pub session_id: String,
+    pub session_title: String,
+    pub branch: String,
+    pub main_repo_path: String,
+    pub managed_by_aoe: bool,
+}
+
+pub async fn list_worktrees(State(state): State<Arc<AppState>>) -> Json<Vec<WorktreeInfo>> {
+    let instances = state.instances.read().await;
+    let worktrees: Vec<WorktreeInfo> = instances
+        .iter()
+        .filter_map(|inst| {
+            inst.worktree_info.as_ref().map(|wt| WorktreeInfo {
+                session_id: inst.id.clone(),
+                session_title: inst.title.clone(),
+                branch: wt.branch.clone(),
+                main_repo_path: wt.main_repo_path.clone(),
+                managed_by_aoe: wt.managed_by_aoe,
+            })
+        })
+        .collect();
+    Json(worktrees)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
