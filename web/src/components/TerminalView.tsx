@@ -32,15 +32,15 @@ export function TerminalView({ session, onBack }: Props) {
             &larr;
           </button>
         )}
-        <span className="font-body font-semibold text-slate-200">
+        <span className="font-body font-semibold text-text-primary">
           {session.title}
         </span>
-        <span className="font-body text-slate-500 ml-3 text-xs">
+        <span className="font-body text-text-muted ml-3 text-xs">
           {[session.tool, session.branch, session.is_sandboxed && "sandboxed"]
             .filter(Boolean)
             .join(" \u00b7 ")}
         </span>
-        <span className="ml-auto font-mono text-[11px] text-slate-500 flex items-center gap-1.5">
+        <span className="ml-auto font-mono text-label text-text-muted flex items-center gap-1.5">
           <span
             className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[session.status]}`}
           />

@@ -35,11 +35,11 @@ export function MobileNav({
       <button
         onClick={onSessionsTab}
         className={`flex flex-col items-center gap-0.5 px-4 py-1 cursor-pointer ${
-          activeTab === "sessions" ? "text-brand-500" : "text-slate-500"
+          activeTab === "sessions" ? "text-brand-500" : "text-text-muted"
         }`}
       >
         <span className="text-lg">&#9632;</span>
-        <span className="font-mono text-[9px]">
+        <span className="font-mono text-label-sm">
           {activeSessionTitle ? (
             <span className="flex items-center gap-1">
               {activeStatus && (
@@ -57,20 +57,20 @@ export function MobileNav({
       <button
         onClick={onWorktreesTab}
         className={`flex flex-col items-center gap-0.5 px-4 py-1 cursor-pointer ${
-          activeTab === "worktrees" ? "text-brand-500" : "text-slate-500"
+          activeTab === "worktrees" ? "text-brand-500" : "text-text-muted"
         }`}
       >
         <span className="font-mono text-sm">wt</span>
-        <span className="font-mono text-[9px]">Worktrees</span>
+        <span className="font-mono text-label-sm">Worktrees</span>
       </button>
       <button
         onClick={onSettingsTab}
         className={`flex flex-col items-center gap-0.5 px-4 py-1 cursor-pointer ${
-          activeTab === "settings" ? "text-brand-500" : "text-slate-500"
+          activeTab === "settings" ? "text-brand-500" : "text-text-muted"
         }`}
       >
         <span className="font-mono text-sm">cfg</span>
-        <span className="font-mono text-[9px]">Settings</span>
+        <span className="font-mono text-label-sm">Settings</span>
       </button>
     </nav>
   );

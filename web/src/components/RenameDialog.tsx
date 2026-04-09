@@ -25,14 +25,14 @@ export function RenameDialog({
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <form
         onSubmit={handleSubmit}
-        className="bg-surface-800 border border-surface-700 rounded-md w-[400px] max-w-[90vw] shadow-xl"
+        className="bg-surface-800 border border-surface-700 rounded-md w-dialog max-w-[90vw] shadow-xl"
       >
         <div className="px-5 pt-4 pb-3">
-          <h3 className="font-body text-sm font-semibold text-slate-200 mb-3">
+          <h3 className="font-body text-sm font-semibold text-text-primary mb-3">
             Rename Session
           </h3>
           <label className="block mb-3">
-            <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
               Title
             </span>
             <input
@@ -40,11 +40,11 @@ export function RenameDialog({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               autoFocus
-              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-slate-200 focus:border-brand-600 focus:outline-none"
+              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary focus:border-brand-600 focus:outline-none"
             />
           </label>
           <label className="block">
-            <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
               Group
             </span>
             <input
@@ -52,7 +52,7 @@ export function RenameDialog({
               value={group}
               onChange={(e) => setGroup(e.target.value)}
               placeholder="e.g. work/projects"
-              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </label>
         </div>
@@ -60,7 +60,7 @@ export function RenameDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="px-3 py-1.5 font-body text-xs rounded-md text-slate-400 hover:bg-surface-700 transition-colors cursor-pointer"
+            className="px-3 py-1.5 font-body text-xs rounded-md text-text-secondary hover:bg-surface-700 transition-colors cursor-pointer"
           >
             Cancel
           </button>

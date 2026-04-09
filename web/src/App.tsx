@@ -125,12 +125,12 @@ export default function App() {
   );
 
   return (
-    <div className="h-screen flex flex-col bg-surface-900 text-slate-200">
+    <div className="h-screen flex flex-col bg-surface-900 text-text-primary">
       {/* Header */}
       <header className="h-12 bg-surface-850 border-b border-surface-700 flex items-center px-4 shrink-0">
-        <h1 className="font-display text-sm font-semibold tracking-wide text-slate-100">
+        <h1 className="font-display text-sm font-semibold tracking-wide text-text-bright">
           Agent of Empires
-          <span className="font-body font-normal text-slate-500 ml-1.5">
+          <span className="font-body font-normal text-text-muted ml-1.5">
             Dashboard
           </span>
         </h1>
@@ -138,7 +138,7 @@ export default function App() {
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => setContentView("worktrees")}
-            className="hidden md:inline font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
             title="Worktrees"
           >
             wt
@@ -149,14 +149,14 @@ export default function App() {
                 v === "settings" ? "terminal" : "settings",
               )
             }
-            className="hidden md:inline font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
             title="Settings (s)"
           >
             cfg
           </button>
           <button
             onClick={() => setShowHelp(true)}
-            className="hidden md:inline font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1.5"
             title="Help (?)"
           >
             ?
@@ -165,7 +165,7 @@ export default function App() {
             activeProfile={activeProfile}
             onSelect={setActiveProfile}
           />
-          <span className="font-mono text-[11px] text-slate-500">
+          <span className="font-mono text-label text-text-muted">
             {error
               ? "connection error"
               : `${filteredSessions.length} session${filteredSessions.length !== 1 ? "s" : ""}`}

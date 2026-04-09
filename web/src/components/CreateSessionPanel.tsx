@@ -59,17 +59,17 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
     <div className="fixed inset-0 bg-black/50 flex justify-end z-50">
       <form
         onSubmit={handleSubmit}
-        className="w-[420px] max-w-full bg-surface-800 border-l border-surface-700 h-full overflow-y-auto shadow-2xl"
+        className="w-panel max-w-full bg-surface-800 border-l border-surface-700 h-full overflow-y-auto shadow-2xl"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700">
-          <h2 className="font-display text-sm font-semibold text-slate-100">
+          <h2 className="font-display text-sm font-semibold text-text-bright">
             New Session
           </h2>
           <button
             type="button"
             onClick={onCancel}
-            className="text-slate-500 hover:text-slate-300 cursor-pointer text-lg"
+            className="text-text-muted hover:text-text-secondary cursor-pointer text-lg"
           >
             &times;
           </button>
@@ -78,7 +78,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
         <div className="p-5 space-y-4">
           {/* Project Path -- required */}
           <label className="block">
-            <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
               Project Path *
             </span>
             <input
@@ -87,13 +87,13 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
               onChange={(e) => setPath(e.target.value)}
               autoFocus
               placeholder="/path/to/your/project"
-              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-2 font-mono text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </label>
 
           {/* Agent Tool */}
           <label className="block">
-            <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
               Agent
             </span>
             <div className="grid grid-cols-3 gap-1.5">
@@ -105,7 +105,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
                   className={`px-2 py-1.5 rounded text-xs font-body cursor-pointer transition-colors ${
                     tool === a.name
                       ? "bg-brand-600/20 text-brand-500 border border-brand-600/40"
-                      : "bg-surface-900 text-slate-400 border border-surface-700 hover:border-surface-700/80"
+                      : "bg-surface-900 text-text-secondary border border-surface-700 hover:border-surface-700/80"
                   }`}
                 >
                   {a.name}
@@ -116,9 +116,9 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
 
           {/* Title */}
           <label className="block">
-            <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
               Title
-              <span className="text-slate-600 ml-1 normal-case tracking-normal">
+              <span className="text-text-dim ml-1 normal-case tracking-normal">
                 (auto-generated if empty)
               </span>
             </span>
@@ -127,13 +127,13 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="My Session"
-              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </label>
 
           {/* Group */}
           <label className="block">
-            <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+            <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
               Group
             </span>
             <input
@@ -141,7 +141,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
               value={group}
               onChange={(e) => setGroup(e.target.value)}
               placeholder="work/projects"
-              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+              className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </label>
 
@@ -154,7 +154,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
                 onChange={(e) => setYolo(e.target.checked)}
                 className="accent-brand-600"
               />
-              <span className="font-body text-xs text-slate-300">
+              <span className="font-body text-xs text-text-secondary">
                 YOLO mode
               </span>
             </label>
@@ -165,7 +165,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
                 onChange={(e) => setSandbox(e.target.checked)}
                 className="accent-brand-600"
               />
-              <span className="font-body text-xs text-slate-300">Sandbox</span>
+              <span className="font-body text-xs text-text-secondary">Sandbox</span>
             </label>
           </div>
 
@@ -173,7 +173,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
           <button
             type="button"
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="font-body text-xs text-slate-500 hover:text-slate-400 cursor-pointer"
+            className="font-body text-xs text-text-muted hover:text-text-secondary cursor-pointer"
           >
             {showAdvanced ? "Hide" : "Show"} advanced options
           </button>
@@ -181,7 +181,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
           {showAdvanced && (
             <div className="space-y-3 border-t border-surface-700 pt-3">
               <label className="block">
-                <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+                <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
                   Worktree Branch
                 </span>
                 <input
@@ -189,7 +189,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}
                   placeholder="feature/my-branch"
-                  className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+                  className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
                 />
               </label>
               {branch && (
@@ -200,13 +200,13 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
                     onChange={(e) => setNewBranch(e.target.checked)}
                     className="accent-brand-600"
                   />
-                  <span className="font-body text-xs text-slate-300">
+                  <span className="font-body text-xs text-text-secondary">
                     Create new branch
                   </span>
                 </label>
               )}
               <label className="block">
-                <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500 block mb-1">
+                <span className="font-mono text-label uppercase tracking-wider text-text-muted block mb-1">
                   Extra Args
                 </span>
                 <input
@@ -214,7 +214,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
                   value={extraArgs}
                   onChange={(e) => setExtraArgs(e.target.value)}
                   placeholder="--resume abc123"
-                  className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-mono text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+                  className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
                 />
               </label>
             </div>
@@ -226,7 +226,7 @@ export function CreateSessionPanel({ onSubmit, onCancel }: Props) {
           <button
             type="button"
             onClick={onCancel}
-            className="px-4 py-2 font-body text-xs rounded-md text-slate-400 hover:bg-surface-700 transition-colors cursor-pointer"
+            className="px-4 py-2 font-body text-xs rounded-md text-text-secondary hover:bg-surface-700 transition-colors cursor-pointer"
           >
             Cancel
           </button>

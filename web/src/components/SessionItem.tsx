@@ -27,13 +27,13 @@ export function SessionItem({ session, isActive, onClick }: Props) {
           : "hover:bg-surface-800/60"
       }`}
     >
-      <div className="flex items-center gap-1.5 font-body text-[13px] font-medium text-slate-200 truncate">
+      <div className="flex items-center gap-1.5 font-body text-ui font-medium text-text-primary truncate">
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[session.status]}`}
         />
         {session.title}
       </div>
-      <div className="flex items-center gap-1.5 font-body text-[11px] text-slate-500 mt-0.5 pl-3">
+      <div className="flex items-center gap-1.5 font-body text-label text-text-muted mt-0.5 pl-3">
         <span className="capitalize">{session.tool}</span>
         {session.branch && (
           <>

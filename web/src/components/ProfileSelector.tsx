@@ -56,7 +56,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="font-mono text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer px-2 py-1 rounded hover:bg-surface-800 transition-colors"
+        className="font-mono text-label text-text-secondary hover:text-text-primary cursor-pointer px-2 py-1 rounded hover:bg-surface-800 transition-colors"
       >
         [{display}]
       </button>
@@ -71,7 +71,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
             className={`w-full text-left px-3 py-1.5 font-body text-xs cursor-pointer transition-colors ${
               !activeProfile
                 ? "text-brand-500 bg-brand-600/10"
-                : "text-slate-300 hover:bg-surface-700"
+                : "text-text-secondary hover:bg-surface-700"
             }`}
           >
             All profiles
@@ -86,7 +86,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
                 className={`flex-1 text-left px-3 py-1.5 font-body text-xs cursor-pointer transition-colors ${
                   activeProfile === p
                     ? "text-brand-500 bg-brand-600/10"
-                    : "text-slate-300 hover:bg-surface-700"
+                    : "text-text-secondary hover:bg-surface-700"
                 }`}
               >
                 {p}
@@ -94,7 +94,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
               {p !== "default" && (
                 <button
                   onClick={() => handleDelete(p)}
-                  className="px-2 py-1 text-[10px] text-status-error opacity-0 group-hover:opacity-100 cursor-pointer"
+                  className="px-2 py-1 text-label-sm text-status-error opacity-0 group-hover:opacity-100 cursor-pointer"
                   title="Delete profile"
                 >
                   &times;
@@ -112,11 +112,11 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
                   onKeyDown={(e) => e.key === "Enter" && handleCreate()}
                   autoFocus
                   placeholder="profile name"
-                  className="flex-1 bg-surface-900 border border-surface-700 rounded px-2 py-1 font-body text-xs text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+                  className="flex-1 bg-surface-900 border border-surface-700 rounded px-2 py-1 font-body text-xs text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
                 />
                 <button
                   onClick={handleCreate}
-                  className="px-2 py-1 font-body text-[10px] text-brand-500 hover:bg-brand-600/10 rounded cursor-pointer"
+                  className="px-2 py-1 font-body text-label-sm text-brand-500 hover:bg-brand-600/10 rounded cursor-pointer"
                 >
                   Add
                 </button>
@@ -124,7 +124,7 @@ export function ProfileSelector({ activeProfile, onSelect }: Props) {
             ) : (
               <button
                 onClick={() => setShowCreate(true)}
-                className="w-full text-left px-3 py-1.5 font-body text-xs text-slate-500 hover:text-slate-300 hover:bg-surface-700 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 font-body text-xs text-text-muted hover:text-text-secondary hover:bg-surface-700 cursor-pointer"
               >
                 + New profile
               </button>

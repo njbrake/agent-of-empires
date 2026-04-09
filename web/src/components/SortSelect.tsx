@@ -25,11 +25,11 @@ export function SortSelect({ value, onChange }: Props) {
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as SortOrder)}
-      className="bg-transparent font-mono text-[10px] text-slate-600 hover:text-slate-400 cursor-pointer border-none focus:outline-none appearance-none"
+      className="bg-transparent font-mono text-label-sm text-text-dim hover:text-text-secondary cursor-pointer border-none focus:outline-none appearance-none"
       title="Sort sessions"
     >
       {Object.entries(SORT_LABELS).map(([key, label]) => (
-        <option key={key} value={key} className="bg-surface-800 text-slate-300">
+        <option key={key} value={key} className="bg-surface-800 text-text-secondary">
           {label}
         </option>
       ))}

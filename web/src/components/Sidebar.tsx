@@ -93,10 +93,10 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-[280px] min-w-[280px] bg-surface-900 border-r border-surface-700 flex flex-col overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700">
+    <aside className="w-sidebar min-w-sidebar bg-surface-900 border-r border-surface-700 flex flex-col overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700">
       {/* Header with new + search */}
       <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
-        <span className="font-mono text-[11px] font-semibold uppercase tracking-widest text-slate-500">
+        <span className="font-mono text-label font-semibold uppercase tracking-widest text-text-muted">
           Sessions
         </span>
         <div className="flex items-center gap-0.5">
@@ -104,7 +104,7 @@ export function Sidebar({
           {onNew && (
             <button
               onClick={onNew}
-              className="font-mono text-[11px] text-brand-600 hover:text-brand-500 cursor-pointer px-1"
+              className="font-mono text-label text-brand-600 hover:text-brand-500 cursor-pointer px-1"
               title="New session (n)"
             >
               +
@@ -112,7 +112,7 @@ export function Sidebar({
           )}
           <button
             onClick={() => setShowSearch(!showSearch)}
-            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1"
+            className="font-mono text-label text-text-dim hover:text-text-secondary cursor-pointer px-1"
             title="Search (/)"
           >
             /
@@ -134,14 +134,14 @@ export function Sidebar({
       {/* Session list with groups */}
       <div className="flex-1 overflow-y-auto px-1.5 pb-1.5">
         {filtered.length === 0 ? (
-          <div className="px-3.5 py-5 text-center text-slate-600 text-xs font-body">
+          <div className="px-3.5 py-5 text-center text-text-dim text-xs font-body">
             {searchQuery ? (
               <>No sessions match &ldquo;{searchQuery}&rdquo;</>
             ) : (
               <>
                 No sessions found.
                 <br />
-                <code className="font-mono text-brand-600 text-[11px]">
+                <code className="font-mono text-brand-600 text-label">
                   aoe add /path/to/project
                 </code>
               </>
@@ -151,7 +151,7 @@ export function Sidebar({
           Array.from(grouped.entries()).map(([group, groupSessions]) => (
             <div key={group || "__ungrouped__"}>
               {group && (
-                <div className="font-mono text-[10px] uppercase tracking-wider text-slate-600 px-3 pt-3 pb-1">
+                <div className="font-mono text-label-sm uppercase tracking-wider text-text-dim px-3 pt-3 pb-1">
                   {group}
                 </div>
               )}
@@ -190,7 +190,7 @@ export function Sidebar({
           )}
           <button
             onClick={() => onRename(activeSession)}
-            className="px-3 py-1 font-body text-xs rounded-md border border-surface-700 text-slate-400 hover:bg-surface-800 transition-colors cursor-pointer"
+            className="px-3 py-1 font-body text-xs rounded-md border border-surface-700 text-text-secondary hover:bg-surface-800 transition-colors cursor-pointer"
           >
             Rename
           </button>
@@ -202,7 +202,7 @@ export function Sidebar({
           </button>
           <button
             onClick={() => setDeleteTarget(activeSession)}
-            className="px-3 py-1 font-body text-xs rounded-md border border-status-error/20 text-slate-500 hover:text-status-error hover:bg-status-error/10 transition-colors cursor-pointer"
+            className="px-3 py-1 font-body text-xs rounded-md border border-status-error/20 text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors cursor-pointer"
           >
             Delete
           </button>

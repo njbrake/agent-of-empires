@@ -22,7 +22,7 @@ export function DiffView({ sessionId, onClose }: Props) {
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-surface-900 text-slate-500 font-mono text-sm">
+      <div className="flex-1 flex items-center justify-center bg-surface-900 text-text-muted font-mono text-sm">
         Loading diff...
       </div>
     );
@@ -30,7 +30,7 @@ export function DiffView({ sessionId, onClose }: Props) {
 
   if (!diff || diff.files.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-surface-900 text-slate-500">
+      <div className="flex-1 flex flex-col items-center justify-center bg-surface-900 text-text-muted">
         <div className="font-mono text-2xl text-surface-700 mb-3">0</div>
         <p className="font-body text-sm">No changes detected</p>
         <button
@@ -53,25 +53,25 @@ export function DiffView({ sessionId, onClose }: Props) {
         >
           &larr; Terminal
         </button>
-        <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500">
+        <span className="font-mono text-label uppercase tracking-wider text-text-muted">
           Diff
         </span>
-        <span className="font-mono text-[11px] text-slate-600 ml-2">
+        <span className="font-mono text-label text-text-dim ml-2">
           {diff.files.length} file{diff.files.length !== 1 ? "s" : ""} changed
         </span>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
         {/* File list */}
-        <div className="w-[220px] min-w-[220px] border-r border-surface-700 overflow-y-auto">
+        <div className="w-sidebar-sm min-w-sidebar-sm border-r border-surface-700 overflow-y-auto">
           {diff.files.map((file, i) => (
             <button
               key={file.path}
               onClick={() => setSelectedFile(i)}
-              className={`w-full text-left px-3 py-1.5 font-mono text-[12px] truncate cursor-pointer transition-colors ${
+              className={`w-full text-left px-3 py-1.5 font-mono text-code truncate cursor-pointer transition-colors ${
                 i === selectedFile
-                  ? "bg-surface-800 text-slate-200 border-l-2 border-brand-600 pl-2.5"
-                  : "text-slate-400 hover:bg-surface-800/50"
+                  ? "bg-surface-800 text-text-primary border-l-2 border-brand-600 pl-2.5"
+                  : "text-text-secondary hover:bg-surface-800/50"
               }`}
             >
               <span
@@ -82,7 +82,7 @@ export function DiffView({ sessionId, onClose }: Props) {
                       ? "text-status-running"
                       : file.status === "D"
                         ? "text-status-error"
-                        : "text-slate-500"
+                        : "text-text-muted"
                 }`}
               >
                 {file.status}
@@ -94,15 +94,15 @@ export function DiffView({ sessionId, onClose }: Props) {
 
         {/* Diff content */}
         <div className="flex-1 overflow-auto">
-          <pre className="font-mono text-[13px] leading-[1.5] p-4 text-slate-300">
+          <pre className="font-mono text-ui leading-[1.5] p-4 text-text-secondary">
             {diff.raw.split("\n").map((line, i) => {
-              let color = "text-slate-400";
+              let color = "text-text-secondary";
               if (line.startsWith("+") && !line.startsWith("+++"))
                 color = "text-status-running";
               if (line.startsWith("-") && !line.startsWith("---"))
                 color = "text-status-error";
               if (line.startsWith("@@")) color = "text-accent-600";
-              if (line.startsWith("diff ")) color = "text-slate-200 font-semibold";
+              if (line.startsWith("diff ")) color = "text-text-primary font-semibold";
               return (
                 <div
                   key={i}

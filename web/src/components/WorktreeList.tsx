@@ -19,7 +19,7 @@ export function WorktreeList({ onClose, onNavigateToSession }: Props) {
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-surface-900 text-slate-500 font-mono text-sm">
+      <div className="flex-1 flex items-center justify-center bg-surface-900 text-text-muted font-mono text-sm">
         Loading worktrees...
       </div>
     );
@@ -34,17 +34,17 @@ export function WorktreeList({ onClose, onNavigateToSession }: Props) {
         >
           &larr; Back
         </button>
-        <span className="font-mono text-[11px] uppercase tracking-wider text-slate-500">
+        <span className="font-mono text-label uppercase tracking-wider text-text-muted">
           Worktrees
         </span>
-        <span className="font-mono text-[11px] text-slate-600 ml-2">
+        <span className="font-mono text-label text-text-dim ml-2">
           {worktrees.length} active
         </span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
         {worktrees.length === 0 ? (
-          <div className="text-center py-12 text-slate-600 font-body text-sm">
+          <div className="text-center py-12 text-text-dim font-body text-sm">
             No active worktrees. Create a session with a worktree branch to see
             them here.
           </div>
@@ -57,11 +57,11 @@ export function WorktreeList({ onClose, onNavigateToSession }: Props) {
               >
                 <div className="flex items-center justify-between">
                   <div>
-                    <span className="font-body text-sm font-medium text-slate-200">
+                    <span className="font-body text-sm font-medium text-text-primary">
                       {wt.branch}
                     </span>
                     {wt.managed_by_aoe && (
-                      <span className="font-mono text-[10px] text-accent-600 ml-2">
+                      <span className="font-mono text-label-sm text-accent-600 ml-2">
                         managed
                       </span>
                     )}
@@ -73,10 +73,10 @@ export function WorktreeList({ onClose, onNavigateToSession }: Props) {
                     Go to session &rarr;
                   </button>
                 </div>
-                <div className="font-mono text-[11px] text-slate-500 mt-1">
+                <div className="font-mono text-label text-text-muted mt-1">
                   {wt.session_title}
                 </div>
-                <div className="font-mono text-[11px] text-slate-600 mt-0.5 truncate">
+                <div className="font-mono text-label text-text-dim mt-0.5 truncate">
                   {wt.main_repo_path}
                 </div>
               </div>

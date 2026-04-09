@@ -65,7 +65,7 @@ export function SettingsView({ onClose }: Props) {
 
   if (!settings) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-surface-900 text-slate-500 font-mono text-sm">
+      <div className="flex-1 flex items-center justify-center bg-surface-900 text-text-muted font-mono text-sm">
         Loading settings...
       </div>
     );
@@ -81,12 +81,12 @@ export function SettingsView({ onClose }: Props) {
         >
           &larr; Back
         </button>
-        <span className="font-display text-sm font-semibold text-slate-100">
+        <span className="font-display text-sm font-semibold text-text-bright">
           Settings
         </span>
         <div className="ml-auto flex items-center gap-2">
           {dirty && (
-            <span className="font-mono text-[11px] text-status-warning">
+            <span className="font-mono text-label text-status-warning">
               unsaved
             </span>
           )}
@@ -110,7 +110,7 @@ export function SettingsView({ onClose }: Props) {
               className={`w-full text-left px-4 py-1.5 font-body text-xs cursor-pointer transition-colors ${
                 activeCategory === cat.key
                   ? "text-brand-500 bg-brand-600/10 border-l-2 border-brand-600 pl-3.5"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-surface-800"
+                  : "text-text-secondary hover:text-text-primary hover:bg-surface-800"
               }`}
             >
               {cat.label}
@@ -273,7 +273,7 @@ function Section({
 }) {
   return (
     <div>
-      <h3 className="font-mono text-[11px] uppercase tracking-widest text-slate-500 mb-4">
+      <h3 className="font-mono text-label uppercase tracking-widest text-text-muted mb-4">
         {title}
       </h3>
       <div className="space-y-4">{children}</div>
@@ -294,7 +294,7 @@ function TextField({
 }) {
   return (
     <label className="block">
-      <span className="font-body text-xs text-slate-400 block mb-1">
+      <span className="font-body text-xs text-text-secondary block mb-1">
         {label}
       </span>
       <input
@@ -302,7 +302,7 @@ function TextField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-600 focus:outline-none"
+        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
       />
     </label>
   );
@@ -319,7 +319,7 @@ function BoolField({
 }) {
   return (
     <label className="flex items-center justify-between py-1 cursor-pointer">
-      <span className="font-body text-xs text-slate-400">{label}</span>
+      <span className="font-body text-xs text-text-secondary">{label}</span>
       <button
         type="button"
         onClick={() => onChange(!value)}
@@ -350,13 +350,13 @@ function SelectField({
 }) {
   return (
     <label className="block">
-      <span className="font-body text-xs text-slate-400 block mb-1">
+      <span className="font-body text-xs text-text-secondary block mb-1">
         {label}
       </span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-slate-200 focus:border-brand-600 focus:outline-none"
+        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary focus:border-brand-600 focus:outline-none"
       >
         {options.map((opt) => (
           <option key={opt} value={opt}>

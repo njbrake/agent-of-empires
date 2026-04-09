@@ -19,6 +19,13 @@
   --color-surface-900: #0f172a;
   --color-surface-950: #020617;
 
+  /* Semantic Text */
+  --color-text-primary: #e2e8f0;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+  --color-text-dim: #475569;
+  --color-text-bright: #f1f5f9;
+
   /* Semantic Status */
   --color-status-running: #22c55e;
   --color-status-waiting: #fbbf24;
@@ -31,10 +38,24 @@
   --font-display: 'Satoshi', system-ui, sans-serif;
   --font-body: 'DM Sans', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Custom sizes -- named tokens for repeated values */
+  --text-label: 11px;
+  --text-label-sm: 10px;
+  --text-ui: 13px;
+  --text-code: 12px;
+
+  /* Layout widths */
+  --width-sidebar: 280px;
+  --width-sidebar-sm: 220px;
+  --min-width-sidebar: 280px;
+  --min-width-sidebar-sm: 220px;
+  --width-dialog: 400px;
+  --width-panel: 420px;
+  --width-content-max: 600px;
 }
 
 html {
-  /* Support iOS safe areas (notch, home indicator) */
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
     env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
@@ -42,12 +63,10 @@ html {
 body {
   font-family: var(--font-body);
   background: var(--color-surface-900);
-  color: #e2e8f0;
-  /* Prevent pull-to-refresh on mobile when scrolling terminal */
+  color: var(--color-text-primary);
   overscroll-behavior: none;
 }
 
-/* Ensure touch targets are at least 44px on mobile */
 @media (max-width: 768px) {
   button,
   [role="button"],
@@ -56,15 +75,7 @@ body {
     min-width: 44px;
   }
 
-  /* Mobile bottom nav safe area */
   .safe-area-bottom {
     padding-bottom: env(safe-area-inset-bottom);
-  }
-}
-
-/* Hide desktop-only header buttons on mobile */
-@media (max-width: 768px) {
-  .desktop-only {
-    display: none;
   }
 }

@@ -19,17 +19,17 @@ export function ConfirmDialog({
 }: Props) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface-800 border border-surface-700 rounded-md w-[400px] max-w-[90vw] shadow-xl">
+      <div className="bg-surface-800 border border-surface-700 rounded-md w-dialog max-w-[90vw] shadow-xl">
         <div className="px-5 pt-4 pb-3">
-          <h3 className="font-body text-sm font-semibold text-slate-200">
+          <h3 className="font-body text-sm font-semibold text-text-primary">
             {title}
           </h3>
-          <p className="font-body text-sm text-slate-400 mt-2">{message}</p>
+          <p className="font-body text-sm text-text-secondary mt-2">{message}</p>
         </div>
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-surface-700">
           <button
             onClick={onCancel}
-            className="px-3 py-1.5 font-body text-xs rounded-md text-slate-400 hover:bg-surface-700 transition-colors cursor-pointer"
+            className="px-3 py-1.5 font-body text-xs rounded-md text-text-secondary hover:bg-surface-700 transition-colors cursor-pointer"
           >
             {cancelLabel}
           </button>
