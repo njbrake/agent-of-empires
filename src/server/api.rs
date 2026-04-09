@@ -423,7 +423,10 @@ pub async fn update_session(
         }
     }
 
-    let inst = instances.iter().find(|i| i.id == id).unwrap();
+    let inst = instances
+        .iter()
+        .find(|i| i.id == id)
+        .expect("instance must exist after any() check above");
     let profile = inst.source_profile.clone();
     let resp = SessionResponse::from(inst);
     let all_for_profile: Vec<Instance> = instances
