@@ -14,6 +14,8 @@ interface Props {
   onRename: (session: SessionResponse) => void;
   onDiff: (session: SessionResponse) => void;
   onNew?: () => void;
+  searchOpen?: boolean;
+  onSearchToggle?: (open: boolean) => void;
 }
 
 export function Sidebar({
@@ -24,9 +26,18 @@ export function Sidebar({
   onRename,
   onDiff,
   onNew,
+  searchOpen: controlledSearchOpen,
+  onSearchToggle,
 }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [showSearch, setShowSearch] = useState(false);
+  const [internalShowSearch, setInternalShowSearch] = useState(false);
+
+  // Support both controlled (from parent/keyboard) and internal toggle
+  const showSearch = controlledSearchOpen ?? internalShowSearch;
+  const setShowSearch = (open: boolean) => {
+    setInternalShowSearch(open);
+    onSearchToggle?.(open);
+  };
   const [sortOrder, setSortOrder] = useState<SortOrder>("created-desc");
   const [deleteTarget, setDeleteTarget] = useState<SessionResponse | null>(
     null,

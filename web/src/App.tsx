@@ -35,6 +35,7 @@ export default function App() {
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
 
   const filteredSessions = activeProfile
     ? sessions.filter(
@@ -93,13 +94,7 @@ export default function App() {
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onSearch: () => {
-          // Search is handled by Sidebar internally via the / button
-          // This shortcut focuses the sidebar search by triggering a click
-          document
-            .querySelector<HTMLButtonElement>('[title="Search"]')
-            ?.click();
-        },
+        onSearch: () => setSidebarSearchOpen((v) => !v),
         onNew: () => setShowCreate(true),
         onDelete: () => {
           if (activeSession) setDeleteTarget(activeSession);
@@ -185,6 +180,8 @@ export default function App() {
               onRename={setRenameTarget}
               onDiff={handleDiff}
               onNew={() => setShowCreate(true)}
+              searchOpen={sidebarSearchOpen}
+              onSearchToggle={setSidebarSearchOpen}
             />
           </div>
         )}
