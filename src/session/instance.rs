@@ -722,23 +722,31 @@ impl Instance {
             Status::Idle if self.has_command_override() => {
                 // Custom commands run agents through wrapper scripts that appear
                 // as shell processes to tmux. Only declare Error when the pane is
-                // actually dead -- don't use is_shell_stale() since the shell IS
-                // the expected wrapper process.
-                if is_dead {
+                // actually dead AND the content doesn't show agent UI (the wrapper
+                // may exit while the agent continues as a child process with
+                // remain-on-exit preserving the TUI output).
+                if is_dead && !pane_has_agent_content(&pane_content, &self.tool) {
                     Status::Error
                 } else {
                     Status::Unknown
                 }
             }
-            Status::Idle if is_dead => Status::Error,
+            Status::Idle if is_dead => {
+                // The pane process exited but remain-on-exit preserves the
+                // screen. If the captured content still shows the agent's
+                // TUI (e.g. a nix wrapper exited while the agent lives on
+                // as a child), keep Idle instead of declaring Error.
+                if pane_has_agent_content(&pane_content, &self.tool) {
+                    Status::Idle
+                } else {
+                    Status::Error
+                }
+            }
             Status::Idle if is_shell_stale() => {
                 // A shell is the foreground process but the pane is alive.
-                // This happens when: (a) tmux-resurrect restored a dead
-                // session, or (b) the agent binary is a shell wrapper / the
-                // agent spawns persistent child shells. Check the captured
-                // pane content: if it contains the agent's UI the agent is
-                // still alive; only declare Error when the content looks
-                // like a bare shell prompt.
+                // Check captured pane content: if it contains the agent's
+                // UI the agent is still alive; only declare Error when the
+                // content looks like a bare shell prompt.
                 if pane_has_agent_content(&pane_content, &self.tool) {
                     Status::Idle
                 } else {
