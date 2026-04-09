@@ -6,7 +6,7 @@ The web dashboard lets you monitor and interact with agent sessions from any bro
 
 ## Availability
 
-The web dashboard is included in release binaries downloaded from [GitHub Releases](https://github.com/njbrake/agent-of-empires/releases) and the [quick install script](../installation.md#quick-install-recommended). No extra build steps needed -- just run `aoe serve`.
+The web dashboard is included in release binaries downloaded from [GitHub Releases](https://github.com/njbrake/agent-of-empires/releases) and the [quick install script](../installation.md#quick-install-recommended). No extra build steps needed, just run `aoe serve`.
 
 > **Homebrew:** The Homebrew formula (`brew install aoe`) does not yet include the web dashboard since the feature is still experimental. Use the install script or build from source to get `aoe serve`.
 
@@ -18,7 +18,7 @@ If building from source, you need the `serve` Cargo feature and Node.js/npm:
 cargo build --release --features serve
 ```
 
-The build automatically runs `npm install && npm run build` in the `web/` directory to compile the React frontend. The output is embedded in the binary -- no separate files to deploy.
+The build automatically runs `npm install && npm run build` in the `web/` directory to compile the React frontend. The output is embedded in the binary, so there are no separate files to deploy.
 
 ## Starting the server
 

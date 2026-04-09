@@ -51,7 +51,7 @@ curl -fsSL \
   https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh \
   | bash
 
-# Homebrew (TUI only -- web dashboard not yet included)
+# Homebrew (TUI only, web dashboard not yet included)
 brew install aoe
 
 # Nix
