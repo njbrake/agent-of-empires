@@ -24,6 +24,8 @@ curl -fsSL \
 brew install aoe
 ```
 
+> **Note:** The Homebrew formula does not yet include the web dashboard (`aoe serve`) since the feature is still experimental. To use the web dashboard, install via the [quick install script](#quick-install-recommended) or [build from source](#build-from-source) with `--features serve`.
+
 ### Build from Source
 
 ```bash

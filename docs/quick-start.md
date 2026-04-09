@@ -85,6 +85,8 @@ In the TUI, select the tool from the dropdown in the new session dialog.
 
 ## Use the Web Dashboard (experimental)
 
+> The web dashboard is included in release binaries and the install script but not yet in the Homebrew formula. If you installed via `brew install aoe`, see the [installation docs](installation.md#homebrew) for alternatives.
+
 Prefer a browser? Run `aoe serve` to start the web dashboard:
 
 ```bash

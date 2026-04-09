@@ -4,15 +4,15 @@
 
 The web dashboard lets you monitor and interact with agent sessions from any browser -- your phone, tablet, or another computer. It runs as an embedded web server inside the `aoe` binary.
 
-## Prerequisites
+## Availability
 
-The web dashboard requires the `serve` Cargo feature, which adds a Node.js/npm build dependency:
+The web dashboard is included in release binaries downloaded from [GitHub Releases](https://github.com/njbrake/agent-of-empires/releases) and the [quick install script](../installation.md#quick-install-recommended). No extra build steps needed -- just run `aoe serve`.
 
-- [Node.js](https://nodejs.org/) (v18+) with npm
+> **Homebrew:** The Homebrew formula (`brew install aoe`) does not yet include the web dashboard since the feature is still experimental. Use the install script or build from source to get `aoe serve`.
 
-TUI-only builds (`cargo build` without `--features serve`) do not need Node.js.
+## Building from source
 
-## Building
+If building from source, you need the `serve` Cargo feature and Node.js/npm:
 
 ```bash
 cargo build --release --features serve
