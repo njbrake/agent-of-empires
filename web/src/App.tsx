@@ -13,6 +13,7 @@ import { HelpOverlay } from "./components/HelpOverlay";
 import { SettingsView } from "./components/SettingsView";
 import { WorktreeList } from "./components/WorktreeList";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { MobileNav } from "./components/MobileNav";
 import {
   CreateSessionPanel,
   type CreateSessionData,
@@ -137,7 +138,7 @@ export default function App() {
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => setContentView("worktrees")}
-            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
             title="Worktrees"
           >
             wt
@@ -148,14 +149,14 @@ export default function App() {
                 v === "settings" ? "terminal" : "settings",
               )
             }
-            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
             title="Settings (s)"
           >
             cfg
           </button>
           <button
             onClick={() => setShowHelp(true)}
-            className="font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
+            className="hidden md:inline font-mono text-[11px] text-slate-600 hover:text-slate-400 cursor-pointer px-1.5"
             title="Help (?)"
           >
             ?
@@ -249,6 +250,26 @@ export default function App() {
       )}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
+
+      {/* Mobile bottom nav */}
+      <MobileNav
+        sessionCount={filteredSessions.length}
+        activeSessionTitle={activeSession?.title ?? null}
+        activeStatus={activeSession?.status ?? null}
+        activeTab={
+          contentView === "settings"
+            ? "settings"
+            : contentView === "worktrees"
+              ? "worktrees"
+              : "sessions"
+        }
+        onSessionsTab={() => {
+          setContentView("terminal");
+          setMobileShowTerminal(false);
+        }}
+        onSettingsTab={() => setContentView("settings")}
+        onWorktreesTab={() => setContentView("worktrees")}
+      />
     </div>
   );
 }

@@ -33,8 +33,38 @@
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
+html {
+  /* Support iOS safe areas (notch, home indicator) */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
 body {
   font-family: var(--font-body);
   background: var(--color-surface-900);
   color: #e2e8f0;
+  /* Prevent pull-to-refresh on mobile when scrolling terminal */
+  overscroll-behavior: none;
+}
+
+/* Ensure touch targets are at least 44px on mobile */
+@media (max-width: 768px) {
+  button,
+  [role="button"],
+  a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Mobile bottom nav safe area */
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Hide desktop-only header buttons on mobile */
+@media (max-width: 768px) {
+  .desktop-only {
+    display: none;
+  }
 }
