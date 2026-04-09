@@ -26,10 +26,10 @@ export const SessionItem = memo(function SessionItem({
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors duration-100 mb-0.5 ${
+      className={`w-full text-left px-3 py-2 rounded-lg cursor-pointer transition-colors duration-100 mb-0.5 ${
         isActive
-          ? "bg-surface-800 border-l-2 border-brand-600 pl-2.5"
-          : "hover:bg-surface-800/60"
+          ? "bg-surface-900 border-l-2 border-brand-600 pl-2.5"
+          : "hover:bg-surface-700/30"
       }`}
     >
       <div className="flex items-center gap-1.5 font-body text-sm font-medium text-text-primary truncate">

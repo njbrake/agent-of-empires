@@ -104,7 +104,7 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-sidebar min-w-sidebar bg-surface-900 border-r border-surface-700 flex flex-col overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700">
+    <aside className="w-sidebar min-w-sidebar bg-surface-800 border-r border-surface-700/50 flex flex-col h-full overflow-hidden max-md:w-full max-md:min-w-full max-md:max-h-[40vh] max-md:border-r-0 max-md:border-b max-md:border-surface-700/50">
       {/* Header with new + search */}
       <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
         <span className="font-mono text-sm font-semibold uppercase tracking-widest text-text-muted">
@@ -181,7 +181,7 @@ export function Sidebar({
 
       {/* Actions for selected session */}
       {activeSession && (
-        <div className="px-3.5 py-2.5 border-t border-surface-700 flex gap-1.5 flex-wrap">
+        <div className="px-3.5 py-2.5 border-t border-surface-700/50 flex gap-1.5 flex-wrap">
           {activeSession.status !== "Stopped" && (
             <button
               onClick={() => handleStop(activeSession.id)}
@@ -201,7 +201,7 @@ export function Sidebar({
           )}
           <button
             onClick={() => onRename(activeSession)}
-            className="px-3 py-1 font-body text-xs rounded-md border border-surface-700 text-text-secondary hover:bg-surface-800 transition-colors cursor-pointer"
+            className="px-3 py-1 font-body text-xs rounded-md border border-surface-700 text-text-secondary hover:bg-surface-700/30 transition-colors cursor-pointer"
           >
             Rename
           </button>

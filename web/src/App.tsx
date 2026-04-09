@@ -121,8 +121,8 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-surface-900 text-text-primary">
-      {/* Header */}
-      <header className="h-12 bg-surface-850 border-b border-surface-700 flex items-center px-4 shrink-0">
+      {/* Header -- spans full width, sits above sidebar + content */}
+      <header className="h-12 bg-surface-850 border-b border-surface-700/50 flex items-center px-4 shrink-0">
         <h1 className="font-display text-sm font-semibold tracking-wide text-text-bright">
           Agent of Empires
           <span className="font-body font-normal text-text-muted ml-1.5">
@@ -168,10 +168,12 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* Main area -- sidebar and content side by side, full remaining height */}
+      <div className="flex flex-1 min-h-0">
         {contentView !== "settings" && contentView !== "worktrees" && (
-          <div className={mobileShowTerminal ? "max-md:hidden" : ""}>
+          <div
+            className={`flex shrink-0 ${mobileShowTerminal ? "max-md:hidden" : ""}`}
+          >
             <Sidebar
               sessions={filteredSessions}
               activeId={activeId}
@@ -187,7 +189,7 @@ export default function App() {
         )}
 
         <div
-          className={`flex-1 flex flex-col overflow-hidden ${!mobileShowTerminal && contentView !== "settings" && contentView !== "worktrees" ? "max-md:hidden" : ""}`}
+          className={`flex-1 flex flex-col min-h-0 ${!mobileShowTerminal && contentView !== "settings" && contentView !== "worktrees" ? "max-md:hidden" : ""}`}
         >
           {contentView === "settings" ? (
             <SettingsView onClose={() => setContentView("terminal")} />
