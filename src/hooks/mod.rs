@@ -201,9 +201,121 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// settl hook events and the AoE status they map to.
+const SETTL_HOOKS: &[(&str, &str)] = &[
+    ("TurnStarted", "running"),
+    ("WaitingForHuman", "waiting"),
+    ("GameWon", "idle"),
+];
+
+/// Install AoE status hooks into settl's `~/.settl/config.toml`.
+///
+/// settl uses TOML config with `[[hooks]]` array entries instead of JSON
+/// settings files. This function reads the existing config, removes any
+/// previous AoE-managed hooks (identified by the marker), and adds hooks
+/// for the three status transitions: TurnStarted->running,
+/// WaitingForHuman->waiting, GameWon->idle.
+pub fn install_settl_hooks() -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
+    let config_path = home.join(".settl").join("config.toml");
+
+    // Parse existing config or start fresh
+    let mut config: toml::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        toml::from_str(&content).unwrap_or_else(|e| {
+            tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
+            toml::Value::Table(toml::map::Map::new())
+        })
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    let table = config
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Config root is not a TOML table"))?;
+
+    // Get or create the hooks array
+    let hooks = table
+        .entry("hooks")
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let hooks_arr = hooks
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("hooks key is not a TOML array"))?;
+
+    // Remove existing AoE hooks
+    hooks_arr.retain(|hook| {
+        !hook
+            .get("command")
+            .and_then(|c| c.as_str())
+            .is_some_and(is_aoe_hook_command)
+    });
+
+    // Add one hook per status transition
+    for (event, status) in SETTL_HOOKS {
+        let mut entry = toml::map::Map::new();
+        entry.insert("event".into(), toml::Value::String((*event).into()));
+        entry.insert("command".into(), toml::Value::String(hook_command(status)));
+        hooks_arr.push(toml::Value::Table(entry));
+    }
+
+    // Write back
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let formatted = toml::to_string_pretty(&config)?;
+    std::fs::write(&config_path, formatted)?;
+
+    tracing::info!("Installed AoE hooks in {}", config_path.display());
+    Ok(())
+}
+
+/// Remove AoE hooks from settl's `~/.settl/config.toml`.
+pub fn uninstall_settl_hooks() -> Result<bool> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
+    let config_path = home.join(".settl").join("config.toml");
+
+    if !config_path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(&config_path)?;
+    let mut config: toml::Value = toml::from_str(&content).unwrap_or_else(|e| {
+        tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
+        toml::Value::Table(toml::map::Map::new())
+    });
+
+    let Some(hooks_arr) = config.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+        return Ok(false);
+    };
+
+    let before = hooks_arr.len();
+    hooks_arr.retain(|hook| {
+        !hook
+            .get("command")
+            .and_then(|c| c.as_str())
+            .is_some_and(is_aoe_hook_command)
+    });
+
+    if hooks_arr.len() == before {
+        return Ok(false);
+    }
+
+    let formatted = toml::to_string_pretty(&config)?;
+    std::fs::write(&config_path, formatted)?;
+    tracing::info!("Removed AoE hooks from {}", config_path.display());
+    Ok(true)
+}
+
 /// Remove all AoE hooks from all known agent settings files and clean up
 /// the hook status base directory. Called during `aoe uninstall`.
 pub fn uninstall_all_hooks() {
+    // Remove settl TOML hooks
+    match uninstall_settl_hooks() {
+        Ok(true) => println!("Removed AoE hooks from ~/.settl/config.toml"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("Failed to remove settl hooks: {}", e),
+    }
+
     if let Some(home) = dirs::home_dir() {
         for agent in crate::agents::AGENTS {
             if let Some(hook_cfg) = &agent.hook_config {
@@ -556,5 +668,139 @@ mod tests {
             "Expected exactly 1 hook after reinstall, got: {:?}",
             all_cmds
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_install_settl_hooks_creates_new_file() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join(".settl").join("config.toml");
+
+        // Override HOME so install_settl_hooks writes to our temp dir
+        std::env::set_var("HOME", tmp.path());
+        install_settl_hooks().unwrap();
+        std::env::remove_var("HOME");
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let hooks = config["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 3);
+        assert_eq!(hooks[0]["event"].as_str().unwrap(), "TurnStarted");
+        assert_eq!(hooks[1]["event"].as_str().unwrap(), "WaitingForHuman");
+        assert_eq!(hooks[2]["event"].as_str().unwrap(), "GameWon");
+
+        for hook in hooks {
+            assert!(hook["command"].as_str().unwrap().contains("aoe-hooks"));
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_install_settl_hooks_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        install_settl_hooks().unwrap();
+        install_settl_hooks().unwrap();
+        std::env::remove_var("HOME");
+
+        let config_path = tmp.path().join(".settl").join("config.toml");
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let hooks = config["hooks"].as_array().unwrap();
+        assert_eq!(
+            hooks.len(),
+            3,
+            "Should have exactly 3 hooks, not duplicates"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_install_settl_hooks_preserves_user_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".settl");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[[hooks]]
+event = "GameWon"
+command = "echo user-hook"
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", tmp.path());
+        install_settl_hooks().unwrap();
+        std::env::remove_var("HOME");
+
+        let content = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let hooks = config["hooks"].as_array().unwrap();
+        // 1 user hook + 3 AoE hooks = 4
+        assert_eq!(hooks.len(), 4);
+        assert_eq!(hooks[0]["command"].as_str().unwrap(), "echo user-hook");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_uninstall_settl_hooks_removes_aoe_entries() {
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        install_settl_hooks().unwrap();
+
+        let modified = uninstall_settl_hooks().unwrap();
+        std::env::remove_var("HOME");
+
+        assert!(modified);
+        let config_path = tmp.path().join(".settl").join("config.toml");
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let hooks = config["hooks"].as_array().unwrap();
+        assert!(hooks.is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_uninstall_settl_hooks_preserves_user_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".settl");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[[hooks]]
+event = "GameWon"
+command = "echo user-hook"
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", tmp.path());
+        install_settl_hooks().unwrap();
+        let modified = uninstall_settl_hooks().unwrap();
+        std::env::remove_var("HOME");
+
+        assert!(modified);
+        let content = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let hooks = config["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["command"].as_str().unwrap(), "echo user-hook");
+    }
+
+    #[test]
+    fn test_settl_hook_commands_write_correct_status() {
+        for (event, expected_status) in SETTL_HOOKS {
+            let cmd = hook_command(expected_status);
+            assert!(
+                cmd.contains(&format!("printf {}", expected_status)),
+                "Hook for {} should write '{}': {}",
+                event,
+                expected_status,
+                cmd
+            );
+            assert!(cmd.contains("aoe-hooks"), "Hook should contain marker");
+        }
     }
 }

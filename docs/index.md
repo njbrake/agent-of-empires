@@ -2,9 +2,9 @@
 
 [![YouTube](https://img.shields.io/badge/YouTube-channel-red?logo=youtube)](https://www.youtube.com/@agent-of-empires)
 
-A terminal session manager for AI coding agents on Linux and macOS, built on tmux and written in Rust.
+A session manager for AI coding agents on Linux and macOS, built on tmux and written in Rust.
 
-AoE lets you run multiple AI agents in parallel -- each in its own tmux session, optionally on its own git branch, optionally inside a Docker container. A TUI dashboard shows you what every agent is doing at a glance.
+AoE lets you run multiple AI agents in parallel -- each in its own tmux session, optionally on its own git branch, optionally inside a Docker container. Use the **TUI dashboard** in your terminal, or the **web dashboard** from any browser on any device.
 
 ## See it in action
 
@@ -26,6 +26,7 @@ allowfullscreen
 
 **AoE handles it for you:**
 
+- **Two ways to use it.** A TUI for the terminal, or a web dashboard you can open in any browser -- even on your phone. Same sessions, same data, your choice of interface.
 - **One dashboard for all agents.** See status (running, waiting, idle, error) at a glance. Toggle to paired shell terminals with `t`.
 - **Git worktrees built in.** Create a session and AoE creates a branch + worktree automatically. Delete the session and AoE cleans up.
 - **Docker sandboxing.** Run agents in isolated containers with your project mounted and auth credentials shared across containers.

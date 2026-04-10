@@ -5,7 +5,6 @@
 ```bash
 cargo build                    # Debug build
 cargo build --release          # Release build (with LTO)
-cargo build --profile dev-release  # Optimized build without LTO (faster compile)
 ```
 
 The release binary is at `target/release/aoe`.

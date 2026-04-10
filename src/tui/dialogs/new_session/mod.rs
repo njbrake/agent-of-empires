@@ -332,8 +332,13 @@ impl NewSessionDialog {
             0
         };
 
-        // Apply sandbox defaults from config
-        let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
+        // Apply sandbox defaults from config (disabled for host-only agents like settl)
+        let is_default_tool_host_only = available_tools
+            .get(tool_index)
+            .and_then(|&t| crate::agents::get_agent(t))
+            .is_some_and(|a| a.host_only);
+        let sandbox_enabled =
+            docker_available && config.sandbox.enabled_by_default && !is_default_tool_host_only;
         let yolo_mode = config.session.yolo_mode_default;
 
         // Load extra args and command override for the default tool
@@ -518,6 +523,12 @@ impl NewSessionDialog {
             .is_some_and(|y| matches!(y, crate::agents::YoloMode::AlwaysYolo))
     }
 
+    /// Whether the currently selected tool can only run on the host (no sandbox/worktree).
+    fn selected_tool_host_only(&self) -> bool {
+        let tool_name = self.available_tools[self.tool_index];
+        crate::agents::get_agent(tool_name).is_some_and(|a| a.host_only)
+    }
+
     /// The field index of the path field (shifts based on whether profile picker is visible)
     fn path_field(&self) -> usize {
         if self.has_profile_selection() {
@@ -548,7 +559,9 @@ impl NewSessionDialog {
         // Reset sandbox/yolo defaults
         self.yolo_mode_default = config.session.yolo_mode_default;
         self.yolo_mode = self.yolo_mode_default;
-        self.sandbox_enabled = self.docker_available && config.sandbox.enabled_by_default;
+        self.sandbox_enabled = self.docker_available
+            && config.sandbox.enabled_by_default
+            && !self.selected_tool_host_only();
 
         // Reset sandbox image from resolved config (includes profile overrides)
         self.sandbox_image = Input::new(config.sandbox.default_image.clone());
@@ -806,7 +819,8 @@ impl NewSessionDialog {
 
         let has_profile_selection = self.available_profiles.len() > 1;
         let has_tool_selection = self.available_tools.len() > 1;
-        let has_sandbox = self.docker_available;
+        let is_host_only = self.selected_tool_host_only();
+        let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
         // Field order: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
         // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
@@ -829,8 +843,13 @@ impl NewSessionDialog {
         } else {
             usize::MAX
         };
-        let worktree_field = fi;
-        fi += 1;
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if has_sandbox {
             let f = fi;
             fi += 1;
@@ -958,6 +977,10 @@ impl NewSessionDialog {
                 } else {
                     self.yolo_mode = self.yolo_mode_default;
                 }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_branch.reset();
+                }
                 self.reload_tool_config();
                 DialogResult::Continue
             }
@@ -967,6 +990,10 @@ impl NewSessionDialog {
                     self.yolo_mode = true;
                 } else {
                     self.yolo_mode = self.yolo_mode_default;
+                }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_branch.reset();
                 }
                 self.reload_tool_config();
                 DialogResult::Continue
@@ -1360,17 +1387,23 @@ impl NewSessionDialog {
         let has_yolo = !self.selected_tool_always_yolo();
         let base = if self.has_profile_selection() { 1 } else { 0 };
 
-        // Field layout: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
+        let is_host_only = self.selected_tool_host_only();
+        // Field layout: [profile], title, path, [tool], [yolo], [worktree], [sandbox], group
         let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
         if has_yolo {
             fi += 1;
         }
-        let worktree_field = fi;
-        let mut next = worktree_field + 1;
-        if self.docker_available {
-            next += 1; // sandbox checkbox
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        if self.docker_available && !is_host_only {
+            fi += 1; // sandbox checkbox
         }
-        let group_field = next;
+        let group_field = fi;
 
         let path_field = self.path_field();
         let title_field = if self.has_profile_selection() { 1 } else { 0 };

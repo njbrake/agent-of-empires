@@ -13,9 +13,9 @@
   </p>
 </p>
 
-A terminal session manager for AI coding agents on Linux and macOS. Built on tmux, written in Rust.
+A session manager for AI coding agents on Linux and macOS. Use it from the **terminal (TUI)** or from **any browser ([web dashboard](docs/guides/web-dashboard.md), experimental)**. Built on tmux, written in Rust.
 
-Run multiple AI agents in parallel across different branches of your codebase, each in its own isolated session with optional Docker sandboxing.
+Run multiple AI agents in parallel across different branches of your codebase, each in its own isolated session with optional Docker sandboxing. Access your agents from your laptop, phone, or tablet.
 
 > If you find this project useful, please consider giving it a star on GitHub: it helps others discover the project!
 
@@ -30,6 +30,7 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 - **Git worktrees** -- run parallel agents on different branches of the same repo
 - **Docker sandboxing** -- isolate agents in containers with shared auth volumes
 - **Diff view** -- review git changes and edit files without leaving the TUI
+- **Web dashboard** -- monitor and control sessions from any browser, installable as a PWA ([experimental](docs/guides/web-dashboard.md))
 - **Per-repo config** -- `.agent-of-empires/config.toml` for project-specific settings and hooks
 - **Profiles** -- separate workspaces for different projects or clients
 - **CLI and TUI** -- full functionality from both interfaces
@@ -50,7 +51,7 @@ curl -fsSL \
   https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh \
   | bash
 
-# Homebrew
+# Homebrew (TUI only, web dashboard not yet included)
 brew install aoe
 
 # Nix

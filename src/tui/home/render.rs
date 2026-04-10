@@ -168,22 +168,58 @@ impl HomeView {
             return;
         }
 
-        let list_items: Vec<ListItem> = self
+        let visible_height = if self.search_active {
+            (inner.height as usize).saturating_sub(1)
+        } else {
+            inner.height as usize
+        };
+        let scroll = crate::tui::components::scroll::calculate_scroll(
+            self.flat_items.len(),
+            self.cursor,
+            visible_height,
+        );
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        if scroll.has_more_above {
+            lines.push(Line::from(Span::styled(
+                format!("  [{} more above]", scroll.scroll_offset),
+                Style::default().fg(theme.dimmed),
+            )));
+        }
+
+        for (i, item) in self
             .flat_items
             .iter()
+            .skip(scroll.scroll_offset)
+            .take(scroll.list_visible)
             .enumerate()
-            .map(|(idx, item)| {
-                let is_selected = idx == self.cursor;
-                let is_match =
-                    !self.search_matches.is_empty() && self.search_matches.contains(&idx);
-                self.render_item(item, is_selected, is_match, theme)
-            })
-            .collect();
+        {
+            let abs_idx = i + scroll.scroll_offset;
+            let is_selected = abs_idx == self.cursor;
+            let is_match =
+                !self.search_matches.is_empty() && self.search_matches.contains(&abs_idx);
+            let mut line = self.render_item_line(item, is_selected, is_match, theme);
+            if is_selected {
+                // Pad to full width so the selection background fills the entire row
+                let pad = (inner.width as usize).saturating_sub(line.width());
+                if pad > 0 {
+                    line.spans.push(Span::raw(" ".repeat(pad)));
+                }
+                line = line.style(Style::default().bg(theme.session_selection));
+            }
+            lines.push(line);
+        }
 
-        let list =
-            List::new(list_items).highlight_style(Style::default().bg(theme.session_selection));
+        if scroll.has_more_below {
+            let remaining = self.flat_items.len() - scroll.scroll_offset - scroll.list_visible;
+            lines.push(Line::from(Span::styled(
+                format!("  [{} more below]", remaining),
+                Style::default().fg(theme.dimmed),
+            )));
+        }
 
-        frame.render_widget(list, inner);
+        frame.render_widget(Paragraph::new(lines), inner);
 
         // Render search bar if active
         if self.search_active {
@@ -232,13 +268,13 @@ impl HomeView {
         }
     }
 
-    fn render_item(
+    fn render_item_line(
         &self,
         item: &Item,
         is_selected: bool,
         is_match: bool,
         theme: &Theme,
-    ) -> ListItem<'_> {
+    ) -> Line<'static> {
         let indent = get_indent(item.depth());
 
         use std::borrow::Cow;
@@ -284,7 +320,7 @@ impl HomeView {
                                 Status::Deleting => theme.waiting,
                             };
                             let style = Style::default().fg(color);
-                            (icon, Cow::Borrowed(&inst.title), style)
+                            (icon, Cow::Owned(inst.title.clone()), style)
                         }
                         ViewMode::Terminal => {
                             // For sandboxed sessions, check the appropriate terminal based on mode
@@ -309,13 +345,13 @@ impl HomeView {
                                 (ICON_IDLE, theme.dimmed)
                             };
                             let style = Style::default().fg(color);
-                            (icon, Cow::Borrowed(&inst.title), style)
+                            (icon, Cow::Owned(inst.title.clone()), style)
                         }
                     }
                 } else {
                     (
                         "?",
-                        Cow::Borrowed(id.as_str()),
+                        Cow::Owned(id.clone()),
                         Style::default().fg(theme.dimmed),
                     )
                 }
@@ -370,13 +406,7 @@ impl HomeView {
             }
         }
 
-        let line = Line::from(line_spans);
-
-        if is_selected {
-            ListItem::new(line).style(Style::default().bg(theme.session_selection))
-        } else {
-            ListItem::new(line)
-        }
+        Line::from(line_spans)
     }
 
     /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)

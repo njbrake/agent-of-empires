@@ -399,7 +399,12 @@ impl Instance {
             .map(|c| c.session.agent_status_hooks)
             .unwrap_or(true);
         if hooks_enabled {
-            if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
+            if self.tool == "settl" {
+                // settl uses TOML config, not JSON settings
+                if let Err(e) = crate::hooks::install_settl_hooks() {
+                    tracing::warn!("Failed to install settl hooks: {}", e);
+                }
+            } else if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
                 if self.is_sandboxed() {
                     // For sandboxed sessions, hooks are installed via build_container_config
                 } else {
@@ -481,7 +486,10 @@ impl Instance {
             }
 
             // Prepend AOE_INSTANCE_ID env var if this agent supports hooks
-            let env_prefix = if agent.and_then(|a| a.hook_config.as_ref()).is_some() {
+            // (either JSON-based hook_config or settl's TOML hooks)
+            let has_hooks =
+                agent.and_then(|a| a.hook_config.as_ref()).is_some() || self.tool == "settl";
+            let env_prefix = if has_hooks {
                 format!("AOE_INSTANCE_ID={} ", self.id)
             } else {
                 String::new()

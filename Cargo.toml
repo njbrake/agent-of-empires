@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "1.0.2"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Agent of Empires Contributors"]
@@ -93,6 +93,17 @@ sha2 = "0.10"
 # File locking
 fs2 = "0.4"
 
+# Web server (optional, behind "serve" feature)
+axum = { version = "0.8", features = ["ws"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+rust-embed = { version = "8", features = ["debug-embed"], optional = true }
+mime_guess = { version = "2.0", optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[features]
+default = []
+serve = ["axum", "tower-http", "rust-embed", "mime_guess", "futures-util"]
+
 [dev-dependencies]
 tempfile = "3.14"
 serial_test = "3.4"
@@ -102,11 +113,6 @@ cargo-husky = { version = "1", default-features = false, features = ["precommit-
 lto = true
 codegen-units = 1
 strip = true
-
-[profile.dev-release]
-inherits = "release"
-lto = false
-codegen-units = 16
 
 [[bin]]
 name = "aoe"

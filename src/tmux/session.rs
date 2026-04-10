@@ -26,6 +26,13 @@ impl Session {
         })
     }
 
+    /// Construct a Session from a pre-computed tmux session name.
+    pub fn from_name(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+
     pub fn generate_name(id: &str, title: &str) -> String {
         let safe_title = sanitize_session_name(title);
         format!("{}{}_{}", SESSION_PREFIX, safe_title, truncate_id(id, 8))

@@ -44,6 +44,10 @@ struct AgentConfigMount {
     /// sandbox. Protects credentials placed by the v002 migration or by in-container
     /// authentication from being overwritten by stale host copies.
     preserve_files: &'static [&'static str],
+    /// Files to delete from the sandbox dir before each launch. Prevents stale state
+    /// (e.g. SQLite databases from a previous opencode version) from causing failures
+    /// when the container image is updated.
+    clean_files: &'static [&'static str],
 }
 
 /// Agent config definitions. Each entry describes one agent CLI's config directory.
@@ -68,17 +72,28 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
             (".sandbox-gitconfig", ""),
         ],
         preserve_files: &[".credentials.json", "history.jsonl"],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "opencode",
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
-        skip_entries: &["sandbox"],
+        // Never copy or keep the SQLite database in the sandbox. Opencode must
+        // create its own fresh database on each launch -- a stale db from a
+        // previous opencode version (or copied from the host) causes drizzle
+        // migration failures.
+        skip_entries: &[
+            "sandbox",
+            "opencode.db",
+            "opencode.db-wal",
+            "opencode.db-shm",
+        ],
         seed_files: &[],
         copy_dirs: &[],
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
     },
     AgentConfigMount {
         tool_name: "opencode",
@@ -90,6 +105,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "codex",
@@ -101,6 +117,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "gemini",
@@ -112,6 +129,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "vibe",
@@ -123,6 +141,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "cursor",
@@ -134,6 +153,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "copilot",
@@ -145,6 +165,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "pi",
@@ -156,6 +177,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "droid",
@@ -167,6 +189,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
 ];
 
@@ -472,6 +495,18 @@ fn extract_keychain_credential(_service: &str, _dest: &Path) -> Result<bool> {
 fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::path::PathBuf> {
     let host_dir = home.join(mount.host_rel);
     let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
+
+    // Remove stale files before syncing. This prevents leftovers from a previous
+    // session (e.g. a SQLite database created by an older tool version) from
+    // causing failures when the container image is updated.
+    for &name in mount.clean_files {
+        let path = sandbox_dir.join(name);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!("Failed to clean {}: {}", path.display(), e);
+            }
+        }
+    }
 
     if host_dir.exists() {
         sync_agent_config(
@@ -2120,5 +2155,112 @@ extra_volumes = ["/host/data:/container/data:ro"]
             "extra_volumes should include /host/data:/container/data, got: {:?}",
             volume_pairs
         );
+    }
+
+    // --- prepare_sandbox_dir / clean_files tests ---
+
+    #[test]
+    fn test_clean_files_deletes_stale_database() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        let sandbox_dir = host_dir.join("sandbox");
+        fs::create_dir_all(&sandbox_dir).unwrap();
+
+        // Simulate stale database files left by a previous sandbox session
+        fs::write(sandbox_dir.join("opencode.db"), "stale").unwrap();
+        fs::write(sandbox_dir.join("opencode.db-wal"), "stale-wal").unwrap();
+        fs::write(sandbox_dir.join("opencode.db-shm"), "stale-shm").unwrap();
+
+        // Create a minimal host dir so sync_agent_config doesn't error
+        fs::create_dir_all(&host_dir).unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &[
+                "sandbox",
+                "opencode.db",
+                "opencode.db-wal",
+                "opencode.db-shm",
+            ],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
+        };
+
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
+
+        assert!(!sandbox_dir.join("opencode.db").exists());
+        assert!(!sandbox_dir.join("opencode.db-wal").exists());
+        assert!(!sandbox_dir.join("opencode.db-shm").exists());
+    }
+
+    #[test]
+    fn test_skip_entries_prevents_host_db_copy() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        let sandbox_dir = host_dir.join("sandbox");
+        fs::create_dir_all(&host_dir).unwrap();
+
+        // Host has a database that should NOT be copied
+        fs::write(host_dir.join("opencode.db"), "host-db").unwrap();
+        // Host also has a config file that SHOULD be copied
+        fs::write(host_dir.join("some-config.txt"), "config").unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &[
+                "sandbox",
+                "opencode.db",
+                "opencode.db-wal",
+                "opencode.db-shm",
+            ],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &[],
+        };
+
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
+
+        assert!(
+            !sandbox_dir.join("opencode.db").exists(),
+            "Host database should not be copied to sandbox"
+        );
+        assert!(
+            sandbox_dir.join("some-config.txt").exists(),
+            "Non-skipped files should still be copied"
+        );
+    }
+
+    #[test]
+    fn test_clean_files_noop_when_no_stale_files() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        fs::create_dir_all(&host_dir).unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &["sandbox"],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
+        };
+
+        // Should not panic or error when files don't exist
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
     }
 }

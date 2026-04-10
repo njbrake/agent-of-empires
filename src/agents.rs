@@ -68,6 +68,9 @@ pub struct AgentDef {
     /// hooks into the agent's settings file so status is written to a file instead
     /// of being parsed from tmux pane content.
     pub hook_config: Option<AgentHookConfig>,
+    /// If true, this agent can only run on the host (no sandbox/worktree support).
+    /// The new-session dialog hides sandbox and worktree options for these agents.
+    pub host_only: bool,
 }
 
 /// Hook events shared by Claude Code and Cursor CLI.
@@ -114,6 +117,7 @@ pub const AGENTS: &[AgentDef] = &[
             settings_rel_path: ".claude/settings.json",
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
+        host_only: false,
     },
     AgentDef {
         name: "opencode",
@@ -126,6 +130,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
     },
     AgentDef {
         name: "vibe",
@@ -138,6 +143,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_vibe_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
     },
     AgentDef {
         name: "codex",
@@ -152,6 +158,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
     },
     AgentDef {
         name: "gemini",
@@ -188,6 +195,7 @@ pub const AGENTS: &[AgentDef] = &[
                 },
             ],
         }),
+        host_only: false,
     },
     AgentDef {
         name: "cursor",
@@ -203,6 +211,7 @@ pub const AGENTS: &[AgentDef] = &[
             settings_rel_path: ".cursor/settings.json",
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
+        host_only: false,
     },
     AgentDef {
         name: "copilot",
@@ -215,6 +224,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_copilot_status,
         container_env: &[("COPILOT_CONFIG_DIR", "/root/.copilot")],
         hook_config: None,
+        host_only: false,
     },
     AgentDef {
         name: "pi",
@@ -228,6 +238,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_pi_status,
         container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
         hook_config: None,
+        host_only: false,
     },
     AgentDef {
         name: "droid",
@@ -240,6 +251,20 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_droid_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
+    },
+    AgentDef {
+        name: "settl",
+        binary: "settl",
+        aliases: &["settlers", "catan"],
+        detection: DetectionMethod::Which("settl"),
+        yolo: Some(YoloMode::AlwaysYolo),
+        instruction_flag: None,
+        set_default_command: false,
+        detect_status: status_detection::detect_settl_status,
+        container_env: &[],
+        hook_config: None,
+        host_only: true,
     },
 ];
 
@@ -309,6 +334,7 @@ mod tests {
         assert_eq!(get_agent("copilot").unwrap().binary, "copilot");
         assert_eq!(get_agent("pi").unwrap().binary, "pi");
         assert_eq!(get_agent("droid").unwrap().binary, "droid");
+        assert_eq!(get_agent("settl").unwrap().binary, "settl");
     }
 
     #[test]
@@ -322,7 +348,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi", "droid"
+                "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi",
+                "droid", "settl"
             ]
         );
     }
@@ -340,6 +367,9 @@ mod tests {
         assert_eq!(resolve_tool_name("pi"), Some("pi"));
         assert_eq!(resolve_tool_name("droid"), Some("droid"));
         assert_eq!(resolve_tool_name("factory-droid"), Some("droid"));
+        assert_eq!(resolve_tool_name("settl"), Some("settl"));
+        assert_eq!(resolve_tool_name("settlers"), Some("settl"));
+        assert_eq!(resolve_tool_name("catan"), Some("settl"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -354,6 +384,7 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("copilot")), 7);
         assert_eq!(settings_index_from_name(Some("pi")), 8);
         assert_eq!(settings_index_from_name(Some("droid")), 9);
+        assert_eq!(settings_index_from_name(Some("settl")), 10);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
@@ -362,6 +393,7 @@ mod tests {
         assert_eq!(name_from_settings_index(7), Some("copilot"));
         assert_eq!(name_from_settings_index(8), Some("pi"));
         assert_eq!(name_from_settings_index(9), Some("droid"));
+        assert_eq!(name_from_settings_index(10), Some("settl"));
         assert_eq!(name_from_settings_index(99), None);
     }
 
