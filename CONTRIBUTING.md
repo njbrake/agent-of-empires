@@ -37,6 +37,7 @@ cargo run --release
 ```bash
 cargo build                    # Debug build
 cargo build --release          # Release build
+cargo build --profile dev-release  # Fast optimized build for local dev
 cargo check                    # Fast type-checking
 cargo test                     # Run tests
 cargo fmt                      # Format code

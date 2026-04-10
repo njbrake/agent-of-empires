@@ -28,6 +28,7 @@
 ## Build, Test, and Development Commands
 
 - `cargo build` / `cargo build --release`: compile TUI-only (release binary at `target/release/aoe`).
+- `cargo build --profile dev-release`: faster optimized builds for local development. Skips LTO for quicker compile times while still producing an optimized binary. Use `--release` for final/CI builds.
 - `cargo build --features serve`: compile with web dashboard support (requires Node.js + npm).
 - `cargo run --release`: run from source; requires `tmux` installed.
 - `cargo check`: fast type-checking during development.
