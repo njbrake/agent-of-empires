@@ -457,6 +457,43 @@ pub fn check_hook_trust(project_path: &Path) -> Result<HookTrustStatus> {
 }
 
 // ---------------------------------------------------------------------------
+// Hook resolution helpers (shared by CLI and TUI)
+// ---------------------------------------------------------------------------
+
+/// Resolve hooks from global+profile config when no repo hooks are defined.
+/// Returns `None` if no on_create or on_launch hooks are configured.
+pub fn resolve_global_profile_hooks(profile: &str) -> Option<HooksConfig> {
+    let config = super::profile_config::resolve_config(profile).ok()?;
+    if config.hooks.on_create.is_empty() && config.hooks.on_launch.is_empty() {
+        None
+    } else {
+        Some(config.hooks)
+    }
+}
+
+/// Merge trusted repo hooks onto the global+profile base config.
+/// Repo hooks override (not append) global hooks per-field.
+/// Returns `None` if the merged result has no on_create or on_launch hooks.
+pub fn merge_hooks_with_config(profile: &str, repo_hooks: HooksConfig) -> Option<HooksConfig> {
+    let mut base = super::profile_config::resolve_config(profile)
+        .map(|c| c.hooks)
+        .unwrap_or_default();
+
+    if !repo_hooks.on_create.is_empty() {
+        base.on_create = repo_hooks.on_create;
+    }
+    if !repo_hooks.on_launch.is_empty() {
+        base.on_launch = repo_hooks.on_launch;
+    }
+
+    if base.on_create.is_empty() && base.on_launch.is_empty() {
+        None
+    } else {
+        Some(base)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Hook execution
 // ---------------------------------------------------------------------------
 

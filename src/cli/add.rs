@@ -335,19 +335,21 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     if should_trust {
                         repo_config::trust_repo(&original_project_path, &hooks_hash)?;
                         println!("✓ Repository hooks trusted");
-                        Some(merge_cli_hooks(profile, hooks))
+                        repo_config::merge_hooks_with_config(profile, hooks)
                     } else {
                         println!("Hooks skipped (session created without running hooks)");
                         None
                     }
                 }
                 Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
-                    Some(merge_cli_hooks(profile, repo_hooks))
+                    repo_config::merge_hooks_with_config(profile, repo_hooks)
                 }
-                Ok(repo_config::HookTrustStatus::NoHooks) => resolve_global_profile_hooks(profile),
+                Ok(repo_config::HookTrustStatus::NoHooks) => {
+                    repo_config::resolve_global_profile_hooks(profile)
+                }
                 Err(e) => {
                     tracing::warn!("Failed to check repo hooks: {}", e);
-                    resolve_global_profile_hooks(profile)
+                    repo_config::resolve_global_profile_hooks(profile)
                 }
             };
 
@@ -451,41 +453,6 @@ pub fn is_duplicate_session(instances: &[Instance], title: &str, path: &str) -> 
         let existing_path = inst.project_path.trim_end_matches('/');
         existing_path == normalized_path && inst.title == title
     })
-}
-
-/// Merge trusted repo hooks onto the global+profile base config, mirroring the
-/// TUI's `merge_repo_hooks_onto_config_for`.
-fn merge_cli_hooks(
-    profile: &str,
-    repo_hooks: crate::session::HooksConfig,
-) -> crate::session::HooksConfig {
-    use crate::session::profile_config::resolve_config;
-
-    let mut base = resolve_config(profile).map(|c| c.hooks).unwrap_or_default();
-
-    if !repo_hooks.on_create.is_empty() {
-        base.on_create = repo_hooks.on_create;
-    }
-    if !repo_hooks.on_launch.is_empty() {
-        base.on_launch = repo_hooks.on_launch;
-    }
-    if !repo_hooks.on_destroy.is_empty() {
-        base.on_destroy = repo_hooks.on_destroy;
-    }
-    base
-}
-
-/// Resolve hooks from global+profile config when no repo hooks are defined,
-/// mirroring the TUI's `resolve_global_profile_hooks_for`.
-fn resolve_global_profile_hooks(profile: &str) -> Option<crate::session::HooksConfig> {
-    use crate::session::profile_config::resolve_config;
-
-    let config = resolve_config(profile).ok()?;
-    if config.hooks.on_create.is_empty() && config.hooks.on_launch.is_empty() {
-        None
-    } else {
-        Some(config.hooks)
-    }
 }
 
 fn detect_tool(cmd: &str) -> Result<String> {
