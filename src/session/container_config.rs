@@ -775,12 +775,16 @@ pub(crate) fn build_container_config(
         compute_volume_paths(project_path, project_path_str)?
     };
 
-    // Save project volume container paths so volume_ignores can be applied to all
-    // project mounts (e.g., both the worktree and parent repo in worktree sessions).
-    let project_container_paths: Vec<String> = project_volumes
+    // Collect all paths that should receive volume_ignores: the workspace_path
+    // (where builds happen) plus every project mount root (which may differ in
+    // bare-repo layouts where workspace_path is a subdirectory of the mount).
+    let mut volume_ignore_bases: Vec<String> = project_volumes
         .iter()
         .map(|v| v.container_path.clone())
         .collect();
+    if !volume_ignore_bases.contains(&workspace_path) {
+        volume_ignore_bases.push(workspace_path.clone());
+    }
 
     let mut volumes = project_volumes;
 
@@ -957,7 +961,7 @@ pub(crate) fn build_container_config(
     //   - Exact match: both point to same path
     //   - Anonymous volume is parent of extra_volume (would shadow the mount)
     //   - Anonymous volume is inside extra_volume (redundant/conflicting)
-    let anonymous_volumes: Vec<String> = project_container_paths
+    let anonymous_volumes: Vec<String> = volume_ignore_bases
         .iter()
         .flat_map(|base_path| {
             sandbox_config
@@ -2279,6 +2283,74 @@ volume_ignores = ["target", "node_modules"]
             config.anonymous_volumes.contains(&expected_repo_node),
             "anonymous_volumes should contain parent repo node_modules ({}), got: {:?}",
             expected_repo_node,
+            config.anonymous_volumes
+        );
+    }
+
+    /// Regression test: volume_ignores must still apply to the workspace_path
+    /// in bare-repo layouts where workspace_path is a subdirectory of the mount.
+    #[test]
+    #[serial_test::serial]
+    fn test_volume_ignores_applied_to_bare_repo_worktree() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        let (_dir, main_repo_path, worktree_path) = setup_bare_repo_with_worktree();
+
+        if !worktree_path.exists() {
+            return; // git worktree add failed, skip
+        }
+
+        // Write repo-level config with volume_ignores
+        let config_dir = worktree_path.join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+volume_ignores = ["target"]
+"#,
+        )
+        .unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let project_path_str = worktree_path.to_str().unwrap();
+        let config = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+        )
+        .unwrap();
+
+        // In bare-repo layout, workspace_path is a subdirectory of the single mount.
+        // volume_ignores must apply to the workspace_path (where builds run), not
+        // just the mount root.
+        let main_name = main_repo_path
+            .canonicalize()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let expected_wt_target = format!("/workspace/{}/main/target", main_name);
+        assert!(
+            config.anonymous_volumes.contains(&expected_wt_target),
+            "anonymous_volumes should contain worktree target ({}), got: {:?}",
+            expected_wt_target,
             config.anonymous_volumes
         );
     }
