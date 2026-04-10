@@ -1152,6 +1152,13 @@ impl NewSessionDialog {
         const WT_EXTRA_REPOS: usize = 1;
         const WT_MAX: usize = 2;
 
+        if self.branch_picker.is_active() {
+            if let ListPickerResult::Selected(value) = self.branch_picker.handle_key(key) {
+                self.worktree_branch = Input::new(value);
+            }
+            return DialogResult::Continue;
+        }
+
         // Handle workspace repos list editing when expanded
         if self.workspace_repos_expanded && self.worktree_config_focused_field == WT_EXTRA_REPOS {
             return self.handle_workspace_repos_list_key(key);
