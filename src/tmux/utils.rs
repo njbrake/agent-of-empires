@@ -86,7 +86,7 @@ pub fn is_pane_dead(session_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn pane_current_command(session_name: &str) -> Option<String> {
+pub(crate) fn pane_current_command(session_name: &str) -> Option<String> {
     // Use `^.0` to target the first window's first pane regardless of
     // base-index or which pane is active.  See #435, #488.
     let target = format!("{session_name}:^.0");

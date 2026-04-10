@@ -684,6 +684,10 @@ impl Instance {
         let session = match self.tmux_session() {
             Ok(s) => s,
             Err(_) => {
+                tracing::debug!(
+                    "status '{}': tmux_session() failed, setting Error",
+                    self.title
+                );
                 self.status = Status::Error;
                 self.last_error_check = Some(std::time::Instant::now());
                 return;
@@ -691,6 +695,11 @@ impl Instance {
         };
 
         if !session.exists() {
+            tracing::debug!(
+                "status '{}': session.exists()=false (tmux name={}), setting Error",
+                self.title,
+                tmux::Session::generate_name(&self.id, &self.title)
+            );
             self.status = Status::Error;
             self.last_error_check = Some(std::time::Instant::now());
             return;
@@ -700,8 +709,29 @@ impl Instance {
             .map(|m| m.pane_dead)
             .unwrap_or_else(|| session.is_pane_dead());
 
+        let pane_cmd = metadata
+            .and_then(|m| m.pane_current_command.clone())
+            .or_else(|| {
+                let name = tmux::Session::generate_name(&self.id, &self.title);
+                tmux::utils::pane_current_command(&name)
+            });
+
+        tracing::debug!(
+            "status '{}': exists=true, is_dead={}, pane_cmd={:?}, tool={}, cmd_override={}",
+            self.title,
+            is_dead,
+            pane_cmd,
+            self.tool,
+            self.has_command_override()
+        );
+
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
-            tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
+            tracing::debug!(
+                "status '{}': hook detected {:?}, is_dead={}",
+                self.title,
+                hook_status,
+                is_dead
+            );
             self.status = if is_dead { Status::Error } else { hook_status };
             self.last_error = None;
             return;
@@ -709,60 +739,66 @@ impl Instance {
 
         let pane_content = session.capture_pane(50).unwrap_or_default();
         let detected = tmux::detect_status_from_content(&pane_content, &self.tool);
-        tracing::trace!(
-            "status detection '{}' (tool={}, cmd_override={}, custom_cmd={}): {:?}",
+        tracing::debug!(
+            "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",
             self.title,
-            self.tool,
+            detected,
             self.has_command_override(),
             self.has_custom_command(),
-            detected
         );
         let is_shell_stale = || {
-            if self.expects_shell() {
+            let expects = self.expects_shell();
+            if expects {
                 return false;
             }
-            metadata
+            let shell_check = metadata
                 .and_then(|m| m.pane_current_command.as_deref())
                 .map(tmux::utils::is_shell_command)
-                .unwrap_or_else(|| session.is_pane_running_shell())
+                .unwrap_or_else(|| session.is_pane_running_shell());
+            tracing::debug!(
+                "status '{}': is_shell_stale check: expects_shell={}, shell_check={}",
+                self.title,
+                expects,
+                shell_check,
+            );
+            shell_check
         };
         self.status = match detected {
             Status::Idle if self.has_command_override() => {
                 // Custom commands run agents through wrapper scripts that appear
                 // as shell processes to tmux. Only declare Error when the pane is
-                // actually dead AND the content doesn't show agent UI (the wrapper
-                // may exit while the agent continues as a child process with
-                // remain-on-exit preserving the TUI output).
-                if is_dead && !pane_has_agent_content(&pane_content, &self.tool) {
+                // actually dead; don't use is_shell_stale() since the shell IS
+                // the expected wrapper process.
+                if is_dead {
                     Status::Error
                 } else {
                     Status::Unknown
                 }
             }
-            Status::Idle if is_dead => {
-                // The pane process exited but remain-on-exit preserves the
-                // screen. If the captured content still shows the agent's
-                // TUI (e.g. a nix wrapper exited while the agent lives on
-                // as a child), keep Idle instead of declaring Error.
-                if pane_has_agent_content(&pane_content, &self.tool) {
-                    Status::Idle
-                } else {
-                    Status::Error
-                }
-            }
+            Status::Idle if is_dead => Status::Error,
             Status::Idle if is_shell_stale() => {
                 // A shell is the foreground process but the pane is alive.
                 // Check captured pane content: if it contains the agent's
                 // UI the agent is still alive; only declare Error when the
                 // content looks like a bare shell prompt.
                 if pane_has_agent_content(&pane_content, &self.tool) {
+                    tracing::debug!(
+                        "status '{}': shell stale but pane has agent content, staying Idle",
+                        self.title,
+                    );
                     Status::Idle
                 } else {
+                    tracing::debug!(
+                        "status '{}': shell stale, no agent content, setting Error",
+                        self.title,
+                    );
                     Status::Error
                 }
             }
             other => other,
         };
+
+        tracing::debug!("status '{}': final={:?}", self.title, self.status);
 
         self.last_error = None;
     }
