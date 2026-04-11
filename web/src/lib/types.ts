@@ -11,6 +11,7 @@ export interface SessionResponse {
   last_accessed_at: string | null;
   last_error: string | null;
   branch: string | null;
+  main_repo_path: string | null;
   is_sandboxed: boolean;
   has_terminal: boolean;
 }

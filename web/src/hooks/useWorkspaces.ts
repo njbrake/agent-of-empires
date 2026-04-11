@@ -45,8 +45,12 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
     const groups = new Map<string, SessionResponse[]>();
 
     for (const session of sessions) {
-      const path = normalizePath(session.project_path);
-      const key = `${path}::${session.branch ?? "__default__"}`;
+      // Use main_repo_path for grouping when available (worktree sessions),
+      // fall back to project_path for non-worktree sessions
+      const repoPath = normalizePath(
+        session.main_repo_path ?? session.project_path,
+      );
+      const key = `${repoPath}::${session.branch ?? "__default__"}`;
       const existing = groups.get(key);
       if (existing) {
         existing.push(session);
@@ -63,7 +67,6 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
       const computedStatus = deriveStatus(groupSessions);
       const override = overrides[id];
 
-      // Active session status overrides manual reviewing/archived
       let status: WorkspaceStatus;
       if (computedStatus === "active") {
         status = "active";
@@ -74,7 +77,9 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
       }
 
       const branch = first.branch;
-      const projectPath = normalizePath(first.project_path);
+      const projectPath = normalizePath(
+        first.main_repo_path ?? first.project_path,
+      );
       const displayName =
         branch ?? projectPath.split("/").pop() ?? projectPath;
 

@@ -57,3 +57,4 @@ debug.log
 website/.next/
 .worktrees/
 .gstack/
+.playwright-mcp/

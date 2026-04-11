@@ -29,6 +29,7 @@ pub struct SessionResponse {
     pub last_accessed_at: Option<String>,
     pub last_error: Option<String>,
     pub branch: Option<String>,
+    pub main_repo_path: Option<String>,
     pub is_sandboxed: bool,
     pub has_terminal: bool,
 }
@@ -47,6 +48,7 @@ impl From<&Instance> for SessionResponse {
             last_accessed_at: inst.last_accessed_at.map(|t| t.to_rfc3339()),
             last_error: inst.last_error.clone(),
             branch: inst.worktree_info.as_ref().map(|w| w.branch.clone()),
+            main_repo_path: inst.worktree_info.as_ref().map(|w| w.main_repo_path.clone()),
             is_sandboxed: inst.is_sandboxed(),
             has_terminal: inst.terminal_info.is_some(),
         }
