@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "xtask"]
+members = [".", "xtask", "desktop"]
 
 [package]
 name = "agent-of-empires"

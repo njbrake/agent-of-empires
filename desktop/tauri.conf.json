@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicklason/tauri-v2-schema/main/tauri.conf.json",
+  "productName": "Agent of Empires",
+  "version": "0.1.0",
+  "identifier": "ai.mozilla.agent-of-empires",
+  "build": {
+    "frontendDist": "../web/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "tooltip": "Agent of Empires"
+    },
+    "windows": [
+      {
+        "title": "Agent of Empires",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "url": "about:blank"
+      }
+    ],
+    "security": {
+      "dangerousRemoteDomainIpcAccess": [
+        {
+          "domain": "localhost",
+          "enableTauriAPI": false,
+          "windows": ["main"],
+          "plugins": []
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  }
+}

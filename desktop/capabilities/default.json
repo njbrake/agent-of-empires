@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicklason/tauri-v2-schema/main/capabilities.json",
+  "identifier": "default",
+  "description": "Default capabilities for the Agent of Empires desktop app",
+  "windows": ["main", "qr-popover"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-create",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-center",
+    "core:tray:default",
+    "shell:allow-open",
+    "notification:default",
+    "notification:allow-notify",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission"
+  ]
+}

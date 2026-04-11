@@ -85,9 +85,22 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         let _ = std::fs::write(&path, std::process::id().to_string());
     }
 
-    let result =
-        crate::server::start_server(profile, &args.host, args.port, args.no_auth, args.read_only)
-            .await;
+    let config = crate::server::ServerConfig {
+        profile: profile.to_string(),
+        host: args.host.clone(),
+        port: args.port,
+        no_auth: args.no_auth,
+        read_only: args.read_only,
+        remote_enabled: None,
+        print_banner: true,
+        write_url_file: true,
+        ready_signal: None,
+        status_events: None,
+        auth_token: None,
+    };
+    let result = crate::server::start_server_with_config(config)
+        .await
+        .map(|_| ());
 
     // Clean up PID and URL files on exit
     if let Ok(path) = pid_file_path() {

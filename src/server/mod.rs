@@ -70,6 +70,9 @@ pub struct ServerConfig {
     /// Broadcast channel sender for status change events.
     /// If provided, the poll loop will send status transitions through it.
     pub status_events: Option<tokio::sync::broadcast::Sender<Vec<StatusChange>>>,
+    /// Pre-generated auth token. If None, a new one is generated.
+    /// The desktop app passes its own token so it can share it with the webview and QR code.
+    pub auth_token: Option<String>,
 }
 
 /// Generate a 32-character alphanumeric auth token.
@@ -100,7 +103,7 @@ pub async fn start_server_with_config(config: ServerConfig) -> anyhow::Result<St
         );
         None
     } else {
-        Some(generate_auth_token())
+        Some(config.auth_token.unwrap_or_else(generate_auth_token))
     };
 
     let token_result = auth_token.clone().unwrap_or_default();
@@ -165,30 +168,6 @@ pub async fn start_server_with_config(config: ServerConfig) -> anyhow::Result<St
     )
     .await?;
     Ok(token_result)
-}
-
-/// Start the web server with default CLI settings (banner, URL file, no remote filtering).
-pub async fn start_server(
-    profile: &str,
-    host: &str,
-    port: u16,
-    no_auth: bool,
-    read_only: bool,
-) -> anyhow::Result<()> {
-    let config = ServerConfig {
-        profile: profile.to_string(),
-        host: host.to_string(),
-        port,
-        no_auth,
-        read_only,
-        remote_enabled: None,
-        print_banner: true,
-        write_url_file: true,
-        ready_signal: None,
-        status_events: None,
-    };
-    start_server_with_config(config).await?;
-    Ok(())
 }
 
 /// Axum middleware that enforces remote access control.
@@ -360,10 +339,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
                 let mut changes = Vec::new();
                 for inst in &instances {
                     let current_status = format!("{:?}", inst.status);
-                    let old_status = previous_statuses
-                        .get(&inst.id)
-                        .cloned()
-                        .unwrap_or_default();
+                    let old_status = previous_statuses.get(&inst.id).cloned().unwrap_or_default();
                     if !old_status.is_empty() && old_status != current_status {
                         changes.push(StatusChange {
                             session_id: inst.id.clone(),
@@ -376,6 +352,11 @@ async fn status_poll_loop(state: Arc<AppState>) {
                     }
                     previous_statuses.insert(inst.id.clone(), current_status);
                 }
+                // Remove stale entries for sessions that no longer exist
+                let current_ids: std::collections::HashSet<&str> =
+                    instances.iter().map(|i| i.id.as_str()).collect();
+                previous_statuses.retain(|id, _| current_ids.contains(id.as_str()));
+
                 if !changes.is_empty() {
                     if let Some(ref tx) = state.status_events {
                         // Ignore send errors (no subscribers is fine)
@@ -395,6 +376,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::atomic::AtomicBool;
 
+    #[allow(dead_code)]
     fn make_state(remote_enabled: Option<Arc<AtomicBool>>) -> Arc<AppState> {
         Arc::new(AppState {
             profile: "default".to_string(),
@@ -463,6 +445,7 @@ mod tests {
             write_url_file: true,
             ready_signal: None,
             status_events: None,
+            auth_token: None,
         };
         assert!(config.print_banner);
         assert!(config.write_url_file);
@@ -486,17 +469,19 @@ mod tests {
             write_url_file: false,
             ready_signal: Some(tx),
             status_events: Some(events_tx),
+            auth_token: Some("mytoken123".to_string()),
         };
         assert!(!config.print_banner);
         assert!(!config.write_url_file);
         assert!(config.remote_enabled.is_some());
+        assert!(config.auth_token.is_some());
     }
 
     #[test]
     fn test_broadcast_no_subscribers_no_panic() {
-        let (tx, _) = tokio::sync::broadcast::channel::<Vec<StatusChange>>(16);
+        let (tx, rx) = tokio::sync::broadcast::channel::<Vec<StatusChange>>(16);
         // Drop the receiver, then send. Should not panic.
-        drop(_);
+        drop(rx);
         let result = tx.send(vec![StatusChange {
             session_id: "test".to_string(),
             title: "test".to_string(),
