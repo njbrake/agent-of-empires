@@ -180,6 +180,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

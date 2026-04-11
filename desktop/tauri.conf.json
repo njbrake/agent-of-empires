@@ -8,13 +8,9 @@
   },
   "app": {
     "withGlobalTauri": false,
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
-      "tooltip": "Agent of Empires"
-    },
     "windows": [
       {
+        "label": "main",
         "title": "Agent of Empires",
         "width": 1200,
         "height": 800,
@@ -24,14 +20,7 @@
       }
     ],
     "security": {
-      "dangerousRemoteDomainIpcAccess": [
-        {
-          "domain": "localhost",
-          "enableTauriAPI": false,
-          "windows": ["main"],
-          "plugins": []
-        }
-      ]
+      "csp": null
     }
   },
   "bundle": {

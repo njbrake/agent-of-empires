@@ -13,6 +13,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use agent_of_empires::server::{generate_auth_token, ServerConfig, StatusChange};
+use tauri::Manager;
 
 /// Try ports 8080..=8090 and return the first available one.
 fn find_available_port() -> anyhow::Result<u16> {
@@ -43,13 +44,15 @@ fn cleanup_server_files() {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let port = find_available_port()?;
     let token = generate_auth_token();
     let remote_enabled = Arc::new(AtomicBool::new(false));
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<String>();
+    // ready_rx is consumed exactly once inside the Tauri setup closure, which
+    // requires Fn (not FnOnce), so wrap it in a Mutex<Option<_>> to allow `take`.
+    let ready_rx = std::sync::Mutex::new(Some(ready_rx));
     let (status_tx, _status_rx) = tokio::sync::broadcast::channel::<Vec<StatusChange>>(64);
 
     // Values for the server task
@@ -63,8 +66,10 @@ async fn main() -> anyhow::Result<()> {
     let setup_status_tx = status_tx.clone();
     let setup_port = port;
 
-    // Spawn the web server
-    tokio::spawn(async move {
+    // Spawn the web server on Tauri's async runtime. Using `tauri::async_runtime`
+    // instead of `tokio::spawn` + `#[tokio::main]` avoids the nested-runtime panic
+    // when `setup` calls `block_on` to wait for the ready signal.
+    tauri::async_runtime::spawn(async move {
         let config = ServerConfig {
             profile: "default".to_string(),
             host: "0.0.0.0".to_string(),
@@ -80,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         };
         if let Err(e) = agent_of_empires::server::start_server_with_config(config).await {
             tracing::error!("Server failed: {}", e);
+            eprintln!("Server failed: {}", e);
         }
     });
 
@@ -89,8 +95,13 @@ async fn main() -> anyhow::Result<()> {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            // Wait for the server to be ready, then navigate the webview
-            let url = tauri::async_runtime::block_on(async { ready_rx.await })?;
+            // Wait for the server to be ready, then navigate the webview.
+            let rx = ready_rx
+                .lock()
+                .expect("ready_rx mutex poisoned")
+                .take()
+                .expect("setup called more than once");
+            let url = tauri::async_runtime::block_on(rx)?;
 
             // Write PID/URL files for CLI coexistence
             let _ = write_server_files(&url);
@@ -100,7 +111,8 @@ async fn main() -> anyhow::Result<()> {
 
             // Navigate the main window to the dashboard
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.navigate(webview_url.parse().unwrap());
+                let parsed: url::Url = webview_url.parse().expect("webview URL must be valid");
+                let _ = window.navigate(parsed);
             }
 
             // Set up system tray

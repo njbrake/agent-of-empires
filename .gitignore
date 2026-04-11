@@ -3,6 +3,9 @@
 !.claude/skills/
 # Rust build artifacts
 /target/
+
+# Tauri codegen output
+desktop/gen/
 # Documentation build output
 /book/
 

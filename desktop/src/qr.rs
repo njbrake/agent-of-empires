@@ -2,6 +2,17 @@
 
 use std::net::IpAddr;
 
+/// A detected network interface suitable for remote access pairing.
+#[derive(Debug, Clone)]
+pub struct DetectedInterface {
+    /// Interface name (e.g. "en0", "utun3") — used for the UI label.
+    pub name: String,
+    /// IPv4 address.
+    pub ip: IpAddr,
+    /// Human-friendly label: "Wi-Fi", "Tailscale", "Ethernet", etc.
+    pub label: String,
+}
+
 /// Generate a QR code as a PNG data URI (data:image/png;base64,...).
 pub fn generate_qr_data_uri(url: &str) -> anyhow::Result<String> {
     use image::Luma;
@@ -24,35 +35,75 @@ pub fn generate_qr_data_uri(url: &str) -> anyhow::Result<String> {
     Ok(format!("data:image/png;base64,{}", b64))
 }
 
-/// Detect non-loopback, non-Docker LAN IPv4 addresses.
-pub fn detect_lan_ips() -> Vec<IpAddr> {
+/// Detect network interfaces usable for remote pairing.
+///
+/// Includes physical LAN (en*, eth*) AND VPN tunnels (utun*, tun*) since
+/// Tailscale, WireGuard, etc. are valid pairing targets. Skips loopback,
+/// Docker bridges, and link-local auto-config addresses.
+pub fn detect_interfaces() -> Vec<DetectedInterface> {
     let Ok(interfaces) = local_ip_address::list_afinet_netifas() else {
         return Vec::new();
     };
 
-    interfaces
+    let mut out: Vec<DetectedInterface> = interfaces
         .into_iter()
         .filter_map(|(name, ip)| {
-            // Skip loopback
             if ip.is_loopback() {
                 return None;
             }
-            // Only IPv4 for QR code URLs (simpler for users)
             if !ip.is_ipv4() {
                 return None;
             }
-            // Skip Docker/container interfaces
+            // Skip link-local auto-config (169.254.x.x)
+            if let IpAddr::V4(v4) = ip {
+                if v4.is_link_local() {
+                    return None;
+                }
+            }
+            // Skip Docker/container bridges — not reachable from phones
             let lower = name.to_lowercase();
-            if lower.starts_with("docker")
-                || lower.starts_with("br-")
-                || lower.starts_with("veth")
-                || lower.starts_with("utun")
+            if lower.starts_with("docker") || lower.starts_with("br-") || lower.starts_with("veth")
             {
                 return None;
             }
-            Some(ip)
+            let label = label_for_interface(&name);
+            Some(DetectedInterface { name, ip, label })
         })
-        .collect()
+        .collect();
+
+    // Sort so physical LAN comes first (most common case), VPNs second.
+    out.sort_by_key(|iface| {
+        let lname = iface.name.to_lowercase();
+        if lname.starts_with("en") || lname.starts_with("eth") || lname.starts_with("wlan") {
+            0
+        } else if lname.starts_with("utun") || lname.starts_with("tun") {
+            1
+        } else {
+            2
+        }
+    });
+    out
+}
+
+/// Map an interface name to a human-friendly label.
+fn label_for_interface(name: &str) -> String {
+    let lower = name.to_lowercase();
+    // macOS: en0 is usually Wi-Fi on laptops, en1/en2 are Ethernet/Thunderbolt
+    if lower == "en0" {
+        "Wi-Fi".to_string()
+    } else if lower.starts_with("en") {
+        format!("Ethernet ({})", name)
+    } else if lower.starts_with("utun") || lower.starts_with("tun") {
+        // utun on macOS is most commonly Tailscale, but could be WireGuard/OpenVPN.
+        // We can't know for sure without more introspection.
+        format!("VPN / Tailscale ({})", name)
+    } else if lower.starts_with("wlan") {
+        "Wi-Fi".to_string()
+    } else if lower.starts_with("eth") {
+        format!("Ethernet ({})", name)
+    } else {
+        name.to_string()
+    }
 }
 
 /// Base64 encode raw bytes.
@@ -111,27 +162,34 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_lan_ips_excludes_loopback() {
-        let ips = detect_lan_ips();
-        for ip in &ips {
-            assert!(!ip.is_loopback(), "LAN IPs should not include loopback");
+    fn test_detect_interfaces_excludes_loopback() {
+        let ifaces = detect_interfaces();
+        for iface in &ifaces {
+            assert!(!iface.ip.is_loopback(), "should exclude loopback");
         }
     }
 
     #[test]
-    fn test_detect_lan_ips_returns_ipv4() {
-        let ips = detect_lan_ips();
-        for ip in &ips {
-            assert!(ip.is_ipv4(), "LAN IPs should be IPv4 only");
+    fn test_detect_interfaces_returns_ipv4() {
+        let ifaces = detect_interfaces();
+        for iface in &ifaces {
+            assert!(iface.ip.is_ipv4(), "should be IPv4 only");
         }
     }
 
     #[test]
-    fn test_detect_lan_ips_handles_no_network() {
-        // This test just verifies detect_lan_ips doesn't panic.
-        // In a container with no LAN interfaces, it returns an empty vec.
-        let ips = detect_lan_ips();
-        // No assertion on contents; presence of any IPs depends on the environment.
-        let _ = ips;
+    fn test_detect_interfaces_handles_no_network() {
+        // Just verify it doesn't panic.
+        let _ = detect_interfaces();
+    }
+
+    #[test]
+    fn test_label_for_interface_en0_is_wifi() {
+        assert_eq!(label_for_interface("en0"), "Wi-Fi");
+    }
+
+    #[test]
+    fn test_label_for_interface_utun_is_vpn() {
+        assert_eq!(label_for_interface("utun3"), "VPN / Tailscale (utun3)");
     }
 }
