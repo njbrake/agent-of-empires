@@ -32,7 +32,9 @@ export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => window.innerWidth >= 768,
+  );
   const [actionPending, setActionPending] = useState(false);
 
   // For post-create selection: store what to select, pick it up when sessions update

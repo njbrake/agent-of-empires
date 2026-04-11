@@ -208,22 +208,12 @@ export function WorkspaceSidebar({
             );
           })}
 
-          {/* Empty state */}
-          {filtered.length === 0 && (
-            <div className="flex flex-col items-center justify-center px-4 py-12 text-center">
+          {/* Search empty state (only when actively filtering) */}
+          {filtered.length === 0 && searchQuery && (
+            <div className="px-4 py-8 text-center">
               <p className="font-body text-sm text-text-muted">
-                {searchQuery
-                  ? `No matches for "${searchQuery}"`
-                  : "No sessions yet"}
+                No matches for "{searchQuery}"
               </p>
-              {!searchQuery && (
-                <button
-                  onClick={onNew}
-                  className="mt-3 px-3 py-1.5 font-body text-xs rounded-md bg-brand-600 text-surface-950 hover:bg-brand-700 cursor-pointer transition-colors"
-                >
-                  Create session
-                </button>
-              )}
             </div>
           )}
         </div>
