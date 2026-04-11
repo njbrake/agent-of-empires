@@ -88,7 +88,7 @@ enum_dispatch = "0.3.13"
 similar = "2.6"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 
 # File locking
 fs2 = "0.4"
