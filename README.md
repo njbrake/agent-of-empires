@@ -43,7 +43,14 @@ The key tmux shortcut to know: **`Ctrl+b d`** detaches from a session and return
 
 ## Installation
 
-**Prerequisites:** [tmux](https://github.com/tmux/tmux/wiki) (required), [Docker](https://www.docker.com/) (optional, for sandboxing)
+AoE is the same tool it's always been: a terminal-first session manager built on tmux. The TUI (`aoe`) is the original interface and the way most people use it. There's now also an experimental macOS desktop app and an embedded Rust library, but they're optional shells around the same core — you can ignore them entirely if you just want the TUI.
+
+**Prerequisites:**
+- [**tmux**](https://github.com/tmux/tmux/wiki) (required)
+- **At least one AI coding agent CLI** -- AoE is a session manager, not an agent. You need to install Claude Code, Codex, Gemini, OpenCode, or another supported agent before sessions are useful. See the [installation guide](docs/installation.md#at-least-one-ai-coding-agent) for install commands.
+- [**Docker**](https://www.docker.com/) (optional, only for [sandboxing](docs/guides/sandbox.md))
+
+### Install the TUI / CLI (most users)
 
 ```bash
 # Quick install (Linux & macOS)
@@ -61,6 +68,39 @@ nix run github:njbrake/agent-of-empires
 git clone https://github.com/njbrake/agent-of-empires
 cd agent-of-empires && cargo build --release
 ```
+
+After install, run `aoe` to launch the TUI. That's the main interface and the same one you've always known.
+
+### Optional: macOS desktop app
+
+If you want a native macOS window with a menu bar tray and one-click QR pairing for your phone, you can also download the desktop app. It runs the same `aoe` underneath — same sessions, same config, same agents — just with a window and a tray icon around it. The TUI/CLI still works exactly as before whether you install this or not.
+
+[**Download Agent of Empires for Mac →**](https://github.com/njbrake/agent-of-empires/releases/latest)
+
+The desktop app is macOS-only for now and is currently experimental.
+
+### Optional: web dashboard
+
+If you want a browser/phone interface without the desktop app, install via the script (above) or build from source with `--features serve`, then run:
+
+```bash
+aoe serve
+```
+
+The web dashboard is currently experimental. The Homebrew formula does not yet include it.
+
+### Optional: embed in your own Rust code
+
+If you're building a tool on top of AoE:
+
+```toml
+[dependencies]
+agent-of-empires = "1.1"  # core only, no web/desktop deps
+```
+
+See [docs.rs/agent-of-empires](https://docs.rs/agent-of-empires) for the public API.
+
+> **Want a comparison of all the options?** See [Which version is right for me?](docs/compare.md).
 
 ## Quick Start
 
