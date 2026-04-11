@@ -684,7 +684,7 @@ impl Instance {
         let session = match self.tmux_session() {
             Ok(s) => s,
             Err(_) => {
-                tracing::debug!(
+                tracing::trace!(
                     "status '{}': tmux_session() failed, setting Error",
                     self.title
                 );
@@ -695,7 +695,7 @@ impl Instance {
         };
 
         if !session.exists() {
-            tracing::debug!(
+            tracing::trace!(
                 "status '{}': session.exists()=false (tmux name={}), setting Error",
                 self.title,
                 tmux::Session::generate_name(&self.id, &self.title)
@@ -716,7 +716,7 @@ impl Instance {
                 tmux::utils::pane_current_command(&name)
             });
 
-        tracing::debug!(
+        tracing::trace!(
             "status '{}': exists=true, is_dead={}, pane_cmd={:?}, tool={}, cmd_override={}",
             self.title,
             is_dead,
@@ -726,7 +726,7 @@ impl Instance {
         );
 
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
-            tracing::debug!(
+            tracing::trace!(
                 "status '{}': hook detected {:?}, is_dead={}",
                 self.title,
                 hook_status,
@@ -739,7 +739,7 @@ impl Instance {
 
         let pane_content = session.capture_pane(50).unwrap_or_default();
         let detected = tmux::detect_status_from_content(&pane_content, &self.tool);
-        tracing::debug!(
+        tracing::trace!(
             "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",
             self.title,
             detected,
@@ -755,7 +755,7 @@ impl Instance {
                 .and_then(|m| m.pane_current_command.as_deref())
                 .map(tmux::utils::is_shell_command)
                 .unwrap_or_else(|| session.is_pane_running_shell());
-            tracing::debug!(
+            tracing::trace!(
                 "status '{}': is_shell_stale check: expects_shell={}, shell_check={}",
                 self.title,
                 expects,
@@ -782,13 +782,13 @@ impl Instance {
                 // UI the agent is still alive; only declare Error when the
                 // content looks like a bare shell prompt.
                 if pane_has_agent_content(&pane_content, &self.tool) {
-                    tracing::debug!(
+                    tracing::trace!(
                         "status '{}': shell stale but pane has agent content, staying Idle",
                         self.title,
                     );
                     Status::Idle
                 } else {
-                    tracing::debug!(
+                    tracing::trace!(
                         "status '{}': shell stale, no agent content, setting Error",
                         self.title,
                     );
@@ -798,7 +798,7 @@ impl Instance {
             other => other,
         };
 
-        tracing::debug!("status '{}': final={:?}", self.title, self.status);
+        tracing::trace!("status '{}': final={:?}", self.title, self.status);
 
         self.last_error = None;
     }
