@@ -201,11 +201,12 @@ impl HomeView {
                                     tracing::error!("Failed to trust repo: {}", e);
                                 }
                                 let merged =
-                                    self.merge_repo_hooks_onto_config_for(&data.profile, hooks);
+                                    repo_config::merge_hooks_with_config(&data.profile, hooks);
                                 return self.create_session_with_hooks(data, merged);
                             }
                             HookTrustAction::Skip => {
-                                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
+                                let fallback =
+                                    repo_config::resolve_global_profile_hooks(&data.profile);
                                 return self.create_session_with_hooks(data, fallback);
                             }
                         }
@@ -1105,16 +1106,16 @@ impl HomeView {
                 None
             }
             Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
-                let merged = self.merge_repo_hooks_onto_config_for(&data.profile, repo_hooks);
+                let merged = repo_config::merge_hooks_with_config(&data.profile, repo_hooks);
                 self.create_session_with_hooks(data, merged)
             }
             Ok(repo_config::HookTrustStatus::NoHooks) => {
-                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
+                let fallback = repo_config::resolve_global_profile_hooks(&data.profile);
                 self.create_session_with_hooks(data, fallback)
             }
             Err(e) => {
                 tracing::warn!("Failed to check repo hooks: {}", e);
-                let fallback = self.resolve_global_profile_hooks_for(&data.profile);
+                let fallback = repo_config::resolve_global_profile_hooks(&data.profile);
                 self.create_session_with_hooks(data, fallback)
             }
         }
@@ -1170,40 +1171,5 @@ impl HomeView {
 
         // No mouse handling for other views currently
         None
-    }
-
-    /// Resolve hooks from global+profile config for the given profile.
-    fn resolve_global_profile_hooks_for(
-        &self,
-        profile: &str,
-    ) -> Option<crate::session::HooksConfig> {
-        let config = resolve_config(profile).ok()?;
-        if config.hooks.on_create.is_empty() && config.hooks.on_launch.is_empty() {
-            None
-        } else {
-            Some(config.hooks)
-        }
-    }
-
-    /// Merge trusted repo hooks onto the resolved config for the given profile.
-    fn merge_repo_hooks_onto_config_for(
-        &self,
-        profile: &str,
-        repo_hooks: crate::session::HooksConfig,
-    ) -> Option<crate::session::HooksConfig> {
-        let mut base = resolve_config(profile).map(|c| c.hooks).unwrap_or_default();
-
-        if !repo_hooks.on_create.is_empty() {
-            base.on_create = repo_hooks.on_create;
-        }
-        if !repo_hooks.on_launch.is_empty() {
-            base.on_launch = repo_hooks.on_launch;
-        }
-
-        if base.on_create.is_empty() && base.on_launch.is_empty() {
-            None
-        } else {
-            Some(base)
-        }
     }
 }

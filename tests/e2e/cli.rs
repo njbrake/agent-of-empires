@@ -1,4 +1,5 @@
 use serial_test::serial;
+use std::path::Path;
 use std::process::Command;
 
 use crate::harness::{require_tmux, TuiTestHarness};
@@ -549,4 +550,145 @@ fn test_cli_rename_preserves_tmux_session() {
     let _ = Command::new("tmux")
         .args(["kill-session", "-t", &new_tmux_name])
         .output();
+}
+
+/// Initialize a bare-minimum git repo at the given path so worktree operations work.
+fn init_git_repo(path: &Path) {
+    std::fs::create_dir_all(path).expect("create repo dir");
+    let init = Command::new("git")
+        .args(["init"])
+        .current_dir(path)
+        .output()
+        .expect("git init");
+    assert!(init.status.success(), "git init failed");
+
+    // Need at least one commit for worktree creation.
+    let _ = Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(path)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output();
+}
+
+/// Regression test for #591: repo on_create hooks should execute for multi-repo
+/// workspace sessions created via `aoe add --repo`.
+#[test]
+#[serial]
+fn test_cli_add_workspace_repo_hooks_execute() {
+    let h = TuiTestHarness::new("cli_workspace_hooks");
+
+    let project_a = h.home_path().join("project-a");
+    let project_b = h.home_path().join("project-b");
+    init_git_repo(&project_a);
+    init_git_repo(&project_b);
+
+    // Set up repo-level hooks in project-a.
+    let hook_marker = h.home_path().join("hook-ran.marker");
+    let aoe_config_dir = project_a.join(".agent-of-empires");
+    std::fs::create_dir_all(&aoe_config_dir).expect("create .agent-of-empires dir");
+    let config = format!(
+        "[hooks]\non_create = [\"touch {}\"]\n",
+        hook_marker.display()
+    );
+    std::fs::write(aoe_config_dir.join("config.toml"), &config).expect("write repo config");
+
+    let add_output = h.run_cli(&[
+        "add",
+        project_a.to_str().unwrap(),
+        "--repo",
+        project_b.to_str().unwrap(),
+        "-w",
+        "feat/hook-test",
+        "-b",
+        "-t",
+        "HookTest",
+        "--trust-hooks",
+    ]);
+    let stdout = String::from_utf8_lossy(&add_output.stdout);
+    let stderr = String::from_utf8_lossy(&add_output.stderr);
+    assert!(
+        add_output.status.success(),
+        "aoe add --repo failed:\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    assert!(
+        stdout.contains("on_create hooks completed"),
+        "should print hook completion message.\nstdout: {}",
+        stdout
+    );
+    assert!(
+        hook_marker.exists(),
+        "hook marker file should exist, proving on_create hooks ran"
+    );
+}
+
+/// Regression test for #591: global hooks should execute as fallback when no
+/// repo hooks are defined, even for workspace sessions.
+#[test]
+#[serial]
+fn test_cli_add_workspace_global_hook_fallback() {
+    let h = TuiTestHarness::new("cli_workspace_global_hooks");
+
+    let project_a = h.home_path().join("project-a");
+    let project_b = h.home_path().join("project-b");
+    init_git_repo(&project_a);
+    init_git_repo(&project_b);
+
+    // Set up global hooks (no repo config).
+    let hook_marker = h.home_path().join("global-hook-ran.marker");
+    let config_dir = if cfg!(target_os = "linux") {
+        h.home_path().join(".config/agent-of-empires")
+    } else {
+        h.home_path().join(".agent-of-empires")
+    };
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[hooks]
+on_create = ["touch {}"]
+"#,
+        env!("CARGO_PKG_VERSION"),
+        hook_marker.display()
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write global config");
+
+    let add_output = h.run_cli(&[
+        "add",
+        project_a.to_str().unwrap(),
+        "--repo",
+        project_b.to_str().unwrap(),
+        "-w",
+        "feat/global-hook-test",
+        "-b",
+        "-t",
+        "GlobalHookTest",
+    ]);
+    let stdout = String::from_utf8_lossy(&add_output.stdout);
+    let stderr = String::from_utf8_lossy(&add_output.stderr);
+    assert!(
+        add_output.status.success(),
+        "aoe add --repo failed:\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    assert!(
+        stdout.contains("on_create hooks completed"),
+        "should print hook completion message for global hooks.\nstdout: {}",
+        stdout
+    );
+    assert!(
+        hook_marker.exists(),
+        "global hook marker file should exist, proving global on_create hooks ran as fallback"
+    );
 }
