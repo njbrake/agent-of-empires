@@ -101,6 +101,16 @@ body {
   animation: slide-in-right 0.2s ease-out;
 }
 
+/* Focus indicators for keyboard navigation */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
+
 @media (max-width: 768px) {
   button,
   [role="button"],

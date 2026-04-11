@@ -38,12 +38,6 @@ export interface AgentInfo {
   binary: string;
 }
 
-/** Group info */
-export interface GroupInfo {
-  path: string;
-  session_count: number;
-}
-
 /** Diff response */
 export interface DiffResponse {
   files: DiffFileInfo[];
@@ -53,4 +47,20 @@ export interface DiffResponse {
 export interface DiffFileInfo {
   path: string;
   status: string;
+}
+
+/** Workspace status derived from session states + manual overrides */
+export type WorkspaceStatus = "active" | "idle" | "reviewing" | "archived";
+
+/** Workspace: a group of sessions sharing the same project + branch */
+export interface Workspace {
+  id: string;
+  branch: string | null;
+  projectPath: string;
+  displayName: string;
+  agents: string[];
+  primaryAgent: string;
+  status: WorkspaceStatus;
+  sessions: SessionResponse[];
+  diff?: DiffResponse;
 }

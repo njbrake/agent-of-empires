@@ -3,12 +3,10 @@ interface Props {
 }
 
 const SHORTCUTS = [
-  { key: "/", desc: "Search sessions" },
   { key: "n", desc: "New session" },
-  { key: "d", desc: "Delete selected session" },
-  { key: "r", desc: "Rename selected session" },
-  { key: "D", desc: "View diff for selected session" },
-  { key: "Esc", desc: "Close dialog / clear search" },
+  { key: "D", desc: "Toggle diff panel" },
+  { key: "s", desc: "Toggle settings" },
+  { key: "Esc", desc: "Close dialog" },
   { key: "?", desc: "Toggle this help" },
 ];
 

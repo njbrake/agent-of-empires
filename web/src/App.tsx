@@ -1,280 +1,339 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
+import { useWorkspaces, setLifecycleOverride } from "./hooks/useWorkspaces";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { updateSession, createSession, deleteSession } from "./lib/api";
-import type { SessionResponse } from "./lib/types";
-import { Sidebar } from "./components/Sidebar";
+import { createSession, stopSession, restartSession } from "./lib/api";
+import { isSessionActive } from "./lib/session";
+import type { WorkspaceStatus } from "./lib/types";
+import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { WorkspaceHeader } from "./components/WorkspaceHeader";
+import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
-import { DiffView } from "./components/DiffView";
-import { EmptyState } from "./components/EmptyState";
-import { RenameDialog } from "./components/RenameDialog";
-import { ProfileSelector } from "./components/ProfileSelector";
-import { HelpOverlay } from "./components/HelpOverlay";
+import { DiffPanel } from "./components/DiffPanel";
 import { SettingsView } from "./components/SettingsView";
-import { WorktreeList } from "./components/WorktreeList";
-import { ConfirmDialog } from "./components/ConfirmDialog";
-import { MobileNav } from "./components/MobileNav";
+import { HelpOverlay } from "./components/HelpOverlay";
 import {
-  CreateSessionPanel,
-  type CreateSessionData,
-} from "./components/CreateSessionPanel";
-
-type ContentView = "terminal" | "diff" | "settings" | "worktrees";
+  CreateWorkspaceModal,
+  type CreateWorkspaceData,
+} from "./components/CreateWorkspaceModal";
 
 export default function App() {
   const { sessions, error, refresh } = useSessions();
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [mobileShowTerminal, setMobileShowTerminal] = useState(false);
-  const [contentView, setContentView] = useState<ContentView>("terminal");
-  const [renameTarget, setRenameTarget] = useState<SessionResponse | null>(
+  const workspaces = useWorkspaces(sessions);
+
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     null,
   );
-  const [deleteTarget, setDeleteTarget] = useState<SessionResponse | null>(
-    null,
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [diffCollapsed, setDiffCollapsed] = useState(
+    () => window.innerWidth < 768,
   );
-  const [activeProfile, setActiveProfile] = useState<string | null>(null);
+  const [diffFileCount, setDiffFileCount] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [actionPending, setActionPending] = useState(false);
 
-  const filteredSessions = activeProfile
-    ? sessions.filter(
-        (s) =>
-          s.group_path.startsWith(activeProfile) ||
-          s.project_path.includes(activeProfile),
-      )
-    : sessions;
+  // For post-create selection: store what to select, pick it up when sessions update
+  const pendingSelectRef = useRef<{
+    wsId: string;
+    sessionId: string;
+  } | null>(null);
 
-  const activeSession = sessions.find((s) => s.id === activeId);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
+  const activeSession = activeWorkspace?.sessions.find(
+    (s) => s.id === activeSessionId,
+  );
 
-  const handleSelect = (id: string) => {
-    setActiveId(id);
-    setContentView("terminal");
-    setMobileShowTerminal(true);
+  const knownPaths = useMemo(() => {
+    const paths = new Set(sessions.map((s) => s.project_path));
+    return [...paths].sort();
+  }, [sessions]);
+
+  // Alert counts for header
+  const alertCounts = useMemo(() => {
+    let errors = 0;
+    let waiting = 0;
+    for (const s of sessions) {
+      if (s.status === "Error") errors++;
+      if (s.status === "Waiting") waiting++;
+    }
+    return { errors, waiting };
+  }, [sessions]);
+
+  // Pick up pending selection when sessions update after create
+  useEffect(() => {
+    if (!pendingSelectRef.current) return;
+    const { wsId, sessionId } = pendingSelectRef.current;
+    const found = sessions.find((s) => s.id === sessionId);
+    if (found) {
+      setActiveWorkspaceId(wsId);
+      setActiveSessionId(sessionId);
+      pendingSelectRef.current = null;
+    }
+  }, [sessions]);
+
+  const handleSelectWorkspace = (workspaceId: string) => {
+    setActiveWorkspaceId(workspaceId);
+    const ws = workspaces.find((w) => w.id === workspaceId);
+    if (ws) {
+      const running = ws.sessions.find((s) => isSessionActive(s.status));
+      setActiveSessionId(running?.id ?? ws.sessions[0]?.id ?? null);
+    }
+    if (window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
   };
 
-  const handleBack = () => {
-    setMobileShowTerminal(false);
+  const handleSelectSessionTab = (sessionId: string) => {
+    setActiveSessionId(sessionId);
   };
 
-  const handleRename = async (title: string, group: string) => {
-    if (!renameTarget) return;
-    await updateSession(renameTarget.id, {
-      title: title !== renameTarget.title ? title : undefined,
-      group_path: group !== renameTarget.group_path ? group : undefined,
-    });
-    setRenameTarget(null);
-    refresh();
-  };
-
-  const handleDiff = (session: SessionResponse) => {
-    setActiveId(session.id);
-    setContentView("diff");
-  };
-
-  const handleCreate = async (data: CreateSessionData) => {
+  const handleCreate = async (data: CreateWorkspaceData) => {
     const result = await createSession(data);
     if (result) {
       setShowCreate(false);
-      setActiveId(result.id);
-      setContentView("terminal");
+      const path = data.path.replace(/\/+$/, "");
+      const branch = data.worktree_branch ?? null;
+      pendingSelectRef.current = {
+        wsId: `${path}::${branch ?? "__default__"}`,
+        sessionId: result.id,
+      };
       refresh();
     }
   };
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    await deleteSession(deleteTarget.id);
-    setDeleteTarget(null);
-    if (activeId === deleteTarget.id) setActiveId(null);
+  const handleStop = async () => {
+    if (!activeSessionId) return;
+    setActionPending(true);
+    await stopSession(activeSessionId);
+    refresh();
+    setActionPending(false);
+  };
+
+  const handleRestart = async () => {
+    if (!activeSessionId) return;
+    setActionPending(true);
+    await restartSession(activeSessionId);
+    refresh();
+    setActionPending(false);
+  };
+
+  const handleLifecycleChange = (status: WorkspaceStatus) => {
+    if (!activeWorkspace) return;
+    if (status === "active") {
+      setLifecycleOverride(activeWorkspace.id, null);
+    } else {
+      setLifecycleOverride(activeWorkspace.id, status);
+    }
     refresh();
   };
 
-  // Keyboard shortcuts
+  const toggleDiff = () => setDiffCollapsed((c) => !c);
+
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onSearch: () => setSidebarSearchOpen((v) => !v),
         onNew: () => setShowCreate(true),
-        onDelete: () => {
-          if (activeSession) setDeleteTarget(activeSession);
-        },
-        onRename: () => {
-          if (activeSession) setRenameTarget(activeSession);
-        },
-        onDiff: () => {
-          if (activeSession) handleDiff(activeSession);
-        },
+        onDiff: () => toggleDiff(),
         onEscape: () => {
           setShowCreate(false);
           setShowHelp(false);
-          setRenameTarget(null);
-          setDeleteTarget(null);
+          setShowSettings(false);
         },
         onHelp: () => setShowHelp((h) => !h),
-        onSettings: () =>
-          setContentView((v) => (v === "settings" ? "terminal" : "settings")),
+        onSettings: () => setShowSettings((s) => !s),
       }),
-      [activeSession],
+      [],
     ),
   );
 
-  return (
-    <div className="h-screen flex flex-col bg-surface-900 text-text-primary">
-      {/* Header */}
-      <header className="h-14 bg-surface-850 border-b border-surface-700/30 flex items-center px-5 shrink-0">
-        <div className="flex items-center gap-2.5">
-          <div className="w-6 h-6 rounded-md bg-brand-600/20 flex items-center justify-center">
-            <span className="font-display text-xs font-bold text-brand-500">
-              A
-            </span>
-          </div>
-          <h1 className="font-display text-base font-semibold tracking-tight text-text-bright">
-            Agent of Empires
-          </h1>
+  const renderContent = () => {
+    if (showSettings) {
+      return <SettingsView onClose={() => setShowSettings(false)} />;
+    }
+
+    if (!activeWorkspace || !activeSession) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
+          <p className="font-body text-sm text-text-dim text-center">
+            {workspaces.length === 0
+              ? "No sessions yet"
+              : "Select a session"}
+          </p>
+          {workspaces.length === 0 && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="mt-3 px-4 py-1.5 font-body text-xs rounded-md bg-brand-600 text-surface-950 font-semibold hover:bg-brand-700 cursor-pointer transition-colors"
+            >
+              Create session
+            </button>
+          )}
         </div>
+      );
+    }
+
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        <WorkspaceHeader
+          workspace={activeWorkspace}
+          activeSession={activeSession}
+          diffCollapsed={diffCollapsed}
+          diffFileCount={diffFileCount}
+          actionPending={actionPending}
+          onStop={handleStop}
+          onRestart={handleRestart}
+          onLifecycleChange={handleLifecycleChange}
+          onToggleDiff={toggleDiff}
+        />
+
+        <ContentSplit
+          collapsed={diffCollapsed}
+          onToggleCollapse={toggleDiff}
+          left={
+            <div className="flex-1 flex flex-col min-h-0">
+              {activeWorkspace.sessions.length > 1 && (
+                <div className="flex bg-surface-900 border-b border-surface-700 px-3 shrink-0 overflow-x-auto">
+                  {activeWorkspace.sessions.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => handleSelectSessionTab(s.id)}
+                      className={`px-3 py-2 font-body text-[12px] border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
+                        s.id === activeSessionId
+                          ? "text-brand-500 border-b-brand-600"
+                          : "text-text-dim border-b-transparent hover:text-text-muted"
+                      }`}
+                    >
+                      {s.tool}
+                      <span
+                        className={`ml-1.5 inline-block w-1.5 h-1.5 rounded-full ${
+                          isSessionActive(s.status)
+                            ? "bg-status-running"
+                            : s.status === "Error"
+                              ? "bg-status-error"
+                              : "bg-status-idle"
+                        }`}
+                      />
+                    </button>
+                  ))}
+                </div>
+              )}
+              <TerminalView key={activeSessionId} session={activeSession} />
+            </div>
+          }
+          right={
+            <DiffPanel
+              sessionId={activeSessionId}
+              expanded={!diffCollapsed}
+              onFileCountChange={setDiffFileCount}
+            />
+          }
+        />
+      </div>
+    );
+  };
+
+  return (
+    <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
+      {/* Header */}
+      <header className="h-10 bg-surface-850 border-b border-surface-700/30 flex items-center px-2 shrink-0 gap-1.5">
+        <button
+          onClick={() => setSidebarOpen((o) => !o)}
+          className="w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-700/30 transition-colors -ml-1"
+          title="Toggle sidebar"
+          aria-label="Toggle sidebar"
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          >
+            <line x1="2" y1="4" x2="14" y2="4" />
+            <line x1="2" y1="8" x2="14" y2="8" />
+            <line x1="2" y1="12" x2="14" y2="12" />
+          </svg>
+        </button>
+
+        {activeWorkspace ? (
+          <span className="font-body text-[13px] text-text-muted truncate">
+            {activeWorkspace.projectPath.split("/").pop()}
+          </span>
+        ) : (
+          <span className="font-body text-[13px] text-text-dim">
+            Agent of Empires
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-1">
+          {/* Alert badges */}
+          {alertCounts.errors > 0 && (
+            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/15 text-status-error">
+              {alertCounts.errors} error{alertCounts.errors !== 1 ? "s" : ""}
+            </span>
+          )}
+          {alertCounts.waiting > 0 && (
+            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-waiting/15 text-status-waiting">
+              {alertCounts.waiting} waiting
+            </span>
+          )}
+          {error && (
+            <span className="font-mono text-xs text-status-error">
+              offline
+            </span>
+          )}
           <button
-            onClick={() => setContentView("worktrees")}
-            className="hidden md:flex items-center gap-1.5 font-body text-xs text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer px-2.5 py-1.5 rounded-md transition-colors"
-            title="Worktrees"
+            onClick={() => setShowSettings((s) => !s)}
+            className="w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer rounded-md transition-colors"
+            title="Settings"
+            aria-label="Settings"
           >
-            Worktrees
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <circle cx="8" cy="8" r="2.5" />
+              <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" />
+            </svg>
           </button>
-          <button
-            onClick={() =>
-              setContentView((v) =>
-                v === "settings" ? "terminal" : "settings",
-              )
-            }
-            className="hidden md:flex items-center gap-1.5 font-body text-xs text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer px-2.5 py-1.5 rounded-md transition-colors"
-            title="Settings (s)"
-          >
-            Settings
-          </button>
-          <button
-            onClick={() => setShowHelp(true)}
-            className="hidden md:flex items-center justify-center w-8 h-8 font-mono text-sm text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer rounded-md transition-colors"
-            title="Help (?)"
-          >
-            ?
-          </button>
-          <div className="hidden md:block w-px h-5 bg-surface-700/50 mx-1" />
-          <ProfileSelector
-            activeProfile={activeProfile}
-            onSelect={setActiveProfile}
-          />
-          <div className="hidden md:block w-px h-5 bg-surface-700/50 mx-1" />
-          <span className="font-mono text-xs text-text-dim tabular-nums">
-            {error
-              ? "offline"
-              : `${filteredSessions.length} session${filteredSessions.length !== 1 ? "s" : ""}`}
-          </span>
         </div>
       </header>
 
-      {/* Main area -- sidebar and content side by side, full remaining height */}
+      {/* Main: sidebar + content */}
       <div className="flex flex-1 min-h-0">
-        {contentView !== "settings" && contentView !== "worktrees" && (
-          <div
-            className={`flex shrink-0 ${mobileShowTerminal ? "max-md:hidden" : ""}`}
-          >
-            <Sidebar
-              sessions={filteredSessions}
-              activeId={activeId}
-              onSelect={handleSelect}
-              onRefresh={refresh}
-              onRename={setRenameTarget}
-              onDiff={handleDiff}
-              onNew={() => setShowCreate(true)}
-              searchOpen={sidebarSearchOpen}
-              onSearchToggle={setSidebarSearchOpen}
-            />
-          </div>
+        {sidebarOpen && (
+          <WorkspaceSidebar
+            workspaces={workspaces}
+            activeId={activeWorkspaceId}
+            onToggle={() => setSidebarOpen(false)}
+            onSelect={handleSelectWorkspace}
+            onNew={() => setShowCreate(true)}
+          />
         )}
 
-        <div
-          className={`flex-1 flex flex-col min-h-0 ${!mobileShowTerminal && contentView !== "settings" && contentView !== "worktrees" ? "max-md:hidden" : ""}`}
-        >
-          {contentView === "settings" ? (
-            <SettingsView onClose={() => setContentView("terminal")} />
-          ) : contentView === "worktrees" ? (
-            <WorktreeList
-              onClose={() => setContentView("terminal")}
-              onNavigateToSession={(id) => {
-                setActiveId(id);
-                setContentView("terminal");
-              }}
-            />
-          ) : activeSession ? (
-            contentView === "diff" ? (
-              <DiffView
-                sessionId={activeSession.id}
-                onClose={() => setContentView("terminal")}
-              />
-            ) : (
-              <TerminalView
-                key={activeSession.id}
-                session={activeSession}
-                onBack={handleBack}
-              />
-            )
-          ) : (
-            <EmptyState />
-          )}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+          {renderContent()}
         </div>
       </div>
 
       {/* Overlays */}
       {showCreate && (
-        <CreateSessionPanel
+        <CreateWorkspaceModal
+          knownPaths={knownPaths}
           onSubmit={handleCreate}
           onCancel={() => setShowCreate(false)}
         />
       )}
 
-      {renameTarget && (
-        <RenameDialog
-          currentTitle={renameTarget.title}
-          currentGroup={renameTarget.group_path}
-          onSave={handleRename}
-          onCancel={() => setRenameTarget(null)}
-        />
-      )}
-
-      {deleteTarget && (
-        <ConfirmDialog
-          title="Delete Session"
-          message={`Delete "${deleteTarget.title}"? This will stop the session and remove it.`}
-          confirmLabel="Delete"
-          danger
-          onConfirm={handleDelete}
-          onCancel={() => setDeleteTarget(null)}
-        />
-      )}
-
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
-
-      {/* Mobile bottom nav */}
-      <MobileNav
-        sessionCount={filteredSessions.length}
-        activeSessionTitle={activeSession?.title ?? null}
-        activeStatus={activeSession?.status ?? null}
-        activeTab={
-          contentView === "settings"
-            ? "settings"
-            : contentView === "worktrees"
-              ? "worktrees"
-              : "sessions"
-        }
-        onSessionsTab={() => {
-          setContentView("terminal");
-          setMobileShowTerminal(false);
-        }}
-        onSettingsTab={() => setContentView("settings")}
-        onWorktreesTab={() => setContentView("worktrees")}
-      />
     </div>
   );
 }

@@ -86,7 +86,7 @@ export function SettingsView({ onClose }: Props) {
         </span>
         <div className="ml-auto flex items-center gap-2">
           {dirty && (
-            <span className="font-mono text-sm text-status-warning">
+            <span className="font-mono text-sm text-status-waiting">
               unsaved
             </span>
           )}

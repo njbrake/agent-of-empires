@@ -63,6 +63,8 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: boo
     let mut cmd = CommandBuilder::new("tmux");
     cmd.args(["attach-session", "-t", &tmux_name]);
     cmd.env("TERM", "xterm-256color");
+    // Allow nesting: unset TMUX so the attach works when aoe serve runs inside tmux
+    cmd.env_remove("TMUX");
 
     let mut child = match pair.slave.spawn_command(cmd) {
         Ok(child) => child,

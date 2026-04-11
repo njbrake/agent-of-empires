@@ -38,7 +38,7 @@ pub async fn start_server(
     // Load initial session data from all profiles
     let instances = load_all_instances()?;
 
-    // Generate auth token
+    // Load or generate auth token (reused for 24 hours so bookmarked URLs keep working)
     let auth_token = if no_auth {
         eprintln!(
             "WARNING: Running without authentication. \
@@ -46,19 +46,7 @@ pub async fn start_server(
         );
         None
     } else {
-        use rand::RngExt;
-        let mut rng = rand::rng();
-        let token: String = (0..32)
-            .map(|_| {
-                let idx = rng.random_range(0..36u8);
-                if idx < 10 {
-                    (b'0' + idx) as char
-                } else {
-                    (b'a' + idx - 10) as char
-                }
-            })
-            .collect();
-        Some(token)
+        Some(load_or_generate_token()?)
     };
 
     let state = Arc::new(AppState {
@@ -74,22 +62,33 @@ pub async fn start_server(
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    // Build and print access URL
-    let display_host = if host == "0.0.0.0" { "localhost" } else { host };
-    let url = if let Some(ref token) = auth_token {
-        format!("http://{}:{}/?token={}", display_host, port, token)
-    } else {
-        format!("http://{}:{}/", display_host, port)
+    // Build and print access URLs
+    let make_url = |h: &str| {
+        if let Some(ref token) = auth_token {
+            format!("http://{}:{}/?token={}", h, port, token)
+        } else {
+            format!("http://{}:{}/", h, port)
+        }
     };
 
     println!("aoe web dashboard running at:");
-    println!("  {}", url);
+    if host == "0.0.0.0" {
+        println!("  {}", make_url("localhost"));
+        // Discover and print all network interface addresses
+        for addr in discover_local_ips() {
+            println!("  {}", make_url(&addr));
+        }
+    } else {
+        println!("  {}", make_url(host));
+    }
     if auth_token.is_some() {
         println!();
         println!(
-            "Open this URL in any browser. Share it to access from other devices on your network."
+            "Open any URL above in a browser. Share it to access from other devices on your network."
         );
     }
+
+    let url = make_url(if host == "0.0.0.0" { "localhost" } else { host });
 
     // Write URL to file so daemon users can retrieve it with `cat ~/.agent-of-empires/serve.url`
     if let Ok(app_dir) = crate::session::get_app_dir() {
@@ -107,36 +106,25 @@ pub async fn start_server(
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    use axum::routing::{delete, get, patch, post};
+    use axum::routing::{get, post};
 
     Router::new()
-        // Session CRUD
+        // Sessions
         .route(
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
         )
-        .route("/api/sessions/{id}", get(api::get_session))
         .route("/api/sessions/{id}/stop", post(api::stop_session))
         .route("/api/sessions/{id}/restart", post(api::restart_session))
-        .route("/api/sessions/{id}", delete(api::delete_session))
-        .route("/api/sessions/{id}", patch(api::update_session))
         .route("/api/sessions/{id}/diff", get(api::session_diff))
         // Agents
         .route("/api/agents", get(api::list_agents))
-        // Groups
-        .route("/api/groups", get(api::list_groups))
-        // Profiles
-        .route("/api/profiles", get(api::list_profiles))
-        .route("/api/profiles", post(api::create_profile))
-        .route("/api/profiles/{name}", delete(api::delete_profile))
         // Settings + themes
         .route(
             "/api/settings",
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
-        // Worktrees
-        .route("/api/worktrees", get(api::list_worktrees))
         // Terminal
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)
@@ -186,6 +174,69 @@ fn serve_embedded_file(path: &str) -> axum::response::Response {
         }
         None => (StatusCode::NOT_FOUND, "Not found").into_response(),
     }
+}
+
+/// Discover non-loopback IPv4 addresses on all network interfaces.
+/// Catches LAN (192.168.x, 10.x), Tailscale (100.x), WireGuard, etc.
+fn discover_local_ips() -> Vec<String> {
+    let mut ips = Vec::new();
+    if let Ok(addrs) = nix::ifaddrs::getifaddrs() {
+        for ifaddr in addrs {
+            if let Some(addr) = ifaddr.address {
+                if let Some(sockaddr) = addr.as_sockaddr_in() {
+                    let ip = sockaddr.ip();
+                    if !ip.is_loopback() {
+                        let s = ip.to_string();
+                        if !ips.contains(&s) {
+                            ips.push(s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ips
+}
+
+/// Load an existing auth token from disk if it's less than 24 hours old,
+/// otherwise generate a fresh one and persist it.
+fn load_or_generate_token() -> anyhow::Result<String> {
+    let app_dir = crate::session::get_app_dir()?;
+    let token_path = app_dir.join("serve.token");
+
+    // Try to reuse existing token if fresh enough
+    if let Ok(metadata) = std::fs::metadata(&token_path) {
+        if let Ok(modified) = metadata.modified() {
+            let age = std::time::SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or_default();
+            if age < std::time::Duration::from_secs(24 * 60 * 60) {
+                if let Ok(token) = std::fs::read_to_string(&token_path) {
+                    let token = token.trim().to_string();
+                    if !token.is_empty() {
+                        return Ok(token);
+                    }
+                }
+            }
+        }
+    }
+
+    // Generate new token
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let token: String = (0..32)
+        .map(|_| {
+            let idx = rng.random_range(0..36u8);
+            if idx < 10 {
+                (b'0' + idx) as char
+            } else {
+                (b'a' + idx - 10) as char
+            }
+        })
+        .collect();
+
+    let _ = std::fs::write(&token_path, &token);
+    Ok(token)
 }
 
 /// Load sessions from all profiles, matching the TUI's "all profiles" view.
