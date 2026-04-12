@@ -106,15 +106,19 @@ export function ContentSplit({
             {right}
           </div>
 
-          {/* Mobile: full-screen overlay */}
-          <div className="md:hidden fixed inset-0 z-40 flex flex-col bg-surface-900">
+          {/* Mobile: slide-in panel from right with backdrop (mirrors left sidebar pattern) */}
+          <div
+            className="md:hidden fixed inset-0 bg-black/50 z-30"
+            onClick={onToggleCollapse}
+          />
+          <div className="md:hidden fixed inset-y-0 right-0 z-40 w-[85vw] max-w-sm flex flex-col bg-surface-900">
             <div className="h-10 flex items-center px-3 border-b border-surface-700/20 shrink-0">
               <span className="text-sm text-text-muted flex-1">
                 Diff & Shell
               </span>
               <button
                 onClick={onToggleCollapse}
-                className="w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer"
+                className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md"
               >
                 &times;
               </button>
