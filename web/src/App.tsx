@@ -248,6 +248,30 @@ export default function App() {
               offline
             </span>
           )}
+          <button
+            onClick={toggleDiff}
+            className={`hidden sm:flex w-10 h-10 items-center justify-center cursor-pointer rounded-md transition-colors ${
+              diffCollapsed
+                ? "text-text-dim hover:text-text-secondary hover:bg-surface-700/30"
+                : "text-brand-500 bg-brand-600/10"
+            }`}
+            title="Toggle diff panel"
+            aria-label="Toggle diff panel"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <line x1="15" y1="3" x2="15" y2="21" />
+            </svg>
+          </button>
         </div>
       </header>
 

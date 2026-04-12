@@ -1,6 +1,11 @@
-import { memo } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { Workspace, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, isSessionActive } from "../lib/session";
+
+const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
+const DEFAULT_WIDTH = 280;
+const MIN_WIDTH = 200;
+const MAX_WIDTH = 480;
 
 interface Props {
   workspaces: Workspace[];
@@ -17,6 +22,19 @@ function bestSessionStatus(ws: Workspace): SessionStatus {
   const error = ws.sessions.find((s) => s.status === "Error");
   if (error) return "Error";
   return ws.sessions[0]?.status ?? "Unknown";
+}
+
+function loadSavedWidth(): number {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (saved) {
+      const w = parseInt(saved, 10);
+      if (w >= MIN_WIDTH && w <= MAX_WIDTH) return w;
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_WIDTH;
 }
 
 const SessionRow = memo(function SessionRow({
@@ -65,19 +83,107 @@ export function WorkspaceSidebar({
   onNew,
   onSettings,
 }: Props) {
+  const [width, setWidth] = useState(loadSavedWidth);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
+  const filterRef = useRef<HTMLInputElement>(null);
+  const dragging = useRef(false);
+
+  const filtered = filterQuery.trim()
+    ? workspaces.filter((ws) => {
+        const q = filterQuery.toLowerCase();
+        return (
+          ws.displayName.toLowerCase().includes(q) ||
+          ws.projectPath.toLowerCase().includes(q) ||
+          ws.agents.some((a) => a.toLowerCase().includes(q)) ||
+          ws.sessions.some((s) => s.title.toLowerCase().includes(q))
+        );
+      })
+    : workspaces;
+
+  const toggleFilter = () => {
+    setFilterOpen((o) => {
+      if (o) setFilterQuery("");
+      return !o;
+    });
+  };
+
+  useEffect(() => {
+    if (filterOpen) filterRef.current?.focus();
+  }, [filterOpen]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, e.clientX));
+      setWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setWidth((w) => {
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
+        return w;
+      });
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
   return (
     <>
       <div
         className="fixed inset-0 bg-black/50 z-30 md:hidden"
         onClick={onToggle}
       />
-      <div className="fixed inset-y-0 left-0 z-40 w-[280px] md:static md:z-auto bg-surface-900 border-r border-surface-700 flex flex-col h-full">
-        <div className="p-3 pb-2 flex items-center gap-2">
+      <div
+        style={{ width }}
+        className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-900 flex flex-col h-full shrink-0"
+      >
+        <div className="p-3 pb-2 flex items-center gap-1.5">
           <button
             onClick={onNew}
             className="flex-1 bg-brand-600 hover:bg-brand-700 text-surface-950 font-body text-sm font-semibold py-2.5 px-3 rounded-md cursor-pointer transition-colors text-left"
           >
             + New Session
+          </button>
+          <button
+            onClick={toggleFilter}
+            className={`w-10 h-10 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
+              filterOpen
+                ? "text-brand-500 bg-brand-600/10"
+                : "text-text-dim hover:text-text-secondary hover:bg-surface-800"
+            }`}
+            title="Filter sessions"
+            aria-label="Filter sessions"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+            </svg>
           </button>
           <button
             onClick={onToggle}
@@ -87,8 +193,24 @@ export function WorkspaceSidebar({
           </button>
         </div>
 
+        {filterOpen && (
+          <div className="px-3 pb-2">
+            <input
+              ref={filterRef}
+              type="text"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") toggleFilter();
+              }}
+              placeholder="Filter by name, branch, agent..."
+              className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 font-body text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+            />
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto">
-          {workspaces.map((ws) => (
+          {filtered.map((ws) => (
             <SessionRow
               key={ws.id}
               workspace={ws}
@@ -96,9 +218,16 @@ export function WorkspaceSidebar({
               onClick={() => onSelect(ws.id)}
             />
           ))}
+
+          {filtered.length === 0 && filterQuery && (
+            <div className="px-4 py-8 text-center">
+              <p className="font-body text-sm text-text-muted">
+                No matches for "{filterQuery}"
+              </p>
+            </div>
+          )}
         </div>
 
-        {/* Footer */}
         <div className="border-t border-surface-700 p-2">
           <button
             onClick={onSettings}
@@ -123,6 +252,11 @@ export function WorkspaceSidebar({
           </button>
         </div>
       </div>
+      {/* Resize handle (desktop only) */}
+      <div
+        onMouseDown={handleMouseDown}
+        className="hidden md:block w-1 bg-surface-700 hover:bg-brand-600/50 cursor-col-resize shrink-0 transition-colors duration-75"
+      />
     </>
   );
 }
