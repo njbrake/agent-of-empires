@@ -223,12 +223,14 @@ fn resolved_sandbox_config(project_path: &std::path::Path) -> super::config::San
 /// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
 /// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
 ///
-/// For inherited entries where the key already exists in the host process
-/// environment with the correct value, emits just `-e KEY` with no value in
-/// the command string. This prevents secrets from appearing in `ps` output.
-/// For mapped keys (e.g. `MY_TOKEN=$GH_TOKEN`), falls back to `-e KEY=VALUE`
-/// since the docker exec process (spawned by tmux) cannot inherit a key that
-/// only exists in aoe's process.
+/// Docker exec commands run inside tmux, so there is no reliable way to inject
+/// env vars into the Docker CLI process without putting values in the command
+/// string. This function therefore always uses `-e KEY=VALUE` (the pre-existing
+/// behavior), keeping secrets in the shell command but ensuring they always
+/// reach the container.
+///
+/// The `docker run` path (container creation) is protected separately via
+/// `Command::env()` in `run_create`, which keeps secrets out of argv entirely.
 pub(crate) fn build_docker_env_args(
     sandbox: &SandboxInfo,
     project_path: &std::path::Path,
@@ -251,26 +253,13 @@ pub(crate) fn build_docker_env_args(
         tracing::debug!("  env: {}=<set>", entry.key());
     }
 
+    // Always pass values explicitly for docker exec via tmux.
+    // We cannot use `-e KEY` (inherit) here because docker exec runs
+    // inside a tmux session whose shell environment may not have the
+    // variable (tmux server may have started before the var was set).
     let args: Vec<String> = env_entries
         .iter()
-        .map(|entry| match entry {
-            EnvEntry::Inherit { key, value } => {
-                // Docker exec commands run inside tmux, so Docker reads
-                // from tmux's server environment, not aoe's process.
-                // If the key is already in the host env with the right
-                // value (bare key or KEY=$KEY), Docker can inherit it.
-                // If the key differs from the source var (MY_TOKEN=$GH_TOKEN),
-                // fall back to passing the value explicitly.
-                if std::env::var(key).ok().as_deref() == Some(value.as_str()) {
-                    format!("-e {}", key)
-                } else {
-                    format!("-e {}={}", key, shell_escape(value))
-                }
-            }
-            EnvEntry::Literal { key, value } => {
-                format!("-e {}={}", key, shell_escape(value))
-            }
-        })
+        .map(|entry| format!("-e {}={}", entry.key(), shell_escape(entry.value())))
         .collect();
 
     args.join(" ")
@@ -567,9 +556,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_docker_env_args_same_key_no_value_leak() {
-        // GH_TOKEN=$GH_TOKEN case: key matches the host var, so Docker can
-        // inherit it from tmux's environment via `-e KEY` (no value in argv)
+    fn test_build_docker_env_args_passes_values_explicitly() {
+        // Docker exec runs inside tmux, so values must always be passed
+        // explicitly (tmux's env may not have the variable).
         std::env::set_var("AOE_TEST_TOKEN", "secret123");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -586,19 +575,17 @@ mod tests {
             "Expected AOE_TEST_TOKEN in args: {}",
             result
         );
-        // Secret value must NOT appear in the command string
+        // Value must be present (docker exec via tmux needs explicit values)
         assert!(
-            !result.contains("secret123"),
-            "Secret leaked into args: {}",
+            result.contains("secret123"),
+            "Expected value in args for docker exec: {}",
             result
         );
         std::env::remove_var("AOE_TEST_TOKEN");
     }
 
     #[test]
-    fn test_build_docker_env_args_different_key_falls_back() {
-        // MY_TOKEN=$GH_TOKEN case: key differs from host var, so Docker
-        // exec via tmux can't inherit it. Must fall back to passing value.
+    fn test_build_docker_env_args_different_key() {
         std::env::set_var("AOE_TEST_SOURCE", "secret456");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -615,18 +602,16 @@ mod tests {
             "Expected MY_MAPPED in args: {}",
             result
         );
-        // Different-key mapping must fall back to passing value
-        // (tmux's env doesn't have MY_MAPPED, only AOE_TEST_SOURCE)
         assert!(
             result.contains("secret456"),
-            "Expected value in args for different-key mapping: {}",
+            "Expected value in args: {}",
             result
         );
         std::env::remove_var("AOE_TEST_SOURCE");
     }
 
     #[test]
-    fn test_build_docker_env_args_bare_key_no_value_leak() {
+    fn test_build_docker_env_args_bare_key() {
         std::env::set_var("AOE_TEST_BARE", "barevalue");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -643,10 +628,9 @@ mod tests {
             "Expected AOE_TEST_BARE in args: {}",
             result
         );
-        // Secret value must NOT appear in the command string
         assert!(
-            !result.contains("barevalue"),
-            "Secret leaked into args: {}",
+            result.contains("barevalue"),
+            "Expected value in args for docker exec: {}",
             result
         );
         std::env::remove_var("AOE_TEST_BARE");
