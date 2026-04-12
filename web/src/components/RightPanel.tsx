@@ -91,7 +91,7 @@ export function RightPanel({
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Upper: diff */}
-      <div className="flex-1 flex flex-col min-h-0 border-b border-surface-700">
+      <div className="flex-1 flex flex-col min-h-0 border-b border-surface-700/20">
         <DiffPanel
           sessionId={sessionId}
           expanded={expanded}
@@ -101,7 +101,7 @@ export function RightPanel({
 
       {/* Lower: paired terminal */}
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="flex items-center gap-1 px-2 py-1 bg-surface-900 border-b border-surface-700 shrink-0">
+        <div className="flex items-center gap-1 px-2 py-1 bg-surface-900 border-b border-surface-700/20 shrink-0">
           <span className="font-body text-xs text-text-dim mr-1">Shell</span>
           <button
             onClick={() => setShellMode("host")}

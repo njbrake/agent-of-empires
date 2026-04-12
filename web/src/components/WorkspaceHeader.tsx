@@ -18,7 +18,7 @@ export function WorkspaceHeader({
   const agentLabel = activeSession?.tool ?? workspace.primaryAgent;
 
   return (
-    <div className="h-10 bg-surface-900 border-b border-surface-700/30 flex items-center px-3 gap-2 shrink-0">
+    <div className="h-10 bg-surface-900 border-b border-surface-700/20 flex items-center px-3 gap-2 shrink-0">
       <span className="font-mono text-sm font-semibold text-accent-600 truncate">
         {workspace.displayName}
       </span>

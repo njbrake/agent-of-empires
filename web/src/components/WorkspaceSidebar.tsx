@@ -153,7 +153,7 @@ export function WorkspaceSidebar({
       />
       <div
         style={{ width }}
-        className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-900 flex flex-col h-full shrink-0"
+        className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0"
       >
         <div className="px-3 pt-3 pb-1 flex items-center">
           <span className="font-body text-sm text-text-muted flex-1">
@@ -244,7 +244,7 @@ export function WorkspaceSidebar({
           )}
         </div>
 
-        <div className="border-t border-surface-700 p-2">
+        <div className="border-t border-surface-700/20 p-2">
           <button
             onClick={onSettings}
             className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"

@@ -176,8 +176,9 @@ export default function App() {
 
   return (
     <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
+
       {/* Header */}
-      <header className="h-10 bg-surface-900 border-b border-surface-700/30 flex items-center px-2 shrink-0 gap-1.5">
+      <header className="h-10 bg-surface-800 border-b border-surface-700/20 flex items-center px-2 shrink-0 gap-1.5">
         <button
           onClick={() => setSidebarOpen((o) => !o)}
           className="w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-700/30 transition-colors -ml-1"

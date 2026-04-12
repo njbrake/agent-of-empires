@@ -12,12 +12,12 @@
   --color-accent-600: #0d9488;
   --color-accent-700: #0f766e;
 
-  /* Surfaces -- Neutral Slate */
+  /* Surfaces -- light sidebar, dark content, darkest terminal */
   --color-surface-700: #3f3f46;
-  --color-surface-800: #27272a;
-  --color-surface-850: #232326;
-  --color-surface-900: #1e1e21;
-  --color-surface-950: #282c34;
+  --color-surface-800: #2c2c30;
+  --color-surface-850: #262629;
+  --color-surface-900: #1c1c1f;
+  --color-surface-950: #17171a;
 
   /* Semantic Text */
   --color-text-primary: #e2e8f0;
