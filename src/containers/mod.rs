@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use crate::cli::truncate_id;
 use crate::session::{Config, ContainerRuntimeName};
 use apple_container::AppleContainer;
-pub use container_interface::{ContainerConfig, ContainerRuntimeInterface, VolumeMount};
+pub use container_interface::{ContainerConfig, ContainerRuntimeInterface, EnvEntry, VolumeMount};
 use docker::Docker;
 use enum_dispatch::enum_dispatch;
 use error::Result;

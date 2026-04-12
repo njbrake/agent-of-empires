@@ -1,4 +1,4 @@
-use super::container_interface::ContainerConfig;
+use super::container_interface::{ContainerConfig, EnvEntry};
 use super::error::{DockerError, Result};
 use std::process::Command;
 
@@ -160,9 +160,17 @@ impl RuntimeBase {
             args.push(path.clone());
         }
 
-        for (key, value) in &config.environment {
+        for entry in &config.environment {
             args.push("-e".to_string());
-            args.push(format!("{}={}", key, value));
+            match entry {
+                EnvEntry::Inherit { key, .. } => {
+                    // Only the key in argv; value stays in process env
+                    args.push(key.clone());
+                }
+                EnvEntry::Literal { key, value } => {
+                    args.push(format!("{}={}", key, value));
+                }
+            }
         }
 
         for port in &config.port_mappings {
@@ -191,7 +199,17 @@ impl RuntimeBase {
     pub fn run_create(&self, name: &str, image: &str, config: &ContainerConfig) -> Result<String> {
         let args = self.build_create_args(name, image, config);
         tracing::debug!("{} create args: {}", self.name, args.join(" "));
-        let output = self.command().args(&args).output()?;
+
+        let mut cmd = self.command();
+        cmd.args(&args);
+        // Set inherited env vars on the child process so docker can read them
+        // via `-e KEY` without the values appearing in argv
+        for entry in &config.environment {
+            if let EnvEntry::Inherit { key, value } = entry {
+                cmd.env(key, value);
+            }
+        }
+        let output = cmd.output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -283,7 +301,7 @@ impl RuntimeBase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::containers::container_interface::VolumeMount;
+    use crate::containers::container_interface::{EnvEntry, VolumeMount};
 
     #[test]
     fn test_build_create_args_read_only_supported() {
@@ -364,7 +382,10 @@ mod tests {
                 read_only: false,
             }],
             anonymous_volumes: vec!["/tmp/cache".to_string()],
-            environment: vec![("KEY".to_string(), "VALUE".to_string())],
+            environment: vec![EnvEntry::Literal {
+                key: "KEY".to_string(),
+                value: "VALUE".to_string(),
+            }],
             cpu_limit: Some("2".to_string()),
             memory_limit: Some("4g".to_string()),
             port_mappings: vec!["3000:3000".to_string()],
@@ -390,6 +411,60 @@ mod tests {
         assert!(args.contains(&"ubuntu:latest".to_string()));
         assert!(args.contains(&"sleep".to_string()));
         assert!(args.contains(&"infinity".to_string()));
+    }
+
+    #[test]
+    fn test_build_create_args_inherit_env_no_value_in_argv() {
+        let base = RuntimeBase::DOCKER;
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![EnvEntry::Inherit {
+                key: "GH_TOKEN".to_string(),
+                value: "ghp_secret123".to_string(),
+            }],
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: vec![],
+        };
+
+        let args = base.build_create_args("test", "alpine:latest", &config);
+
+        // Should contain just the key, not the value
+        assert!(args.contains(&"GH_TOKEN".to_string()));
+        assert!(!args.iter().any(|a| a.contains("ghp_secret123")));
+    }
+
+    #[test]
+    fn test_build_create_args_mixed_env_entries() {
+        let base = RuntimeBase::DOCKER;
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            environment: vec![
+                EnvEntry::Inherit {
+                    key: "SECRET".to_string(),
+                    value: "s3cr3t".to_string(),
+                },
+                EnvEntry::Literal {
+                    key: "TERM".to_string(),
+                    value: "xterm".to_string(),
+                },
+            ],
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: vec![],
+        };
+
+        let args = base.build_create_args("test", "alpine:latest", &config);
+
+        // Inherit: just the key
+        assert!(args.contains(&"SECRET".to_string()));
+        assert!(!args.iter().any(|a| a.contains("s3cr3t")));
+        // Literal: key=value
+        assert!(args.contains(&"TERM=xterm".to_string()));
     }
 
     #[test]

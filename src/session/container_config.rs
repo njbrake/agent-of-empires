@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::containers::{ContainerConfig, VolumeMount};
+use crate::containers::{ContainerConfig, EnvEntry, VolumeMount};
 use crate::git::GitWorktree;
 
 use super::environment::collect_environment;
@@ -914,15 +914,21 @@ pub(crate) fn build_container_config(
         }
     }
 
-    let mut environment: Vec<(String, String)> = collect_environment(&sandbox_config, sandbox_info);
+    let mut environment = collect_environment(&sandbox_config, sandbox_info);
 
     if let Some(agent) = crate::agents::get_agent(tool) {
         for &(key, value) in agent.container_env {
-            environment.push((key.to_string(), value.to_string()));
+            environment.push(EnvEntry::Literal {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
         }
         if is_yolo_mode {
             if let Some(crate::agents::YoloMode::EnvVar(key, value)) = &agent.yolo {
-                environment.push((key.to_string(), value.to_string()));
+                environment.push(EnvEntry::Literal {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                });
             }
         }
     }
@@ -2132,7 +2138,7 @@ extra_volumes = ["/host/data:/container/data:ro"]
         .unwrap();
 
         // Verify environment variables from repo config are present
-        let env_keys: Vec<&str> = config.environment.iter().map(|(k, _)| k.as_str()).collect();
+        let env_keys: Vec<&str> = config.environment.iter().map(|e| e.key()).collect();
         assert!(
             env_keys.contains(&"MY_VAR"),
             "MY_VAR should be in environment, got: {:?}",
