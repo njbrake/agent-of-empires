@@ -35,8 +35,8 @@
   --color-status-stopped: #475569;
 
   /* Typography */
-  --font-display: 'Satoshi', system-ui, sans-serif;
-  --font-body: 'DM Sans', system-ui, sans-serif;
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
   /* Layout widths */
