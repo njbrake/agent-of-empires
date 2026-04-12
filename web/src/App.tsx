@@ -261,15 +261,9 @@ export default function App() {
           </svg>
         </button>
 
-        {activeWorkspace ? (
-          <span className="font-body text-[13px] text-text-muted truncate">
-            {activeWorkspace.projectPath.split("/").pop()}
-          </span>
-        ) : (
-          <span className="font-body text-[13px] text-text-dim">
-            Agent of Empires
-          </span>
-        )}
+        <span className="font-body text-[13px] text-text-dim">
+          Agent of Empires
+        </span>
 
         <div className="ml-auto flex items-center gap-1">
           {/* Alert badges */}
