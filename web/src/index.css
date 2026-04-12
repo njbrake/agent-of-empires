@@ -12,12 +12,12 @@
   --color-accent-600: #0d9488;
   --color-accent-700: #0f766e;
 
-  /* Surfaces -- Warm Navy */
-  --color-surface-700: #334155;
-  --color-surface-800: #1e293b;
-  --color-surface-850: #172033;
-  --color-surface-900: #0f172a;
-  --color-surface-950: #020617;
+  /* Surfaces -- Neutral Slate */
+  --color-surface-700: #3f3f46;
+  --color-surface-800: #27272a;
+  --color-surface-850: #202023;
+  --color-surface-900: #18181b;
+  --color-surface-950: #09090b;
 
   /* Semantic Text */
   --color-text-primary: #e2e8f0;
