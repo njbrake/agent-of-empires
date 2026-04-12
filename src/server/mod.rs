@@ -239,11 +239,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             let _ = std::fs::write(app_dir.join("serve.url"), &tunnel_url_with_token);
         }
 
-        // Start health monitor
-        let arc_handle = Arc::new(handle);
-        arc_handle.spawn_health_monitor();
+        // Start health monitor (uses CancellationToken internally)
+        handle.spawn_health_monitor();
 
-        Some(arc_handle)
+        Some(handle)
     } else {
         // Local mode: print URLs as before
         let make_url = |h: &str| {
@@ -303,11 +302,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal)
     .await?;
 
-    // Clean up tunnel
+    // Clean up tunnel (cancels health monitor, then sends SIGTERM to cloudflared)
     if let Some(handle) = tunnel_handle {
-        if let Ok(handle) = Arc::try_unwrap(handle) {
-            handle.shutdown().await;
-        }
+        handle.shutdown().await;
     }
 
     Ok(())

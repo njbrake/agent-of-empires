@@ -642,6 +642,9 @@ Start a web dashboard for remote session access [experimental]
   Default value: `127.0.0.1`
 * `--no-auth` — Disable authentication (only allowed with localhost binding)
 * `--read-only` — Read-only mode: view terminals but cannot send keystrokes
+* `--remote` — Expose via Cloudflare Tunnel for secure remote access
+* `--tunnel-name <TUNNEL_NAME>` — Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+* `--tunnel-url <TUNNEL_URL>` — Hostname for a named tunnel (e.g., aoe.example.com)
 * `--daemon` — Run as a background daemon (detach from terminal)
 * `--stop` — Stop a running daemon
 

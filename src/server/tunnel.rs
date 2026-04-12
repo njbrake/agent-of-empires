@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 /// Manages a cloudflared tunnel subprocess.
@@ -17,6 +18,7 @@ pub struct TunnelHandle {
     pub url: String,
     port: u16,
     kind: TunnelKind,
+    cancel: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -71,6 +73,7 @@ impl TunnelHandle {
             url,
             port: local_port,
             kind: TunnelKind::Quick,
+            cancel: CancellationToken::new(),
         })
     }
 
@@ -117,11 +120,17 @@ impl TunnelHandle {
             kind: TunnelKind::Named {
                 tunnel_name: tunnel_name.to_string(),
             },
+            cancel: CancellationToken::new(),
         })
     }
 
     /// Gracefully shut down the tunnel process.
+    /// Cancels the health monitor first, then sends SIGTERM to cloudflared.
     pub async fn shutdown(self) {
+        self.cancel.cancel();
+        // Brief yield to let the monitor task observe cancellation
+        tokio::task::yield_now().await;
+
         let mut child = self.child.lock().await;
         if let Some(id) = child.id() {
             let _ = nix::sys::signal::kill(
@@ -139,15 +148,23 @@ impl TunnelHandle {
     }
 
     /// Spawn a background task that monitors tunnel health and attempts one restart.
-    pub fn spawn_health_monitor(self: &Arc<Self>) {
-        let handle = Arc::clone(self);
+    /// The task stops when the cancellation token is cancelled (during shutdown).
+    pub fn spawn_health_monitor(&self) {
+        let child = Arc::clone(&self.child);
+        let kind = self.kind.clone();
+        let port = self.port;
+        let cancel = self.cancel.clone();
+
         tokio::spawn(async move {
             let mut has_restarted = false;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+                }
 
-                let mut child = handle.child.lock().await;
-                match child.try_wait() {
+                let mut child_guard = child.lock().await;
+                match child_guard.try_wait() {
                     Ok(Some(status)) => {
                         if has_restarted {
                             error!(
@@ -164,9 +181,9 @@ impl TunnelHandle {
                             status
                         );
 
-                        match restart_tunnel(&handle.kind, handle.port).await {
+                        match restart_tunnel(&kind, port).await {
                             Ok(new_child) => {
-                                *child = new_child;
+                                *child_guard = new_child;
                                 has_restarted = true;
                                 info!("Cloudflare tunnel restarted successfully");
                             }

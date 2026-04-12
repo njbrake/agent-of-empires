@@ -79,8 +79,9 @@ async fn record_device(state: &AppState, ip: IpAddr, user_agent: &str) {
     }
 }
 
-/// Extract a token from the request (cookie, query param, or WS protocol header).
-/// Returns `Some((token_value, source))` or `None`.
+/// Extract a token from the request cookie or query parameter.
+/// WebSocket protocols are handled separately since multiple protocols may be
+/// present and each must be tried against the token manager.
 fn extract_token(request: &Request) -> Option<(&str, TokenSource)> {
     // Check cookie
     if let Some(cookie_header) = request.headers().get(header::COOKIE) {
@@ -103,19 +104,25 @@ fn extract_token(request: &Request) -> Option<(&str, TokenSource)> {
         }
     }
 
-    // Check WebSocket protocol header
-    if let Some(protocols) = request.headers().get("sec-websocket-protocol") {
-        if let Ok(proto_str) = protocols.to_str() {
+    None
+}
+
+/// Extract all WebSocket sub-protocol values from the request.
+/// Each must be individually validated since the token could be in any position
+/// alongside actual sub-protocol names (e.g., "graphql-ws, <token>").
+fn extract_ws_protocols(request: &Request) -> Vec<String> {
+    let mut protocols = Vec::new();
+    if let Some(header) = request.headers().get("sec-websocket-protocol") {
+        if let Ok(proto_str) = header.to_str() {
             for proto in proto_str.split(',') {
                 let trimmed = proto.trim();
                 if !trimmed.is_empty() {
-                    return Some((trimmed, TokenSource::WebSocketProtocol));
+                    protocols.push(trimmed.to_string());
                 }
             }
         }
     }
-
-    None
+    protocols
 }
 
 #[derive(Debug, PartialEq)]
@@ -154,38 +161,59 @@ pub async fn auth_middleware(
             .into_response();
     }
 
-    // Extract and validate token
+    // Try cookie/query param first
+    let mut matched_source = None;
+    let mut needs_upgrade = false;
+
     if let Some((token_value, source)) = extract_token(&request) {
-        let (valid, needs_upgrade) = state.token_manager.validate(token_value).await;
-
+        let (valid, upgrade) = state.token_manager.validate(token_value).await;
         if valid {
-            // Record success
-            state.rate_limiter.record_success(client_ip).await;
-
-            let user_agent = request
-                .headers()
-                .get(header::USER_AGENT)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            record_device(&state, client_ip, user_agent).await;
-
-            let mut response = next.run(request).await;
-
-            // Set cookie if authenticated via query param or if token needs upgrade
-            let should_set_cookie = source == TokenSource::QueryParam || needs_upgrade;
-
-            if should_set_cookie {
-                if let Some(current) = state.token_manager.current_token().await {
-                    let cookie = build_cookie(&current, state.behind_tunnel);
-                    response.headers_mut().insert(
-                        header::SET_COOKIE,
-                        cookie.parse().expect("cookie format must be valid"),
-                    );
-                }
-            }
-
-            return response;
+            matched_source = Some(source);
+            needs_upgrade = upgrade;
         }
+    }
+
+    // If cookie/query didn't match, try each WebSocket sub-protocol.
+    // A client may send multiple protocols (e.g., "graphql-ws, <token>"),
+    // so we must check each one, not just the first.
+    if matched_source.is_none() {
+        for proto in extract_ws_protocols(&request) {
+            let (valid, upgrade) = state.token_manager.validate(&proto).await;
+            if valid {
+                matched_source = Some(TokenSource::WebSocketProtocol);
+                needs_upgrade = upgrade;
+                break;
+            }
+        }
+    }
+
+    if let Some(source) = matched_source {
+        // Record success
+        state.rate_limiter.record_success(client_ip).await;
+
+        let user_agent = request
+            .headers()
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown");
+        record_device(&state, client_ip, user_agent).await;
+
+        let mut response = next.run(request).await;
+
+        // Set cookie if authenticated via query param or if token needs upgrade
+        let should_set_cookie = source == TokenSource::QueryParam || needs_upgrade;
+
+        if should_set_cookie {
+            if let Some(current) = state.token_manager.current_token().await {
+                let cookie = build_cookie(&current, state.behind_tunnel);
+                response.headers_mut().insert(
+                    header::SET_COOKIE,
+                    cookie.parse().expect("cookie format must be valid"),
+                );
+            }
+        }
+
+        return response;
     }
 
     // Auth failed: record failure
