@@ -47,6 +47,16 @@ export interface DiffFileInfo {
 /** Workspace status derived from session states */
 export type WorkspaceStatus = "active" | "idle";
 
+/** Repository group: workspaces sharing the same parent repo */
+export interface RepoGroup {
+  id: string;
+  repoPath: string;
+  displayName: string;
+  workspaces: Workspace[];
+  status: WorkspaceStatus;
+  collapsed: boolean;
+}
+
 /** Workspace: a group of sessions sharing the same project + branch */
 export interface Workspace {
   id: string;

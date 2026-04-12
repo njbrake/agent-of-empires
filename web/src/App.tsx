@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
+import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { isSessionActive } from "./lib/session";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
@@ -14,6 +15,8 @@ import { HelpOverlay } from "./components/HelpOverlay";
 export default function App() {
   const { sessions, error } = useSessions();
   const workspaces = useWorkspaces(sessions);
+  const { groups, standalone, toggleRepoCollapsed } =
+    useRepoGroups(workspaces);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     null,
@@ -245,10 +248,12 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         {sidebarOpen && (
           <WorkspaceSidebar
-            workspaces={workspaces}
+            groups={groups}
+            standalone={standalone}
             activeId={activeWorkspaceId}
             onToggle={() => setSidebarOpen(false)}
             onSelect={handleSelectWorkspace}
+            onToggleRepo={toggleRepoCollapsed}
             onNew={() => setShowCreate(true)}
             onSettings={() => setShowSettings((s) => !s)}
           />
