@@ -223,12 +223,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     } else {
         // Use default_tool from resolved config, then first available tool, then "claude"
         let available_tools = crate::tmux::AvailableTools::detect();
+        let tools_list = available_tools.available_list();
         instance.tool = config
             .session
             .default_tool
             .as_deref()
             .and_then(crate::agents::resolve_tool_name)
-            .or_else(|| available_tools.available_list().first().copied())
+            .or_else(|| tools_list.first().map(|s| s.as_str()))
             .unwrap_or("claude")
             .to_string();
     }

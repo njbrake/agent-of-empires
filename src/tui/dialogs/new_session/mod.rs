@@ -109,7 +109,7 @@ pub struct NewSessionDialog {
     pub(super) group: Input,
     pub(super) tool_index: usize,
     pub(super) focused_field: usize,
-    pub(super) available_tools: Vec<&'static str>,
+    pub(super) available_tools: Vec<String>,
     pub(super) existing_titles: Vec<String>,
     pub(super) worktree_branch: Input,
     pub(super) create_new_branch: bool,
@@ -322,7 +322,7 @@ impl NewSessionDialog {
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {
             available_tools
                 .iter()
-                .position(|&t| t == default_tool.as_str())
+                .position(|t| t == default_tool)
                 .unwrap_or(0)
         } else {
             0
@@ -331,7 +331,7 @@ impl NewSessionDialog {
         // Apply sandbox defaults from config (disabled for host-only agents like settl)
         let is_default_tool_host_only = available_tools
             .get(tool_index)
-            .and_then(|&t| crate::agents::get_agent(t))
+            .and_then(|t| crate::agents::get_agent(t))
             .is_some_and(|a| a.host_only);
         let sandbox_enabled =
             docker_available && config.sandbox.enabled_by_default && !is_default_tool_host_only;
@@ -341,7 +341,7 @@ impl NewSessionDialog {
         let selected_tool = available_tools
             .get(tool_index)
             .or_else(|| available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         let extra_args_value = config
             .session
@@ -349,12 +349,23 @@ impl NewSessionDialog {
             .get(selected_tool)
             .cloned()
             .unwrap_or_default();
-        let command_override_value = config
+        let mut command_override_value = config
             .session
             .agent_command_override
             .get(selected_tool)
             .cloned()
             .unwrap_or_default();
+        // For custom agents, pre-fill command override from the custom agent definition
+        if command_override_value.is_empty() {
+            if let Some(custom) = config
+                .session
+                .custom_agents
+                .iter()
+                .find(|c| c.name == selected_tool)
+            {
+                command_override_value = custom.command.clone();
+            }
+        }
 
         // Initialize env entries and inherited settings from config when sandbox is enabled
         let (extra_env, inherited_settings) = if sandbox_enabled {
@@ -513,7 +524,7 @@ impl NewSessionDialog {
 
     /// Whether the currently selected tool is always in YOLO mode (no opt-in needed).
     fn selected_tool_always_yolo(&self) -> bool {
-        let tool_name = self.available_tools[self.tool_index];
+        let tool_name = &self.available_tools[self.tool_index];
         crate::agents::get_agent(tool_name)
             .and_then(|a| a.yolo.as_ref())
             .is_some_and(|y| matches!(y, crate::agents::YoloMode::AlwaysYolo))
@@ -521,7 +532,7 @@ impl NewSessionDialog {
 
     /// Whether the currently selected tool can only run on the host (no sandbox/worktree).
     fn selected_tool_host_only(&self) -> bool {
-        let tool_name = self.available_tools[self.tool_index];
+        let tool_name = &self.available_tools[self.tool_index];
         crate::agents::get_agent(tool_name).is_some_and(|a| a.host_only)
     }
 
@@ -546,7 +557,7 @@ impl NewSessionDialog {
         self.tool_index = if let Some(ref default_tool) = config.session.default_tool {
             self.available_tools
                 .iter()
-                .position(|&t| t == default_tool.as_str())
+                .position(|t| t == default_tool)
                 .unwrap_or(0)
         } else {
             0
@@ -576,7 +587,7 @@ impl NewSessionDialog {
             .available_tools
             .get(self.tool_index)
             .or_else(|| self.available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         self.extra_args = Input::new(
             config
@@ -586,14 +597,23 @@ impl NewSessionDialog {
                 .cloned()
                 .unwrap_or_default(),
         );
-        self.command_override = Input::new(
-            config
+        let mut cmd_override = config
+            .session
+            .agent_command_override
+            .get(selected_tool)
+            .cloned()
+            .unwrap_or_default();
+        if cmd_override.is_empty() {
+            if let Some(custom) = config
                 .session
-                .agent_command_override
-                .get(selected_tool)
-                .cloned()
-                .unwrap_or_default(),
-        );
+                .custom_agents
+                .iter()
+                .find(|c| c.name == selected_tool)
+            {
+                cmd_override = custom.command.clone();
+            }
+        }
+        self.command_override = Input::new(cmd_override);
         self.tool_config_mode = false;
         self.tool_config_focused_field = 0;
 
@@ -605,12 +625,10 @@ impl NewSessionDialog {
     }
 
     #[cfg(test)]
-    pub(super) fn new_with_config(tools: Vec<&'static str>, path: String, config: Config) -> Self {
+    pub(super) fn new_with_config(tools: Vec<&str>, path: String, config: Config) -> Self {
+        let tools: Vec<String> = tools.iter().map(|s| s.to_string()).collect();
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {
-            tools
-                .iter()
-                .position(|&t| t == default_tool.as_str())
-                .unwrap_or(0)
+            tools.iter().position(|t| t == default_tool).unwrap_or(0)
         } else {
             0
         };
@@ -674,7 +692,7 @@ impl NewSessionDialog {
     }
 
     #[cfg(test)]
-    pub(super) fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
+    pub(super) fn new_with_tools(tools: Vec<&str>, path: String) -> Self {
         Self {
             profile: "default".to_string(),
             available_profiles: vec!["default".to_string()],
@@ -684,7 +702,7 @@ impl NewSessionDialog {
             group: Input::default(),
             tool_index: 0,
             focused_field: 0,
-            available_tools: tools,
+            available_tools: tools.iter().map(|s| s.to_string()).collect(),
             existing_titles: Vec::new(),
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
@@ -1363,7 +1381,7 @@ impl NewSessionDialog {
             .available_tools
             .get(self.tool_index)
             .or_else(|| self.available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         self.extra_args = Input::new(
             config
@@ -1373,14 +1391,19 @@ impl NewSessionDialog {
                 .cloned()
                 .unwrap_or_default(),
         );
-        self.command_override = Input::new(
-            config
-                .session
-                .agent_command_override
-                .get(tool)
-                .cloned()
-                .unwrap_or_default(),
-        );
+        let mut cmd_override = config
+            .session
+            .agent_command_override
+            .get(tool)
+            .cloned()
+            .unwrap_or_default();
+        // For custom agents, pre-fill command override from the custom agent definition
+        if cmd_override.is_empty() {
+            if let Some(custom) = config.session.custom_agents.iter().find(|c| c.name == tool) {
+                cmd_override = custom.command.clone();
+            }
+        }
+        self.command_override = Input::new(cmd_override);
     }
 
     fn current_input_mut(&mut self) -> &mut Input {
@@ -1461,7 +1484,7 @@ impl NewSessionDialog {
             title: final_title,
             path: self.path.value().trim().to_string(),
             group: self.group.value().trim().to_string(),
-            tool: self.available_tools[self.tool_index].to_string(),
+            tool: self.available_tools[self.tool_index].clone(),
             worktree_branch,
             create_new_branch: self.create_new_branch,
             extra_repo_paths: if has_worktree_branch {

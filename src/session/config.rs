@@ -111,6 +111,18 @@ pub struct AppStateConfig {
     pub sort_order: Option<SortOrder>,
 }
 
+/// A user-defined custom agent that appears in the TUI agent picker.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CustomAgentDef {
+    /// Display name shown in the agent picker (e.g. "lenovo-claude")
+    pub name: String,
+    /// Command to run (e.g. "ssh -t lenovo claude")
+    pub command: String,
+    /// Optional: use a built-in agent's status detection (e.g. "claude")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detect_as: Option<String>,
+}
+
 /// Session-related configuration defaults
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -136,6 +148,10 @@ pub struct SessionConfig {
     /// to tmux pane content parsing, which is less reliable.
     #[serde(default = "default_true")]
     pub agent_status_hooks: bool,
+
+    /// User-defined custom agents that appear alongside built-in agents in the TUI picker
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_agents: Vec<CustomAgentDef>,
 }
 
 /// Diff view configuration

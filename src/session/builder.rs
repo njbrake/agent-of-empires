@@ -351,12 +351,20 @@ pub fn build_instance(
 
     // Apply agent_command_override and agent_extra_args from resolved config.
     // Per-session values from params take priority over config.
+    // For custom agents, fall back to the custom agent's command definition.
     if !params.command_override.is_empty() {
         instance.command = params.command_override;
     } else if let Some(cmd_override) = config.session.agent_command_override.get(&params.tool) {
         if !cmd_override.is_empty() {
             instance.command = cmd_override.clone();
         }
+    } else if let Some(custom) = config
+        .session
+        .custom_agents
+        .iter()
+        .find(|c| c.name == params.tool)
+    {
+        instance.command = custom.command.clone();
     }
     if !params.extra_args.is_empty() {
         instance.extra_args = params.extra_args;
