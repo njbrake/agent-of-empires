@@ -1,4 +1,4 @@
-import { useState, memo } from "react";
+import { memo } from "react";
 import type { Workspace, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, isSessionActive } from "../lib/session";
 
@@ -63,19 +63,6 @@ export function WorkspaceSidebar({
   onSelect,
   onNew,
 }: Props) {
-  const [searchQuery, setSearchQuery] = useState("");
-
-  const filtered = searchQuery.trim()
-    ? workspaces.filter((ws) => {
-        const q = searchQuery.toLowerCase();
-        return (
-          ws.displayName.toLowerCase().includes(q) ||
-          ws.projectPath.toLowerCase().includes(q) ||
-          ws.agents.some((a) => a.toLowerCase().includes(q))
-        );
-      })
-    : workspaces;
-
   return (
     <>
       <div
@@ -98,18 +85,8 @@ export function WorkspaceSidebar({
           </button>
         </div>
 
-        <div className="px-3 pb-2">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search... (/)"
-            className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 font-body text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-          />
-        </div>
-
         <div className="flex-1 overflow-y-auto">
-          {filtered.map((ws) => (
+          {workspaces.map((ws) => (
             <SessionRow
               key={ws.id}
               workspace={ws}
@@ -117,14 +94,6 @@ export function WorkspaceSidebar({
               onClick={() => onSelect(ws.id)}
             />
           ))}
-
-          {filtered.length === 0 && searchQuery && (
-            <div className="px-4 py-8 text-center">
-              <p className="font-body text-sm text-text-muted">
-                No matches for "{searchQuery}"
-              </p>
-            </div>
-          )}
         </div>
       </div>
     </>
