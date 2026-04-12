@@ -1,6 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
   <defs>
     <linearGradient id="win-back" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#78350f"/>
+      <stop offset="100%" stop-color="#451a03"/>
+    </linearGradient>
+    <linearGradient id="win-mid" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#92400e"/>
       <stop offset="100%" stop-color="#78350f"/>
     </linearGradient>
@@ -19,26 +23,23 @@
 
   <!-- Stacked terminal windows, centered in circle -->
   <g transform="translate(400, 400) scale(3.8) translate(-64, -64)">
-    <!-- Back terminal window -->
-    <rect x="6" y="38" width="72" height="56" rx="6" fill="url(#win-back)" opacity="0.7"/>
+    <!-- Back terminal window (darkest) -->
+    <rect x="2" y="44" width="68" height="54" rx="6" fill="url(#win-back)" opacity="0.6"/>
 
-    <!-- Front terminal window -->
+    <!-- Middle terminal window -->
+    <rect x="18" y="32" width="72" height="56" rx="6" fill="url(#win-mid)" opacity="0.7"/>
+
+    <!-- Front terminal window (brightest) -->
     <g>
-      <!-- Window body -->
-      <rect x="36" y="18" width="80" height="66" rx="6" fill="url(#win-front)"/>
-      <!-- Title bar -->
-      <rect x="36" y="18" width="80" height="18" rx="6" fill="url(#titlebar)"/>
-      <rect x="36" y="30" width="80" height="6" fill="url(#titlebar)"/>
-      <!-- Traffic light dots -->
-      <circle cx="50" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-      <circle cx="59" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-      <circle cx="68" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-      <!-- Terminal content area -->
-      <rect x="40" y="39" width="72" height="41" rx="3" fill="#b45309" opacity="0.22"/>
-      <!-- $ prompt -->
-      <text x="49" y="65" font-family="'Courier New', monospace" font-size="20" font-weight="bold" fill="#fef3c7" opacity="0.85">$</text>
-      <!-- Cursor block -->
-      <rect x="68" y="51" width="9" height="17" rx="2" fill="#fef3c7" opacity="0.75"/>
+      <rect x="38" y="18" width="78" height="64" rx="6" fill="url(#win-front)"/>
+      <rect x="38" y="18" width="78" height="18" rx="6" fill="url(#titlebar)"/>
+      <rect x="38" y="30" width="78" height="6" fill="url(#titlebar)"/>
+      <circle cx="52" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+      <circle cx="61" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+      <circle cx="70" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+      <rect x="42" y="39" width="70" height="39" rx="3" fill="#b45309" opacity="0.22"/>
+      <text x="50" y="64" font-family="'Courier New', monospace" font-size="20" font-weight="bold" fill="#fef3c7" opacity="0.85">$</text>
+      <rect x="69" y="50" width="9" height="17" rx="2" fill="#fef3c7" opacity="0.75"/>
     </g>
   </g>
 </svg>

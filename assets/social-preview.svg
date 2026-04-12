@@ -5,6 +5,10 @@
       <stop offset="100%" stop-color="#020617"/>
     </linearGradient>
     <linearGradient id="win-back" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#78350f"/>
+      <stop offset="100%" stop-color="#451a03"/>
+    </linearGradient>
+    <linearGradient id="win-mid" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#92400e"/>
       <stop offset="100%" stop-color="#78350f"/>
     </linearGradient>
@@ -36,42 +40,48 @@
     <line x1="960" y1="0" x2="960" y2="640"/>
   </g>
 
-  <!-- Decorative background terminal shapes (scattered, faded) -->
+  <!-- Decorative background terminal shapes (scattered, faded, 3 panes each) -->
   <!-- Top-left -->
   <g transform="translate(40, 80) scale(1.2)" opacity="0.08">
-    <rect x="6" y="38" width="72" height="56" rx="6" fill="#94a3b8"/>
-    <rect x="36" y="18" width="80" height="66" rx="6" fill="#94a3b8"/>
+    <rect x="2" y="44" width="68" height="54" rx="6" fill="#94a3b8"/>
+    <rect x="18" y="32" width="72" height="56" rx="6" fill="#94a3b8"/>
+    <rect x="38" y="18" width="78" height="64" rx="6" fill="#94a3b8"/>
   </g>
   <!-- Top-right -->
   <g transform="translate(980, 60) scale(1.0)" opacity="0.06">
-    <rect x="6" y="38" width="72" height="56" rx="6" fill="#94a3b8"/>
-    <rect x="36" y="18" width="80" height="66" rx="6" fill="#94a3b8"/>
+    <rect x="2" y="44" width="68" height="54" rx="6" fill="#94a3b8"/>
+    <rect x="18" y="32" width="72" height="56" rx="6" fill="#94a3b8"/>
+    <rect x="38" y="18" width="78" height="64" rx="6" fill="#94a3b8"/>
   </g>
   <!-- Bottom-left -->
   <g transform="translate(30, 400) scale(0.9)" opacity="0.06">
-    <rect x="6" y="38" width="72" height="56" rx="6" fill="#94a3b8"/>
-    <rect x="36" y="18" width="80" height="66" rx="6" fill="#94a3b8"/>
+    <rect x="2" y="44" width="68" height="54" rx="6" fill="#94a3b8"/>
+    <rect x="18" y="32" width="72" height="56" rx="6" fill="#94a3b8"/>
+    <rect x="38" y="18" width="78" height="64" rx="6" fill="#94a3b8"/>
   </g>
   <!-- Bottom-right -->
   <g transform="translate(1050, 380) scale(1.1)" opacity="0.07">
-    <rect x="6" y="38" width="72" height="56" rx="6" fill="#94a3b8"/>
-    <rect x="36" y="18" width="80" height="66" rx="6" fill="#94a3b8"/>
+    <rect x="2" y="44" width="68" height="54" rx="6" fill="#94a3b8"/>
+    <rect x="18" y="32" width="72" height="56" rx="6" fill="#94a3b8"/>
+    <rect x="38" y="18" width="78" height="64" rx="6" fill="#94a3b8"/>
   </g>
 
   <!-- Main icon (centered-left area) -->
-  <g transform="translate(460, 175) scale(1.6)">
-    <!-- Back terminal window -->
-    <rect x="6" y="38" width="72" height="56" rx="6" fill="url(#win-back)" opacity="0.7"/>
-    <!-- Front terminal window -->
-    <rect x="36" y="18" width="80" height="66" rx="6" fill="url(#win-front)"/>
-    <rect x="36" y="18" width="80" height="18" rx="6" fill="url(#titlebar)"/>
-    <rect x="36" y="30" width="80" height="6" fill="url(#titlebar)"/>
-    <circle cx="50" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-    <circle cx="59" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-    <circle cx="68" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-    <rect x="40" y="39" width="72" height="41" rx="3" fill="#b45309" opacity="0.22"/>
-    <text x="49" y="65" font-family="'Courier New', monospace" font-size="20" font-weight="bold" fill="#fef3c7" opacity="0.85">$</text>
-    <rect x="68" y="51" width="9" height="17" rx="2" fill="#fef3c7" opacity="0.75"/>
+  <g transform="translate(450, 170) scale(1.6)">
+    <!-- Back terminal window (darkest) -->
+    <rect x="2" y="44" width="68" height="54" rx="6" fill="url(#win-back)" opacity="0.6"/>
+    <!-- Middle terminal window -->
+    <rect x="18" y="32" width="72" height="56" rx="6" fill="url(#win-mid)" opacity="0.7"/>
+    <!-- Front terminal window (brightest) -->
+    <rect x="38" y="18" width="78" height="64" rx="6" fill="url(#win-front)"/>
+    <rect x="38" y="18" width="78" height="18" rx="6" fill="url(#titlebar)"/>
+    <rect x="38" y="30" width="78" height="6" fill="url(#titlebar)"/>
+    <circle cx="52" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+    <circle cx="61" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+    <circle cx="70" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+    <rect x="42" y="39" width="70" height="39" rx="3" fill="#b45309" opacity="0.22"/>
+    <text x="50" y="64" font-family="'Courier New', monospace" font-size="20" font-weight="bold" fill="#fef3c7" opacity="0.85">$</text>
+    <rect x="69" y="50" width="9" height="17" rx="2" fill="#fef3c7" opacity="0.75"/>
   </g>
 
   <!-- "aoe" text -->
