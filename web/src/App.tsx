@@ -84,11 +84,39 @@ export default function App() {
     if (!activeWorkspace || !activeSession) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
-          <p className="font-body text-sm text-text-dim text-center">
-            {workspaces.length === 0
-              ? "No sessions yet"
-              : "Select a session"}
-          </p>
+          <svg
+            width="48"
+            height="48"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-text-dim/40 mb-4"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <line x1="3" y1="8" x2="21" y2="8" />
+            <circle cx="6" cy="5.5" r="0.5" fill="currentColor" />
+            <circle cx="8.5" cy="5.5" r="0.5" fill="currentColor" />
+            <circle cx="11" cy="5.5" r="0.5" fill="currentColor" />
+          </svg>
+          {workspaces.length === 0 ? (
+            <>
+              <p className="text-sm text-text-muted mb-1">No sessions yet</p>
+              <p className="text-xs text-text-dim">
+                Create one: <code className="font-mono text-text-muted">aoe add /path/to/project</code>
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-text-muted mb-1">Select a session</p>
+              <p className="text-xs text-text-dim">
+                Click any session in the sidebar to connect
+              </p>
+            </>
+          )}
         </div>
       );
     }
@@ -126,10 +154,10 @@ export default function App() {
     <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
 
       {/* Header */}
-      <header className="h-10 bg-surface-800 border-b border-surface-700/20 flex items-center px-2 shrink-0 gap-1.5">
+      <header className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2">
         <button
           onClick={() => setSidebarOpen((o) => !o)}
-          className={`w-10 h-10 flex items-center justify-center cursor-pointer rounded-md transition-colors -ml-1 ${
+          className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
             sidebarOpen
               ? "text-text-secondary"
               : "text-text-dim hover:text-text-secondary"
@@ -138,8 +166,8 @@ export default function App() {
           aria-label="Toggle sidebar"
         >
           <svg
-            width="18"
-            height="18"
+            width="16"
+            height="16"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -152,16 +180,32 @@ export default function App() {
           </svg>
         </button>
 
+        <a
+          href="https://agent-of-empires.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 text-text-muted hover:text-text-secondary transition-colors"
+          aria-label="Agent of Empires website (opens in new tab)"
+        >
+          <img src="/icon-192.png" alt="" width="18" height="18" className="rounded-sm" />
+          <span className="font-mono text-xs">aoe</span>
+        </a>
+
         <div className="flex-1" />
 
-        <div className="ml-auto flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          {sessions.length > 0 && (
+            <span className="font-mono text-[11px] text-text-dim">
+              {sessions.length} session{sessions.length !== 1 ? "s" : ""}
+            </span>
+          )}
           {alertCounts.errors > 0 && (
-            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/15 text-status-error">
+            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/10 text-status-error">
               {alertCounts.errors} error{alertCounts.errors !== 1 ? "s" : ""}
             </span>
           )}
           {alertCounts.waiting > 0 && (
-            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-waiting/15 text-status-waiting">
+            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-waiting/10 text-status-waiting">
               {alertCounts.waiting} waiting
             </span>
           )}
@@ -172,7 +216,7 @@ export default function App() {
           )}
           <button
             onClick={toggleDiff}
-            className={`flex w-10 h-10 items-center justify-center cursor-pointer rounded-md transition-colors ${
+            className={`flex w-8 h-8 items-center justify-center cursor-pointer rounded-md transition-colors ${
               diffCollapsed
                 ? "text-text-dim hover:text-text-secondary"
                 : "text-text-secondary"
@@ -181,8 +225,8 @@ export default function App() {
             aria-label="Toggle diff panel"
           >
             <svg
-              width="18"
-              height="18"
+              width="16"
+              height="16"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -222,18 +266,18 @@ export default function App() {
           onClick={() => setShowCreate(false)}
         >
           <div
-            className="bg-surface-800 border border-surface-700/30 rounded-xl px-6 py-5 max-w-sm text-center"
+            className="bg-surface-800 border border-surface-700/30 rounded-lg px-6 py-5 max-w-sm text-center"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="font-body text-sm text-text-primary mb-1">
+            <p className="text-sm text-text-primary mb-1">
               Not supported yet
             </p>
-            <p className="font-body text-xs text-text-dim mb-4">
+            <p className="text-xs text-text-dim mb-4">
               Create sessions from the terminal with the aoe CLI.
             </p>
             <button
               onClick={() => setShowCreate(false)}
-              className="font-body text-xs text-text-muted hover:text-text-secondary cursor-pointer"
+              className="text-xs text-text-muted hover:text-text-secondary cursor-pointer"
             >
               Close
             </button>

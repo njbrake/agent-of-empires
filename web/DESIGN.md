@@ -1,338 +1,203 @@
 # Web Dashboard Design System -- Agent of Empires
 
-> Extends DESIGN.md. All brand colors, fonts, and principles from the main design system apply here. This document covers web-specific patterns.
+> Standalone design system for the web dashboard. The root DESIGN.md covers the TUI and marketing site; this document covers the browser-based app UI, which has its own visual direction.
 
 ## Product Context
 - **What this is:** Browser-based dashboard for monitoring and controlling AI agent sessions
 - **Classifier:** APP UI (workspace-driven, task-focused, data-dense)
 - **Who it's for:** Developers managing parallel AI agents who want remote/mobile access
 - **Competitors:** Conductor Build (native Mac app), Webmux (web-based tmux viewer)
-- **Mood:** The TUI, but in a browser. Industrial warmth. Dense but breathable. Not a generic SaaS dashboard -- this is a terminal tool that happens to render in a browser.
+- **Mood:** Clean, neutral, tool-like. Feels like Cursor or Conductor, not like a branded marketing site. The terminal is the hero; everything else stays out of the way.
+- **What we avoid:** Pervasive brand colors, warm navy surfaces, orange/amber everywhere, decorative elements, AI slop patterns (purple gradients, 3-column icon grids, centered-everything layouts)
 
 ## Design Principles
 
-1. **Terminal is the hero.** The terminal pane dominates the viewport. Everything else exists to help you find and interact with the right terminal session.
+1. **Terminal is the hero.** The terminal pane dominates the viewport. Everything else helps you find and interact with the right session.
 2. **Density over chrome.** Show more sessions, less UI. Every pixel of border, padding, and decoration earns its space.
-3. **Warm dark, not cold dark.** Use the navy surfaces from DESIGN.md (#0f172a, #1e293b), not GitHub's cold gray (#0d1117, #161b22). The current implementation uses cold grays -- this needs to change.
-4. **Status at a glance.** Session state (running, waiting, idle, error) should be visible in peripheral vision. Color-coded dots, not labels.
-5. **Mobile is monitoring.** On mobile, you mostly watch. The sidebar becomes a session picker, the terminal fills the screen. Don't cram desktop features into mobile.
+3. **Neutral dark.** Standard zinc grays, not warm navy or cold GitHub blue. Professional and unobtrusive.
+4. **Restrained accent.** Amber (brand) and teal (accent) appear only at interaction points: terminal cursor, active indicators, status badges. Never on backgrounds or headers.
+5. **Status at a glance.** Session state (running, waiting, idle, error) visible in peripheral vision. Color + shape for accessibility.
+6. **Mobile is monitoring.** On mobile, you mostly watch. Sidebar becomes a session picker, terminal fills the screen.
+
+## Typography
+
+Geist Sans for UI text, Geist Mono for code, data, and terminal. Both from Vercel's Geist font family, designed for developer tools.
+
+| Element | Font | Size | Weight |
+|---------|------|------|--------|
+| Header title | Geist Mono | 12px | 400 |
+| Session title (sidebar) | Geist Sans | 13px | 400 |
+| Session meta (tool, branch) | Geist Mono | 11px | 400 |
+| Content header title | Geist Mono | 14px | 600 |
+| Status labels | Geist Mono | 11px | 400 |
+| Terminal | Geist Mono | 14px (12px mobile) | 400 |
+| Buttons | Geist Sans | 12px | 500 |
+| Section labels | Geist Mono | 11px | 500, uppercase, tracking-wider |
+| Body text | Geist Sans | 14px | 400 |
+
+Font files are self-hosted in `public/fonts/` from the `geist` npm package. No external font CDN requests.
+
+## Color
+
+### Surfaces -- Neutral Zinc
+| Token | Hex | Usage |
+|-------|-----|-------|
+| surface-700 | #3f3f46 | Borders, dividers |
+| surface-800 | #2c2c30 | Elevated surfaces (header, sidebar) |
+| surface-850 | #262629 | Slightly elevated (settings sidebar, nav) |
+| surface-900 | #1c1c1f | Primary background |
+| surface-950 | #141416 | Deepest background (terminal, empty states) |
+
+### Text
+| Token | Hex | Usage |
+|-------|-----|-------|
+| text-primary | #e4e4e7 | Primary body text (zinc-200) |
+| text-secondary | #a1a1aa | Secondary text, descriptions (zinc-400) |
+| text-muted | #71717a | Muted labels, hints (zinc-500) |
+| text-dim | #52525b | Dimmest text, placeholders (zinc-600) |
+| text-bright | #fafafa | Bright emphasis (zinc-50) |
+
+### Brand -- Amber/Copper (used sparingly)
+| Token | Hex | Usage |
+|-------|-----|-------|
+| brand-400 | #fbbf24 | Bright amber accents |
+| brand-500 | #f59e0b | Hover states on brand elements |
+| brand-600 | #d97706 | Terminal cursor, active sidebar border, focus rings |
+| brand-700 | #b45309 | Pressed states |
+
+### Accent -- Muted Teal (used sparingly)
+| Token | Hex | Usage |
+|-------|-----|-------|
+| accent-500 | #14b8a6 | Bright teal |
+| accent-600 | #0d9488 | Workspace name, diff chunk markers |
+| accent-700 | #0f766e | Dark teal |
+
+### Status
+| Name | Hex | Glyph | Usage |
+|------|-----|-------|-------|
+| Running | #22c55e | ● | Agent actively working |
+| Waiting | #fbbf24 | ◐ | Waiting for user input |
+| Idle | #71717a | ○ | Agent idle |
+| Error | #ef4444 | ✕ | Session error |
+| Starting | #f59e0b | ◌ | Session starting up |
+| Stopped | #52525b | ■ | Session stopped |
+
+Status uses both color AND distinct glyphs for accessibility. The glyph shape should be recognizable even without color.
+
+### Terminal Theme
+| Token | Hex | Notes |
+|-------|-----|-------|
+| background | #141416 | surface-950, deepest layer |
+| foreground | #e4e4e7 | text-primary |
+| cursor | #d97706 | Brand amber, the ONE place brand color is prominent |
+| selection | rgba(161,161,170,0.2) | Neutral zinc tint, not amber |
+| ANSI blue | #60a5fa | Standard blue, not teal |
+| ANSI cyan | #22d3ee | Standard cyan |
 
 ## Layout
 
 ### Desktop (>1024px)
-
 ```
 +------------------------------------------------------+
-|  [logo] Agent of Empires    [status] 6 sessions   [?]|  <- 48px header
+| [=] [icon] aoe          3 sessions  [errors] [diff]  |  <- 48px header
 +--------+---------------------------------------------+
-|        |  Session Title  ·  claude  ·  main  ● Run   |  <- 40px content header
-| SESS.  |                                              |
-| LIST   |                                              |
-|        |  ┌─────────────────────────────────────────┐ |
-| ● Huns |  │                                         │ |
-| ◐ Goth |  │       [xterm.js terminal pane]          │ |
-| ○ Celt |  │         fills remaining space           │ |
-| ● Frnk |  │                                         │ |
-|        |  │                                         │ |
-|        |  └─────────────────────────────────────────┘ |
-+--------+---------------------------------------------+
+| ● Huns |  workspace/branch  ·  claude                |  <- 40px content header
+|   claude|                                             |
+|   2 sess|  ┌──────────────────────────────────────┐  |
+|         |  │                                      │  |
+| ◐ Goths|  │      [xterm.js terminal pane]        │  |
+|   gemini|  │        fills remaining space         │  |
+|         |  │                                      │  |
+| ○ Celts|  │                                      │  |
+|   claude|  └──────────────────────────────────────┘  |
++---------+--------------------------------------------+
   280px                    flex-1
 ```
 
-- **Sidebar:** Fixed 280px. Session list with status dots, tool, branch. Selected item has left accent border (brand-600 amber, not blue).
+- **Header:** 48px. Sidebar toggle, icon + "aoe" link (muted), session count, alert badges, diff toggle.
+- **Sidebar:** 280px, resizable (200-480px). Two-line session items with status glyph, title, and meta line. Active item has left border in brand-600.
 - **Content:** Flex-1. Content header (40px) + terminal (fills remaining).
-- **Header:** 48px. Logo left, session count right. Minimal.
-
-### Tablet (768-1024px)
-
-Same layout but sidebar collapses to 220px. Terminal font size reduces to 13px.
+- **Right panel:** Resizable diff + paired shell terminal, toggled by D key.
 
 ### Mobile (<768px)
-
-Two-state: session list OR terminal. Swipe or tap to switch. Back arrow in terminal header returns to list. No split view.
-
-## Colors (Web-Specific Tokens)
-
-Adapt the DESIGN.md palette for web rendering. The key change: replace the current cold GitHub-style grays with the warm navy surfaces.
-
-```css
-:root {
-  /* Surfaces -- warm navy (from DESIGN.md) */
-  --bg-primary: #0f172a;          /* surface-900 */
-  --bg-elevated: #1e293b;         /* surface-800 */
-  --bg-nav: #172033;              /* surface-850 */
-  --bg-hover: #26324b;            /* elevated hover */
-  --bg-active: #2d3a56;           /* active/selected */
-
-  /* Borders */
-  --border: #334155;              /* surface-700 */
-  --border-subtle: #1e293b;       /* surface-800 */
-
-  /* Text */
-  --text-primary: #e2e8f0;        /* surface-200, NOT pure white */
-  --text-secondary: #94a3b8;      /* slate-400 */
-  --text-muted: #64748b;          /* slate-500 */
-
-  /* Brand -- amber/copper */
-  --brand: #d97706;               /* brand-600 */
-  --brand-hover: #f59e0b;         /* brand-500 */
-  --brand-subtle: rgba(217, 119, 6, 0.1);
-
-  /* Accent -- teal */
-  --accent: #0d9488;              /* accent-600 */
-  --accent-hover: #14b8a6;        /* accent-500 */
-
-  /* Semantic */
-  --status-running: #22c55e;
-  --status-waiting: #fbbf24;
-  --status-idle: #64748b;
-  --status-error: #ef4444;
-  --status-starting: #f59e0b;
-  --status-stopped: #475569;
-
-  /* Terminal */
-  --terminal-bg: #020617;         /* surface-950, deepest */
-  --terminal-fg: #e2e8f0;
-  --terminal-cursor: #d97706;     /* brand cursor, not blue */
-}
-```
-
-## Typography
-
-```css
-/* Load from DESIGN.md font sources */
-@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
-
-:root {
-  --font-display: 'Satoshi', system-ui, sans-serif;
-  --font-body: 'DM Sans', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-}
-```
-
-| Element | Font | Size | Weight |
-|---------|------|------|--------|
-| Header title | Satoshi | 14px | 600 |
-| Session title (sidebar) | DM Sans | 13px | 500 |
-| Session meta (tool, branch) | DM Sans | 11px | 400 |
-| Content header title | DM Sans | 14px | 600 |
-| Status labels | JetBrains Mono | 11px | 400 |
-| Terminal | JetBrains Mono | 14px | 400 |
-| Buttons | DM Sans | 12px | 500 |
-| Section labels | JetBrains Mono | 11px | 600, uppercase, tracking-wider |
+Sidebar overlay. Right panel full-screen overlay. Terminal fills screen. Monitor-first.
 
 ## Components
 
 ### Session Item (Sidebar)
-
 ```
-┌─────────────────────────┐
-│ ● Huns                  │  <- status dot + title (DM Sans 500)
-│   claude · feature/auth │  <- tool + branch (11px, muted)
-└─────────────────────────┘
+│ ● Huns                    │  <- glyph + title (13px)
+│   claude · 2 sessions     │  <- meta (11px mono, dim)
 ```
+- **Default:** transparent bg, border-l-2 border-transparent
+- **Hover:** bg-surface-800/50
+- **Active:** bg-surface-850, border-l-2 border-brand-600
+- **Status glyph:** Text character, colored by status
 
-- **Default:** transparent bg, --text-primary title, --text-muted meta
-- **Hover:** --bg-hover background
-- **Active:** --bg-active background, 2px left border in --brand
-- **Status dot:** 6px circle, color from --status-* tokens
-- **Padding:** 8px 12px
-- **Gap between items:** 2px
-
-### Action Buttons
-
-- **Primary:** --brand bg, white text, 6px radius, 12px font
-- **Danger:** transparent bg, --status-error border + text
-- **Ghost:** transparent bg, --text-secondary text, hover: --bg-hover
-- **Size:** 28px height, 12px horizontal padding
-- **All buttons:** `cursor: pointer`, 150ms transition
-
-### Terminal View
-
-- **Background:** --terminal-bg (#020617) -- the darkest surface, creates depth
-- **Font:** JetBrains Mono, 14px, line-height 1.3
-- **Cursor:** --brand color (amber), blink enabled
-- **Selection:** rgba(217, 119, 6, 0.2) -- amber tint, not blue
-- **Scrollbar:** thin, --border color, transparent track
-- **Content header above terminal:** --bg-nav bg, shows session title + tool + status
-
-### Status Indicators
-
-Consistent across sidebar, header, and any future views:
-
-| Status | Color | Dot | Description |
-|--------|-------|-----|-------------|
-| Running | --status-running | ● | Filled circle, green |
-| Waiting | --status-waiting | ◐ | Half-filled, amber |
-| Idle | --status-idle | ○ | Open circle, gray |
-| Error | --status-error | ✕ | X mark, red |
-| Starting | --status-starting | ◌ | Dotted circle, amber |
-| Stopped | --status-stopped | ■ | Filled square, dark gray |
+### Header Branding
+- Small icon (18px) + "aoe" in mono, linked to agent-of-empires.com
+- Muted (text-muted), brightens on hover (text-secondary)
+- Not prominent, just identifiable
 
 ### Empty States
+- Terminal icon (48px, very dim)
+- Primary message (14px, text-muted)
+- Secondary hint (12px, text-dim)
+- "No sessions" state includes CLI command in mono
 
-When no session is selected:
+### Buttons
+- **Primary:** bg-brand-600 text-white, rounded-md (6px)
+- **Ghost:** transparent, text-text-secondary, hover bg-surface-800
+- **Size:** h-8, px-3
+- **All:** cursor-pointer, 150ms transition
 
-```
-+---------------------------------------------+
-|                                              |
-|          [terminal icon, 48px, muted]        |
-|                                              |
-|       Select a session to connect            |  <- DM Sans 16px, --text-muted
-|    Click any session in the sidebar          |  <- 13px, --text-muted
-|                                              |
-+---------------------------------------------+
-```
-
-When no sessions exist:
-
-```
-+---------------------------------------------+
-|                                              |
-|          [rocket icon, 48px, --brand]        |
-|                                              |
-|           No sessions yet                    |
-|    Create one:  aoe add /path/to/project     |  <- code style, JetBrains Mono
-|                                              |
-+---------------------------------------------+
-```
+### Dialogs
+- Rounded-lg (8px), not rounded-xl
+- bg-surface-800, border-surface-700/30
+- Backdrop: bg-black/60
 
 ## Spacing
+- **Base unit:** 4px
+- **Header height:** 48px (h-12)
+- **Content header height:** 40px (h-10)
+- **Sidebar width:** 280px default, 200-480px range
+- **Session item padding:** px-3 py-2
+- **Button height:** 32px (h-8)
 
-Use the DESIGN.md 4px base unit. Key measurements:
-
-| Element | Value |
-|---------|-------|
-| Header height | 48px |
-| Content header height | 40px |
-| Sidebar width (desktop) | 280px |
-| Sidebar padding | 6px horizontal, 0 vertical |
-| Session item padding | 8px 12px |
-| Session item gap | 2px |
-| Button height | 28px |
-| Button padding | 0 12px |
-| Section label padding | 12px 14px |
+## Border Radius Hierarchy
+| Element | Radius | Class |
+|---------|--------|-------|
+| Buttons, inputs | 6px | rounded-md |
+| Dialogs | 8px | rounded-lg |
+| Badges, pills | 9999px | rounded-full |
+| Sidebar, header, terminal | 0 | none |
+| Session items | 0 | none |
 
 ## Motion
+Minimal-functional. This is a workspace tool.
+- **Hover:** background-color 100ms ease
+- **Selection:** instant
+- **Dialog entrance:** slide-up 200ms ease-out
+- **Status color change:** 300ms ease
 
-Minimal. This is a workspace tool, not a marketing page.
-
-- **Sidebar hover:** background-color 100ms ease
-- **Session selection:** instant (no transition -- feels responsive)
-- **Terminal connect:** no animation. The PTY stream starts immediately.
-- **Status dot color change:** 300ms ease (smooth, not jarring)
-- **Mobile view switch:** 200ms slide (list -> terminal)
-
-## Anti-Patterns (What NOT to Do)
-
-These are specific to the web dashboard -- not the marketing site:
-
-1. **No cards.** Sessions are list items, not cards. The sidebar is a list, not a grid.
-2. **No colored backgrounds on sections.** The terminal is the only colored area (deep navy). Everything else is --bg-primary or --bg-elevated.
-3. **No rounded everything.** Border radius: 6px on buttons, 6px on session items. 0 on the sidebar, header, and terminal container. Radius hierarchy matters.
-4. **No blue accents.** The current implementation uses blue (#58a6ff) for active states and links. Replace with --brand (amber) for selection and --accent (teal) for informational.
-5. **No pure white text.** Use --text-primary (#e2e8f0) for body, not #ffffff.
-6. **No decorative elements.** No icons in the header. No badges. No gradients. The density of real information IS the design.
-
-## Future Components (Design Guidance)
-
-As the web dashboard expands, these components will be needed. Design direction for each:
-
-### Session Creation Form
-- **Pattern:** Slide-over panel from the right (not a modal)
-- **Fields:** Project path (with filesystem picker), agent selector, branch, sandbox toggle, extra args
-- **Agent selector:** Grid of agent icons (small, 32px, monochrome). Selected = --brand border.
-- **Not a wizard.** One screen, all fields visible. Advanced options collapsed by default.
-
-### Diff Viewer
-- **Pattern:** Replace the terminal pane with a diff view (toggle, not overlay)
-- **Style:** GitHub-style unified diff. Green/red with muted backgrounds. JetBrains Mono.
-- **Header:** File path + line counts. Navigation between files.
-
-### Settings Panel
-- **Pattern:** Full-page view (replaces sidebar + content). Back button returns to dashboard.
-- **Sections:** Profile management, theme, sound, sandbox defaults.
-- **Not nested.** Flat list of settings with section headers. No tabs within settings.
-
-### Notification System
-- **Pattern:** Small toast in bottom-right. Auto-dismiss after 5s.
-- **Content:** "Session 'Huns' is waiting for input", "Session 'Goths' finished"
-- **Color:** --bg-elevated with left border in status color.
-
-## Implementation Notes
-
-### Tailwind CSS Configuration
-
-The current Tailwind setup uses default classes. Extend with the design tokens:
-
-```ts
-// tailwind.config.ts
-export default {
-  theme: {
-    extend: {
-      colors: {
-        brand: { 400: '#fbbf24', 500: '#f59e0b', 600: '#d97706', 700: '#b45309' },
-        accent: { 500: '#14b8a6', 600: '#0d9488', 700: '#0f766e' },
-        surface: { 700: '#334155', 800: '#1e293b', 850: '#172033', 900: '#0f172a', 950: '#020617' },
-      },
-      fontFamily: {
-        display: ['Satoshi', 'system-ui', 'sans-serif'],
-        body: ['DM Sans', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
-      },
-    },
-  },
-}
-```
-
-### xterm.js Theme
-
-```ts
-const terminalTheme = {
-  background: '#020617',      // surface-950
-  foreground: '#e2e8f0',      // surface-200
-  cursor: '#d97706',          // brand-600
-  cursorAccent: '#020617',
-  selectionBackground: 'rgba(217, 119, 6, 0.2)',  // brand amber tint
-  black: '#0f172a',
-  red: '#ef4444',
-  green: '#22c55e',
-  yellow: '#fbbf24',
-  blue: '#0d9488',            // teal, not blue
-  magenta: '#a78bfa',
-  cyan: '#14b8a6',
-  white: '#e2e8f0',
-  brightBlack: '#475569',
-  brightRed: '#f87171',
-  brightGreen: '#4ade80',
-  brightYellow: '#fde68a',
-  brightBlue: '#2dd4bf',
-  brightMagenta: '#c4b5fd',
-  brightCyan: '#5eead4',
-  brightWhite: '#f8fafc',
-};
-```
-
-### Font Loading
-
-Add to `web/index.html` `<head>`:
-
-```html
-<link rel="preconnect" href="https://api.fontshare.com" crossorigin>
-<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
-<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-```
+## Anti-Patterns
+1. **No pervasive brand color.** Amber appears on terminal cursor, active border, focus rings. Nowhere else.
+2. **No cards in sidebar.** Sessions are list items, not cards.
+3. **No colored section backgrounds.** Only the terminal gets a distinct (deeper) surface.
+4. **No blue accents for interactive states.** Use neutral grays for hover/active.
+5. **No pure white text.** Use text-primary (#e4e4e7), not #ffffff.
+6. **No decorative elements.** Information density IS the design.
+7. **No warm navy.** Zinc grays, not slate/navy.
 
 ## Decisions Log
-
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| 2026-04-08 | Warm navy surfaces replace cold GitHub grays | DESIGN.md establishes warm navy (#0f172a) as the surface color. The current web dashboard uses cold grays (#0d1117) from the MVP. Consistency with brand requires the warm palette. |
-| 2026-04-08 | Amber selection/cursor replaces blue | Blue (#58a6ff) is generic. Amber (#d97706) is the brand color. Selected session, terminal cursor, and active states all use brand amber. |
-| 2026-04-08 | Satoshi for header, DM Sans for UI, JetBrains Mono for terminal | Matches DESIGN.md font stack. Gives the web dashboard typographic personality instead of system fonts. |
-| 2026-04-08 | No cards in sidebar | Sessions are list items. Cards add unnecessary borders and padding. The sidebar is a dense, scannable list -- like a file tree, not a deck of cards. |
-| 2026-04-08 | Terminal gets the deepest surface (#020617) | Creates visual depth. Sidebar and header are mid-tone (#0f172a, #172033). Terminal is the darkest. This makes the terminal feel like a window INTO something. |
-| 2026-04-08 | Mobile is monitor-first | On phones, you mostly check on agents. The UI should prioritize session status viewing and terminal reading. Creating sessions stays on desktop/CLI. |
-| 2026-04-08 | Classified as APP UI, not marketing | Applied App UI rules: calm surfaces, dense typography, utility copy. Not the Landing Page rules from DESIGN.md. |
+| 2026-04-08 | Initial web design system created | Inherited warm navy direction from root DESIGN.md |
+| 2026-04-12 | Switched to neutral zinc grays | Warm navy felt too branded for an app UI. User wants Conductor/Cursor feel, not a marketing aesthetic. |
+| 2026-04-12 | Geist Sans + Geist Mono | Vercel's developer font family. More character than Inter, purpose-built for dev tools, mono variant pairs perfectly. |
+| 2026-04-12 | Restrained amber accent | Brand color was too pervasive. Now only on terminal cursor, active sidebar border, and focus rings. |
+| 2026-04-12 | Two-line sidebar items | Single-line cramming was hard to scan. Title + meta line creates clear hierarchy. |
+| 2026-04-12 | Distinct status glyphs | Uniform dots relied entirely on color. Different shapes (●◐○✕◌■) add peripheral scannability and accessibility. |
+| 2026-04-12 | Header branding: icon + "aoe" link | Anonymous header felt unfinished. Small, muted branding gives identity without being loud. |
+| 2026-04-12 | Rich empty states | Bare text strings felt like placeholder UI. Icon + message + hint shows the app was designed with care. |
+| 2026-04-12 | Rounded-lg on dialogs, not rounded-xl | Tighter radius fits the neutral tool aesthetic. Rounded-xl felt too soft. |

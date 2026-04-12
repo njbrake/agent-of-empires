@@ -109,7 +109,7 @@ export function ContentSplit({
           {/* Mobile: full-screen overlay */}
           <div className="md:hidden fixed inset-0 z-40 flex flex-col bg-surface-900">
             <div className="h-10 flex items-center px-3 border-b border-surface-700/20 shrink-0">
-              <span className="font-body text-sm text-text-muted flex-1">
+              <span className="text-sm text-text-muted flex-1">
                 Diff & Shell
               </span>
               <button

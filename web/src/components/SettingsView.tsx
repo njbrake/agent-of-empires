@@ -77,11 +77,11 @@ export function SettingsView({ onClose }: Props) {
       <div className="h-12 bg-surface-850 border-b border-surface-700 flex items-center px-4 shrink-0">
         <button
           onClick={onClose}
-          className="text-brand-500 mr-3 cursor-pointer font-body text-sm"
+          className="text-brand-500 mr-3 cursor-pointer text-sm"
         >
           &larr; Back
         </button>
-        <span className="font-display text-sm font-semibold text-text-bright">
+        <span className="text-sm font-semibold text-text-bright">
           Settings
         </span>
         <div className="ml-auto flex items-center gap-2">
@@ -93,7 +93,7 @@ export function SettingsView({ onClose }: Props) {
           <button
             onClick={handleSave}
             disabled={!dirty || saving}
-            className="px-3 py-1 font-body text-xs rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 cursor-pointer transition-colors"
+            className="px-3 py-1 text-xs rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 cursor-pointer transition-colors"
           >
             {saving ? "Saving..." : "Save"}
           </button>
@@ -102,15 +102,15 @@ export function SettingsView({ onClose }: Props) {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Category sidebar */}
-        <div className="w-[180px] border-r border-surface-700 py-2">
+        <div className="w-[180px] bg-surface-850 border-r border-surface-700/30 py-2">
           {CATEGORIES.map((cat) => (
             <button
               key={cat.key}
               onClick={() => setActiveCategory(cat.key)}
-              className={`w-full text-left px-4 py-1.5 font-body text-xs cursor-pointer transition-colors ${
+              className={`w-full text-left px-4 py-1.5 text-xs cursor-pointer transition-colors ${
                 activeCategory === cat.key
-                  ? "text-brand-500 bg-brand-600/10 border-l-2 border-brand-600 pl-3.5"
-                  : "text-text-secondary hover:text-text-primary hover:bg-surface-800"
+                  ? "text-text-primary bg-surface-800 border-l-2 border-text-muted pl-3.5"
+                  : "text-text-secondary hover:text-text-primary hover:bg-surface-800/50"
               }`}
             >
               {cat.label}
@@ -294,7 +294,7 @@ function TextField({
 }) {
   return (
     <label className="block">
-      <span className="font-body text-xs text-text-secondary block mb-1">
+      <span className="text-xs text-text-secondary block mb-1">
         {label}
       </span>
       <input
@@ -302,7 +302,7 @@ function TextField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
       />
     </label>
   );
@@ -319,7 +319,7 @@ function BoolField({
 }) {
   return (
     <label className="flex items-center justify-between py-1 cursor-pointer">
-      <span className="font-body text-xs text-text-secondary">{label}</span>
+      <span className="text-xs text-text-secondary">{label}</span>
       <button
         type="button"
         onClick={() => onChange(!value)}
@@ -350,13 +350,13 @@ function SelectField({
 }) {
   return (
     <label className="block">
-      <span className="font-body text-xs text-text-secondary block mb-1">
+      <span className="text-xs text-text-secondary block mb-1">
         {label}
       </span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 font-body text-sm text-text-primary focus:border-brand-600 focus:outline-none"
+        className="w-full bg-surface-900 border border-surface-700 rounded px-3 py-1.5 text-sm text-text-primary focus:border-brand-600 focus:outline-none"
       >
         {options.map((opt) => (
           <option key={opt} value={opt}>

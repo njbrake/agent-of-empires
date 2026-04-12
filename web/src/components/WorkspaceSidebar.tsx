@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { Workspace, SessionStatus } from "../lib/types";
-import { STATUS_DOT_CLASS, isSessionActive } from "../lib/session";
+
+import { STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
 
 const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
 const DEFAULT_WIDTH = 280;
@@ -37,6 +38,18 @@ function loadSavedWidth(): number {
   return DEFAULT_WIDTH;
 }
 
+/** Status glyph by session state for scannability */
+const STATUS_GLYPH: Record<SessionStatus, string> = {
+  Running: "●",
+  Waiting: "◐",
+  Idle: "○",
+  Error: "✕",
+  Starting: "◌",
+  Stopped: "■",
+  Unknown: "○",
+  Deleting: "✕",
+};
+
 const SessionRow = memo(function SessionRow({
   workspace,
   isActive,
@@ -47,30 +60,45 @@ const SessionRow = memo(function SessionRow({
   onClick: () => void;
 }) {
   const sessionStatus = bestSessionStatus(workspace);
-  const dotClass = STATUS_DOT_CLASS[sessionStatus] ?? "bg-status-idle";
+  const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
+  const glyph = STATUS_GLYPH[sessionStatus] ?? "○";
 
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left flex items-center gap-2.5 px-3 py-2.5 cursor-pointer transition-colors duration-75 ${
+      className={`w-full text-left px-3 py-2 cursor-pointer transition-colors duration-75 ${
         isActive
-          ? "bg-surface-850 text-text-primary"
-          : "text-text-secondary hover:bg-surface-800/50"
+          ? "bg-surface-850 border-l-2 border-brand-600"
+          : "border-l-2 border-transparent hover:bg-surface-800/50"
       }`}
     >
-      <span
-        className={`w-2 h-2 rounded-full shrink-0 ${dotClass} ${
-          sessionStatus === "Waiting" ? "animate-pulse" : ""
-        }`}
-      />
-      <span className="font-body text-[13px] truncate flex-1" title={label}>
-        {label}
-      </span>
-      <span className="font-mono text-xs text-accent-600 shrink-0">
-        {workspace.primaryAgent}
-      </span>
+      <div className="flex items-center gap-2">
+        <span
+          className={`text-[10px] shrink-0 leading-none ${textClass} ${
+            sessionStatus === "Waiting" ? "animate-pulse" : ""
+          }`}
+        >
+          {glyph}
+        </span>
+        <span className={`text-[13px] truncate flex-1 ${isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+          {label}
+        </span>
+      </div>
+      <div className="ml-[18px] mt-0.5 flex items-center gap-1.5">
+        <span className="font-mono text-[11px] text-text-dim truncate">
+          {workspace.primaryAgent}
+        </span>
+        {workspace.branch && workspace.sessions[0]?.title !== workspace.branch && (
+          <>
+            <span className="text-text-dim/40 text-[11px]">&middot;</span>
+            <span className="font-mono text-[11px] text-text-dim truncate">
+              {workspace.sessions.length} session{workspace.sessions.length !== 1 ? "s" : ""}
+            </span>
+          </>
+        )}
+      </div>
     </button>
   );
 });
@@ -156,7 +184,7 @@ export function WorkspaceSidebar({
         className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0"
       >
         <div className="px-3 pt-3 pb-1 flex items-center">
-          <span className="font-body text-sm text-text-muted flex-1">
+          <span className="text-sm text-text-muted flex-1">
             Sessions
           </span>
           <button
@@ -220,7 +248,7 @@ export function WorkspaceSidebar({
                 if (e.key === "Escape") toggleFilter();
               }}
               placeholder="Filter by name, branch, agent..."
-              className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 font-body text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+              className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </div>
         )}
@@ -237,7 +265,7 @@ export function WorkspaceSidebar({
 
           {filtered.length === 0 && filterQuery && (
             <div className="px-4 py-8 text-center">
-              <p className="font-body text-sm text-text-muted">
+              <p className="text-sm text-text-muted">
                 No matches for "{filterQuery}"
               </p>
             </div>

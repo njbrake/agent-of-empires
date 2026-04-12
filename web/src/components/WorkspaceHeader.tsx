@@ -22,7 +22,7 @@ export function WorkspaceHeader({
       <span className="font-mono text-sm font-semibold text-accent-600 truncate">
         {workspace.displayName}
       </span>
-      <span className="hidden sm:inline font-body text-xs text-text-dim truncate">
+      <span className="hidden sm:inline text-xs text-text-dim truncate">
         {agentLabel}
       </span>
 

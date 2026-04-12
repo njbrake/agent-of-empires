@@ -62,7 +62,7 @@ export function DiffPanel({ sessionId, expanded, onFileCountChange }: Props) {
   if (!sessionId) {
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-900 text-text-dim">
-        <p className="font-body text-sm">Select a session to see changes</p>
+        <p className="text-sm">Select a session to see changes</p>
       </div>
     );
   }
@@ -76,7 +76,7 @@ export function DiffPanel({ sessionId, expanded, onFileCountChange }: Props) {
           </span>
         </div>
         <div className="flex-1 flex items-center justify-center text-text-dim">
-          <span className="font-body text-sm">Loading changes...</span>
+          <span className="text-sm">Loading changes...</span>
         </div>
       </div>
     );
@@ -93,7 +93,7 @@ export function DiffPanel({ sessionId, expanded, onFileCountChange }: Props) {
         <div className="flex-1 flex items-center justify-center text-text-dim">
           <div className="text-center">
             <div className="font-mono text-xl text-surface-700 mb-1">0</div>
-            <p className="font-body text-xs">No changes yet</p>
+            <p className="text-xs">No changes yet</p>
           </div>
         </div>
       </div>
@@ -116,11 +116,25 @@ export function DiffPanel({ sessionId, expanded, onFileCountChange }: Props) {
             setLoading(true);
             void fetchDiff();
           }}
-          className="font-body text-[10px] text-text-dim hover:text-text-muted cursor-pointer"
+          className="text-text-dim hover:text-text-muted cursor-pointer transition-colors"
           title="Refresh diff"
           aria-label="Refresh diff"
         >
-          ↻
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+            <path d="M16 16h5v5" />
+          </svg>
         </button>
       </div>
 

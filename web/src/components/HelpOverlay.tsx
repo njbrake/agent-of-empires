@@ -24,11 +24,11 @@ export function HelpOverlay({ onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="bg-surface-800 border border-surface-700/50 rounded-xl w-[480px] max-w-[90vw] shadow-2xl animate-slide-up"
+        className="bg-surface-800 border border-surface-700/50 rounded-lg w-[480px] max-w-[90vw] shadow-2xl animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700">
-          <h2 className="font-display text-sm font-semibold text-text-bright">
+          <h2 className="text-sm font-semibold text-text-bright">
             Keyboard Shortcuts
           </h2>
           <button
@@ -50,7 +50,7 @@ export function HelpOverlay({ onClose }: Props) {
                   <kbd className="font-mono text-sm bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-brand-500 min-w-[32px] text-center">
                     {s.key}
                   </kbd>
-                  <span className="font-body text-sm text-text-secondary">
+                  <span className="text-sm text-text-secondary">
                     {s.desc}
                   </span>
                 </div>
@@ -68,7 +68,7 @@ export function HelpOverlay({ onClose }: Props) {
                   <kbd className="font-mono text-sm bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-accent-600 min-w-[32px] text-center">
                     {s.key}
                   </kbd>
-                  <span className="font-body text-sm text-text-secondary">
+                  <span className="text-sm text-text-secondary">
                     {s.desc}
                   </span>
                 </div>
@@ -78,7 +78,7 @@ export function HelpOverlay({ onClose }: Props) {
         </div>
 
         <div className="px-5 py-3 border-t border-surface-700">
-          <p className="font-body text-sm text-text-dim">
+          <p className="text-sm text-text-dim">
             Shortcuts are disabled when typing in input fields or the terminal.
           </p>
         </div>
