@@ -20,7 +20,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::prelude::*;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 use crate::migrations;
 use crate::session::get_update_settings;
@@ -89,6 +89,12 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
             )
             .await;
         }
+    }
+
+    // Bail early if stdin is not a terminal. Running without a tty would
+    // cause the event loop to busy-loop after the parent terminal dies.
+    if !io::stdin().is_terminal() {
+        anyhow::bail!("stdin is not a terminal; aoe requires an interactive TTY");
     }
 
     // Setup terminal
