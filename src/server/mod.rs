@@ -125,8 +125,13 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
-        // Terminal
+        // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
+        .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))
+        .route(
+            "/sessions/{id}/container-terminal/ws",
+            get(ws::container_terminal_ws),
+        )
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)
         .route("/assets/{*path}", get(serve_asset))
         .route("/manifest.json", get(serve_public_file))

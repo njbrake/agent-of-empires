@@ -17,7 +17,10 @@ export interface TerminalState {
  * Manages an xterm.js terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
  */
-export function useTerminal(sessionId: string | null) {
+export function useTerminal(
+  sessionId: string | null,
+  wsPath: string = "ws",
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -91,7 +94,7 @@ export function useTerminal(sessionId: string | null) {
     function connect() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(
-        `${proto}//${location.host}/sessions/${sessionId}/ws`,
+        `${proto}//${location.host}/sessions/${sessionId}/${wsPath}`,
       );
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -206,7 +209,7 @@ export function useTerminal(sessionId: string | null) {
       wsRef.current = null;
       fitRef.current = null;
     };
-  }, [sessionId]);
+  }, [sessionId, wsPath]);
 
   const manualReconnect = () => {
     retryCountRef.current = 0;

@@ -19,6 +19,55 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
 use super::AppState;
 
+/// WebSocket for the paired host terminal (TerminalSession tmux session)
+pub async fn paired_terminal_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let instances = state.instances.read().await;
+    let session_info = instances
+        .iter()
+        .find(|i| i.id == id)
+        .map(|inst| crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title));
+    drop(instances);
+
+    let read_only = state.read_only;
+
+    match session_info {
+        Some(tmux_name) => ws
+            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
+            .into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
+    }
+}
+
+/// WebSocket for the paired container terminal (ContainerTerminalSession tmux session)
+pub async fn container_terminal_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let instances = state.instances.read().await;
+    let session_info = instances
+        .iter()
+        .find(|i| i.id == id)
+        .map(|inst| {
+            crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title)
+        });
+    drop(instances);
+
+    let read_only = state.read_only;
+
+    match session_info {
+        Some(tmux_name) => ws
+            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
+            .into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
+    }
+}
+
+/// WebSocket for the agent's main tmux session
 pub async fn terminal_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
