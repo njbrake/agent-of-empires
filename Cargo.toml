@@ -20,7 +20,7 @@ clap_complete = "4.5"
 
 # TUI
 ratatui = { version = "0.30", features = ["crossterm"] }
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["event-stream"] }
 ansi-to-tui = "8.0"
 ratatui-textarea = "0.8"
 tui-input = "0.15"
@@ -31,7 +31,7 @@ tokio = { version = "1.50", features = ["full"] }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "1.0"
+toml = "1.1"
 
 # File watching
 notify = "8.2"
@@ -50,7 +50,7 @@ anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 
 # UUID generation
-uuid = { version = "1.22", features = ["v4"] }
+uuid = { version = "1.23", features = ["v4"] }
 
 # Random
 rand = "0.10"
@@ -88,21 +88,23 @@ enum_dispatch = "0.3.13"
 similar = "2.6"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 
 # File locking
 fs2 = "0.4"
+
+# Stream utilities (for crossterm EventStream)
+futures-util = "0.3"
 
 # Web server (optional, behind "serve" feature)
 axum = { version = "0.8", features = ["ws"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 rust-embed = { version = "8", features = ["debug-embed"], optional = true }
 mime_guess = { version = "2.0", optional = true }
-futures-util = { version = "0.3", optional = true }
 
 [features]
 default = []
-serve = ["axum", "tower-http", "rust-embed", "mime_guess", "futures-util"]
+serve = ["axum", "tower-http", "rust-embed", "mime_guess"]
 
 [dev-dependencies]
 tempfile = "3.14"

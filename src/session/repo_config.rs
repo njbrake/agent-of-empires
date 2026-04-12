@@ -326,7 +326,11 @@ pub fn compute_hooks_hash(hooks: &HooksConfig) -> String {
         hasher.update(cmd.as_bytes());
         hasher.update(b"\n");
     }
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }
 
 /// Path to the global trust store. Trust decisions are shared across all

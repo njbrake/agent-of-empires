@@ -2,13 +2,12 @@
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseEvent,
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyModifiers, MouseEvent,
 };
+use futures_util::{FutureExt, StreamExt};
 use ratatui::prelude::*;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
@@ -48,10 +47,6 @@ where
         crossterm::cursor::Hide
     )?;
     std::io::Write::flush(terminal.backend_mut())?;
-
-    while event::poll(Duration::from_millis(0))? {
-        let _ = event::read();
-    }
 
     terminal.clear()?;
 
@@ -156,77 +151,130 @@ impl App {
             });
         }
 
-        // Listen for SIGHUP/SIGTERM so we exit cleanly when the terminal
+        // SIGHUP/SIGTERM futures so we exit cleanly when the terminal
         // emulator is force-quit, preventing PTY slot leaks (#541).
-        let signal_quit = Arc::new(AtomicBool::new(false));
+        // These are polled directly inside tokio::select!, which guarantees
+        // they get scheduled even when no terminal events arrive.
         #[cfg(unix)]
-        {
-            let quit = signal_quit.clone();
-            tokio::spawn(async move {
-                use tokio::signal::unix::{signal, SignalKind};
-                let Ok(mut sighup) = signal(SignalKind::hangup()) else {
-                    tracing::warn!("Failed to register SIGHUP handler");
-                    return;
-                };
-                let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
-                    tracing::warn!("Failed to register SIGTERM handler");
-                    return;
-                };
-                tokio::select! {
-                    _ = sighup.recv() => {}
-                    _ = sigterm.recv() => {}
-                }
-                quit.store(true, Ordering::SeqCst);
-            });
-        }
+        let (mut sighup, mut sigterm) = {
+            use tokio::signal::unix::{signal, SignalKind};
+            let hup = signal(SignalKind::hangup());
+            let term = signal(SignalKind::terminate());
+            if let Err(ref e) = hup {
+                tracing::warn!("Failed to register SIGHUP handler: {}", e);
+            }
+            if let Err(ref e) = term {
+                tracing::warn!("Failed to register SIGTERM handler: {}", e);
+            }
+            (hup.ok(), term.ok())
+        };
 
+        let mut event_stream = EventStream::new();
+        let mut refresh_interval = tokio::time::interval(Duration::from_millis(50));
+        refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
         loop {
-            // Check for OS signals (SIGHUP/SIGTERM) each iteration
-            if signal_quit.load(Ordering::Relaxed) {
-                self.should_quit = true;
-                break;
-            }
             // Force full redraw if needed (e.g., after returning from tmux)
             if self.needs_redraw {
                 terminal.clear()?;
                 self.needs_redraw = false;
-            }
-
-            // Poll with short timeout for responsive input
-            if event::poll(Duration::from_millis(50))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        self.handle_key(key, terminal).await?;
-
-                        // Draw immediately after input for responsiveness
-                        terminal.draw(|f| self.render(f))?;
-
-                        if self.should_quit {
+                // Drain stale events that accumulated during raw-mode-disabled
+                // operations (tmux attach, editor). The EventStream's background
+                // thread holds the internal lock, so the former sync drain could
+                // not acquire it; drain via the async API instead.
+                loop {
+                    match event_stream.next().now_or_never() {
+                        Some(Some(Ok(_))) => continue,
+                        Some(Some(Err(_))) | Some(None) => {
+                            self.should_quit = true;
                             break;
                         }
-                        continue; // Skip status refresh this iteration for responsiveness
+                        None => break,
                     }
-                    Event::Mouse(mouse) => {
-                        self.handle_mouse(mouse, terminal).await?;
+                }
+                if self.should_quit {
+                    break;
+                }
+            }
 
-                        // Draw immediately after input for responsiveness
-                        terminal.draw(|f| self.render(f))?;
+            // All event sources are polled cooperatively via tokio::select!.
+            // This ensures signal futures actually get scheduled (fixing #608
+            // defect 1), and that EOF from a dead tty is detected (defect 2).
+            tokio::select! {
+                event = event_stream.next() => {
+                    match event {
+                        Some(Ok(Event::Key(key))) => {
+                            self.handle_key(key, terminal).await?;
 
-                        continue;
+                            terminal.draw(|f| self.render(f))?;
+
+                            if self.should_quit {
+                                break;
+                            }
+                            continue;
+                        }
+                        Some(Ok(Event::Mouse(mouse))) => {
+                            self.handle_mouse(mouse, terminal).await?;
+
+                            terminal.draw(|f| self.render(f))?;
+
+                            continue;
+                        }
+                        Some(Ok(Event::Paste(text))) => {
+                            self.home.handle_paste(&text);
+
+                            terminal.draw(|f| self.render(f))?;
+
+                            continue;
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            // IO error reading from the terminal (broken pipe,
+                            // EOF, etc.) means the tty is gone. Exit cleanly
+                            // instead of spinning (#608 defect 2).
+                            tracing::info!("Terminal event stream error, exiting: {}", e);
+                            self.should_quit = true;
+                            break;
+                        }
+                        None => {
+                            // EventStream ended (EOF on stdin). The terminal is
+                            // gone; exit instead of busy-looping (#608 defect 2).
+                            tracing::info!("Terminal event stream ended (EOF), exiting");
+                            self.should_quit = true;
+                            break;
+                        }
                     }
-                    Event::Paste(text) => {
-                        self.home.handle_paste(&text);
-
-                        terminal.draw(|f| self.render(f))?;
-
-                        continue;
+                }
+                _ = refresh_interval.tick() => {}
+                _ = async {
+                    #[cfg(unix)]
+                    match sighup {
+                        Some(ref mut s) => { s.recv().await; }
+                        None => { std::future::pending::<()>().await; }
                     }
-                    _ => {}
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                } => {
+                    tracing::info!("Received SIGHUP, exiting");
+                    self.should_quit = true;
+                    break;
+                }
+                _ = async {
+                    #[cfg(unix)]
+                    match sigterm {
+                        Some(ref mut s) => { s.recv().await; }
+                        None => { std::future::pending::<()>().await; }
+                    }
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                } => {
+                    tracing::info!("Received SIGTERM, exiting");
+                    self.should_quit = true;
+                    break;
                 }
             }
 
@@ -238,42 +286,34 @@ impl App {
             // Periodic refreshes (only when no input pending)
             let mut refresh_needed = false;
 
-            // Request status refresh every interval (non-blocking)
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.request_status_refresh();
                 last_status_refresh = std::time::Instant::now();
             }
 
-            // Always check for and apply status updates (non-blocking)
             if self.home.apply_status_updates() {
                 refresh_needed = true;
             }
 
-            // Check for and apply deletion results (non-blocking)
             if self.home.apply_deletion_results() {
                 refresh_needed = true;
             }
 
-            // Check for and apply creation results (non-blocking)
             if let Some(session_id) = self.home.apply_creation_results() {
-                // Creation succeeded - attach to the new session
                 self.attach_session(&session_id, terminal)?;
                 refresh_needed = true;
             }
 
-            // Tick dialog animations/timers (spinner, transient flashes)
             if self.home.tick_dialog() {
                 refresh_needed = true;
             }
 
-            // Periodic disk refresh to sync with other instances
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;
             }
 
-            // Single draw after all refreshes to avoid flicker
             if refresh_needed {
                 terminal.draw(|f| self.render(f))?;
             }
