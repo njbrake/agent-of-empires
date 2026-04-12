@@ -181,7 +181,11 @@ export default function App() {
       <header className="h-10 bg-surface-800 border-b border-surface-700/20 flex items-center px-2 shrink-0 gap-1.5">
         <button
           onClick={() => setSidebarOpen((o) => !o)}
-          className="w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-700/30 transition-colors -ml-1"
+          className={`w-10 h-10 flex items-center justify-center cursor-pointer rounded-md transition-colors -ml-1 ${
+            sidebarOpen
+              ? "text-text-secondary"
+              : "text-text-dim hover:text-text-secondary"
+          }`}
           title="Toggle sidebar"
           aria-label="Toggle sidebar"
         >
