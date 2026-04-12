@@ -2,7 +2,7 @@
 
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rattles::presets::prelude as spinners;
 
@@ -10,8 +10,10 @@ use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
     ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
-
-use std::time::Duration;
+use crate::session::{Item, Status};
+use crate::tui::components::{HelpOverlay, Preview};
+use crate::tui::styles::Theme;
+use crate::update::UpdateInfo;
 
 fn spinner_running() -> &'static str {
     spinners::dots()
@@ -30,10 +32,6 @@ fn spinner_starting() -> &'static str {
         .set_interval(Duration::from_millis(180))
         .current_frame()
 }
-use crate::session::{Item, Status};
-use crate::tui::components::{HelpOverlay, Preview};
-use crate::tui::styles::Theme;
-use crate::update::UpdateInfo;
 
 impl HomeView {
     pub fn render(

@@ -177,7 +177,7 @@ impl App {
         let mut last_spinner_redraw = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-        // Fastest spinner (circle_halves) changes every 120ms; redrawing faster is wasted work
+        // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
         const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
 
         loop {
