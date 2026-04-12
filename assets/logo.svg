@@ -19,27 +19,21 @@
   </defs>
 
   <!-- Back terminal window (darkest) -->
-  <rect x="2" y="44" width="68" height="54" rx="6" fill="url(#win-back)" opacity="0.6"/>
+  <rect x="10" y="38" width="76" height="60" rx="6" fill="url(#win-back)" opacity="0.6"/>
 
   <!-- Middle terminal window -->
-  <rect x="18" y="32" width="72" height="56" rx="6" fill="url(#win-mid)" opacity="0.7"/>
+  <rect x="20" y="28" width="76" height="60" rx="6" fill="url(#win-mid)" opacity="0.7"/>
 
   <!-- Front terminal window (brightest) -->
   <g>
-    <!-- Window body -->
-    <rect x="38" y="18" width="78" height="64" rx="6" fill="url(#win-front)"/>
-    <!-- Title bar -->
-    <rect x="38" y="18" width="78" height="18" rx="6" fill="url(#titlebar)"/>
-    <rect x="38" y="30" width="78" height="6" fill="url(#titlebar)"/>
-    <!-- Traffic light dots -->
-    <circle cx="52" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-    <circle cx="61" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-    <circle cx="70" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
-    <!-- Terminal content area -->
-    <rect x="42" y="39" width="70" height="39" rx="3" fill="#b45309" opacity="0.22"/>
-    <!-- $ prompt -->
-    <text x="50" y="64" font-family="'Courier New', monospace" font-size="20" font-weight="bold" fill="#fef3c7" opacity="0.85">$</text>
-    <!-- Cursor block -->
-    <rect x="69" y="50" width="9" height="17" rx="2" fill="#fef3c7" opacity="0.75"/>
+    <rect x="32" y="18" width="82" height="66" rx="6" fill="url(#win-front)"/>
+    <rect x="32" y="18" width="82" height="18" rx="6" fill="url(#titlebar)"/>
+    <rect x="32" y="30" width="82" height="6" fill="url(#titlebar)"/>
+    <circle cx="46" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+    <circle cx="55" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+    <circle cx="64" cy="28" r="2.8" fill="#b45309" opacity="0.55"/>
+    <rect x="36" y="39" width="74" height="41" rx="3" fill="#b45309" opacity="0.22"/>
+    <text x="45" y="65" font-family="'Courier New', monospace" font-size="20" font-weight="bold" fill="#fef3c7" opacity="0.85">$</text>
+    <rect x="64" y="51" width="9" height="17" rx="2" fill="#fef3c7" opacity="0.75"/>
   </g>
 </svg>
