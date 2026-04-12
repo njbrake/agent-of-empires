@@ -261,9 +261,7 @@ export default function App() {
           </svg>
         </button>
 
-        <span className="font-body text-[13px] text-text-dim">
-          Agent of Empires
-        </span>
+        <div className="flex-1" />
 
         <div className="ml-auto flex items-center gap-1">
           {/* Alert badges */}
