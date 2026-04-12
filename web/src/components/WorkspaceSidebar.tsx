@@ -90,9 +90,7 @@ const SessionRow = memo(function SessionRow({
         <span className={`text-[13px] truncate flex-1 ${isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
           {label}
         </span>
-      </div>
-      <div className="ml-[18px] mt-0.5">
-        <span className="font-mono text-[11px] text-text-dim truncate">
+        <span className="font-mono text-[11px] text-text-dim shrink-0">
           {workspace.primaryAgent}
         </span>
       </div>
