@@ -248,24 +248,6 @@ export default function App() {
               offline
             </span>
           )}
-          <button
-            onClick={() => setShowSettings((s) => !s)}
-            className="w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-700/30 cursor-pointer rounded-md transition-colors"
-            title="Settings"
-            aria-label="Settings"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-            >
-              <circle cx="8" cy="8" r="2.5" />
-              <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" />
-            </svg>
-          </button>
         </div>
       </header>
 
@@ -278,6 +260,7 @@ export default function App() {
             onToggle={() => setSidebarOpen(false)}
             onSelect={handleSelectWorkspace}
             onNew={() => setShowCreate(true)}
+            onSettings={() => setShowSettings((s) => !s)}
           />
         )}
 
