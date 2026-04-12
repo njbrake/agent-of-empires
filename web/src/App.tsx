@@ -152,49 +152,51 @@ export default function App() {
       return <SettingsView onClose={() => setShowSettings(false)} />;
     }
 
-    if (!activeWorkspace || !activeSession) {
-      return (
-        <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
-          <p className="font-body text-sm text-text-dim text-center">
-            {workspaces.length === 0
-              ? "No sessions yet"
-              : "Select a session"}
-          </p>
-          {workspaces.length === 0 && (
-            <button
-              onClick={() => setShowCreate(true)}
-              className="mt-3 px-4 py-1.5 font-body text-xs rounded-md bg-brand-600 text-surface-950 font-semibold hover:bg-brand-700 cursor-pointer transition-colors"
-            >
-              Create session
-            </button>
-          )}
-        </div>
-      );
-    }
+    const emptyState = (
+      <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
+        <p className="font-body text-sm text-text-dim text-center">
+          {workspaces.length === 0 ? "No sessions yet" : "Select a session"}
+        </p>
+        {workspaces.length === 0 && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className="mt-3 px-4 py-1.5 font-body text-xs rounded-md bg-brand-600 text-surface-950 font-semibold hover:bg-brand-700 cursor-pointer transition-colors"
+          >
+            Create session
+          </button>
+        )}
+      </div>
+    );
 
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <WorkspaceHeader
-          workspace={activeWorkspace}
-          activeSession={activeSession}
-          diffCollapsed={diffCollapsed}
-          diffFileCount={diffFileCount}
-          actionPending={actionPending}
-          onStop={handleStop}
-          onRestart={handleRestart}
-          onLifecycleChange={handleLifecycleChange}
-          onToggleDiff={toggleDiff}
-        />
+        {activeWorkspace && activeSession && (
+          <WorkspaceHeader
+            workspace={activeWorkspace}
+            activeSession={activeSession}
+            diffCollapsed={diffCollapsed}
+            diffFileCount={diffFileCount}
+            actionPending={actionPending}
+            onStop={handleStop}
+            onRestart={handleRestart}
+            onLifecycleChange={handleLifecycleChange}
+            onToggleDiff={toggleDiff}
+          />
+        )}
 
         <ContentSplit
           collapsed={diffCollapsed}
           onToggleCollapse={toggleDiff}
           left={
-            <TerminalView key={activeSessionId} session={activeSession} />
+            activeSession ? (
+              <TerminalView key={activeSessionId} session={activeSession} />
+            ) : (
+              emptyState
+            )
           }
           right={
             <RightPanel
-              session={activeSession}
+              session={activeSession ?? null}
               sessionId={activeSessionId}
               expanded={!diffCollapsed}
               onFileCountChange={setDiffFileCount}
