@@ -57,10 +57,10 @@ const STATUS_RATTLE: Partial<Record<SessionStatus, keyof typeof RATTLES>> = {
 const STATIC_GLYPH: Record<SessionStatus, string> = {
   Running: "⠋",
   Waiting: "⠃",
-  Idle: "⣉",
+  Idle: "⠒",
   Error: "✕",
   Starting: "⠀",
-  Stopped: "⣉",
+  Stopped: "⠒",
   Unknown: "⠤",
   Deleting: "✕",
 };
