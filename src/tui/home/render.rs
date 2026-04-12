@@ -2,17 +2,36 @@
 
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use rattles::presets::prelude as spinners;
 
 use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_STOPPED, ICON_UNKNOWN,
-    ICON_WAITING,
+    ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
 use crate::tui::styles::Theme;
 use crate::update::UpdateInfo;
+
+fn spinner_running() -> &'static str {
+    spinners::dots()
+        .set_interval(Duration::from_millis(220))
+        .current_frame()
+}
+
+fn spinner_waiting() -> &'static str {
+    spinners::orbit()
+        .set_interval(Duration::from_millis(400))
+        .current_frame()
+}
+
+fn spinner_starting() -> &'static str {
+    spinners::breathe()
+        .set_interval(Duration::from_millis(180))
+        .current_frame()
+}
 
 impl HomeView {
     pub fn render(
@@ -300,13 +319,13 @@ impl HomeView {
                     match self.view_mode {
                         ViewMode::Agent => {
                             let icon = match inst.status {
-                                Status::Running => ICON_RUNNING,
-                                Status::Waiting => ICON_WAITING,
+                                Status::Running => spinner_running(),
+                                Status::Waiting => spinner_waiting(),
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
                                 Status::Error => ICON_ERROR,
-                                Status::Starting => ICON_STARTING,
+                                Status::Starting => spinner_starting(),
                                 Status::Deleting => ICON_DELETING,
                             };
                             let color = match inst.status {
@@ -340,7 +359,7 @@ impl HomeView {
                                     .unwrap_or(false),
                             };
                             let (icon, color) = if terminal_running {
-                                (ICON_RUNNING, theme.terminal_active)
+                                (spinner_running(), theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
                             };

@@ -3,7 +3,9 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
+use rattles::presets::prelude as spinners;
+
+use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
 use crate::tui::components::{render_text_field, render_text_field_with_ghost};
 use crate::tui::styles::Theme;
 
@@ -1280,7 +1282,9 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let spinner = SPINNER_FRAMES[self.spinner_frame];
+        let spinner = spinners::orbit()
+            .set_interval(std::time::Duration::from_millis(400))
+            .current_frame();
 
         if show_hook_output {
             let mut lines = vec![];

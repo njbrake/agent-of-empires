@@ -100,9 +100,6 @@ pub struct NewSessionData {
     pub command_override: String,
 }
 
-/// Spinner frames for loading animation
-pub(super) const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
-
 pub struct NewSessionDialog {
     pub(super) profile: String,
     pub(super) available_profiles: Vec<String>,
@@ -170,7 +167,6 @@ pub struct NewSessionDialog {
     /// Whether the dialog is in loading state (creating session in background)
     pub(super) loading: bool,
     /// Spinner animation frame counter
-    pub(super) spinner_frame: usize,
     /// Whether hooks are being executed during loading
     pub(super) has_hooks: bool,
     /// The currently running hook command
@@ -421,7 +417,6 @@ impl NewSessionDialog {
             error_message: None,
             show_help: false,
             loading: false,
-            spinner_frame: 0,
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
@@ -493,7 +488,8 @@ impl NewSessionDialog {
         let mut changed = false;
 
         if self.loading {
-            self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+            // Spinner frame is computed from elapsed time by rattles,
+            // so we just need to trigger a redraw
             changed = true;
         }
 
@@ -667,7 +663,6 @@ impl NewSessionDialog {
             error_message: None,
             show_help: false,
             loading: false,
-            spinner_frame: 0,
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
@@ -728,7 +723,6 @@ impl NewSessionDialog {
             error_message: None,
             show_help: false,
             loading: false,
-            spinner_frame: 0,
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),

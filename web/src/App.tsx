@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
+import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { isSessionActive } from "./lib/session";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
@@ -14,6 +15,8 @@ import { HelpOverlay } from "./components/HelpOverlay";
 export default function App() {
   const { sessions, error } = useSessions();
   const workspaces = useWorkspaces(sessions);
+  const { groups, standalone, toggleRepoCollapsed } =
+    useRepoGroups(workspaces);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     null,
@@ -157,9 +160,9 @@ export default function App() {
       <header className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2">
         <button
           onClick={() => setSidebarOpen((o) => !o)}
-          className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
+          className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors hover:bg-surface-700/50 ${
             sidebarOpen
-              ? "text-text-secondary"
+              ? "text-text-secondary hover:text-text-primary"
               : "text-text-dim hover:text-text-secondary"
           }`}
           title="Toggle sidebar"
@@ -214,30 +217,32 @@ export default function App() {
               offline
             </span>
           )}
-          <button
-            onClick={toggleDiff}
-            className={`flex w-8 h-8 items-center justify-center cursor-pointer rounded-md transition-colors ${
-              diffCollapsed
-                ? "text-text-dim hover:text-text-secondary"
-                : "text-text-secondary"
-            }`}
-            title="Toggle diff panel"
-            aria-label="Toggle diff panel"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          {activeWorkspace && activeSession && (
+            <button
+              onClick={toggleDiff}
+              className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors hover:bg-surface-700/50 ${
+                diffCollapsed
+                  ? "text-text-dim hover:text-text-secondary"
+                  : "text-text-secondary hover:text-text-primary"
+              }`}
+              title="Toggle diff panel"
+              aria-label="Toggle diff panel"
             >
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <line x1="15" y1="3" x2="15" y2="21" />
-            </svg>
-          </button>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <line x1="15" y1="3" x2="15" y2="21" />
+              </svg>
+            </button>
+          )}
         </div>
       </header>
 
@@ -245,10 +250,12 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         {sidebarOpen && (
           <WorkspaceSidebar
-            workspaces={workspaces}
+            groups={groups}
+            standalone={standalone}
             activeId={activeWorkspaceId}
             onToggle={() => setSidebarOpen(false)}
             onSelect={handleSelectWorkspace}
+            onToggleRepo={toggleRepoCollapsed}
             onNew={() => setShowCreate(true)}
             onSettings={() => setShowSettings((s) => !s)}
           />

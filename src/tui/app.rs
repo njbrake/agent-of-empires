@@ -174,8 +174,11 @@ impl App {
         refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
+        let mut last_spinner_redraw = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+        // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
+        const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
 
         loop {
             // Force full redraw if needed (e.g., after returning from tmux)
@@ -311,6 +314,15 @@ impl App {
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
+                refresh_needed = true;
+            }
+
+            // Animated spinners (rattles) need periodic redraws, but only at
+            // the spinner frame rate to avoid unnecessary widget tree rebuilds
+            if last_spinner_redraw.elapsed() >= SPINNER_REDRAW_INTERVAL
+                && self.home.has_animated_sessions()
+            {
+                last_spinner_redraw = std::time::Instant::now();
                 refresh_needed = true;
             }
 

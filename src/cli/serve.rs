@@ -22,6 +22,18 @@ pub struct ServeArgs {
     #[arg(long)]
     pub read_only: bool,
 
+    /// Expose via Cloudflare Tunnel for secure remote access
+    #[arg(long)]
+    pub remote: bool,
+
+    /// Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+    #[arg(long, requires = "remote")]
+    pub tunnel_name: Option<String>,
+
+    /// Hostname for a named tunnel (e.g., aoe.example.com)
+    #[arg(long, requires = "tunnel_name")]
+    pub tunnel_url: Option<String>,
+
     /// Run as a background daemon (detach from terminal)
     #[arg(long)]
     pub daemon: bool,
@@ -41,7 +53,11 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         return stop_daemon();
     }
 
-    let is_localhost = args.host == "127.0.0.1" || args.host == "localhost" || args.host == "::1";
+    let is_localhost = args.host == "localhost"
+        || args
+            .host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
 
     // Block dangerous combination: no auth on a network-accessible server
     if args.no_auth && !is_localhost {
@@ -53,8 +69,38 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         );
     }
 
-    // Warn about security implications of network binding
-    if !is_localhost {
+    // Block --no-auth with --remote (tunnel makes localhost publicly accessible)
+    if args.no_auth && args.remote {
+        bail!(
+            "Refusing to start without authentication in remote mode.\n\
+             --no-auth with --remote would expose unauthenticated shell access to the internet."
+        );
+    }
+
+    // Named tunnel requires --tunnel-url
+    if args.tunnel_name.is_some() && args.tunnel_url.is_none() {
+        bail!(
+            "Named tunnels require --tunnel-url to specify the hostname.\n\
+             Example: aoe serve --remote --tunnel-name my-tunnel --tunnel-url aoe.example.com\n\
+             \n\
+             Setup steps:\n\
+             1. cloudflared tunnel create my-tunnel\n\
+             2. Add a CNAME record: aoe.example.com -> <tunnel-id>.cfargotunnel.com\n\
+             3. aoe serve --remote --tunnel-name my-tunnel --tunnel-url aoe.example.com"
+        );
+    }
+
+    // Remote mode: check cloudflared and force localhost binding
+    let host = if args.remote {
+        crate::server::tunnel::check_cloudflared()?;
+        // Force localhost since cloudflared connects to localhost
+        "127.0.0.1".to_string()
+    } else {
+        args.host.clone()
+    };
+
+    // Warn about security implications of network binding (non-remote, non-localhost)
+    if !is_localhost && !args.remote {
         eprintln!("==========================================================");
         eprintln!("  SECURITY WARNING: Binding to {}", args.host);
         eprintln!("==========================================================");
@@ -67,6 +113,9 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         eprintln!("  Use a VPN (Tailscale, WireGuard) or SSH tunnel");
         eprintln!("  for remote access. Do NOT expose this to the");
         eprintln!("  public internet without TLS termination.");
+        eprintln!();
+        eprintln!("  Or use: aoe serve --remote");
+        eprintln!("  for automatic HTTPS via Cloudflare Tunnel.");
         eprintln!();
         if args.read_only {
             eprintln!("  Read-only mode is ON: terminal input is disabled.");
@@ -85,9 +134,18 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         let _ = std::fs::write(&path, std::process::id().to_string());
     }
 
-    let result =
-        crate::server::start_server(profile, &args.host, args.port, args.no_auth, args.read_only)
-            .await;
+    let result = crate::server::start_server(crate::server::ServerConfig {
+        profile,
+        host: &host,
+        port: args.port,
+        no_auth: args.no_auth,
+        read_only: args.read_only,
+        remote: args.remote,
+        tunnel_name: args.tunnel_name.as_deref(),
+        tunnel_url: args.tunnel_url.as_deref(),
+        is_daemon: false,
+    })
+    .await;
 
     // Clean up PID and URL files on exit
     if let Ok(path) = pid_file_path() {
@@ -118,6 +176,15 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     }
     if args.read_only {
         cmd.arg("--read-only");
+    }
+    if args.remote {
+        cmd.arg("--remote");
+    }
+    if let Some(ref name) = args.tunnel_name {
+        cmd.args(["--tunnel-name", name]);
+    }
+    if let Some(ref url) = args.tunnel_url {
+        cmd.args(["--tunnel-url", url]);
     }
     if !profile.is_empty() {
         cmd.args(["--profile", profile]);
@@ -156,6 +223,20 @@ fn stop_daemon() -> Result<()> {
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid PID in {}: {}", path.display(), pid_str.trim()))?;
 
+    // Verify PID belongs to an aoe process
+    let proc_path = format!("/proc/{}/cmdline", pid);
+    if std::path::Path::new(&proc_path).exists() {
+        if let Ok(cmdline) = std::fs::read_to_string(&proc_path) {
+            if !cmdline.contains("aoe") && !cmdline.contains("agent-of-empires") {
+                std::fs::remove_file(&path)?;
+                bail!(
+                    "PID {} belongs to a different process (stale PID file). Cleaned up.",
+                    pid
+                );
+            }
+        }
+    }
+
     // Send SIGTERM
     match nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(pid),
@@ -169,7 +250,7 @@ fn stop_daemon() -> Result<()> {
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
         Err(nix::errno::Errno::ESRCH) => {
-            // Process doesn't exist -- clean up stale PID file
+            // Process doesn't exist; clean up stale PID file
             std::fs::remove_file(&path)?;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
