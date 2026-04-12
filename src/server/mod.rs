@@ -115,10 +115,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::list_sessions).post(api::create_session),
         )
         .route("/api/sessions/{id}/diff", get(api::session_diff))
-        .route(
-            "/api/sessions/{id}/terminal",
-            post(api::ensure_terminal),
-        )
+        .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
         .route(
             "/api/sessions/{id}/container-terminal",
             post(api::ensure_container_terminal),

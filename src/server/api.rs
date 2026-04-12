@@ -51,7 +51,10 @@ impl From<&Instance> for SessionResponse {
             last_accessed_at: inst.last_accessed_at.map(|t| t.to_rfc3339()),
             last_error: inst.last_error.clone(),
             branch: inst.worktree_info.as_ref().map(|w| w.branch.clone()),
-            main_repo_path: inst.worktree_info.as_ref().map(|w| w.main_repo_path.clone()),
+            main_repo_path: inst
+                .worktree_info
+                .as_ref()
+                .map(|w| w.main_repo_path.clone()),
             is_sandboxed: inst.is_sandboxed(),
             has_terminal: inst.terminal_info.is_some(),
         }
@@ -200,8 +203,7 @@ pub async fn ensure_terminal(
     let mut inst_clone = inst.clone();
     drop(instances);
 
-    let result =
-        tokio::task::spawn_blocking(move || inst_clone.start_terminal()).await;
+    let result = tokio::task::spawn_blocking(move || inst_clone.start_terminal()).await;
 
     match result {
         Ok(Ok(())) => {
@@ -259,10 +261,9 @@ pub async fn ensure_container_terminal(
     let mut inst_clone = inst.clone();
     drop(instances);
 
-    let result = tokio::task::spawn_blocking(move || {
-        inst_clone.start_container_terminal_with_size(None)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || inst_clone.start_container_terminal_with_size(None))
+            .await;
 
     match result {
         Ok(Ok(())) => (

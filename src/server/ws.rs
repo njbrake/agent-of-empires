@@ -52,9 +52,7 @@ pub async fn container_terminal_ws(
     let session_info = instances
         .iter()
         .find(|i| i.id == id)
-        .map(|inst| {
-            crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title)
-        });
+        .map(|inst| crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title));
     drop(instances);
 
     let read_only = state.read_only;
