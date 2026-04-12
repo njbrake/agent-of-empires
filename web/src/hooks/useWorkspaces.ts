@@ -62,7 +62,7 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
     const workspaces: Workspace[] = [];
 
     for (const [id, groupSessions] of groups) {
-      const first = groupSessions[0];
+      const first = groupSessions[0]!;
       const agents = [...new Set(groupSessions.map((s) => s.tool))];
       const computedStatus = deriveStatus(groupSessions);
       const override = overrides[id];
