@@ -53,16 +53,16 @@ const STATUS_RATTLE: Partial<Record<SessionStatus, keyof typeof RATTLES>> = {
   Starting: "breathe",
 };
 
-/** Static glyphs for non-animated statuses */
+/** Static glyphs for non-animated statuses (braille family) */
 const STATIC_GLYPH: Record<SessionStatus, string> = {
   Running: "⠋",
   Waiting: "◐",
-  Idle: "○",
-  Error: "✕",
+  Idle: "⠿",
+  Error: "⠭",
   Starting: "⠀",
-  Stopped: "■",
-  Unknown: "○",
-  Deleting: "✕",
+  Stopped: "⠿",
+  Unknown: "⠤",
+  Deleting: "⠭",
 };
 
 /** Animated status glyph that cycles through rattles frames */
