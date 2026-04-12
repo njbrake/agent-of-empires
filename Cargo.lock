@@ -28,6 +28,7 @@ dependencies = [
  "rand 0.10.0",
  "ratatui",
  "ratatui-textarea",
+ "rattles",
  "regex",
  "reqwest",
  "rust-embed",
@@ -2313,6 +2314,12 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "rattles"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4409b45886b11584adff17187acaa2373ed2bf26c68c4ebbe414b3d394a66900"
 
 [[package]]
 name = "redox_syscall"

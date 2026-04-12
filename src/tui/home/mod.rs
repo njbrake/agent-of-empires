@@ -87,11 +87,8 @@ pub(super) fn get_indent(depth: usize) -> &'static str {
     INDENTS.get(depth).copied().unwrap_or(INDENTS[9])
 }
 
-pub(super) const ICON_RUNNING: &str = "●";
-pub(super) const ICON_WAITING: &str = "◐";
 pub(super) const ICON_IDLE: &str = "○";
 pub(super) const ICON_ERROR: &str = "✕";
-pub(super) const ICON_STARTING: &str = "◌";
 pub(super) const ICON_UNKNOWN: &str = "?";
 pub(super) const ICON_STOPPED: &str = "■";
 pub(super) const ICON_DELETING: &str = "✗";
@@ -634,6 +631,18 @@ impl HomeView {
 
     pub fn get_instance(&self, id: &str) -> Option<&Instance> {
         self.instance_map.get(id)
+    }
+
+    /// Returns true if any session has an animated status (Running, Waiting, Starting),
+    /// which means the TUI needs periodic redraws for spinner animation.
+    pub fn has_animated_sessions(&self) -> bool {
+        use crate::session::Status;
+        self.instances.iter().any(|inst| {
+            matches!(
+                inst.status,
+                Status::Running | Status::Waiting | Status::Starting
+            )
+        })
     }
 
     pub(super) fn build_flat_items(&self) -> Vec<Item> {

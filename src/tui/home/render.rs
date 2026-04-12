@@ -4,10 +4,11 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::time::Instant;
 
+use rattles::presets::prelude as spinners;
+
 use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_STOPPED, ICON_UNKNOWN,
-    ICON_WAITING,
+    ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
@@ -300,13 +301,13 @@ impl HomeView {
                     match self.view_mode {
                         ViewMode::Agent => {
                             let icon = match inst.status {
-                                Status::Running => ICON_RUNNING,
-                                Status::Waiting => ICON_WAITING,
+                                Status::Running => spinners::dots().current_frame(),
+                                Status::Waiting => spinners::circle_halves().current_frame(),
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
                                 Status::Error => ICON_ERROR,
-                                Status::Starting => ICON_STARTING,
+                                Status::Starting => spinners::breathe().current_frame(),
                                 Status::Deleting => ICON_DELETING,
                             };
                             let color = match inst.status {
@@ -340,7 +341,7 @@ impl HomeView {
                                     .unwrap_or(false),
                             };
                             let (icon, color) = if terminal_running {
-                                (ICON_RUNNING, theme.terminal_active)
+                                (spinners::dots().current_frame(), theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
                             };

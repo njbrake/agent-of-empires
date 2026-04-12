@@ -314,6 +314,11 @@ impl App {
                 refresh_needed = true;
             }
 
+            // Animated spinners (rattles) need periodic redraws to show animation
+            if self.home.has_animated_sessions() {
+                refresh_needed = true;
+            }
+
             if refresh_needed {
                 terminal.draw(|f| self.render(f))?;
             }
