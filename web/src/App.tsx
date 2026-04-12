@@ -223,8 +223,8 @@ export default function App() {
             onClick={toggleDiff}
             className={`hidden sm:flex w-10 h-10 items-center justify-center cursor-pointer rounded-md transition-colors ${
               diffCollapsed
-                ? "text-text-dim hover:text-text-secondary hover:bg-surface-700/30"
-                : "text-brand-500 bg-brand-600/10"
+                ? "text-text-dim hover:text-text-secondary"
+                : "text-text-secondary"
             }`}
             title="Toggle diff panel"
             aria-label="Toggle diff panel"
