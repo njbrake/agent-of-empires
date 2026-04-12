@@ -1,0 +1,202 @@
+//! IP-based auth failure rate limiting.
+//!
+//! After 5 failed authentication attempts from an IP within 15 minutes,
+//! subsequent requests from that IP are locked out for 15 minutes.
+//! State is in-memory only; restarting the server clears all lockouts.
+
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::Instant;
+
+use tokio::sync::RwLock;
+
+const MAX_FAILURES: u32 = 5;
+const LOCKOUT_DURATION: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const WINDOW_DURATION: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+struct FailureRecord {
+    count: u32,
+    first_failure: Instant,
+    locked_until: Option<Instant>,
+}
+
+pub struct RateLimiter {
+    failures: RwLock<HashMap<IpAddr, FailureRecord>>,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self {
+            failures: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Check if an IP is currently locked out. Returns remaining seconds if locked.
+    pub async fn check_locked(&self, ip: IpAddr) -> Option<u64> {
+        let failures = self.failures.read().await;
+        if let Some(record) = failures.get(&ip) {
+            if let Some(locked_until) = record.locked_until {
+                let now = Instant::now();
+                if now < locked_until {
+                    let remaining = locked_until.duration_since(now);
+                    return Some(remaining.as_secs().max(1));
+                }
+            }
+        }
+        None
+    }
+
+    /// Record a failed auth attempt. Returns true if this failure triggered a lockout.
+    pub async fn record_failure(&self, ip: IpAddr) -> bool {
+        let mut failures = self.failures.write().await;
+        let now = Instant::now();
+
+        let record = failures.entry(ip).or_insert(FailureRecord {
+            count: 0,
+            first_failure: now,
+            locked_until: None,
+        });
+
+        // If already locked, no-op
+        if let Some(locked_until) = record.locked_until {
+            if now < locked_until {
+                return false;
+            }
+            // Lockout expired, reset
+            record.count = 0;
+            record.first_failure = now;
+            record.locked_until = None;
+        }
+
+        // If the failure window expired, reset counter
+        if now.duration_since(record.first_failure) > WINDOW_DURATION {
+            record.count = 0;
+            record.first_failure = now;
+        }
+
+        record.count += 1;
+
+        if record.count >= MAX_FAILURES {
+            record.locked_until = Some(now + LOCKOUT_DURATION);
+            return true;
+        }
+
+        false
+    }
+
+    /// Clear failure count for an IP after successful auth.
+    pub async fn record_success(&self, ip: IpAddr) {
+        let mut failures = self.failures.write().await;
+        failures.remove(&ip);
+    }
+
+    /// Spawn periodic cleanup task to evict expired entries.
+    pub fn spawn_cleanup_task(self: &Arc<Self>) {
+        let limiter = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+            loop {
+                interval.tick().await;
+                let mut failures = limiter.failures.write().await;
+                let now = Instant::now();
+                failures.retain(|_, record| {
+                    // Keep entries that are still locked
+                    if let Some(locked_until) = record.locked_until {
+                        if now < locked_until {
+                            return true;
+                        }
+                    }
+                    // Keep entries with recent failures (within window)
+                    now.duration_since(record.first_failure) < WINDOW_DURATION
+                });
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn allows_under_limit() {
+        let limiter = RateLimiter::new();
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+
+        for _ in 0..4 {
+            assert!(!limiter.record_failure(ip).await);
+        }
+        assert!(limiter.check_locked(ip).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn locks_at_threshold() {
+        let limiter = RateLimiter::new();
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+
+        for _ in 0..4 {
+            limiter.record_failure(ip).await;
+        }
+        // 5th failure triggers lockout
+        assert!(limiter.record_failure(ip).await);
+        assert!(limiter.check_locked(ip).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn success_clears_failures() {
+        let limiter = RateLimiter::new();
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+
+        for _ in 0..3 {
+            limiter.record_failure(ip).await;
+        }
+        limiter.record_success(ip).await;
+
+        // After success, should be able to fail again without lockout
+        for _ in 0..4 {
+            assert!(!limiter.record_failure(ip).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn independent_ips() {
+        let limiter = RateLimiter::new();
+        let ip_a: IpAddr = "1.2.3.4".parse().unwrap();
+        let ip_b: IpAddr = "5.6.7.8".parse().unwrap();
+
+        // Lock out IP A
+        for _ in 0..5 {
+            limiter.record_failure(ip_a).await;
+        }
+        assert!(limiter.check_locked(ip_a).await.is_some());
+        // IP B is unaffected
+        assert!(limiter.check_locked(ip_b).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn unlocked_ip_returns_none() {
+        let limiter = RateLimiter::new();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(limiter.check_locked(ip).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn already_locked_failure_is_noop() {
+        let limiter = RateLimiter::new();
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+
+        for _ in 0..5 {
+            limiter.record_failure(ip).await;
+        }
+        // Additional failures while locked return false (no new lockout triggered)
+        assert!(!limiter.record_failure(ip).await);
+    }
+}

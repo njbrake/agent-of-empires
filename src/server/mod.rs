@@ -5,40 +5,182 @@
 
 pub mod api;
 pub mod auth;
+pub mod rate_limit;
+pub mod tunnel;
 pub mod ws;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use rust_embed::Embed;
+use serde::Serialize;
 use tokio::sync::RwLock;
+use tracing::info;
 
 use crate::session::Instance;
 use crate::session::Storage;
+
+use self::rate_limit::RateLimiter;
 
 #[derive(Embed)]
 #[folder = "web/dist/"]
 struct StaticAssets;
 
+// ── DeviceInfo ──────────────────────────────────────────────────────────────
+
+/// A device that has connected to the dashboard.
+#[derive(Clone, Serialize)]
+pub struct DeviceInfo {
+    pub ip: String,
+    pub user_agent: String,
+    pub first_seen: chrono::DateTime<chrono::Utc>,
+    pub last_seen: chrono::DateTime<chrono::Utc>,
+    pub request_count: u64,
+}
+
+// ── TokenManager ────────────────────────────────────────────────────────────
+
+struct TokenState {
+    current: Option<String>,
+    previous: Option<String>,
+    grace_expires: Option<tokio::time::Instant>,
+    lifetime: Duration,
+}
+
+/// Manages auth tokens with rotation and grace periods.
+pub struct TokenManager {
+    state: RwLock<TokenState>,
+}
+
+impl TokenManager {
+    pub fn new(initial_token: Option<String>, lifetime: Duration) -> Self {
+        Self {
+            state: RwLock::new(TokenState {
+                current: initial_token,
+                previous: None,
+                grace_expires: None,
+                lifetime,
+            }),
+        }
+    }
+
+    /// Check if auth is disabled (no-auth mode).
+    pub async fn is_no_auth(&self) -> bool {
+        self.state.read().await.current.is_none()
+    }
+
+    /// Validate a token against current and previous (grace period).
+    /// Returns `(is_valid, needs_cookie_upgrade)`.
+    pub async fn validate(&self, token: &str) -> (bool, bool) {
+        let state = self.state.read().await;
+
+        if let Some(ref current) = state.current {
+            if auth::constant_time_eq(token, current) {
+                return (true, false);
+            }
+        }
+
+        // Check previous token within grace period
+        if let Some(ref previous) = state.previous {
+            if let Some(grace_expires) = state.grace_expires {
+                if tokio::time::Instant::now() < grace_expires
+                    && auth::constant_time_eq(token, previous)
+                {
+                    return (true, true);
+                }
+            }
+        }
+
+        (false, false)
+    }
+
+    /// Get the current token value (for setting cookies).
+    pub async fn current_token(&self) -> Option<String> {
+        self.state.read().await.current.clone()
+    }
+
+    /// Rotate: generate new token, move current to previous with grace period.
+    pub async fn rotate(&self) {
+        let mut state = self.state.write().await;
+        let new_token = generate_token();
+
+        state.previous = state.current.take();
+        state.current = Some(new_token.clone());
+        state.grace_expires = Some(tokio::time::Instant::now() + Duration::from_secs(300));
+
+        // Persist to disk
+        if let Ok(app_dir) = crate::session::get_app_dir() {
+            let _ = std::fs::write(app_dir.join("serve.token"), &new_token);
+        }
+
+        info!("Auth token rotated (previous token valid for 5 more minutes)");
+    }
+
+    /// Spawn a background rotation task (only in remote mode).
+    pub fn spawn_rotation_task(self: &Arc<Self>) {
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                let lifetime = manager.state.read().await.lifetime;
+                tokio::time::sleep(lifetime).await;
+                manager.rotate().await;
+
+                // After grace period, clear previous
+                tokio::time::sleep(Duration::from_secs(300)).await;
+                {
+                    let mut state = manager.state.write().await;
+                    state.previous = None;
+                    state.grace_expires = None;
+                }
+            }
+        });
+    }
+}
+
+// ── AppState ────────────────────────────────────────────────────────────────
+
 /// Shared application state accessible by all request handlers.
 pub struct AppState {
     pub profile: String,
-    pub auth_token: Option<String>,
     pub read_only: bool,
     pub instances: RwLock<Vec<Instance>>,
+    pub token_manager: Arc<TokenManager>,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub devices: RwLock<Vec<DeviceInfo>>,
+    pub behind_tunnel: bool,
 }
 
-pub async fn start_server(
-    profile: &str,
-    host: &str,
-    port: u16,
-    no_auth: bool,
-    read_only: bool,
-) -> anyhow::Result<()> {
-    // Load initial session data from all profiles
+// ── Server ──────────────────────────────────────────────────────────────────
+
+pub struct ServerConfig<'a> {
+    pub profile: &'a str,
+    pub host: &'a str,
+    pub port: u16,
+    pub no_auth: bool,
+    pub read_only: bool,
+    pub remote: bool,
+    pub tunnel_name: Option<&'a str>,
+    pub tunnel_url: Option<&'a str>,
+    pub is_daemon: bool,
+}
+
+pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
+    let ServerConfig {
+        profile,
+        host,
+        port,
+        no_auth,
+        read_only,
+        remote,
+        tunnel_name,
+        tunnel_url,
+        is_daemon,
+    } = config;
     let instances = load_all_instances()?;
 
-    // Load or generate auth token (reused for 24 hours so bookmarked URLs keep working)
+    // Load or generate auth token
     let auth_token = if no_auth {
         eprintln!(
             "WARNING: Running without authentication. \
@@ -49,59 +191,125 @@ pub async fn start_server(
         Some(load_or_generate_token()?)
     };
 
-    let state = Arc::new(AppState {
-        profile: profile.to_string(),
-        auth_token: auth_token.clone(),
-        read_only,
-        instances: RwLock::new(instances),
-    });
-
-    // Build router
-    let app = build_router(state.clone());
-
-    let addr = format!("{}:{}", host, port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-
-    // Build and print access URLs
-    let make_url = |h: &str| {
-        if let Some(ref token) = auth_token {
-            format!("http://{}:{}/?token={}", h, port, token)
-        } else {
-            format!("http://{}:{}/", h, port)
-        }
+    let token_lifetime = if remote {
+        Duration::from_secs(4 * 60 * 60) // 4 hours
+    } else {
+        Duration::from_secs(24 * 60 * 60) // 24 hours (existing behavior)
     };
 
-    println!("aoe web dashboard running at:");
-    if host == "0.0.0.0" {
-        println!("  {}", make_url("localhost"));
-        // Discover and print all network interface addresses
-        for addr in discover_local_ips() {
-            println!("  {}", make_url(&addr));
+    let token_manager = Arc::new(TokenManager::new(auth_token.clone(), token_lifetime));
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    let state = Arc::new(AppState {
+        profile: profile.to_string(),
+        read_only,
+        instances: RwLock::new(instances),
+        token_manager: Arc::clone(&token_manager),
+        rate_limiter: Arc::clone(&rate_limiter),
+        devices: RwLock::new(Vec::new()),
+        behind_tunnel: remote,
+    });
+
+    let app = build_router(state.clone());
+    let addr = format!("{}:{}", host, port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let local_port = listener.local_addr()?.port();
+
+    // Start tunnel if remote mode
+    let tunnel_handle = if remote {
+        let handle = if let (Some(name), Some(url)) = (tunnel_name, tunnel_url) {
+            tunnel::TunnelHandle::spawn_named(name, url, local_port).await?
+        } else {
+            tunnel::TunnelHandle::spawn_quick(local_port).await?
+        };
+
+        let tunnel_url_with_token = if let Some(ref token) = auth_token {
+            format!("{}/?token={}", handle.url, token)
+        } else {
+            handle.url.clone()
+        };
+
+        // Print QR code unless running as daemon
+        if !is_daemon {
+            tunnel::print_qr_code(&tunnel_url_with_token);
         }
+
+        // Write tunnel URL for daemon discovery
+        if let Ok(app_dir) = crate::session::get_app_dir() {
+            let _ = std::fs::write(app_dir.join("serve.url"), &tunnel_url_with_token);
+        }
+
+        // Start health monitor
+        let arc_handle = Arc::new(handle);
+        arc_handle.spawn_health_monitor();
+
+        Some(arc_handle)
     } else {
-        println!("  {}", make_url(host));
-    }
-    if auth_token.is_some() {
-        println!();
-        println!(
-            "Open any URL above in a browser. Share it to access from other devices on your network."
-        );
-    }
+        // Local mode: print URLs as before
+        let make_url = |h: &str| {
+            if let Some(ref token) = auth_token {
+                format!("http://{}:{}/?token={}", h, port, token)
+            } else {
+                format!("http://{}:{}/", h, port)
+            }
+        };
 
-    let url = make_url(if host == "0.0.0.0" { "localhost" } else { host });
+        println!("aoe web dashboard running at:");
+        if host == "0.0.0.0" {
+            println!("  {}", make_url("localhost"));
+            for addr in discover_local_ips() {
+                println!("  {}", make_url(&addr));
+            }
+        } else {
+            println!("  {}", make_url(host));
+        }
+        if auth_token.is_some() {
+            println!();
+            println!(
+                "Open any URL above in a browser. Share it to access from other devices on your network."
+            );
+        }
 
-    // Write URL to file so daemon users can retrieve it with `cat ~/.agent-of-empires/serve.url`
-    if let Ok(app_dir) = crate::session::get_app_dir() {
-        let _ = std::fs::write(app_dir.join("serve.url"), &url);
-    }
+        let url = make_url(if host == "0.0.0.0" { "localhost" } else { host });
+        if let Ok(app_dir) = crate::session::get_app_dir() {
+            let _ = std::fs::write(app_dir.join("serve.url"), &url);
+        }
 
-    // Spawn background status polling task
+        None
+    };
+
+    // Spawn background tasks
     let poll_state = state.clone();
     tokio::spawn(async move {
         status_poll_loop(poll_state).await;
     });
 
-    axum::serve(listener, app).await?;
+    rate_limiter.spawn_cleanup_task();
+
+    if remote {
+        token_manager.spawn_rotation_task();
+    }
+
+    // Graceful shutdown with tunnel cleanup
+    let shutdown_signal = async {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Shutting down...");
+    };
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await?;
+
+    // Clean up tunnel
+    if let Some(handle) = tunnel_handle {
+        if let Ok(handle) = Arc::try_unwrap(handle) {
+            handle.shutdown().await;
+        }
+    }
+
     Ok(())
 }
 
@@ -128,6 +336,8 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
+        // Devices
+        .route("/api/devices", get(api::list_devices))
         // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))
@@ -185,7 +395,6 @@ fn serve_embedded_file(path: &str) -> axum::response::Response {
 }
 
 /// Discover non-loopback IPv4 addresses on all network interfaces.
-/// Catches LAN (192.168.x, 10.x), Tailscale (100.x), WireGuard, etc.
 fn discover_local_ips() -> Vec<String> {
     let mut ips = Vec::new();
     if let Ok(addrs) = nix::ifaddrs::getifaddrs() {
@@ -204,6 +413,22 @@ fn discover_local_ips() -> Vec<String> {
         }
     }
     ips
+}
+
+/// Generate a cryptographically random 32-character alphanumeric token.
+pub(crate) fn generate_token() -> String {
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    (0..32)
+        .map(|_| {
+            let idx = rng.random_range(0..36u8);
+            if idx < 10 {
+                (b'0' + idx) as char
+            } else {
+                (b'a' + idx - 10) as char
+            }
+        })
+        .collect()
 }
 
 /// Load an existing auth token from disk if it's less than 24 hours old,
@@ -229,20 +454,7 @@ fn load_or_generate_token() -> anyhow::Result<String> {
         }
     }
 
-    // Generate new token
-    use rand::RngExt;
-    let mut rng = rand::rng();
-    let token: String = (0..32)
-        .map(|_| {
-            let idx = rng.random_range(0..36u8);
-            if idx < 10 {
-                (b'0' + idx) as char
-            } else {
-                (b'a' + idx - 10) as char
-            }
-        })
-        .collect();
-
+    let token = generate_token();
     let _ = std::fs::write(&token_path, &token);
     Ok(token)
 }
@@ -294,5 +506,64 @@ async fn status_poll_loop(state: Arc<AppState>) {
         if let Ok(instances) = updated {
             *state.instances.write().await = instances;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_token_correct_length_and_charset() {
+        let token = generate_token();
+        assert_eq!(token.len(), 32);
+        assert!(token.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[tokio::test]
+    async fn token_manager_validates_current() {
+        let mgr = TokenManager::new(Some("abc123".to_string()), Duration::from_secs(3600));
+        let (valid, upgrade) = mgr.validate("abc123").await;
+        assert!(valid);
+        assert!(!upgrade);
+    }
+
+    #[tokio::test]
+    async fn token_manager_rejects_invalid() {
+        let mgr = TokenManager::new(Some("abc123".to_string()), Duration::from_secs(3600));
+        let (valid, _) = mgr.validate("wrong").await;
+        assert!(!valid);
+    }
+
+    #[tokio::test]
+    async fn token_manager_validates_previous_in_grace() {
+        let mgr = TokenManager::new(Some("old_token".to_string()), Duration::from_secs(3600));
+        mgr.rotate().await;
+
+        // Old token should still be valid during grace period
+        let (valid, upgrade) = mgr.validate("old_token").await;
+        assert!(valid);
+        assert!(upgrade); // needs cookie upgrade
+
+        // New token should also be valid
+        let current = mgr.current_token().await.unwrap();
+        let (valid, upgrade) = mgr.validate(&current).await;
+        assert!(valid);
+        assert!(!upgrade);
+    }
+
+    #[tokio::test]
+    async fn token_manager_rotate_changes_token() {
+        let mgr = TokenManager::new(Some("original".to_string()), Duration::from_secs(3600));
+        let before = mgr.current_token().await;
+        mgr.rotate().await;
+        let after = mgr.current_token().await;
+        assert_ne!(before, after);
+    }
+
+    #[tokio::test]
+    async fn token_manager_no_auth_mode() {
+        let mgr = TokenManager::new(None, Duration::from_secs(3600));
+        assert!(mgr.is_no_auth().await);
     }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getSettings, updateSettings, fetchThemes } from "../lib/api";
+import { ConnectedDevices } from "./ConnectedDevices";
 
 interface Props {
   onClose: () => void;
@@ -12,7 +13,8 @@ type Category =
   | "worktree"
   | "tmux"
   | "updates"
-  | "sound";
+  | "sound"
+  | "security";
 
 const CATEGORIES: { key: Category; label: string }[] = [
   { key: "theme", label: "Theme" },
@@ -22,6 +24,7 @@ const CATEGORIES: { key: Category; label: string }[] = [
   { key: "tmux", label: "Tmux" },
   { key: "updates", label: "Updates" },
   { key: "sound", label: "Sound" },
+  { key: "security", label: "Security" },
 ];
 
 export function SettingsView({ onClose }: Props) {
@@ -256,6 +259,8 @@ export function SettingsView({ onClose }: Props) {
               />
             </Section>
           )}
+
+          {activeCategory === "security" && <ConnectedDevices />}
         </div>
       </div>
     </div>

@@ -440,6 +440,13 @@ pub async fn update_settings(Json(body): Json<serde_json::Value>) -> impl IntoRe
     }
 }
 
+// --- Devices ---
+
+pub async fn list_devices(State(state): State<Arc<AppState>>) -> Json<Vec<super::DeviceInfo>> {
+    let devices = state.devices.read().await;
+    Json(devices.clone())
+}
+
 // --- Themes ---
 
 pub async fn list_themes() -> Json<Vec<String>> {

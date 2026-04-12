@@ -66,6 +66,26 @@ export async function updateSettings(
   }
 }
 
+// --- Devices ---
+
+export interface DeviceInfo {
+  ip: string;
+  user_agent: string;
+  first_seen: string;
+  last_seen: string;
+  request_count: number;
+}
+
+export async function fetchDevices(): Promise<DeviceInfo[] | null> {
+  try {
+    const res = await fetch("/api/devices");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 // --- Themes ---
 
 export async function fetchThemes(): Promise<string[]> {
