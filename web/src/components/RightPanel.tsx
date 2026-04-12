@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { DiffPanel } from "./DiffPanel";
-import { TerminalView } from "./TerminalView";
 import type { SessionResponse } from "../lib/types";
 
 interface Props {
