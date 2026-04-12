@@ -10,6 +10,26 @@ use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
     ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
+
+use std::time::Duration;
+
+fn spinner_running() -> &'static str {
+    spinners::dots()
+        .set_interval(Duration::from_millis(150))
+        .current_frame()
+}
+
+fn spinner_waiting() -> &'static str {
+    spinners::circle_halves()
+        .set_interval(Duration::from_millis(120))
+        .current_frame()
+}
+
+fn spinner_starting() -> &'static str {
+    spinners::breathe()
+        .set_interval(Duration::from_millis(180))
+        .current_frame()
+}
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
 use crate::tui::styles::Theme;
@@ -301,13 +321,13 @@ impl HomeView {
                     match self.view_mode {
                         ViewMode::Agent => {
                             let icon = match inst.status {
-                                Status::Running => spinners::dots().current_frame(),
-                                Status::Waiting => spinners::circle_halves().current_frame(),
+                                Status::Running => spinner_running(),
+                                Status::Waiting => spinner_waiting(),
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
                                 Status::Error => ICON_ERROR,
-                                Status::Starting => spinners::breathe().current_frame(),
+                                Status::Starting => spinner_starting(),
                                 Status::Deleting => ICON_DELETING,
                             };
                             let color = match inst.status {
@@ -341,7 +361,7 @@ impl HomeView {
                                     .unwrap_or(false),
                             };
                             let (icon, color) = if terminal_running {
-                                (spinners::dots().current_frame(), theme.terminal_active)
+                                (spinner_running(), theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
                             };

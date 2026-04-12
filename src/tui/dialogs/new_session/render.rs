@@ -1282,7 +1282,9 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let spinner = spinners::circle_halves().current_frame();
+        let spinner = spinners::circle_halves()
+            .set_interval(std::time::Duration::from_millis(120))
+            .current_frame();
 
         if show_hook_output {
             let mut lines = vec![];

@@ -177,8 +177,8 @@ impl App {
         let mut last_spinner_redraw = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-        // Fastest rattles spinner (dots) changes every 80ms; redrawing faster is wasted work
-        const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(80);
+        // Fastest spinner (circle_halves) changes every 120ms; redrawing faster is wasted work
+        const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
 
         loop {
             // Force full redraw if needed (e.g., after returning from tmux)

@@ -41,9 +41,9 @@ function loadSavedWidth(): number {
 
 /** Animated spinner frames from rattles (https://github.com/vyfor/rattles) */
 const RATTLES: Record<string, { frames: string[]; interval: number }> = {
-  dots:         { frames: ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"], interval: 80 },
-  circleHalves: { frames: ["◐","◓","◑","◒"], interval: 50 },
-  breathe:      { frames: ["⠀","⠂","⠌","⡑","⢕","⢝","⣫","⣟","⣿","⣟","⣫","⢝","⢕","⡑","⠌","⠂","⠀"], interval: 100 },
+  dots:         { frames: ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"], interval: 150 },
+  circleHalves: { frames: ["◐","◓","◑","◒"], interval: 120 },
+  breathe:      { frames: ["⠀","⠂","⠌","⡑","⢕","⢝","⣫","⣟","⣿","⣟","⣫","⢝","⢕","⡑","⠌","⠂","⠀"], interval: 180 },
 };
 
 /** Which statuses get animated spinners vs static glyphs */
