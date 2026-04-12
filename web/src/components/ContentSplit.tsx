@@ -95,13 +95,13 @@ export function ContentSplit({
           <div
             onMouseDown={handleMouseDown}
             onDoubleClick={onToggleCollapse}
-            className="w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
+            className="hidden md:block w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
           />
 
-          {/* Diff pane */}
+          {/* Right pane (hidden on mobile) */}
           <div
             style={{ width: diffWidth }}
-            className="shrink-0 flex flex-col min-h-0 overflow-hidden"
+            className="hidden md:flex shrink-0 flex-col min-h-0 overflow-hidden"
           >
             {right}
           </div>
