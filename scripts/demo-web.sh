@@ -141,7 +141,7 @@ echo "waiting" > "/tmp/aoe-hooks/$ID2/status"
 echo "idle"    > "/tmp/aoe-hooks/$ID3/status"
 
 # ---------------------------------------------------------------------------
-# Pre-seed terminal content with colored output
+# Pre-seed terminal content to look like Claude Code output
 # ---------------------------------------------------------------------------
 sleep 1  # let tmux sessions initialize
 
@@ -149,11 +149,65 @@ TMUX1="aoe_API_Server_${ID1:0:8}"
 TMUX2="aoe_Web_App_${ID2:0:8}"
 TMUX3="aoe_Chat_App_${ID3:0:8}"
 
-tmux send-keys -t "$TMUX1" "clear && printf '\\033[36m● Reading src/main.rs...\\033[0m\\n\\033[33m⏳ Analyzing 3 files\\033[0m\\n\\033[32m✓ Found 1 function\\033[0m\\n'" Enter
-tmux send-keys -t "$TMUX2" "clear && printf '\\033[36m● Loading dependencies...\\033[0m\\n\\033[33m⏳ Scanning package.json\\033[0m\\n'" Enter
-tmux send-keys -t "$TMUX3" "clear && printf '\\033[36m● Checking project structure...\\033[0m\\n\\033[32m✓ No issues found\\033[0m\\n'" Enter
+# Create scripts that output realistic Claude Code-style terminal content,
+# then hold the terminal open with `cat` (blocks forever, keeps pane alive).
+cat > "$DEMO_TMPDIR/fake-claude-1.sh" << 'FAKECLAUDE'
+#!/bin/sh
+clear
+printf '\033[1m> Refactor the request handler to use async/await\033[0m\n\n'
+printf 'I'\''ll analyze the current request handler and refactor it.\n\n'
+printf '\033[2m● \033[0m\033[1mRead\033[0m src/main.rs\n\n'
+printf 'The current handler uses blocking I/O. I'\''ll refactor it to use\n'
+printf 'async/await for better concurrency.\n\n'
+printf '\033[2m● \033[0m\033[1mEdit\033[0m src/main.rs\n'
+printf '  \033[32m+ async fn handle_request(req: Request) -> Response {\033[0m\n'
+printf '  \033[32m+     let data = fetch_data(&req).await?;\033[0m\n'
+printf '  \033[32m+     Ok(Response::json(data))\033[0m\n'
+printf '  \033[32m+ }\033[0m\n\n'
+printf 'The handler is now async. Let me verify the changes compile.\n\n'
+printf '\033[2m● \033[0m\033[1mBash\033[0m cargo check\n\n'
+printf '\033[2m  Compiling api-server v0.1.0\n'
+printf '   Finished dev [unoptimized] target(s) in 1.2s\033[0m\n\n'
+printf '\033[32m✓\033[0m Changes compile successfully.\n\n'
+exec cat
+FAKECLAUDE
 
-sleep 1  # let terminal content render
+cat > "$DEMO_TMPDIR/fake-claude-2.sh" << 'FAKECLAUDE'
+#!/bin/sh
+clear
+printf '\033[1m> Add a Dashboard component with responsive layout\033[0m\n\n'
+printf 'I'\''ll create the Dashboard component with a responsive grid.\n\n'
+printf '\033[2m● \033[0m\033[1mRead\033[0m src/App.tsx\n\n'
+printf 'I see the main App component. Let me add a Dashboard.\n\n'
+printf '\033[2m● \033[0m\033[1mWrite\033[0m src/Dashboard.tsx\n\n'
+printf '\033[1;35m  Do you want me to create this new file?\033[0m\n'
+printf '\033[2m  src/Dashboard.tsx\033[0m\n\n'
+printf '  \033[33mYes\033[0m  / No\n'
+exec cat
+FAKECLAUDE
+
+cat > "$DEMO_TMPDIR/fake-claude-3.sh" << 'FAKECLAUDE'
+#!/bin/sh
+clear
+printf '\033[1m> Review the Go module structure\033[0m\n\n'
+printf 'Let me look at the project layout.\n\n'
+printf '\033[2m● \033[0m\033[1mBash\033[0m find src -type f -name "*.go"\n\n'
+printf '  src/main.go\n\n'
+printf 'This is a single-file Go project. The code looks clean.\n'
+printf 'No issues found in the module structure.\n\n'
+printf '\033[32m✓\033[0m Review complete. The project follows standard Go conventions.\n\n'
+printf '\033[2m$\033[0m \033[?25l'
+exec cat
+FAKECLAUDE
+
+chmod +x "$DEMO_TMPDIR/fake-claude-1.sh" "$DEMO_TMPDIR/fake-claude-2.sh" "$DEMO_TMPDIR/fake-claude-3.sh"
+
+# Kill the bash shells and replace with our fake claude scripts
+tmux send-keys -t "$TMUX1" "exec $DEMO_TMPDIR/fake-claude-1.sh" Enter
+tmux send-keys -t "$TMUX2" "exec $DEMO_TMPDIR/fake-claude-2.sh" Enter
+tmux send-keys -t "$TMUX3" "exec $DEMO_TMPDIR/fake-claude-3.sh" Enter
+
+sleep 2  # let terminal content render
 
 # ---------------------------------------------------------------------------
 # Start server
