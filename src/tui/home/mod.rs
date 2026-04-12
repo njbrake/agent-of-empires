@@ -87,10 +87,10 @@ pub(super) fn get_indent(depth: usize) -> &'static str {
     INDENTS.get(depth).copied().unwrap_or(INDENTS[9])
 }
 
-pub(super) const ICON_IDLE: &str = "⠿";
+pub(super) const ICON_IDLE: &str = "⣉";
 pub(super) const ICON_ERROR: &str = "✕";
 pub(super) const ICON_UNKNOWN: &str = "⠤";
-pub(super) const ICON_STOPPED: &str = "⠿";
+pub(super) const ICON_STOPPED: &str = "⣉";
 pub(super) const ICON_DELETING: &str = "✕";
 pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
