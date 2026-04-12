@@ -117,6 +117,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/stop", post(api::stop_session))
         .route("/api/sessions/{id}/restart", post(api::restart_session))
         .route("/api/sessions/{id}/diff", get(api::session_diff))
+        .route(
+            "/api/sessions/{id}/terminal",
+            post(api::ensure_terminal),
+        )
         // Agents
         .route("/api/agents", get(api::list_agents))
         // Settings + themes

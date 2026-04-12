@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DiffPanel } from "./DiffPanel";
 import { useTerminal } from "../hooks/useTerminal";
+import { ensureTerminal } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
 import "@xterm/xterm/css/xterm.css";
 
@@ -20,12 +21,33 @@ function PairedTerminal({
   sessionId: string;
   mode: ShellMode;
 }) {
+  const [ready, setReady] = useState(false);
   const wsPath =
     mode === "container" ? "container-terminal/ws" : "terminal/ws";
   const { containerRef, state, manualReconnect } = useTerminal(
-    sessionId,
+    ready ? sessionId : null,
     wsPath,
   );
+
+  // Auto-create the paired terminal if it doesn't exist
+  useEffect(() => {
+    let cancelled = false;
+    setReady(false);
+    ensureTerminal(sessionId).then((ok) => {
+      if (!cancelled && ok) setReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  if (!ready) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
+        <span className="font-body text-xs">Starting terminal...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -65,7 +87,6 @@ export function RightPanel({
 }: Props) {
   const [shellMode, setShellMode] = useState<ShellMode>("host");
   const isSandboxed = session?.is_sandboxed ?? false;
-  const hasTerminal = session?.has_terminal ?? false;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -106,7 +127,7 @@ export function RightPanel({
           )}
         </div>
 
-        {sessionId && hasTerminal ? (
+        {sessionId ? (
           <PairedTerminal
             key={`${sessionId}-${shellMode}`}
             sessionId={sessionId}
@@ -114,9 +135,7 @@ export function RightPanel({
           />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
-            <p className="font-body text-xs">
-              {sessionId ? "No terminal available" : "Select a session"}
-            </p>
+            <p className="font-body text-xs">Select a session</p>
           </div>
         )}
       </div>

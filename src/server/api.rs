@@ -278,6 +278,67 @@ pub async fn create_session(
     }
 }
 
+// --- Paired terminal ---
+
+pub async fn ensure_terminal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut instances = state.instances.write().await;
+    let inst = match instances.iter_mut().find(|i| i.id == id) {
+        Some(i) => i,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not_found"})),
+            )
+                .into_response();
+        }
+    };
+
+    if inst.has_terminal() {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "exists"})),
+        )
+            .into_response();
+    }
+
+    let mut inst_clone = inst.clone();
+    drop(instances);
+
+    let result =
+        tokio::task::spawn_blocking(move || inst_clone.start_terminal()).await;
+
+    match result {
+        Ok(Ok(())) => {
+            // Update in-memory cache
+            let mut instances = state.instances.write().await;
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                inst.terminal_info = Some(crate::session::TerminalInfo {
+                    created: true,
+                    created_at: Some(chrono::Utc::now()),
+                });
+            }
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({"status": "created"})),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 // --- Diff ---
 
 #[derive(Serialize)]

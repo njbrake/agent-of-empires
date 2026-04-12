@@ -61,6 +61,17 @@ export async function restartSession(id: string): Promise<boolean> {
   }
 }
 
+export async function ensureTerminal(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/sessions/${id}/terminal`, {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function getSessionDiff(
   id: string,
 ): Promise<DiffResponse | null> {
