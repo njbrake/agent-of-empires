@@ -88,10 +88,6 @@ export default function App() {
     }
   };
 
-  const handleSelectSessionTab = (sessionId: string) => {
-    setActiveSessionId(sessionId);
-  };
-
   const handleCreate = async (data: CreateWorkspaceData) => {
     const result = await createSession(data);
     if (result) {
@@ -194,35 +190,7 @@ export default function App() {
           collapsed={diffCollapsed}
           onToggleCollapse={toggleDiff}
           left={
-            <div className="flex-1 flex flex-col min-h-0">
-              {activeWorkspace.sessions.length > 1 && (
-                <div className="flex bg-surface-900 border-b border-surface-700 px-3 shrink-0 overflow-x-auto">
-                  {activeWorkspace.sessions.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => handleSelectSessionTab(s.id)}
-                      className={`px-3 py-2 font-body text-[12px] border-b-2 cursor-pointer transition-colors whitespace-nowrap ${
-                        s.id === activeSessionId
-                          ? "text-brand-500 border-b-brand-600"
-                          : "text-text-dim border-b-transparent hover:text-text-muted"
-                      }`}
-                    >
-                      {s.tool}
-                      <span
-                        className={`ml-1.5 inline-block w-1.5 h-1.5 rounded-full ${
-                          isSessionActive(s.status)
-                            ? "bg-status-running"
-                            : s.status === "Error"
-                              ? "bg-status-error"
-                              : "bg-status-idle"
-                        }`}
-                      />
-                    </button>
-                  ))}
-                </div>
-              )}
-              <TerminalView key={activeSessionId} session={activeSession} />
-            </div>
+            <TerminalView key={activeSessionId} session={activeSession} />
           }
           right={
             <DiffPanel
