@@ -9,7 +9,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
-import { DiffPanel } from "./components/DiffPanel";
+import { RightPanel } from "./components/RightPanel";
 import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
 import {
@@ -193,7 +193,8 @@ export default function App() {
             <TerminalView key={activeSessionId} session={activeSession} />
           }
           right={
-            <DiffPanel
+            <RightPanel
+              session={activeSession}
               sessionId={activeSessionId}
               expanded={!diffCollapsed}
               onFileCountChange={setDiffFileCount}
