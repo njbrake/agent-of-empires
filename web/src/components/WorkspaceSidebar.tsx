@@ -156,7 +156,7 @@ export function WorkspaceSidebar({
         className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-900 flex flex-col h-full shrink-0"
       >
         <div className="px-3 pt-3 pb-1 flex items-center">
-          <span className="font-mono text-xs uppercase tracking-wider text-text-dim flex-1">
+          <span className="font-body text-sm text-text-muted flex-1">
             Sessions
           </span>
           <button

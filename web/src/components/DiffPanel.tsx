@@ -21,11 +21,11 @@ export function DiffPanel({ sessionId, expanded, onFileCountChange }: Props) {
     if (!sessionId) return;
     const d = await getSessionDiff(sessionId);
     if (d) {
-      // Skip re-render if diff unchanged
-      if (d.raw === lastRawRef.current) return;
-      lastRawRef.current = d.raw;
-      setDiff(d);
-      onFileCountChange?.(d.files.length);
+      if (d.raw !== lastRawRef.current) {
+        lastRawRef.current = d.raw;
+        setDiff(d);
+        onFileCountChange?.(d.files.length);
+      }
     }
     setLoading(false);
   }, [sessionId, onFileCountChange]);
