@@ -118,7 +118,7 @@ export function ContentSplit({
               </span>
               <button
                 onClick={onToggleCollapse}
-                className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md"
+                className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
               >
                 &times;
               </button>
