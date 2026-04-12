@@ -68,19 +68,20 @@ const STATIC_GLYPH: Record<SessionStatus, string> = {
 /** Animated status glyph that cycles through rattles frames */
 function StatusGlyph({ status }: { status: SessionStatus }) {
   const rattleKey = STATUS_RATTLE[status];
+  const rattle = rattleKey ? RATTLES[rattleKey] : undefined;
   const [frame, setFrame] = useState(0);
 
   useEffect(() => {
-    if (!rattleKey) return;
-    const rattle = RATTLES[rattleKey];
+    if (!rattle) return;
+    const r = rattle;
     const id = setInterval(() => {
-      setFrame((f) => (f + 1) % rattle.frames.length);
-    }, rattle.interval);
+      setFrame((f) => (f + 1) % r.frames.length);
+    }, r.interval);
     return () => clearInterval(id);
-  }, [rattleKey]);
+  }, [rattle]);
 
-  if (!rattleKey) return <>{STATIC_GLYPH[status]}</>;
-  return <>{RATTLES[rattleKey].frames[frame % RATTLES[rattleKey].frames.length]}</>;
+  if (!rattle) return <>{STATIC_GLYPH[status]}</>;
+  return <>{rattle.frames[frame % rattle.frames.length]}</>;
 }
 
 const SessionRow = memo(function SessionRow({
