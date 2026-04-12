@@ -42,27 +42,27 @@ function loadSavedWidth(): number {
 /** Animated spinner frames from rattles (https://github.com/vyfor/rattles) */
 const RATTLES: Record<string, { frames: string[]; interval: number }> = {
   dots:         { frames: ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"], interval: 150 },
-  circleHalves: { frames: ["◐","◓","◑","◒"], interval: 120 },
+  orbit:        { frames: ["⠃","⠉","⠘","⠰","⢠","⣀","⡄","⠆"], interval: 400 },
   breathe:      { frames: ["⠀","⠂","⠌","⡑","⢕","⢝","⣫","⣟","⣿","⣟","⣫","⢝","⢕","⡑","⠌","⠂","⠀"], interval: 180 },
 };
 
 /** Which statuses get animated spinners vs static glyphs */
 const STATUS_RATTLE: Partial<Record<SessionStatus, keyof typeof RATTLES>> = {
   Running: "dots",
-  Waiting: "circleHalves",
+  Waiting: "orbit",
   Starting: "breathe",
 };
 
 /** Static glyphs for non-animated statuses (braille family) */
 const STATIC_GLYPH: Record<SessionStatus, string> = {
   Running: "⠋",
-  Waiting: "◐",
+  Waiting: "⠃",
   Idle: "⠿",
-  Error: "⠭",
+  Error: "✕",
   Starting: "⠀",
   Stopped: "⠿",
   Unknown: "⠤",
-  Deleting: "⠭",
+  Deleting: "✕",
 };
 
 /** Animated status glyph that cycles through rattles frames */

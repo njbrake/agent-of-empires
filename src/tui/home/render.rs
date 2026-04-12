@@ -20,8 +20,8 @@ fn spinner_running() -> &'static str {
 }
 
 fn spinner_waiting() -> &'static str {
-    spinners::circle_halves()
-        .set_interval(Duration::from_millis(120))
+    spinners::orbit()
+        .set_interval(Duration::from_millis(400))
         .current_frame()
 }
 
