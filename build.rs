@@ -69,9 +69,6 @@ fn build_frontend() {
     use std::path::Path;
     use std::process::Command;
 
-    let web_dist = Path::new("web/dist");
-
-    // Only rebuild frontend if dist/ is missing or source files changed
     println!("cargo:rerun-if-changed=web/src");
     println!("cargo:rerun-if-changed=web/index.html");
     println!("cargo:rerun-if-changed=web/package.json");
@@ -90,8 +87,8 @@ fn build_frontend() {
         "npm is required to build with --features serve. Install Node.js: https://nodejs.org/"
     );
 
-    // Only run npm install when node_modules is missing
-    if !Path::new("web/node_modules").exists() {
+    // Run npm install when node_modules is missing or incomplete
+    if !Path::new("web/node_modules/.package-lock.json").exists() {
         let status = Command::new("npm")
             .args(["install"])
             .current_dir("web")
