@@ -1,8 +1,4 @@
-import type {
-  SessionResponse,
-  AgentInfo,
-  DiffResponse,
-} from "./types";
+import type { SessionResponse, DiffResponse } from "./types";
 
 // --- Sessions ---
 
@@ -10,33 +6,6 @@ export async function fetchSessions(): Promise<SessionResponse[] | null> {
   try {
     const res = await fetch("/api/sessions");
     if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function createSession(data: {
-  title?: string;
-  path: string;
-  tool: string;
-  group?: string;
-  yolo_mode?: boolean;
-  worktree_branch?: string;
-  create_new_branch?: boolean;
-  sandbox?: boolean;
-  extra_args?: string;
-}): Promise<SessionResponse | null> {
-  try {
-    const res = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => null);
-      throw new Error(err?.message || `HTTP ${res.status}`);
-    }
     return await res.json();
   } catch {
     return null;
@@ -67,18 +36,6 @@ export async function getSessionDiff(
     return await res.json();
   } catch {
     return null;
-  }
-}
-
-// --- Agents ---
-
-export async function fetchAgents(): Promise<AgentInfo[]> {
-  try {
-    const res = await fetch("/api/agents");
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    return [];
   }
 }
 

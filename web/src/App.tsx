@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { createSession } from "./lib/api";
 import { isSessionActive } from "./lib/session";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
@@ -11,13 +10,9 @@ import { TerminalView } from "./components/TerminalView";
 import { RightPanel } from "./components/RightPanel";
 import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
-import {
-  CreateWorkspaceModal,
-  type CreateWorkspaceData,
-} from "./components/CreateWorkspaceModal";
 
 export default function App() {
-  const { sessions, error, refresh } = useSessions();
+  const { sessions, error } = useSessions();
   const workspaces = useWorkspaces(sessions);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
@@ -34,23 +29,12 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(
     () => window.innerWidth >= 768,
   );
-  // For post-create selection: store what to select, pick it up when sessions update
-  const pendingSelectRef = useRef<{
-    wsId: string;
-    sessionId: string;
-  } | null>(null);
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const activeSession = activeWorkspace?.sessions.find(
     (s) => s.id === activeSessionId,
   );
 
-  const knownPaths = useMemo(() => {
-    const paths = new Set(sessions.map((s) => s.project_path));
-    return [...paths].sort();
-  }, [sessions]);
-
-  // Alert counts for header
   const alertCounts = useMemo(() => {
     let errors = 0;
     let waiting = 0;
@@ -59,18 +43,6 @@ export default function App() {
       if (s.status === "Waiting") waiting++;
     }
     return { errors, waiting };
-  }, [sessions]);
-
-  // Pick up pending selection when sessions update after create
-  useEffect(() => {
-    if (!pendingSelectRef.current) return;
-    const { wsId, sessionId } = pendingSelectRef.current;
-    const found = sessions.find((s) => s.id === sessionId);
-    if (found) {
-      setActiveWorkspaceId(wsId);
-      setActiveSessionId(sessionId);
-      pendingSelectRef.current = null;
-    }
   }, [sessions]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
@@ -82,20 +54,6 @@ export default function App() {
     }
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
-    }
-  };
-
-  const handleCreate = async (data: CreateWorkspaceData) => {
-    const result = await createSession(data);
-    if (result) {
-      setShowCreate(false);
-      const path = data.path.replace(/\/+$/, "");
-      const branch = data.worktree_branch ?? null;
-      pendingSelectRef.current = {
-        wsId: `${path}::${branch ?? "__default__"}`,
-        sessionId: result.id,
-      };
-      refresh();
     }
   };
 
@@ -123,43 +81,33 @@ export default function App() {
       return <SettingsView onClose={() => setShowSettings(false)} />;
     }
 
-    const emptyState = (
-      <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
-        <p className="font-body text-sm text-text-dim text-center">
-          {workspaces.length === 0 ? "No sessions yet" : "Select a session"}
-        </p>
-        {workspaces.length === 0 && (
-          <button
-            onClick={() => setShowCreate(true)}
-            className="mt-3 px-4 py-1.5 font-body text-xs rounded-md bg-brand-600 text-surface-950 font-semibold hover:bg-brand-700 cursor-pointer transition-colors"
-          >
-            Create session
-          </button>
-        )}
-      </div>
-    );
+    if (!activeWorkspace || !activeSession) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
+          <p className="font-body text-sm text-text-dim text-center">
+            {workspaces.length === 0
+              ? "No sessions yet"
+              : "Select a session"}
+          </p>
+        </div>
+      );
+    }
 
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        {activeWorkspace && activeSession && (
-          <WorkspaceHeader
-            workspace={activeWorkspace}
-            activeSession={activeSession}
-            diffCollapsed={diffCollapsed}
-            diffFileCount={diffFileCount}
-            onToggleDiff={toggleDiff}
-          />
-        )}
+        <WorkspaceHeader
+          workspace={activeWorkspace}
+          activeSession={activeSession}
+          diffCollapsed={diffCollapsed}
+          diffFileCount={diffFileCount}
+          onToggleDiff={toggleDiff}
+        />
 
         <ContentSplit
           collapsed={diffCollapsed}
           onToggleCollapse={toggleDiff}
           left={
-            activeSession ? (
-              <TerminalView key={activeSessionId} session={activeSession} />
-            ) : (
-              emptyState
-            )
+            <TerminalView key={activeSessionId} session={activeSession} />
           }
           right={
             <RightPanel
@@ -207,7 +155,6 @@ export default function App() {
         <div className="flex-1" />
 
         <div className="ml-auto flex items-center gap-1">
-          {/* Alert badges */}
           {alertCounts.errors > 0 && (
             <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/15 text-status-error">
               {alertCounts.errors} error{alertCounts.errors !== 1 ? "s" : ""}
@@ -268,13 +215,30 @@ export default function App() {
         </div>
       </div>
 
-      {/* Overlays */}
+      {/* Not supported dialog */}
       {showCreate && (
-        <CreateWorkspaceModal
-          knownPaths={knownPaths}
-          onSubmit={handleCreate}
-          onCancel={() => setShowCreate(false)}
-        />
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in"
+          onClick={() => setShowCreate(false)}
+        >
+          <div
+            className="bg-surface-800 border border-surface-700/30 rounded-xl px-6 py-5 max-w-sm text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="font-body text-sm text-text-primary mb-1">
+              Not supported yet
+            </p>
+            <p className="font-body text-xs text-text-dim mb-4">
+              Create sessions from the terminal with the aoe CLI.
+            </p>
+            <button
+              onClick={() => setShowCreate(false)}
+              className="font-body text-xs text-text-muted hover:text-text-secondary cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
       )}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}

@@ -33,12 +33,6 @@ export interface ResizeMessage {
   rows: number;
 }
 
-/** Agent tool info */
-export interface AgentInfo {
-  name: string;
-  binary: string;
-}
-
 /** Diff response */
 export interface DiffResponse {
   files: DiffFileInfo[];
