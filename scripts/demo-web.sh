@@ -55,19 +55,18 @@ last_seen_version = "999.0.0"
 TOML
 
 # ---------------------------------------------------------------------------
-# Create stub agent binaries (so aoe finds "claude" etc. without running real agents)
-# Pattern from tests/e2e/harness.rs — stubs run bash instead of real agents
+# Copy Claude Code credentials so the real agent can authenticate.
+# The isolated HOME has no ~/.claude/ by default.
 # ---------------------------------------------------------------------------
-STUB_DIR="$DEMO_TMPDIR/stubs"
-mkdir -p "$STUB_DIR"
-for agent in claude opencode codex; do
-  cat > "$STUB_DIR/$agent" << 'STUB'
-#!/bin/sh
-exec bash
-STUB
-  chmod +x "$STUB_DIR/$agent"
-done
-export PATH="$STUB_DIR:$PATH"
+if [ -d "$ORIG_HOME/.claude" ]; then
+  mkdir -p "$DEMO_TMPDIR/.claude"
+  for f in .credentials.json .claude.json settings.json statsig.json; do
+    [ -f "$ORIG_HOME/.claude/$f" ] && cp "$ORIG_HOME/.claude/$f" "$DEMO_TMPDIR/.claude/$f"
+  done
+else
+  echo "Error: ~/.claude/ not found. Real Claude Code requires authentication."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Create demo git repos with unstaged changes (for diff panel)
@@ -104,6 +103,23 @@ mkdir -p "$DEMO_DIR/chat-app/src"
 )
 
 # ---------------------------------------------------------------------------
+# Pre-trust demo directories in Claude Code's config so it skips the
+# workspace trust dialog when sessions start.
+# ---------------------------------------------------------------------------
+python3 << PYEOF
+import json
+with open("$DEMO_TMPDIR/.claude/.claude.json") as f:
+    data = json.load(f)
+projects = data.get("projects", {})
+trust = {"allowedTools": [], "hasTrustDialogAccepted": True, "hasCompletedProjectOnboarding": True}
+for path in ["$DEMO_DIR/api-server", "$DEMO_DIR/web-app", "$DEMO_DIR/chat-app"]:
+    projects[path] = trust.copy()
+data["projects"] = projects
+with open("$DEMO_TMPDIR/.claude/.claude.json", "w") as f:
+    json.dump(data, f)
+PYEOF
+
+# ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 AOE="./target/release/aoe"
@@ -116,12 +132,15 @@ fi
 # Create sessions (no --launch to avoid blocking)
 # ---------------------------------------------------------------------------
 echo "Creating demo sessions..."
-# --cmd-override bash ensures bash runs instead of the real agent binary.
-# Stubs on PATH above handle tool detection (which claude), but the tmux
-# server may use its own PATH, so --cmd-override is the reliable mechanism.
-ID1=$($AOE add "$DEMO_DIR/api-server" -t "API Server" -c claude --cmd-override bash 2>&1 | grep "ID:" | awk '{print $2}')
-ID2=$($AOE add "$DEMO_DIR/web-app" -t "Web App" -c opencode --cmd-override bash 2>&1 | grep "ID:" | awk '{print $2}')
-ID3=$($AOE add "$DEMO_DIR/chat-app" -t "Chat App" -c codex --cmd-override bash 2>&1 | grep "ID:" | awk '{print $2}')
+# Use claude -p (print mode) which skips the workspace trust dialog.
+# Each session runs a different prompt to show varied Claude Code output.
+# "exec cat" holds the pane alive after claude exits so status detection works.
+CMD1="bash -c 'claude -p \"Read src/main.rs and suggest improvements\" --dangerously-skip-permissions 2>/dev/null; exec cat'"
+CMD2="bash -c 'claude -p \"What does this project do? Be brief.\" --dangerously-skip-permissions 2>/dev/null; exec cat'"
+CMD3="bash -c 'claude -p \"List all source files\" --dangerously-skip-permissions 2>/dev/null; exec cat'"
+ID1=$($AOE add "$DEMO_DIR/api-server" -t "API Server" -c claude --cmd-override "$CMD1" 2>&1 | grep "ID:" | awk '{print $2}')
+ID2=$($AOE add "$DEMO_DIR/web-app" -t "Web App" -c claude --cmd-override "$CMD2" 2>&1 | grep "ID:" | awk '{print $2}')
+ID3=$($AOE add "$DEMO_DIR/chat-app" -t "Chat App" -c claude --cmd-override "$CMD3" 2>&1 | grep "ID:" | awk '{print $2}')
 
 echo "  API Server: $ID1"
 echo "  Web App:    $ID2"
@@ -133,81 +152,10 @@ $AOE session start "$ID2"
 $AOE session start "$ID3"
 
 # ---------------------------------------------------------------------------
-# Fake agent status via hook files
+# Wait for Claude Code to run prompts and produce output
 # ---------------------------------------------------------------------------
-mkdir -p "/tmp/aoe-hooks/$ID1" "/tmp/aoe-hooks/$ID2" "/tmp/aoe-hooks/$ID3"
-echo "running" > "/tmp/aoe-hooks/$ID1/status"
-echo "waiting" > "/tmp/aoe-hooks/$ID2/status"
-echo "idle"    > "/tmp/aoe-hooks/$ID3/status"
-
-# ---------------------------------------------------------------------------
-# Pre-seed terminal content to look like Claude Code output
-# ---------------------------------------------------------------------------
-sleep 1  # let tmux sessions initialize
-
-TMUX1="aoe_API_Server_${ID1:0:8}"
-TMUX2="aoe_Web_App_${ID2:0:8}"
-TMUX3="aoe_Chat_App_${ID3:0:8}"
-
-# Create scripts that output realistic Claude Code-style terminal content,
-# then hold the terminal open with `cat` (blocks forever, keeps pane alive).
-cat > "$DEMO_TMPDIR/fake-claude-1.sh" << 'FAKECLAUDE'
-#!/bin/sh
-clear
-printf '\033[1m> Refactor the request handler to use async/await\033[0m\n\n'
-printf 'I'\''ll analyze the current request handler and refactor it.\n\n'
-printf '\033[2m● \033[0m\033[1mRead\033[0m src/main.rs\n\n'
-printf 'The current handler uses blocking I/O. I'\''ll refactor it to use\n'
-printf 'async/await for better concurrency.\n\n'
-printf '\033[2m● \033[0m\033[1mEdit\033[0m src/main.rs\n'
-printf '  \033[32m+ async fn handle_request(req: Request) -> Response {\033[0m\n'
-printf '  \033[32m+     let data = fetch_data(&req).await?;\033[0m\n'
-printf '  \033[32m+     Ok(Response::json(data))\033[0m\n'
-printf '  \033[32m+ }\033[0m\n\n'
-printf 'The handler is now async. Let me verify the changes compile.\n\n'
-printf '\033[2m● \033[0m\033[1mBash\033[0m cargo check\n\n'
-printf '\033[2m  Compiling api-server v0.1.0\n'
-printf '   Finished dev [unoptimized] target(s) in 1.2s\033[0m\n\n'
-printf '\033[32m✓\033[0m Changes compile successfully.\n\n'
-exec cat
-FAKECLAUDE
-
-cat > "$DEMO_TMPDIR/fake-claude-2.sh" << 'FAKECLAUDE'
-#!/bin/sh
-clear
-printf '\033[1m> Add a Dashboard component with responsive layout\033[0m\n\n'
-printf 'I'\''ll create the Dashboard component with a responsive grid.\n\n'
-printf '\033[2m● \033[0m\033[1mRead\033[0m src/App.tsx\n\n'
-printf 'I see the main App component. Let me add a Dashboard.\n\n'
-printf '\033[2m● \033[0m\033[1mWrite\033[0m src/Dashboard.tsx\n\n'
-printf '\033[1;35m  Do you want me to create this new file?\033[0m\n'
-printf '\033[2m  src/Dashboard.tsx\033[0m\n\n'
-printf '  \033[33mYes\033[0m  / No\n'
-exec cat
-FAKECLAUDE
-
-cat > "$DEMO_TMPDIR/fake-claude-3.sh" << 'FAKECLAUDE'
-#!/bin/sh
-clear
-printf '\033[1m> Review the Go module structure\033[0m\n\n'
-printf 'Let me look at the project layout.\n\n'
-printf '\033[2m● \033[0m\033[1mBash\033[0m find src -type f -name "*.go"\n\n'
-printf '  src/main.go\n\n'
-printf 'This is a single-file Go project. The code looks clean.\n'
-printf 'No issues found in the module structure.\n\n'
-printf '\033[32m✓\033[0m Review complete. The project follows standard Go conventions.\n\n'
-printf '\033[2m$\033[0m \033[?25l'
-exec cat
-FAKECLAUDE
-
-chmod +x "$DEMO_TMPDIR/fake-claude-1.sh" "$DEMO_TMPDIR/fake-claude-2.sh" "$DEMO_TMPDIR/fake-claude-3.sh"
-
-# Kill the bash shells and replace with our fake claude scripts
-tmux send-keys -t "$TMUX1" "exec $DEMO_TMPDIR/fake-claude-1.sh" Enter
-tmux send-keys -t "$TMUX2" "exec $DEMO_TMPDIR/fake-claude-2.sh" Enter
-tmux send-keys -t "$TMUX3" "exec $DEMO_TMPDIR/fake-claude-3.sh" Enter
-
-sleep 2  # let terminal content render
+echo "Waiting for Claude Code to finish (this may take 30-60s)..."
+sleep 45
 
 # ---------------------------------------------------------------------------
 # Start server
