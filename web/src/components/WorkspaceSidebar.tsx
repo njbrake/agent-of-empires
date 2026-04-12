@@ -155,16 +155,13 @@ export function WorkspaceSidebar({
         style={{ width }}
         className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-900 flex flex-col h-full shrink-0"
       >
-        <div className="p-3 pb-2 flex items-center gap-1.5">
-          <button
-            onClick={onNew}
-            className="flex-1 bg-brand-600 hover:bg-brand-700 text-surface-950 font-body text-sm font-semibold py-2.5 px-3 rounded-md cursor-pointer transition-colors text-left"
-          >
-            + New Session
-          </button>
+        <div className="px-3 pt-3 pb-1 flex items-center">
+          <span className="font-mono text-xs uppercase tracking-wider text-text-dim flex-1">
+            Sessions
+          </span>
           <button
             onClick={toggleFilter}
-            className={`w-10 h-10 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
+            className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
               filterOpen
                 ? "text-brand-500 bg-brand-600/10"
                 : "text-text-dim hover:text-text-secondary hover:bg-surface-800"
@@ -173,12 +170,12 @@ export function WorkspaceSidebar({
             aria-label="Filter sessions"
           >
             <svg
-              width="16"
-              height="16"
+              width="14"
+              height="14"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="1.5"
+              strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
             >
@@ -186,8 +183,27 @@ export function WorkspaceSidebar({
             </svg>
           </button>
           <button
+            onClick={onNew}
+            className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
+            title="New session"
+            aria-label="New session"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            >
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </button>
+          <button
             onClick={onToggle}
-            className="md:hidden w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-800"
+            className="md:hidden w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-800 ml-1"
           >
             &times;
           </button>
