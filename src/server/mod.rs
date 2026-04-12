@@ -121,6 +121,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions/{id}/terminal",
             post(api::ensure_terminal),
         )
+        .route(
+            "/api/sessions/{id}/container-terminal",
+            post(api::ensure_container_terminal),
+        )
         // Agents
         .route("/api/agents", get(api::list_agents))
         // Settings + themes

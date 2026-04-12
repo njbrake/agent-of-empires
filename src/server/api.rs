@@ -339,6 +339,57 @@ pub async fn ensure_terminal(
     }
 }
 
+pub async fn ensure_container_terminal(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut instances = state.instances.write().await;
+    let inst = match instances.iter_mut().find(|i| i.id == id) {
+        Some(i) => i,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not_found"})),
+            )
+                .into_response();
+        }
+    };
+
+    if inst.has_container_terminal() {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "exists"})),
+        )
+            .into_response();
+    }
+
+    let mut inst_clone = inst.clone();
+    drop(instances);
+
+    let result = tokio::task::spawn_blocking(move || {
+        inst_clone.start_container_terminal_with_size(None)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"status": "created"})),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 // --- Diff ---
 
 #[derive(Serialize)]

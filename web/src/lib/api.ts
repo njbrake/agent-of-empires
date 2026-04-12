@@ -61,9 +61,13 @@ export async function restartSession(id: string): Promise<boolean> {
   }
 }
 
-export async function ensureTerminal(id: string): Promise<boolean> {
+export async function ensureTerminal(
+  id: string,
+  container = false,
+): Promise<boolean> {
+  const path = container ? "container-terminal" : "terminal";
   try {
-    const res = await fetch(`/api/sessions/${id}/terminal`, {
+    const res = await fetch(`/api/sessions/${id}/${path}`, {
       method: "POST",
     });
     return res.ok;

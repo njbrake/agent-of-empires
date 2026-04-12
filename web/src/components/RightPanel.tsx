@@ -33,13 +33,13 @@ function PairedTerminal({
   useEffect(() => {
     let cancelled = false;
     setReady(false);
-    ensureTerminal(sessionId).then((ok) => {
+    ensureTerminal(sessionId, mode === "container").then((ok) => {
       if (!cancelled && ok) setReady(true);
     });
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, mode]);
 
   if (!ready) {
     return (
