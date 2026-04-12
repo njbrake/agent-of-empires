@@ -85,25 +85,43 @@ export function ContentSplit({
   }, [collapsed]);
 
   return (
-    <div ref={containerRef} className="flex-1 flex min-h-0 overflow-hidden">
+    <div ref={containerRef} className="flex-1 flex min-h-0 overflow-hidden relative">
       {/* Terminal pane */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">{left}</div>
 
       {!collapsed && (
         <>
-          {/* Drag handle */}
+          {/* Drag handle (desktop) */}
           <div
             onMouseDown={handleMouseDown}
             onDoubleClick={onToggleCollapse}
             className="hidden md:block w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
           />
 
-          {/* Right pane (hidden on mobile) */}
+          {/* Right pane: inline on desktop, overlay on mobile */}
           <div
             style={{ width: diffWidth }}
             className="hidden md:flex shrink-0 flex-col min-h-0 overflow-hidden"
           >
             {right}
+          </div>
+
+          {/* Mobile: full-screen overlay */}
+          <div className="md:hidden fixed inset-0 z-40 flex flex-col bg-surface-900">
+            <div className="h-10 flex items-center px-3 border-b border-surface-700/20 shrink-0">
+              <span className="font-body text-sm text-text-muted flex-1">
+                Diff & Shell
+              </span>
+              <button
+                onClick={onToggleCollapse}
+                className="w-10 h-10 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              {right}
+            </div>
           </div>
         </>
       )}

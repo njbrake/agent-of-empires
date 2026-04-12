@@ -172,7 +172,7 @@ export default function App() {
           )}
           <button
             onClick={toggleDiff}
-            className={`hidden sm:flex w-10 h-10 items-center justify-center cursor-pointer rounded-md transition-colors ${
+            className={`flex w-10 h-10 items-center justify-center cursor-pointer rounded-md transition-colors ${
               diffCollapsed
                 ? "text-text-dim hover:text-text-secondary"
                 : "text-text-secondary"
