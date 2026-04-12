@@ -41,7 +41,7 @@ function loadSavedWidth(): number {
 
 /** Animated spinner frames from rattles (https://github.com/vyfor/rattles) */
 const RATTLES: Record<string, { frames: string[]; interval: number }> = {
-  dots:         { frames: ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"], interval: 150 },
+  dots:         { frames: ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"], interval: 300 },
   orbit:        { frames: ["⠃","⠉","⠘","⠰","⢠","⣀","⡄","⠆"], interval: 400 },
   breathe:      { frames: ["⠀","⠂","⠌","⡑","⢕","⢝","⣫","⣟","⣿","⣟","⣫","⢝","⢕","⡑","⠌","⠂","⠀"], interval: 180 },
 };
