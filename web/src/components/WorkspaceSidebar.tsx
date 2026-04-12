@@ -163,8 +163,8 @@ export function WorkspaceSidebar({
             onClick={toggleFilter}
             className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
               filterOpen
-                ? "text-brand-500 bg-brand-600/10"
-                : "text-text-dim hover:text-text-secondary hover:bg-surface-800"
+                ? "text-text-secondary"
+                : "text-text-dim hover:text-text-secondary"
             }`}
             title="Filter sessions"
             aria-label="Filter sessions"
