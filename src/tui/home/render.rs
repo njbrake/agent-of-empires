@@ -15,7 +15,7 @@ use std::time::Duration;
 
 fn spinner_running() -> &'static str {
     spinners::dots()
-        .set_interval(Duration::from_millis(300))
+        .set_interval(Duration::from_millis(220))
         .current_frame()
 }
 
