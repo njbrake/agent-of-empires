@@ -15,6 +15,7 @@ const MAX_FAILURES: u32 = 5;
 const LOCKOUT_DURATION: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const WINDOW_DURATION: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_TRACKED_IPS: usize = 10_000;
 
 struct FailureRecord {
     count: u32,
@@ -58,6 +59,10 @@ impl RateLimiter {
     pub async fn record_failure(&self, ip: IpAddr) -> bool {
         let mut failures = self.failures.write().await;
         let now = Instant::now();
+
+        if failures.len() >= MAX_TRACKED_IPS && !failures.contains_key(&ip) {
+            return false;
+        }
 
         let record = failures.entry(ip).or_insert(FailureRecord {
             count: 0,

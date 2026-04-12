@@ -109,7 +109,21 @@ impl TunnelHandle {
         // Give cloudflared a moment to connect
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let url = format!("https://{}", tunnel_url.trim_start_matches("https://"));
+        let domain = tunnel_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        if domain.is_empty()
+            || domain.contains(' ')
+            || domain.contains('/')
+            || !domain.contains('.')
+        {
+            return Err(anyhow::anyhow!(
+                "Invalid tunnel URL '{}'. Expected a domain like 'aoe.example.com'.",
+                tunnel_url
+            ));
+        }
+
+        let url = format!("https://{}", domain);
 
         info!(url = %url, tunnel = %tunnel_name, "Named Cloudflare tunnel started");
 

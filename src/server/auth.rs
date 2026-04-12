@@ -35,10 +35,17 @@ pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
 fn resolve_client_ip(socket_addr: SocketAddr, headers: &axum::http::HeaderMap) -> IpAddr {
     let socket_ip = socket_addr.ip();
     if socket_ip.is_loopback() {
+        if let Some(cf_ip) = headers.get("cf-connecting-ip") {
+            if let Ok(ip_str) = cf_ip.to_str() {
+                if let Ok(ip) = ip_str.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
         if let Some(xff) = headers.get("x-forwarded-for") {
             if let Ok(xff_str) = xff.to_str() {
-                if let Some(first) = xff_str.split(',').next() {
-                    if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                if let Some(last) = xff_str.rsplit(',').next() {
+                    if let Ok(ip) = last.trim().parse::<IpAddr>() {
                         return ip;
                     }
                 }
@@ -49,13 +56,18 @@ fn resolve_client_ip(socket_addr: SocketAddr, headers: &axum::http::HeaderMap) -
 }
 
 /// Build a Set-Cookie header value with optional Secure flag for HTTPS tunnels.
-fn build_cookie(token: &str, secure: bool) -> String {
-    let mut cookie = format!("aoe_token={}; HttpOnly; SameSite=Strict; Path=/", token);
+fn build_cookie(token: &str, secure: bool, max_age_secs: u64) -> String {
+    let mut cookie = format!(
+        "aoe_token={}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+        token, max_age_secs
+    );
     if secure {
         cookie.push_str("; Secure");
     }
     cookie
 }
+
+const MAX_DEVICES: usize = 100;
 
 /// Record a successful device connection for tracking.
 async fn record_device(state: &AppState, ip: IpAddr, user_agent: &str) {
@@ -69,6 +81,16 @@ async fn record_device(state: &AppState, ip: IpAddr, user_agent: &str) {
         device.last_seen = chrono::Utc::now();
         device.request_count += 1;
     } else {
+        if devices.len() >= MAX_DEVICES {
+            if let Some(oldest_idx) = devices
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, d)| d.last_seen)
+                .map(|(i, _)| i)
+            {
+                devices.remove(oldest_idx);
+            }
+        }
         devices.push(super::DeviceInfo {
             ip: ip_str,
             user_agent: ua,
@@ -205,7 +227,8 @@ pub async fn auth_middleware(
 
         if should_set_cookie {
             if let Some(current) = state.token_manager.current_token().await {
-                let cookie = build_cookie(&current, state.behind_tunnel);
+                let max_age = state.token_manager.lifetime_secs().await;
+                let cookie = build_cookie(&current, state.behind_tunnel, max_age);
                 response.headers_mut().insert(
                     header::SET_COOKIE,
                     cookie.parse().expect("cookie format must be valid"),
@@ -217,7 +240,14 @@ pub async fn auth_middleware(
     }
 
     // Auth failed: record failure
-    state.rate_limiter.record_failure(client_ip).await;
+    let locked = state.rate_limiter.record_failure(client_ip).await;
+    let path = request.uri().path().to_string();
+    tracing::warn!(
+        ip = %client_ip,
+        path = %path,
+        locked = locked,
+        "Authentication failed"
+    );
 
     (
         StatusCode::UNAUTHORIZED,
@@ -258,10 +288,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_ip_loopback_with_xff() {
+    fn resolve_ip_prefers_cf_connecting_ip() {
         let socket: SocketAddr = "127.0.0.1:12345".parse().unwrap();
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "203.0.113.50".parse().unwrap());
+        headers.insert("cf-connecting-ip", "203.0.113.50".parse().unwrap());
+        headers.insert("x-forwarded-for", "10.0.0.1".parse().unwrap());
+        let ip = resolve_client_ip(socket, &headers);
+        assert_eq!(ip, "203.0.113.50".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn resolve_ip_falls_back_to_xff_last() {
+        let socket: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "spoofed.by.client, 203.0.113.50".parse().unwrap(),
+        );
         let ip = resolve_client_ip(socket, &headers);
         assert_eq!(ip, "203.0.113.50".parse::<IpAddr>().unwrap());
     }
@@ -294,16 +337,18 @@ mod tests {
 
     #[test]
     fn build_cookie_without_secure() {
-        let cookie = build_cookie("mytoken", false);
+        let cookie = build_cookie("mytoken", false, 14400);
         assert!(cookie.contains("aoe_token=mytoken"));
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Max-Age=14400"));
         assert!(!cookie.contains("Secure"));
     }
 
     #[test]
     fn build_cookie_with_secure() {
-        let cookie = build_cookie("mytoken", true);
+        let cookie = build_cookie("mytoken", true, 14400);
         assert!(cookie.contains("Secure"));
+        assert!(cookie.contains("Max-Age=14400"));
     }
 }

@@ -53,7 +53,11 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         return stop_daemon();
     }
 
-    let is_localhost = args.host == "127.0.0.1" || args.host == "localhost" || args.host == "::1";
+    let is_localhost = args.host == "localhost"
+        || args
+            .host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
 
     // Block dangerous combination: no auth on a network-accessible server
     if args.no_auth && !is_localhost {
@@ -218,6 +222,20 @@ fn stop_daemon() -> Result<()> {
         .trim()
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid PID in {}: {}", path.display(), pid_str.trim()))?;
+
+    // Verify PID belongs to an aoe process
+    let proc_path = format!("/proc/{}/cmdline", pid);
+    if std::path::Path::new(&proc_path).exists() {
+        if let Ok(cmdline) = std::fs::read_to_string(&proc_path) {
+            if !cmdline.contains("aoe") && !cmdline.contains("agent-of-empires") {
+                std::fs::remove_file(&path)?;
+                bail!(
+                    "PID {} belongs to a different process (stale PID file). Cleaned up.",
+                    pid
+                );
+            }
+        }
+    }
 
     // Send SIGTERM
     match nix::sys::signal::kill(

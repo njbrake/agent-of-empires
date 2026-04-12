@@ -101,6 +101,10 @@ impl TokenManager {
         self.state.read().await.current.clone()
     }
 
+    pub async fn lifetime_secs(&self) -> u64 {
+        self.state.read().await.lifetime.as_secs()
+    }
+
     /// Rotate: generate new token, move current to previous with grace period.
     pub async fn rotate(&self) {
         let mut state = self.state.write().await;
@@ -112,7 +116,7 @@ impl TokenManager {
 
         // Persist to disk
         if let Ok(app_dir) = crate::session::get_app_dir() {
-            let _ = std::fs::write(app_dir.join("serve.token"), &new_token);
+            write_secret_file(&app_dir.join("serve.token"), &new_token);
         }
 
         info!("Auth token rotated (previous token valid for 5 more minutes)");
@@ -236,7 +240,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 
         // Write tunnel URL for daemon discovery
         if let Ok(app_dir) = crate::session::get_app_dir() {
-            let _ = std::fs::write(app_dir.join("serve.url"), &tunnel_url_with_token);
+            write_secret_file(&app_dir.join("serve.url"), &tunnel_url_with_token);
         }
 
         // Start health monitor (uses CancellationToken internally)
@@ -271,7 +275,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 
         let url = make_url(if host == "0.0.0.0" { "localhost" } else { host });
         if let Ok(app_dir) = crate::session::get_app_dir() {
-            let _ = std::fs::write(app_dir.join("serve.url"), &url);
+            write_secret_file(&app_dir.join("serve.url"), &url);
         }
 
         None
@@ -354,7 +358,22 @@ fn build_router(state: Arc<AppState>) -> Router {
             state.clone(),
             auth::auth_middleware,
         ))
+        .layer(axum::middleware::from_fn(security_headers))
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(state)
+}
+
+/// Middleware that adds security headers to all responses.
+async fn security_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert("referrer-policy", "no-referrer".parse().unwrap());
+    response
 }
 
 async fn serve_index() -> impl axum::response::IntoResponse {
@@ -412,20 +431,43 @@ fn discover_local_ips() -> Vec<String> {
     ips
 }
 
-/// Generate a cryptographically random 32-character alphanumeric token.
+/// Write a file with owner-only permissions (0600) to protect secrets.
+#[cfg(unix)]
+fn write_secret_file(path: &std::path::Path, contents: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = file.write_all(contents.as_bytes());
+    }
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &std::path::Path, contents: &str) {
+    let _ = std::fs::write(path, contents);
+}
+
+/// Generate a cryptographically random 64-character hex token (256 bits of entropy).
 pub(crate) fn generate_token() -> String {
     use rand::RngExt;
-    let mut rng = rand::rng();
-    (0..32)
-        .map(|_| {
-            let idx = rng.random_range(0..36u8);
-            if idx < 10 {
-                (b'0' + idx) as char
-            } else {
-                (b'a' + idx - 10) as char
-            }
-        })
-        .collect()
+    let mut bytes = [0u8; 32];
+    rand::rng().fill(&mut bytes);
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Validate that a token matches the expected format.
+/// Accepts 64-char hex (new) or 32-char alphanumeric (legacy).
+fn is_valid_token_format(token: &str) -> bool {
+    let len = token.len();
+    (len == 64 || len == 32)
+        && token
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c.is_ascii_lowercase())
 }
 
 /// Load an existing auth token from disk if it's less than 24 hours old,
@@ -443,7 +485,7 @@ fn load_or_generate_token() -> anyhow::Result<String> {
             if age < std::time::Duration::from_secs(24 * 60 * 60) {
                 if let Ok(token) = std::fs::read_to_string(&token_path) {
                     let token = token.trim().to_string();
-                    if !token.is_empty() {
+                    if !token.is_empty() && is_valid_token_format(&token) {
                         return Ok(token);
                     }
                 }
@@ -452,7 +494,7 @@ fn load_or_generate_token() -> anyhow::Result<String> {
     }
 
     let token = generate_token();
-    let _ = std::fs::write(&token_path, &token);
+    write_secret_file(&token_path, &token);
     Ok(token)
 }
 
@@ -513,8 +555,27 @@ mod tests {
     #[test]
     fn generate_token_correct_length_and_charset() {
         let token = generate_token();
-        assert_eq!(token.len(), 32);
-        assert!(token.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_eq!(token.len(), 64);
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn valid_token_format_accepts_hex_64() {
+        assert!(is_valid_token_format(
+            "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        ));
+    }
+
+    #[test]
+    fn valid_token_format_accepts_legacy_32() {
+        assert!(is_valid_token_format("abcdef0123456789abcdef0123456789"));
+    }
+
+    #[test]
+    fn valid_token_format_rejects_garbage() {
+        assert!(!is_valid_token_format("short"));
+        assert!(!is_valid_token_format(""));
+        assert!(!is_valid_token_format("ZZZZ0000111122223333444455556666"));
     }
 
     #[tokio::test]

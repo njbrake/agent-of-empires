@@ -17,6 +17,26 @@ use crate::session::Status;
 
 use super::AppState;
 
+const SHELL_METACHARACTERS: &[char] = &[
+    ';', '&', '|', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r', '\\', '"', '\'', '!', '#',
+    '*', '?', '[', ']', '~', '\t', '\0',
+];
+
+fn validate_no_shell_injection(value: &str, field_name: &str) -> Result<(), String> {
+    if let Some(c) = value.chars().find(|c| SHELL_METACHARACTERS.contains(c)) {
+        return Err(format!(
+            "Invalid character '{}' in {}. Shell metacharacters are not allowed.",
+            c, field_name
+        ));
+    }
+    Ok(())
+}
+
+const ALLOWED_SETTINGS_SECTIONS: &[&str] = &["theme", "session", "tmux", "updates", "sound"];
+
+const SESSION_BLOCKED_FIELDS: &[&str] =
+    &["agent_command_override", "agent_extra_args", "extra_env"];
+
 /// API response DTO for session data.
 /// Decouples the API contract from the internal Instance struct.
 #[derive(Serialize)]
@@ -101,6 +121,40 @@ pub async fn create_session(
             .into_response();
     }
 
+    // Validate user inputs for shell injection
+    for (value, name) in [
+        (body.extra_args.as_str(), "extra_args"),
+        (body.tool.as_str(), "tool"),
+        (body.group.as_str(), "group"),
+        (body.path.as_str(), "path"),
+    ] {
+        if let Err(msg) = validate_no_shell_injection(value, name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
+            )
+                .into_response();
+        }
+    }
+    if let Some(ref title) = body.title {
+        if let Err(msg) = validate_no_shell_injection(title, "title") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
+            )
+                .into_response();
+        }
+    }
+    if let Some(ref branch) = body.worktree_branch {
+        if let Err(msg) = validate_no_shell_injection(branch, "worktree_branch") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
+            )
+                .into_response();
+        }
+    }
+
     let profile = state.profile.clone();
     let instances = state.instances.read().await;
     let existing_titles: Vec<String> = instances.iter().map(|i| i.title.clone()).collect();
@@ -161,16 +215,22 @@ pub async fn create_session(
             )
                 .into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!("Session creation failed: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "create_failed", "message": "Failed to create session"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Session creation panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -221,16 +281,22 @@ pub async fn ensure_terminal(
             )
                 .into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("Terminal creation failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "create_failed", "message": "Failed to create terminal"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Terminal creation panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -271,16 +337,22 @@ pub async fn ensure_container_terminal(
             Json(serde_json::json!({"status": "created"})),
         )
             .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("Container terminal creation failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "create_failed", "message": "Failed to create container terminal"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Container terminal creation panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -351,16 +423,22 @@ pub async fn session_diff(
             Json(serde_json::to_value(diff).expect("DiffResponse is always serializable")),
         )
             .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "diff_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("Diff failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "diff_failed", "message": "Failed to compute diff"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Diff panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -389,27 +467,58 @@ pub async fn get_settings() -> impl IntoResponse {
     match crate::session::Config::load() {
         Ok(config) => match serde_json::to_value(&config) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
-            )
-                .into_response(),
+            Err(e) => {
+                tracing::error!("Settings serialization failed: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
+                )
+                    .into_response()
+            }
         },
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "load_failed", "message": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("Settings load failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "load_failed", "message": "Failed to load settings"})),
+            )
+                .into_response()
+        }
     }
 }
 
 pub async fn update_settings(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
+    // Validate that only allowed sections are being updated
+    if let Some(obj) = body.as_object() {
+        for key in obj.keys() {
+            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "validation_failed",
+                        "message": format!("Settings section '{}' is not allowed via the web API.", key)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let result = tokio::task::spawn_blocking(move || {
         let config = crate::session::Config::load().unwrap_or_default();
         let mut current = serde_json::to_value(&config)?;
         if let (Some(current_obj), Some(update_obj)) = (current.as_object_mut(), body.as_object()) {
             for (key, value) in update_obj {
-                current_obj.insert(key.clone(), value.clone());
+                let mut value = value.clone();
+                // Strip blocked fields from session section
+                if key == "session" {
+                    if let Some(session_obj) = value.as_object_mut() {
+                        for blocked in SESSION_BLOCKED_FIELDS {
+                            session_obj.remove(*blocked);
+                        }
+                    }
+                }
+                current_obj.insert(key.clone(), value);
             }
         }
         let config: crate::session::Config = serde_json::from_value(current)?;
@@ -421,22 +530,31 @@ pub async fn update_settings(Json(body): Json<serde_json::Value>) -> impl IntoRe
     match result {
         Ok(Ok(config)) => match serde_json::to_value(&config) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
-            )
-                .into_response(),
+            Err(e) => {
+                tracing::error!("Settings serialization failed: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
+                )
+                    .into_response()
+            }
         },
-        Ok(Err(e)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!("Settings update failed: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "update_failed", "message": "Failed to update settings"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Settings update panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
     }
 }
 
