@@ -95,7 +95,7 @@ export function ContentSplit({
           <div
             onMouseDown={handleMouseDown}
             onDoubleClick={onToggleCollapse}
-            className="w-1 bg-surface-700 hover:bg-brand-600/50 cursor-col-resize shrink-0 transition-colors duration-75"
+            className="w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
           />
 
           {/* Diff pane */}
