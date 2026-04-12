@@ -219,6 +219,10 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: boo
                                 .await;
                             }
                         }
+                    } else if text.starts_with('{') {
+                        // Malformed JSON control message; drop it so raw JSON
+                        // doesn't leak into the terminal as visible text.
+                        tracing::warn!("Ignoring malformed control message: {}", text);
                     } else if !read_only {
                         // Plain text input -> PTY stdin (blocked in read-only mode)
                         let writer = writer_for_input.clone();

@@ -109,11 +109,17 @@ export function useTerminal(
         });
         term.focus();
         const dims = fitAddon.proposeDimensions();
-        if (dims) {
+        if (
+          dims &&
+          Number.isFinite(dims.cols) &&
+          Number.isFinite(dims.rows) &&
+          dims.cols > 0 &&
+          dims.rows > 0
+        ) {
           const msg: ResizeMessage = {
             type: "resize",
-            cols: dims.cols,
-            rows: dims.rows,
+            cols: Math.round(dims.cols),
+            rows: Math.round(dims.rows),
           };
           ws.send(JSON.stringify(msg));
         }
