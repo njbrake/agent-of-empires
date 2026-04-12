@@ -17,7 +17,7 @@ pub struct VolumeMount {
 ///
 /// `Literal` entries use `-e KEY=VALUE` and are appropriate for non-secret,
 /// hard-coded values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EnvEntry {
     /// Value inherited from host environment. Only the key appears in argv;
     /// the value is passed to Docker via the process environment.
