@@ -223,10 +223,12 @@ fn resolved_sandbox_config(project_path: &std::path::Path) -> super::config::San
 /// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
 /// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
 ///
-/// For inherited entries, sets the variable in the current process environment
-/// (so the docker CLI can read it via `-e KEY`) and emits just `-e KEY` with no
-/// value in the command string. This prevents secrets from appearing in `ps`
-/// output or debug logs.
+/// For inherited entries where the key already exists in the host process
+/// environment with the correct value, emits just `-e KEY` with no value in
+/// the command string. This prevents secrets from appearing in `ps` output.
+/// For mapped keys (e.g. `MY_TOKEN=$GH_TOKEN`), falls back to `-e KEY=VALUE`
+/// since the docker exec process (spawned by tmux) cannot inherit a key that
+/// only exists in aoe's process.
 pub(crate) fn build_docker_env_args(
     sandbox: &SandboxInfo,
     project_path: &std::path::Path,
