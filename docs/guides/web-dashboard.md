@@ -2,7 +2,7 @@
 
 > This feature is experimental and subject to major changes.
 
-The web dashboard lets you monitor and interact with agent sessions from any browser -- your phone, tablet, or another computer. It runs as an embedded web server inside the `aoe` binary.
+The web dashboard lets you monitor and interact with agent sessions from any browser, including your phone, tablet, or another computer. It runs as an embedded web server inside the `aoe` binary.
 
 ## Availability
 
@@ -26,24 +26,55 @@ The build automatically runs `npm install && npm run build` in the `web/` direct
 # Localhost only (safe, default)
 aoe serve
 
-# Accessible from other devices on your network
+# Remote access via Cloudflare Tunnel (HTTPS, QR code pairing)
+aoe serve --remote
+
+# Accessible from other devices on your LAN/VPN (HTTP, requires VPN)
 aoe serve --host 0.0.0.0
 
-# Run in background (for PWA use)
+# Run in background
 aoe serve --daemon
 
 # Read-only monitoring (no terminal input)
-aoe serve --host 0.0.0.0 --read-only
+aoe serve --remote --read-only
 ```
 
 The server prints a URL with an auth token:
 
 ```
 aoe web dashboard running at:
-  http://localhost:8080/?token=abc123def456
+  http://localhost:8080/?token=a1b2c3...
 ```
 
-Open this URL in any browser to access the dashboard.
+Open this URL in any browser to access the dashboard. The token is set as a cookie on first visit so you don't need to keep it in the URL.
+
+In `--remote` mode, a QR code is also printed for easy phone pairing.
+
+## Remote access
+
+The `--remote` flag is the recommended way to access the dashboard from your phone or another device:
+
+```bash
+aoe serve --remote
+```
+
+This starts a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) that gives you a public HTTPS URL with a QR code. No account, DNS, or certificate setup needed.
+
+**Requirements:** `cloudflared` must be installed on the host:
+- macOS: `brew install cloudflared`
+- Linux: `sudo apt install cloudflared`
+- Other: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+
+**Named tunnels** provide a stable domain (useful for bookmarks and future passkey support):
+
+```bash
+# One-time setup
+cloudflared tunnel create my-tunnel
+# Add a CNAME record: aoe.example.com -> <tunnel-id>.cfargotunnel.com
+
+# Run with stable URL
+aoe serve --remote --tunnel-name my-tunnel --tunnel-url aoe.example.com
+```
 
 ## Flags
 
@@ -51,28 +82,41 @@ Open this URL in any browser to access the dashboard.
 |------|---------|-------------|
 | `--port` | 8080 | Port to listen on |
 | `--host` | 127.0.0.1 | Bind address. Use `0.0.0.0` for LAN/VPN access |
-| `--no-auth` | off | Disable token auth (localhost only -- blocked with `0.0.0.0`) |
-| `--read-only` | off | View terminals but cannot send keystrokes or stop/restart sessions |
+| `--remote` | off | Expose via Cloudflare Tunnel (HTTPS, QR code) |
+| `--tunnel-name` | | Use a named tunnel (requires `--remote`) |
+| `--tunnel-url` | | Hostname for a named tunnel (requires `--tunnel-name`) |
+| `--no-auth` | off | Disable token auth (localhost only) |
+| `--read-only` | off | View terminals but cannot send keystrokes |
 | `--daemon` | off | Fork to background and detach from terminal |
+| `--stop` | | Stop a running daemon |
 
 ## Security
 
-**The web dashboard exposes terminal access over HTTP.** Anyone with the auth token can send keystrokes to your agent sessions, which run as your user.
+**The web dashboard exposes terminal access.** Anyone who authenticates can send keystrokes to your agent sessions, which run as your user.
 
-**Safe usage patterns:**
+### Authentication
+
+- **Token auth:** A random 256-bit token is generated on startup and stored at `~/.config/agent-of-empires/serve.token` (Linux) or `~/.agent-of-empires/serve.token` (macOS). The token is passed via URL on first visit, then stored as an `HttpOnly; SameSite=Strict` cookie.
+- **Rate limiting:** 5 failed auth attempts from an IP trigger a 15-minute lockout. Uses `Cf-Connecting-IP` when behind a Cloudflare tunnel to prevent IP spoofing.
+- **Token rotation:** In `--remote` mode, the token rotates every 4 hours with a 5-minute grace period for active sessions.
+- **Device tracking:** Connected devices (IP, browser, last seen) are visible in Settings > Security.
+
+### Security headers
+
+The server sets `X-Frame-Options: DENY` (prevents clickjacking), `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer` (prevents token leaking via Referer headers).
+
+### Safe usage patterns
 
 - **Localhost** (`aoe serve`): Same security as the TUI. Fine.
-- **Over Tailscale/WireGuard** (`aoe serve --host 0.0.0.0`): The VPN encrypts traffic. This is the recommended way to access remotely.
-- **Read-only over LAN** (`aoe serve --host 0.0.0.0 --read-only`): Monitor sessions from your phone without input capability.
+- **Remote via tunnel** (`aoe serve --remote`): Encrypted via HTTPS. Recommended for phone access.
+- **Over Tailscale/WireGuard** (`aoe serve --host 0.0.0.0`): The VPN encrypts traffic.
+- **Read-only** (`aoe serve --remote --read-only`): Monitor sessions without input capability.
 
-**Dangerous:**
+### Dangerous
 
-- `aoe serve --host 0.0.0.0` on public WiFi without a VPN -- the token is transmitted in cleartext HTTP
-- `aoe serve --no-auth --host 0.0.0.0` -- this is blocked and will refuse to start
-
-**Blocked combinations:**
-
-The server refuses to start with `--no-auth` and a non-localhost `--host`. This prevents accidental exposure of unauthenticated terminal access to the network.
+- `aoe serve --host 0.0.0.0` on public WiFi without a VPN: traffic is unencrypted HTTP
+- `aoe serve --no-auth --host 0.0.0.0`: blocked (refuses to start)
+- `aoe serve --no-auth --remote`: blocked (refuses to start)
 
 ## Installing as a PWA
 
@@ -91,16 +135,17 @@ The PWA requires the server to be running. Use `--daemon` to keep it running in 
 ```bash
 aoe serve --daemon
 # Server runs in background, prints PID
-# Stop with: kill <PID>
+# Stop with: aoe serve --stop
 ```
 
 ## Features
 
 - **Session list** with live status updates (Running, Waiting, Idle, Error)
-- **Live terminal** via PTY relay -- full terminal experience with all key sequences
+- **Live terminal** via PTY relay, full terminal experience with all key sequences
 - **Stop/restart** sessions from the browser
 - **Mobile-responsive** layout (sidebar collapses on small screens)
 - **Multi-profile** support (shows sessions from all profiles)
+- **Connected Devices** view in Settings > Security
 
 ## Architecture
 
@@ -109,6 +154,8 @@ The server embeds an axum web server that serves a React frontend and provides:
 - REST API for session listing and control (`/api/sessions`)
 - WebSocket PTY relay for terminal streaming (`/sessions/:id/ws`)
 - Token-based authentication via cookie, query parameter, or WebSocket protocol header
+- Rate limiting, token rotation, and device tracking
+- Security headers (X-Frame-Options, Referrer-Policy)
 
 Each terminal connection spawns `tmux attach-session` inside a PTY and relays the raw byte stream bidirectionally over WebSocket. This gives the browser a real terminal experience identical to SSH.
 
