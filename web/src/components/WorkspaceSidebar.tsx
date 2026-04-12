@@ -91,18 +91,10 @@ const SessionRow = memo(function SessionRow({
           {label}
         </span>
       </div>
-      <div className="ml-[18px] mt-0.5 flex items-center gap-1.5">
+      <div className="ml-[18px] mt-0.5">
         <span className="font-mono text-[11px] text-text-dim truncate">
           {workspace.primaryAgent}
         </span>
-        {workspace.branch && workspace.sessions[0]?.title !== workspace.branch && (
-          <>
-            <span className="text-text-dim/40 text-[11px]">&middot;</span>
-            <span className="font-mono text-[11px] text-text-dim truncate">
-              {workspace.sessions.length} session{workspace.sessions.length !== 1 ? "s" : ""}
-            </span>
-          </>
-        )}
       </div>
     </button>
   );
