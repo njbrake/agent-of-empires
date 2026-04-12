@@ -50,8 +50,8 @@ export interface DiffFileInfo {
   status: string;
 }
 
-/** Workspace status derived from session states + manual overrides */
-export type WorkspaceStatus = "active" | "idle" | "reviewing" | "archived";
+/** Workspace status derived from session states */
+export type WorkspaceStatus = "active" | "idle";
 
 /** Workspace: a group of sessions sharing the same project + branch */
 export interface Workspace {

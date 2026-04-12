@@ -43,24 +43,6 @@ export async function createSession(data: {
   }
 }
 
-export async function stopSession(id: string): Promise<boolean> {
-  try {
-    const res = await fetch(`/api/sessions/${id}/stop`, { method: "POST" });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-export async function restartSession(id: string): Promise<boolean> {
-  try {
-    const res = await fetch(`/api/sessions/${id}/restart`, { method: "POST" });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 export async function ensureTerminal(
   id: string,
   container = false,

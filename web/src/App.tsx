@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
-import { useWorkspaces, setLifecycleOverride } from "./hooks/useWorkspaces";
+import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { createSession, stopSession, restartSession } from "./lib/api";
+import { createSession } from "./lib/api";
 import { isSessionActive } from "./lib/session";
-import type { WorkspaceStatus } from "./lib/types";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { ContentSplit } from "./components/ContentSplit";
@@ -35,8 +34,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(
     () => window.innerWidth >= 768,
   );
-  const [actionPending, setActionPending] = useState(false);
-
   // For post-create selection: store what to select, pick it up when sessions update
   const pendingSelectRef = useRef<{
     wsId: string;
@@ -102,32 +99,6 @@ export default function App() {
     }
   };
 
-  const handleStop = async () => {
-    if (!activeSessionId) return;
-    setActionPending(true);
-    await stopSession(activeSessionId);
-    refresh();
-    setActionPending(false);
-  };
-
-  const handleRestart = async () => {
-    if (!activeSessionId) return;
-    setActionPending(true);
-    await restartSession(activeSessionId);
-    refresh();
-    setActionPending(false);
-  };
-
-  const handleLifecycleChange = (status: WorkspaceStatus) => {
-    if (!activeWorkspace) return;
-    if (status === "active") {
-      setLifecycleOverride(activeWorkspace.id, null);
-    } else {
-      setLifecycleOverride(activeWorkspace.id, status);
-    }
-    refresh();
-  };
-
   const toggleDiff = () => setDiffCollapsed((c) => !c);
 
   useKeyboardShortcuts(
@@ -176,10 +147,6 @@ export default function App() {
             activeSession={activeSession}
             diffCollapsed={diffCollapsed}
             diffFileCount={diffFileCount}
-            actionPending={actionPending}
-            onStop={handleStop}
-            onRestart={handleRestart}
-            onLifecycleChange={handleLifecycleChange}
             onToggleDiff={toggleDiff}
           />
         )}

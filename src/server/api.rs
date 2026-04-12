@@ -10,7 +10,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::session::{Instance, Status, Storage};
+use crate::session::{Instance, Storage};
+
+#[cfg(test)]
+use crate::session::Status;
 
 use super::AppState;
 
@@ -59,116 +62,6 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
     let instances = state.instances.read().await;
     let sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
     Json(sessions)
-}
-
-pub async fn stop_session(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
-    }
-
-    let instances = state.instances.read().await;
-    let inst = match instances.iter().find(|i| i.id == id) {
-        Some(i) => i.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found", "message": "Session not found"})),
-            )
-                .into_response();
-        }
-    };
-    drop(instances);
-
-    let result = tokio::task::spawn_blocking(move || inst.stop()).await;
-
-    match result {
-        Ok(Ok(())) => {
-            let mut instances = state.instances.write().await;
-            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
-                inst.status = Status::Stopped;
-            }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "stopped"})),
-            )
-                .into_response()
-        }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "stop_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-pub async fn restart_session(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
-    }
-
-    let mut instances = state.instances.write().await;
-    let inst = match instances.iter_mut().find(|i| i.id == id) {
-        Some(i) => i,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found", "message": "Session not found"})),
-            )
-                .into_response();
-        }
-    };
-
-    let mut inst_clone = inst.clone();
-    drop(instances);
-
-    let result = tokio::task::spawn_blocking(move || inst_clone.start()).await;
-
-    match result {
-        Ok(Ok(())) => {
-            let mut instances = state.instances.write().await;
-            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
-                inst.status = Status::Starting;
-            }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "starting"})),
-            )
-                .into_response()
-        }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "restart_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
-    }
 }
 
 // --- Create session ---
