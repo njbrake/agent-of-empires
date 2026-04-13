@@ -150,12 +150,6 @@ impl Session {
             bail!("Session does not exist: {}", self.name);
         }
 
-        // Let the terminal finish processing mode-change escape sequences
-        // (LeaveAlternateScreen, DisableMouseCapture) and let crossterm's
-        // EventStream background reader quiesce before tmux takes over
-        // stdin. Without this, tmux can fail to initialize its client.
-        Self::settle_terminal();
-
         if std::env::var("TMUX").is_ok() {
             let status = Command::new("tmux")
                 .args(["switch-client", "-t", &self.name])
@@ -197,24 +191,6 @@ impl Session {
         }
 
         Ok(())
-    }
-
-    /// Flush stale stdin bytes and pause briefly so the terminal has time
-    /// to process escape sequences and crossterm's reader can quiesce.
-    fn settle_terminal() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            let fd = std::io::stdin().as_raw_fd();
-            unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            let fd = std::io::stdin().as_raw_fd();
-            unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
-        }
     }
 
     /// Collect diagnostic info after a failed attach attempt.

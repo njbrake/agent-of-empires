@@ -17,18 +17,24 @@ use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
-/// Discard any bytes buffered on stdin (e.g., stale mouse tracking escape
-/// sequences, terminal responses to LeaveAlternateScreen/DisableMouseCapture).
-/// Uses POSIX tcflush which discards the kernel tty input queue directly.
+/// Flush stale stdin bytes, pause for the terminal to finish processing
+/// mode-change escape sequences (DisableMouseCapture, LeaveAlternateScreen),
+/// then flush again to catch any late-arriving responses. Without this,
+/// child processes (tmux, editors) can read leftover mouse tracking escape
+/// sequences from stdin and fail to initialize.
 #[cfg(unix)]
-fn drain_stdin() {
+fn settle_stdin() {
     use std::os::unix::io::AsRawFd;
     let fd = std::io::stdin().as_raw_fd();
+    unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
+    std::thread::sleep(std::time::Duration::from_millis(50));
     unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
 }
 
 #[cfg(not(unix))]
-fn drain_stdin() {}
+fn settle_stdin() {
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
 
 /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
 /// Drains stale events and clears the terminal on return.
@@ -49,10 +55,7 @@ where
     )?;
     std::io::Write::flush(terminal.backend_mut())?;
 
-    // Discard stale input (mouse tracking escape sequences, terminal
-    // responses to LeaveAlternateScreen, etc.) so child processes
-    // (tmux, editors) don't read leftover bytes from stdin.
-    drain_stdin();
+    settle_stdin();
 
     let result = f();
 
