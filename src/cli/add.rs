@@ -222,8 +222,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         }
     } else {
         // Use default_tool from resolved config, then first available tool, then "claude".
-        // default_tool may be a custom agent name, so check custom_agents if resolve_tool_name
-        // doesn't match a built-in.
+        // Check custom_agents first (exact match) before resolve_tool_name (substring match),
+        // so names like "lenovo-claude" resolve as the custom agent, not built-in "claude".
         let available_tools = crate::tmux::AvailableTools::detect();
         let tools_list = available_tools.available_list();
         instance.tool = config
@@ -231,13 +231,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             .default_tool
             .as_deref()
             .and_then(|name| {
-                crate::agents::resolve_tool_name(name).or_else(|| {
-                    if config.session.custom_agents.contains_key(name) {
-                        Some(name)
-                    } else {
-                        None
-                    }
-                })
+                if config.session.custom_agents.contains_key(name) {
+                    Some(name)
+                } else {
+                    crate::agents::resolve_tool_name(name)
+                }
             })
             .or_else(|| tools_list.first().map(|s| s.as_str()))
             .unwrap_or("claude")
