@@ -213,6 +213,14 @@ impl App {
                         Some(Ok(Event::Key(key))) => {
                             self.handle_key(key, terminal).await?;
 
+                            // Check for creation results after key handling so
+                            // the async CreationPoller path isn't starved by
+                            // continuous input events (mouse moves, etc.)
+                            // that `continue` past the periodic refresh section.
+                            if let Some(session_id) = self.home.apply_creation_results() {
+                                self.attach_session(&session_id, terminal)?;
+                            }
+
                             terminal.draw(|f| self.render(f))?;
 
                             if self.should_quit {
@@ -222,6 +230,10 @@ impl App {
                         }
                         Some(Ok(Event::Mouse(mouse))) => {
                             self.handle_mouse(mouse, terminal).await?;
+
+                            if let Some(session_id) = self.home.apply_creation_results() {
+                                self.attach_session(&session_id, terminal)?;
+                            }
 
                             terminal.draw(|f| self.render(f))?;
 

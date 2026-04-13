@@ -2393,3 +2393,62 @@ fn test_has_dialog_true_when_search_active() {
     view.handle_key(key(KeyCode::Char('/')));
     assert!(view.has_dialog());
 }
+
+/// Verify that the async CreationPoller path returns a session ID from
+/// `apply_creation_results` once the background thread finishes. This is
+/// the code path that was previously starved by continuous input events
+/// in the tokio::select! event loop (see #633).
+#[test]
+#[serial]
+fn test_apply_creation_results_returns_session_id() {
+    use crate::tui::dialogs::NewSessionData;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let project_dir = temp.path().join("project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("default".to_string()), tools).unwrap();
+
+    let data = NewSessionData {
+        profile: "default".to_string(),
+        title: "Async Test".to_string(),
+        path: project_dir.to_str().unwrap().to_string(),
+        group: String::new(),
+        tool: "claude".to_string(),
+        worktree_branch: None,
+        create_new_branch: false,
+        extra_repo_paths: Vec::new(),
+        sandbox: false,
+        sandbox_image: String::new(),
+        yolo_mode: false,
+        extra_env: Vec::new(),
+        extra_args: String::new(),
+        command_override: String::new(),
+    };
+
+    // Use the async CreationPoller path (pass None hooks, non-sandbox,
+    // but call request_creation directly to force the async path)
+    view.request_creation(data, None);
+    assert!(view.is_creation_pending());
+
+    // Wait for the background thread to finish (should be near-instant
+    // for non-sandbox, non-hook creation)
+    let start = std::time::Instant::now();
+    let mut session_id = None;
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if let Some(id) = view.apply_creation_results() {
+            session_id = Some(id);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let session_id = session_id.expect("apply_creation_results should return Some(session_id)");
+    assert!(
+        view.get_instance(&session_id).is_some(),
+        "created session should be findable after apply_creation_results"
+    );
+}
