@@ -221,7 +221,14 @@ impl App {
                                 self.attach_session(&session_id, terminal)?;
                             }
 
-                            terminal.draw(|f| self.render(f))?;
+                            // Skip the draw when returning from tmux attach
+                            // (handle_key sync path or creation result above).
+                            // needs_redraw triggers a clear + stale event drain
+                            // on the next iteration; drawing before that drain
+                            // wastes a frame and can flicker.
+                            if !self.needs_redraw {
+                                terminal.draw(|f| self.render(f))?;
+                            }
 
                             if self.should_quit {
                                 break;
@@ -235,7 +242,9 @@ impl App {
                                 self.attach_session(&session_id, terminal)?;
                             }
 
-                            terminal.draw(|f| self.render(f))?;
+                            if !self.needs_redraw {
+                                terminal.draw(|f| self.render(f))?;
+                            }
 
                             continue;
                         }
