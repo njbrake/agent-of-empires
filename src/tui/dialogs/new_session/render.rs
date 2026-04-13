@@ -188,7 +188,7 @@ impl NewSessionDialog {
                     tool_spans.push(Span::raw("  "));
                 }
                 tool_spans.push(Span::styled(if is_selected { "● " } else { "○ " }, style));
-                tool_spans.push(Span::styled(*tool_name, style));
+                tool_spans.push(Span::styled(tool_name.as_str(), style));
             }
 
             // Show Ctrl+P hint and summary of tool config
@@ -217,7 +217,10 @@ impl NewSessionDialog {
             let mut tool_spans = vec![
                 Span::styled("Tool:", tool_style),
                 Span::raw(" "),
-                Span::styled(self.available_tools[0], Style::default().fg(theme.accent)),
+                Span::styled(
+                    self.available_tools[0].as_str(),
+                    Style::default().fg(theme.accent),
+                ),
             ];
 
             let has_config =
@@ -704,7 +707,7 @@ impl NewSessionDialog {
             .available_tools
             .get(self.tool_index)
             .or_else(|| self.available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         let title = format!(" Tool Configuration: {} ", selected_tool);
 

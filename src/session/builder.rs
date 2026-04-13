@@ -341,6 +341,12 @@ pub fn build_instance(
     let mut instance = Instance::new(&final_title, &final_path);
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
+    instance.detect_as = config
+        .session
+        .agent_detect_as
+        .get(&params.tool)
+        .cloned()
+        .unwrap_or_default();
     instance.command = crate::agents::get_agent(&params.tool)
         .filter(|a| a.set_default_command)
         .map(|a| a.binary.to_string())
@@ -349,13 +355,14 @@ pub fn build_instance(
     instance.workspace_info = workspace_info;
     instance.yolo_mode = params.yolo_mode;
 
-    // Apply agent_command_override and agent_extra_args from resolved config.
-    // Per-session values from params take priority over config.
+    // Apply command overrides and custom agent commands from resolved config.
+    // Priority: per-session params > agent_command_override > custom_agents > AgentDef default.
     if !params.command_override.is_empty() {
         instance.command = params.command_override;
-    } else if let Some(cmd_override) = config.session.agent_command_override.get(&params.tool) {
-        if !cmd_override.is_empty() {
-            instance.command = cmd_override.clone();
+    } else {
+        let resolved = config.session.resolve_tool_command(&params.tool);
+        if !resolved.is_empty() {
+            instance.command = resolved;
         }
     }
     if !params.extra_args.is_empty() {
