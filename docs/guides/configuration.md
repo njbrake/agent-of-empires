@@ -54,12 +54,44 @@ name = "empire"   # empire, phosphor, tokyo-night-storm, catppuccin-latte, dracu
 [session]
 default_tool = "claude"   # any supported agent name
 yolo_mode_default = false
+agent_status_hooks = true
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `default_tool` | (auto-detect) | Default agent for new sessions. Falls back to the first available tool if unset or unavailable. |
+| `default_tool` | (auto-detect) | Default agent for new sessions. Falls back to the first available tool if unset or unavailable. Can be set to a custom agent name. |
 | `yolo_mode_default` | `false` | Enable YOLO mode by default for new sessions (skip permission prompts). Works with or without sandbox. |
+| `agent_status_hooks` | `true` | Install status-detection hooks into the agent's settings file. When disabled, status detection falls back to tmux pane content parsing. |
+| `agent_extra_args` | `{}` | Per-agent extra arguments appended after the binary (e.g., `{ opencode = "--port 8080" }`). |
+| `agent_command_override` | `{}` | Per-agent command override replacing the binary entirely (e.g., `{ claude = "my-claude-wrapper" }`). |
+| `custom_agents` | `{}` | User-defined agents: name to command mapping. Custom agent names appear in the TUI agent picker alongside built-in agents. |
+| `agent_detect_as` | `{}` | Status detection mapping: maps an agent name to a built-in agent whose status heuristics should be used. |
+
+### Custom Agents
+
+You can register additional agents (SSH wrappers to remote machines, custom workflows, etc.) that appear in the TUI agent picker alongside built-in agents like `claude`, `opencode`, and `codex`.
+
+```toml
+[session]
+custom_agents = { "lenovo-claude" = "ssh -t lenovo claude" }
+agent_detect_as = { "lenovo-claude" = "claude" }
+```
+
+- **`custom_agents`**: Maps a display name to the command to run. The name appears in the agent picker when creating a new session, and the command is auto-filled as the session's command override.
+- **`agent_detect_as`** (optional): Maps a custom agent to a built-in agent's status detection. Without this, custom agents default to `Idle` status. Setting `"lenovo-claude" = "claude"` reuses Claude's Running/Waiting/Idle detection heuristics for the remote session.
+
+Custom agents are always shown as available in the picker (no binary detection), since the command may target a remote host or a wrapper script.
+
+You can also set `default_tool` to a custom agent name:
+
+```toml
+[session]
+default_tool = "lenovo-claude"
+custom_agents = { "lenovo-claude" = "ssh -t lenovo claude" }
+agent_detect_as = { "lenovo-claude" = "claude" }
+```
+
+Both fields are editable from the TUI settings screen and support profile/repo-level overrides.
 
 ## Worktree
 

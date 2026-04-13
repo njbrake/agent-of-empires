@@ -100,6 +100,10 @@ pub struct Instance {
     pub extra_args: String,
     #[serde(default)]
     pub tool: String,
+    /// Built-in agent name used for status detection, resolved at build time from
+    /// config's agent_detect_as map. Avoids loading config during the polling hot path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detect_as: String,
     #[serde(default)]
     pub yolo_mode: bool,
     #[serde(default)]
@@ -148,6 +152,7 @@ impl Instance {
             command: String::new(),
             extra_args: String::new(),
             tool: "claude".to_string(),
+            detect_as: String::new(),
             yolo_mode: false,
             status: Status::Idle,
             created_at: Utc::now(),
@@ -738,7 +743,12 @@ impl Instance {
         }
 
         let pane_content = session.capture_pane(50).unwrap_or_default();
-        let detected = tmux::detect_status_from_content(&pane_content, &self.tool);
+        let detection_tool = if self.detect_as.is_empty() {
+            &self.tool
+        } else {
+            &self.detect_as
+        };
+        let detected = tmux::detect_status_from_content(&pane_content, detection_tool);
         tracing::trace!(
             "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",
             self.title,

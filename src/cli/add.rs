@@ -221,17 +221,36 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             instance.command = cmd.clone();
         }
     } else {
-        // Use default_tool from resolved config, then first available tool, then "claude"
+        // Use default_tool from resolved config, then first available tool, then "claude".
+        // default_tool may be a custom agent name, so check custom_agents if resolve_tool_name
+        // doesn't match a built-in.
         let available_tools = crate::tmux::AvailableTools::detect();
+        let tools_list = available_tools.available_list();
         instance.tool = config
             .session
             .default_tool
             .as_deref()
-            .and_then(crate::agents::resolve_tool_name)
-            .or_else(|| available_tools.available_list().first().copied())
+            .and_then(|name| {
+                crate::agents::resolve_tool_name(name).or_else(|| {
+                    if config.session.custom_agents.contains_key(name) {
+                        Some(name)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .or_else(|| tools_list.first().map(|s| s.as_str()))
             .unwrap_or("claude")
             .to_string();
     }
+
+    // Set detect_as for status detection (resolved once, avoids config load in poll loop)
+    instance.detect_as = config
+        .session
+        .agent_detect_as
+        .get(&instance.tool)
+        .cloned()
+        .unwrap_or_default();
 
     // Apply set_default_command for agents that need it (e.g., opencode, codex)
     if instance.command.is_empty() {
@@ -262,9 +281,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(ref cmd) = args.cmd_override {
         instance.command = cmd.clone();
-    } else if let Some(cmd_override) = config.session.agent_command_override.get(&instance.tool) {
-        if !cmd_override.is_empty() {
-            instance.command = cmd_override.clone();
+    } else {
+        let resolved = config.session.resolve_tool_command(&instance.tool);
+        if !resolved.is_empty() {
+            instance.command = resolved;
         }
     }
 

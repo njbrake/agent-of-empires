@@ -136,6 +136,31 @@ pub struct SessionConfig {
     /// to tmux pane content parsing, which is less reliable.
     #[serde(default = "default_true")]
     pub agent_status_hooks: bool,
+
+    /// User-defined custom agents: name -> launch command
+    /// (e.g., "lenovo-claude" = "ssh -t lenovo claude").
+    /// Custom agent names appear in the TUI agent picker alongside built-in agents.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub custom_agents: HashMap<String, String>,
+
+    /// Status detection mapping: agent name -> built-in agent name
+    /// (e.g., "lenovo-claude" = "claude").
+    /// Maps a custom (or built-in) agent to another agent's status detection heuristics.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_detect_as: HashMap<String, String>,
+}
+
+impl SessionConfig {
+    /// Resolve the command override for a tool, checking agent_command_override first,
+    /// then falling back to custom_agents. Returns empty string if no override found.
+    pub fn resolve_tool_command(&self, tool: &str) -> String {
+        self.agent_command_override
+            .get(tool)
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.custom_agents.get(tool))
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 /// Diff view configuration

@@ -207,16 +207,27 @@ fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct AvailableTools {
-    available: Vec<&'static str>,
+    available: Vec<String>,
 }
 
 impl AvailableTools {
     pub fn detect() -> Self {
-        let available = crate::agents::AGENTS
+        let mut available: Vec<String> = crate::agents::AGENTS
             .iter()
             .filter(|a| is_agent_available(a))
-            .map(|a| a.name)
+            .map(|a| a.name.to_string())
             .collect();
+
+        // Append user-defined custom agents (always considered available since the
+        // command may target a remote host or a wrapper script).
+        if let Ok(config) = crate::session::config::Config::load() {
+            for name in config.session.custom_agents.keys() {
+                if !name.is_empty() && !available.iter().any(|n| n == name) {
+                    available.push(name.clone());
+                }
+            }
+        }
+
         Self { available }
     }
 
@@ -224,14 +235,14 @@ impl AvailableTools {
         !self.available.is_empty()
     }
 
-    pub fn available_list(&self) -> Vec<&'static str> {
-        self.available.clone()
+    pub fn available_list(&self) -> &[String] {
+        &self.available
     }
 
     #[cfg(test)]
-    pub fn with_tools(tools: &[&'static str]) -> Self {
+    pub fn with_tools(tools: &[&str]) -> Self {
         Self {
-            available: tools.to_vec(),
+            available: tools.iter().map(|s| s.to_string()).collect(),
         }
     }
 }

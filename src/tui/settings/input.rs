@@ -464,19 +464,22 @@ impl SettingsView {
                         let field_key = self.fields[self.selected_field].key;
 
                         // Validate key=value format for agent override fields
-                        if matches!(
-                            field_key,
-                            FieldKey::AgentExtraArgs | FieldKey::AgentCommandOverride
-                        ) {
-                            if let Err(msg) = validate_agent_key_value(&text) {
-                                self.error_message = Some(msg);
-                                // Re-open the editor so the user can fix the entry
-                                if let Some(ref mut s) = self.list_edit_state {
-                                    s.editing_item = Some(tui_input::Input::new(text));
-                                    s.adding_new = adding_new;
-                                }
-                                return SettingsAction::Continue;
+                        let validation_result = match field_key {
+                            FieldKey::AgentExtraArgs | FieldKey::AgentCommandOverride => {
+                                Some(validate_agent_key_value(&text))
                             }
+                            FieldKey::CustomAgents => Some(validate_custom_agent_entry(&text)),
+                            FieldKey::AgentDetectAs => Some(validate_detect_as_entry(&text)),
+                            _ => None,
+                        };
+                        if let Some(Err(msg)) = validation_result {
+                            self.error_message = Some(msg);
+                            // Re-open the editor so the user can fix the entry
+                            if let Some(ref mut s) = self.list_edit_state {
+                                s.editing_item = Some(tui_input::Input::new(text));
+                                s.adding_new = adding_new;
+                            }
+                            return SettingsAction::Continue;
                         }
 
                         // Validate env var references before accepting
@@ -628,6 +631,16 @@ impl SettingsView {
             FieldKey::AgentCommandOverride => {
                 if let Some(ref mut s) = config.session {
                     s.agent_command_override = None;
+                }
+            }
+            FieldKey::CustomAgents => {
+                if let Some(ref mut s) = config.session {
+                    s.custom_agents = None;
+                }
+            }
+            FieldKey::AgentDetectAs => {
+                if let Some(ref mut s) = config.session {
+                    s.agent_detect_as = None;
                 }
             }
             FieldKey::AgentStatusHooks => {
@@ -810,6 +823,49 @@ fn validate_agent_key_value(text: &str) -> Result<(), String> {
         ));
     }
 
+    Ok(())
+}
+
+/// Validate a custom agent entry: name=command. Name must not collide with built-in agents.
+fn validate_custom_agent_entry(text: &str) -> Result<(), String> {
+    let Some((key, value)) = text.split_once('=') else {
+        return Err(
+            "Must be in name=command format (e.g. lenovo-claude=ssh -t lenovo claude)".to_string(),
+        );
+    };
+    if key.is_empty() {
+        return Err("Agent name cannot be empty".to_string());
+    }
+    if value.is_empty() {
+        return Err("Command cannot be empty".to_string());
+    }
+    if crate::agents::get_agent(key).is_some() {
+        return Err(format!(
+            "'{}' is a built-in agent. Use Agent Command Override to override built-in agents.",
+            key
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a detect_as entry: name=builtin_agent. Value must be a known built-in agent.
+fn validate_detect_as_entry(text: &str) -> Result<(), String> {
+    let Some((key, value)) = text.split_once('=') else {
+        return Err("Must be in name=builtin format (e.g. lenovo-claude=claude)".to_string());
+    };
+    if key.is_empty() {
+        return Err("Agent name cannot be empty".to_string());
+    }
+    if value.is_empty() {
+        return Err("Built-in agent name cannot be empty".to_string());
+    }
+    if crate::agents::get_agent(value).is_none() {
+        let names = crate::agents::agent_names().join(", ");
+        return Err(format!(
+            "'{}' is not a known built-in agent. Known agents: {}",
+            value, names
+        ));
+    }
     Ok(())
 }
 
