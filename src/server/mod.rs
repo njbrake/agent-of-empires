@@ -315,7 +315,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    use axum::routing::{get, post};
+    use axum::routing::{get, patch, post};
 
     Router::new()
         // Sessions
@@ -323,6 +323,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
         )
+        .route("/api/sessions/{id}", patch(api::rename_session))
         .route("/api/sessions/{id}/diff", get(api::session_diff))
         .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
         .route(
@@ -331,6 +332,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         // Agents
         .route("/api/agents", get(api::list_agents))
+        // Wizard support
+        .route("/api/profiles", get(api::list_profiles))
+        .route("/api/filesystem/browse", get(api::browse_filesystem))
+        .route("/api/git/branches", get(api::list_branches))
+        .route("/api/groups", get(api::list_groups))
+        .route("/api/docker/status", get(api::docker_status))
         // Settings + themes
         .route(
             "/api/settings",
@@ -504,7 +511,10 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     let mut all = Vec::new();
     for profile in &profiles {
         if let Ok(storage) = Storage::new(profile) {
-            if let Ok(instances) = storage.load() {
+            if let Ok(mut instances) = storage.load() {
+                for inst in &mut instances {
+                    inst.source_profile = profile.clone();
+                }
                 all.extend(instances);
             }
         }
@@ -512,7 +522,10 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     // Also load from the default profile if it wasn't in the list
     if !profiles.iter().any(|p| p == "default") {
         if let Ok(storage) = Storage::new("default") {
-            if let Ok(instances) = storage.load() {
+            if let Ok(mut instances) = storage.load() {
+                for inst in &mut instances {
+                    inst.source_profile = "default".to_string();
+                }
                 all.extend(instances);
             }
         }

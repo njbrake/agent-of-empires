@@ -37,6 +37,20 @@ pub struct InstanceParams {
     pub command_override: String,
     /// Additional repository paths for multi-repo workspace mode
     pub extra_repo_paths: Vec<String>,
+    /// Per-session custom instruction (overrides config.sandbox.custom_instruction)
+    pub custom_instruction: Option<String>,
+    /// Per-session CPU limit (overrides config.sandbox.cpu_limit)
+    pub cpu_limit: Option<String>,
+    /// Per-session memory limit (overrides config.sandbox.memory_limit)
+    pub memory_limit: Option<String>,
+    /// Per-session port mappings (overrides config.sandbox.port_mappings)
+    pub port_mappings: Option<Vec<String>>,
+    /// Per-session mount SSH toggle (overrides config.sandbox.mount_ssh)
+    pub mount_ssh: Option<bool>,
+    /// Per-session volume ignores (overrides config.sandbox.volume_ignores)
+    pub volume_ignores: Option<Vec<String>>,
+    /// Per-session extra volumes (overrides config.sandbox.extra_volumes)
+    pub extra_volumes: Option<Vec<String>>,
 }
 
 /// Result of building an instance, tracking what was created for cleanup purposes.
@@ -378,7 +392,40 @@ pub fn build_instance(
             } else {
                 Some(params.extra_env.clone())
             },
-            custom_instruction: config.sandbox.custom_instruction.clone(),
+            custom_instruction: params
+                .custom_instruction
+                .clone()
+                .or_else(|| config.sandbox.custom_instruction.clone()),
+            cpu_limit: params
+                .cpu_limit
+                .clone()
+                .or(config.sandbox.cpu_limit.clone()),
+            memory_limit: params
+                .memory_limit
+                .clone()
+                .or(config.sandbox.memory_limit.clone()),
+            port_mappings: params.port_mappings.clone().or_else(|| {
+                if config.sandbox.port_mappings.is_empty() {
+                    None
+                } else {
+                    Some(config.sandbox.port_mappings.clone())
+                }
+            }),
+            mount_ssh: params.mount_ssh,
+            volume_ignores: params.volume_ignores.clone().or_else(|| {
+                if config.sandbox.volume_ignores.is_empty() {
+                    None
+                } else {
+                    Some(config.sandbox.volume_ignores.clone())
+                }
+            }),
+            extra_volumes: params.extra_volumes.clone().or_else(|| {
+                if config.sandbox.extra_volumes.is_empty() {
+                    None
+                } else {
+                    Some(config.sandbox.extra_volumes.clone())
+                }
+            }),
         });
     }
 

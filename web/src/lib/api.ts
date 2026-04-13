@@ -1,4 +1,14 @@
-import type { SessionResponse, DiffResponse } from "./types";
+import type {
+  SessionResponse,
+  DiffResponse,
+  AgentInfo,
+  ProfileInfo,
+  DirEntry,
+  BranchInfo,
+  GroupInfo,
+  DockerStatusResponse,
+  CreateSessionRequest,
+} from "./types";
 
 // --- Sessions ---
 
@@ -95,5 +105,121 @@ export async function fetchThemes(): Promise<string[]> {
     return await res.json();
   } catch {
     return [];
+  }
+}
+
+// --- Wizard APIs ---
+
+export async function fetchAgents(): Promise<AgentInfo[]> {
+  try {
+    const res = await fetch("/api/agents");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchProfiles(): Promise<ProfileInfo[]> {
+  try {
+    const res = await fetch("/api/profiles");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function browseFilesystem(path: string): Promise<DirEntry[]> {
+  try {
+    const res = await fetch(
+      `/api/filesystem/browse?path=${encodeURIComponent(path)}`,
+    );
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchBranches(path: string): Promise<BranchInfo[]> {
+  try {
+    const res = await fetch(
+      `/api/git/branches?path=${encodeURIComponent(path)}`,
+    );
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchGroups(): Promise<GroupInfo[]> {
+  try {
+    const res = await fetch("/api/groups");
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchDockerStatus(): Promise<DockerStatusResponse> {
+  try {
+    const res = await fetch("/api/docker/status");
+    if (!res.ok) return { available: false, runtime: null };
+    return await res.json();
+  } catch {
+    return { available: false, runtime: null };
+  }
+}
+
+export async function createSession(
+  body: CreateSessionRequest,
+): Promise<{ ok: boolean; error?: string; session?: SessionResponse }> {
+  try {
+    const res = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        return {
+          ok: false,
+          error: data.message || `Server error (${res.status})`,
+        };
+      } catch {
+        return {
+          ok: false,
+          error: `Server error (${res.status}): ${text.slice(0, 200)}`,
+        };
+      }
+    }
+    const data = await res.json();
+    return { ok: true, session: data };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `Network error: ${e instanceof Error ? e.message : "connection failed"}`,
+    };
+  }
+}
+
+export async function renameSession(
+  id: string,
+  title: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/sessions/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }

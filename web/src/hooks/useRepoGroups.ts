@@ -13,12 +13,11 @@ function loadCollapsed(id: string): boolean {
 
 export function useRepoGroups(workspaces: Workspace[]): {
   groups: RepoGroup[];
-  standalone: Workspace[];
   toggleRepoCollapsed: (repoId: string) => void;
 } {
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
 
-  const { groups, standalone } = useMemo(() => {
+  const groups = useMemo(() => {
     const byRepo = new Map<string, Workspace[]>();
 
     for (const ws of workspaces) {
@@ -31,14 +30,8 @@ export function useRepoGroups(workspaces: Workspace[]): {
     }
 
     const repoGroups: RepoGroup[] = [];
-    const standaloneList: Workspace[] = [];
 
     for (const [repoPath, repoWorkspaces] of byRepo) {
-      if (repoWorkspaces.length < 2) {
-        standaloneList.push(repoWorkspaces[0]!);
-        continue;
-      }
-
       const sorted = [...repoWorkspaces].sort((a, b) => {
         if (a.status === "active" && b.status !== "active") return -1;
         if (a.status !== "active" && b.status === "active") return 1;
@@ -67,7 +60,7 @@ export function useRepoGroups(workspaces: Workspace[]): {
       return a.displayName.localeCompare(b.displayName) || a.repoPath.localeCompare(b.repoPath);
     });
 
-    return { groups: repoGroups, standalone: standaloneList };
+    return repoGroups;
   }, [workspaces, collapsedMap]);
 
   const toggleRepoCollapsed = useCallback((repoId: string) => {
@@ -87,5 +80,5 @@ export function useRepoGroups(workspaces: Workspace[]): {
     });
   }, []);
 
-  return { groups, standalone, toggleRepoCollapsed };
+  return { groups, toggleRepoCollapsed };
 }

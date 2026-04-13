@@ -2124,6 +2124,12 @@ extra_volumes = ["/host/data:/container/data:ro"]
             created_at: None,
             extra_env: None,
             custom_instruction: None,
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: None,
+            mount_ssh: None,
+            volume_ignores: None,
+            extra_volumes: None,
         };
 
         let project_path_str = project_dir.path().to_str().unwrap();
@@ -2238,6 +2244,12 @@ volume_ignores = ["target", "node_modules"]
             created_at: None,
             extra_env: None,
             custom_instruction: None,
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: None,
+            mount_ssh: None,
+            volume_ignores: None,
+            extra_volumes: None,
         };
 
         let project_path_str = worktree_path.to_str().unwrap();
@@ -2329,6 +2341,12 @@ volume_ignores = ["target"]
             created_at: None,
             extra_env: None,
             custom_instruction: None,
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: None,
+            mount_ssh: None,
+            volume_ignores: None,
+            extra_volumes: None,
         };
 
         let project_path_str = worktree_path.to_str().unwrap();

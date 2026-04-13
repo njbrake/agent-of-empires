@@ -4,6 +4,7 @@ import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { isSessionActive } from "./lib/session";
+import { createSession } from "./lib/api";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { ContentSplit } from "./components/ContentSplit";
@@ -11,12 +12,13 @@ import { TerminalView } from "./components/TerminalView";
 import { RightPanel } from "./components/RightPanel";
 import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
+import { SessionWizard } from "./components/session-wizard/SessionWizard";
+import { Dashboard } from "./components/Dashboard";
 
 export default function App() {
   const { sessions, error } = useSessions();
   const workspaces = useWorkspaces(sessions);
-  const { groups, standalone, toggleRepoCollapsed } =
-    useRepoGroups(workspaces);
+  const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     null,
@@ -26,7 +28,8 @@ export default function App() {
     () => window.innerWidth < 768,
   );
   const [diffFileCount, setDiffFileCount] = useState(0);
-  const [showCreate, setShowCreate] = useState(false);
+  const [showAddProject, setShowAddProject] = useState(false);
+  const [creatingForProject, setCreatingForProject] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
@@ -48,6 +51,15 @@ export default function App() {
     return { errors, waiting };
   }, [sessions]);
 
+  const handleSelectSession = (sessionId: string) => {
+    const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
+    if (ws) {
+      setActiveWorkspaceId(ws.id);
+      setActiveSessionId(sessionId);
+      if (window.innerWidth < 768) setSidebarOpen(false);
+    }
+  };
+
   const handleSelectWorkspace = (workspaceId: string) => {
     setActiveWorkspaceId(workspaceId);
     const ws = workspaces.find((w) => w.id === workspaceId);
@@ -60,15 +72,37 @@ export default function App() {
     }
   };
 
+  const handleCreateSession = useCallback(async (repoPath: string) => {
+    if (creatingForProject) return;
+    setCreatingForProject(repoPath);
+
+    const projectSessions = sessions
+      .filter((s) => (s.main_repo_path || s.project_path) === repoPath)
+      .sort((a, b) => (b.last_accessed_at ?? "").localeCompare(a.last_accessed_at ?? ""));
+    const latest = projectSessions[0];
+
+    await createSession({
+      path: repoPath,
+      tool: latest?.tool ?? "claude",
+      group: latest?.group_path || undefined,
+      yolo_mode: latest?.yolo_mode ?? false,
+      worktree_branch: "",
+      create_new_branch: true,
+      sandbox: latest?.is_sandboxed ?? false,
+    });
+
+    setCreatingForProject(null);
+  }, [sessions, creatingForProject]);
+
   const toggleDiff = () => setDiffCollapsed((c) => !c);
 
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onNew: () => setShowCreate(true),
+        onNew: () => setShowAddProject(true),
         onDiff: () => toggleDiff(),
         onEscape: () => {
-          setShowCreate(false);
+          setShowAddProject(false);
           setShowHelp(false);
           setShowSettings(false);
         },
@@ -86,41 +120,11 @@ export default function App() {
 
     if (!activeWorkspace || !activeSession) {
       return (
-        <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
-          <svg
-            width="48"
-            height="48"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-text-dim/40 mb-4"
-            aria-hidden="true"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <line x1="3" y1="8" x2="21" y2="8" />
-            <circle cx="6" cy="5.5" r="0.5" fill="currentColor" />
-            <circle cx="8.5" cy="5.5" r="0.5" fill="currentColor" />
-            <circle cx="11" cy="5.5" r="0.5" fill="currentColor" />
-          </svg>
-          {workspaces.length === 0 ? (
-            <>
-              <p className="text-sm text-text-muted mb-1">No sessions yet</p>
-              <p className="text-xs text-text-dim">
-                Create one: <code className="font-mono text-text-muted">aoe add /path/to/project</code>
-              </p>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-text-muted mb-1">Select a session</p>
-              <p className="text-xs text-text-dim">
-                Click any session in the sidebar to connect
-              </p>
-            </>
-          )}
-        </div>
+        <Dashboard
+          sessions={sessions}
+          onSelectSession={handleSelectSession}
+          onAddProject={() => setShowAddProject(true)}
+        />
       );
     }
 
@@ -183,25 +187,18 @@ export default function App() {
           </svg>
         </button>
 
-        <a
-          href="https://agent-of-empires.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 text-text-muted hover:text-text-secondary transition-colors"
-          aria-label="Agent of Empires website (opens in new tab)"
+        <button
+          onClick={() => { setActiveWorkspaceId(null); setActiveSessionId(null); setShowSettings(false); }}
+          className="flex items-center gap-1.5 text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
+          aria-label="Go to dashboard"
         >
           <img src="/icon-192.png" alt="" width="18" height="18" className="rounded-sm" />
-          <span className="font-mono text-xs">aoe</span>
-        </a>
+          <span className="font-mono text-xs leading-none">aoe</span>
+        </button>
 
         <div className="flex-1" />
 
         <div className="flex items-center gap-1.5">
-          {sessions.length > 0 && (
-            <span className="font-mono text-[11px] text-text-dim">
-              {sessions.length} session{sessions.length !== 1 ? "s" : ""}
-            </span>
-          )}
           {alertCounts.errors > 0 && (
             <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/10 text-status-error">
               {alertCounts.errors} error{alertCounts.errors !== 1 ? "s" : ""}
@@ -251,13 +248,14 @@ export default function App() {
         {sidebarOpen && (
           <WorkspaceSidebar
             groups={groups}
-            standalone={standalone}
             activeId={activeWorkspaceId}
+            creatingForProject={creatingForProject}
             onToggle={() => setSidebarOpen(false)}
             onSelect={handleSelectWorkspace}
             onToggleRepo={toggleRepoCollapsed}
-            onNew={() => setShowCreate(true)}
-            onSettings={() => setShowSettings((s) => !s)}
+            onNew={() => setShowAddProject(true)}
+            onCreateSession={handleCreateSession}
+            onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
           />
         )}
 
@@ -266,30 +264,12 @@ export default function App() {
         </div>
       </div>
 
-      {/* Not supported dialog */}
-      {showCreate && (
-        <div
-          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in"
-          onClick={() => setShowCreate(false)}
-        >
-          <div
-            className="bg-surface-800 border border-surface-700/30 rounded-lg px-6 py-5 max-w-sm text-center"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <p className="text-sm text-text-primary mb-1">
-              Not supported yet
-            </p>
-            <p className="text-xs text-text-dim mb-4">
-              Create sessions from the terminal with the aoe CLI.
-            </p>
-            <button
-              onClick={() => setShowCreate(false)}
-              className="text-xs text-text-muted hover:text-text-secondary cursor-pointer"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+      {/* Add project wizard */}
+      {showAddProject && (
+        <SessionWizard
+          onClose={() => setShowAddProject(false)}
+          onCreated={() => setShowAddProject(false)}
+        />
       )}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}

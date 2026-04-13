@@ -279,11 +279,11 @@ pub fn print_qr_code(url: &str) {
                 .module_dimensions(2, 1)
                 .build();
             eprintln!();
-            eprintln!("  Scan this QR code to connect from your phone:");
-            eprintln!();
             for line in string.lines() {
                 eprintln!("  {}", line);
             }
+            eprintln!("  ^^ Scan this QR code to connect from your phone.");
+            eprintln!("     (Resize your terminal wider if it looks garbled.)");
             eprintln!();
             eprintln!("  Or open: {}", url);
             eprintln!();

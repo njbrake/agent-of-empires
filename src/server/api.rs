@@ -55,6 +55,7 @@ pub struct SessionResponse {
     pub main_repo_path: Option<String>,
     pub is_sandboxed: bool,
     pub has_terminal: bool,
+    pub profile: String,
 }
 
 impl From<&Instance> for SessionResponse {
@@ -77,6 +78,7 @@ impl From<&Instance> for SessionResponse {
                 .map(|w| w.main_repo_path.clone()),
             is_sandboxed: inst.is_sandboxed(),
             has_terminal: inst.terminal_info.is_some(),
+            profile: inst.source_profile.clone(),
         }
     }
 }
@@ -85,6 +87,53 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
     let instances = state.instances.read().await;
     let sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
     Json(sessions)
+}
+
+// --- Rename session ---
+
+#[derive(Deserialize)]
+pub struct RenameSessionBody {
+    pub title: String,
+}
+
+pub async fn rename_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<RenameSessionBody>,
+) -> impl IntoResponse {
+    let title = body.title.trim().to_string();
+    if title.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": "Title cannot be empty" })),
+        );
+    }
+
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        );
+    };
+
+    inst.title = title.clone();
+    // Also update the worktree branch name in metadata (cosmetic only;
+    // the actual git branch is not renamed on disk).
+    if let Some(ref mut wt) = inst.worktree_info {
+        wt.branch = title;
+    }
+
+    let response = SessionResponse::from(&*inst);
+
+    let profile = state.profile.clone();
+    if let Ok(storage) = Storage::new(&profile) {
+        if let Err(e) = storage.save(&instances) {
+            tracing::error!("Failed to save after rename: {e}");
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!(response)))
 }
 
 // --- Create session ---
@@ -105,6 +154,28 @@ pub struct CreateSessionBody {
     pub sandbox: bool,
     #[serde(default)]
     pub extra_args: String,
+    #[serde(default)]
+    pub sandbox_image: Option<String>,
+    #[serde(default)]
+    pub extra_env: Vec<String>,
+    #[serde(default)]
+    pub extra_repo_paths: Vec<String>,
+    #[serde(default)]
+    pub command_override: String,
+    #[serde(default)]
+    pub custom_instruction: Option<String>,
+    #[serde(default)]
+    pub cpu_limit: Option<String>,
+    #[serde(default)]
+    pub memory_limit: Option<String>,
+    #[serde(default)]
+    pub port_mappings: Option<Vec<String>>,
+    #[serde(default)]
+    pub mount_ssh: Option<bool>,
+    #[serde(default)]
+    pub volume_ignores: Option<Vec<String>>,
+    #[serde(default)]
+    pub extra_volumes: Option<Vec<String>>,
 }
 
 pub async fn create_session(
@@ -165,27 +236,60 @@ pub async fn create_session(
         use crate::session::Config;
 
         let config = Config::load().unwrap_or_default();
-        let sandbox_image = if config.sandbox.default_image.is_empty() {
-            "ubuntu:latest".to_string()
-        } else {
-            config.sandbox.default_image.clone()
-        };
+        let sandbox_image = body.sandbox_image.unwrap_or_else(|| {
+            if config.sandbox.default_image.is_empty() {
+                "ubuntu:latest".to_string()
+            } else {
+                config.sandbox.default_image.clone()
+            }
+        });
 
         let title_refs: Vec<&str> = existing_titles.iter().map(|s| s.as_str()).collect();
+        let extra_repo_paths: Vec<String> = body
+            .extra_repo_paths
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        // When worktree_branch is empty string, generate a name from civilizations
+        // (matches TUI behavior where empty title gets auto-generated).
+        // The generated name is used as both title and branch.
+        let title = body.title.unwrap_or_default();
+        let worktree_branch = match body.worktree_branch {
+            Some(b) if b.is_empty() => {
+                let generated = crate::session::civilizations::generate_random_title(&title_refs);
+                Some(generated)
+            }
+            other => other,
+        };
+        // If title is empty and we generated a branch name, use it as the title too
+        let title = if title.is_empty() {
+            worktree_branch.clone().unwrap_or_default()
+        } else {
+            title
+        };
+
         let params = InstanceParams {
-            title: body.title.unwrap_or_default(),
+            title,
             path: body.path,
             group: body.group,
             tool: body.tool,
-            worktree_branch: body.worktree_branch,
+            worktree_branch,
             create_new_branch: body.create_new_branch,
             sandbox: body.sandbox,
             sandbox_image,
             yolo_mode: body.yolo_mode,
-            extra_env: vec![],
+            extra_env: body.extra_env,
             extra_args: body.extra_args,
-            command_override: String::new(),
-            extra_repo_paths: vec![],
+            command_override: body.command_override,
+            extra_repo_paths,
+            custom_instruction: body.custom_instruction,
+            cpu_limit: body.cpu_limit,
+            memory_limit: body.memory_limit,
+            port_mappings: body.port_mappings,
+            mount_ssh: body.mount_ssh,
+            volume_ignores: body.volume_ignores,
+            extra_volumes: body.extra_volumes,
         };
 
         let build_result = builder::build_instance(params, &title_refs, &profile)?;
@@ -447,18 +551,29 @@ pub async fn session_diff(
 #[derive(Serialize)]
 pub struct AgentInfo {
     pub name: String,
+    pub description: String,
     pub binary: String,
+    pub host_only: bool,
+    pub installed: bool,
 }
 
 pub async fn list_agents() -> Json<Vec<AgentInfo>> {
-    let agents: Vec<AgentInfo> = crate::agents::AGENTS
-        .iter()
-        .map(|a| AgentInfo {
-            name: a.name.to_string(),
-            binary: a.binary.to_string(),
-        })
-        .collect();
-    Json(agents)
+    let result = tokio::task::spawn_blocking(|| {
+        let available = crate::tmux::AvailableTools::detect().available_list();
+        crate::agents::AGENTS
+            .iter()
+            .map(|a| AgentInfo {
+                name: a.name.to_string(),
+                description: a.description.to_string(),
+                binary: a.binary.to_string(),
+                host_only: a.host_only,
+                installed: available.contains(&a.name),
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    Json(result)
 }
 
 // --- Settings ---
@@ -574,6 +689,236 @@ pub async fn list_themes() -> Json<Vec<String>> {
             .map(|s| s.to_string())
             .collect(),
     )
+}
+
+// --- Wizard support ---
+
+#[derive(Serialize)]
+pub struct ProfileInfo {
+    pub name: String,
+    pub is_default: bool,
+}
+
+pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<ProfileInfo>> {
+    let profiles = crate::session::list_profiles().unwrap_or_default();
+    let active = &state.profile;
+    let mut result: Vec<ProfileInfo> = profiles
+        .into_iter()
+        .map(|name| {
+            let is_default = name == *active;
+            ProfileInfo { name, is_default }
+        })
+        .collect();
+    // Ensure the active profile appears even if list_profiles missed it
+    if !result.iter().any(|p| p.name == *active) {
+        result.insert(
+            0,
+            ProfileInfo {
+                name: active.clone(),
+                is_default: true,
+            },
+        );
+    }
+    Json(result)
+}
+
+#[derive(Deserialize)]
+pub struct BrowseQuery {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub is_git_repo: bool,
+}
+
+pub async fn browse_filesystem(
+    axum::extract::Query(query): axum::extract::Query<BrowseQuery>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        let path = std::path::Path::new(&query.path);
+        let canonical = path.canonicalize().map_err(|_| "Path does not exist")?;
+
+        if !canonical.is_dir() {
+            return Err("Path is not a directory");
+        }
+
+        // Security: restrict browsing to the user's home directory
+        if let Some(home) = dirs::home_dir() {
+            if !canonical.starts_with(&home) {
+                return Err("Path is outside the home directory");
+            }
+        }
+
+        let mut entries: Vec<DirEntry> = Vec::new();
+        let read_dir = std::fs::read_dir(&canonical).map_err(|_| "Cannot read directory")?;
+
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let entry_path = entry.path();
+            let is_dir = entry_path.is_dir();
+            if !is_dir {
+                continue;
+            }
+            let is_git_repo = entry_path.join(".git").exists();
+            entries.push(DirEntry {
+                name,
+                path: entry_path.to_string_lossy().to_string(),
+                is_dir,
+                is_git_repo,
+            });
+        }
+        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(entries)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(entries)) => {
+            (StatusCode::OK, Json(serde_json::to_value(entries).unwrap())).into_response()
+        }
+        Ok(Err(msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "browse_failed", "message": msg})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct BranchesQuery {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+}
+
+pub async fn list_branches(
+    axum::extract::Query(query): axum::extract::Query<BranchesQuery>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        let path = std::path::Path::new(&query.path);
+        if !crate::git::GitWorktree::is_git_repo(path) {
+            return Err("Path is not a git repository".to_string());
+        }
+
+        let branches = crate::git::diff::list_branches(path).map_err(|e| e.to_string())?;
+
+        let current = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(path)
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        let mut result: Vec<BranchInfo> = branches
+            .into_iter()
+            .take(200)
+            .map(|name| {
+                let is_current = name == current;
+                BranchInfo { name, is_current }
+            })
+            .collect();
+
+        result.sort_by(|a, b| b.is_current.cmp(&a.is_current));
+
+        Ok(result)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(branches)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(branches).unwrap()),
+        )
+            .into_response(),
+        Ok(Err(msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "not_a_repo", "message": msg})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct GroupInfo {
+    pub path: String,
+    pub session_count: usize,
+}
+
+pub async fn list_groups(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let instances = state.instances.read().await;
+    let mut group_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for inst in instances.iter() {
+        if !inst.group_path.is_empty() {
+            *group_counts.entry(inst.group_path.clone()).or_default() += 1;
+        }
+    }
+    let groups: Vec<GroupInfo> = group_counts
+        .into_iter()
+        .map(|(path, session_count)| GroupInfo {
+            path,
+            session_count,
+        })
+        .collect();
+    Json(groups)
+}
+
+#[derive(Serialize)]
+pub struct DockerStatus {
+    pub available: bool,
+    pub runtime: Option<String>,
+}
+
+pub async fn docker_status() -> Json<DockerStatus> {
+    let result = tokio::task::spawn_blocking(|| {
+        use crate::containers::ContainerRuntimeInterface;
+        let runtime = crate::containers::get_container_runtime();
+        let available = runtime.is_available() && runtime.is_daemon_running();
+        let runtime_name = if available {
+            let config = crate::session::Config::load().unwrap_or_default();
+            Some(
+                serde_json::to_value(config.sandbox.container_runtime)
+                    .ok()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| "docker".to_string()),
+            )
+        } else {
+            None
+        };
+        DockerStatus {
+            available,
+            runtime: runtime_name,
+        }
+    })
+    .await
+    .unwrap_or(DockerStatus {
+        available: false,
+        runtime: None,
+    });
+    Json(result)
 }
 
 #[cfg(test)]

@@ -939,6 +939,12 @@ fn create_test_env_with_group_sessions() -> TestEnv {
         created_at: None,
         extra_env: None,
         custom_instruction: None,
+        cpu_limit: None,
+        memory_limit: None,
+        port_mappings: None,
+        mount_ssh: None,
+        volume_ignores: None,
+        extra_volumes: None,
     });
     instances.push(inst3);
 
@@ -1006,6 +1012,12 @@ fn test_group_has_containers() {
         created_at: None,
         extra_env: None,
         custom_instruction: None,
+        cpu_limit: None,
+        memory_limit: None,
+        port_mappings: None,
+        mount_ssh: None,
+        volume_ignores: None,
+        extra_volumes: None,
     });
 
     let mut inst2 = Instance::new("other-session", "/tmp/other");
@@ -1193,6 +1205,12 @@ fn test_delete_group_with_sessions_respects_container_option() {
         created_at: None,
         extra_env: None,
         custom_instruction: None,
+        cpu_limit: None,
+        memory_limit: None,
+        port_mappings: None,
+        mount_ssh: None,
+        volume_ignores: None,
+        extra_volumes: None,
     });
 
     storage.save(&[inst1]).unwrap();

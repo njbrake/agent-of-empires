@@ -83,6 +83,24 @@ pub struct SandboxInfo {
     /// Custom instruction text to inject into agent launch command
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instruction: Option<String>,
+    /// Per-session CPU limit override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_limit: Option<String>,
+    /// Per-session memory limit override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit: Option<String>,
+    /// Per-session port mappings override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_mappings: Option<Vec<String>>,
+    /// Per-session mount SSH override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_ssh: Option<bool>,
+    /// Per-session volume ignores override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_ignores: Option<Vec<String>>,
+    /// Per-session extra volumes override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_volumes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -991,6 +1009,12 @@ mod tests {
             created_at: None,
             extra_env: None,
             custom_instruction: None,
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: None,
+            mount_ssh: None,
+            volume_ignores: None,
+            extra_volumes: None,
         });
         assert!(!inst.is_sandboxed());
     }
@@ -1006,6 +1030,12 @@ mod tests {
             created_at: None,
             extra_env: None,
             custom_instruction: None,
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: None,
+            mount_ssh: None,
+            volume_ignores: None,
+            extra_volumes: None,
         });
         assert!(inst.is_sandboxed());
     }
@@ -1110,6 +1140,12 @@ mod tests {
             created_at: Some(Utc::now()),
             extra_env: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
             custom_instruction: None,
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: None,
+            mount_ssh: None,
+            volume_ignores: None,
+            extra_volumes: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();

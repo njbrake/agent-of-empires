@@ -23,6 +23,12 @@ fn test_sandbox_info_serialization() {
         created_at: Some(chrono::Utc::now()),
         extra_env: Some(vec!["MY_VAR".to_string()]),
         custom_instruction: None,
+        cpu_limit: None,
+        memory_limit: None,
+        port_mappings: None,
+        mount_ssh: None,
+        volume_ignores: None,
+        extra_volumes: None,
     };
 
     let json = serde_json::to_string(&sandbox_info).unwrap();
@@ -48,6 +54,12 @@ fn test_instance_is_sandboxed() {
         created_at: None,
         extra_env: None,
         custom_instruction: None,
+        cpu_limit: None,
+        memory_limit: None,
+        port_mappings: None,
+        mount_ssh: None,
+        volume_ignores: None,
+        extra_volumes: None,
     });
     assert!(inst.is_sandboxed());
 
@@ -59,6 +71,12 @@ fn test_instance_is_sandboxed() {
         created_at: None,
         extra_env: None,
         custom_instruction: None,
+        cpu_limit: None,
+        memory_limit: None,
+        port_mappings: None,
+        mount_ssh: None,
+        volume_ignores: None,
+        extra_volumes: None,
     });
     assert!(!inst.is_sandboxed());
 }
@@ -79,6 +97,12 @@ fn test_sandbox_info_persists_across_save_load() {
         created_at: Some(chrono::Utc::now()),
         extra_env: Some(vec!["API_KEY".to_string(), "SECRET=my_secret".to_string()]),
         custom_instruction: None,
+        cpu_limit: None,
+        memory_limit: None,
+        port_mappings: None,
+        mount_ssh: None,
+        volume_ignores: None,
+        extra_volumes: None,
     });
 
     storage.save(&[inst.clone()]).unwrap();

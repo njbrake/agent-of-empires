@@ -47,6 +47,8 @@ pub struct AgentHookConfig {
 pub struct AgentDef {
     /// Canonical name: `"claude"`, `"opencode"`, etc.
     pub name: &'static str,
+    /// Short human-readable description for UI display.
+    pub description: &'static str,
     /// Binary to invoke (usually same as name).
     pub binary: &'static str,
     /// Alternative substrings recognised by `resolve_tool_name` (e.g. `"open-code"`).
@@ -105,6 +107,7 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
 pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
+        description: "Anthropic's coding agent with tool use and file editing",
         binary: "claude",
         aliases: &[],
         detection: DetectionMethod::Which("claude"),
@@ -121,6 +124,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "opencode",
+        description: "Open-source terminal coding assistant",
         binary: "opencode",
         aliases: &["open-code"],
         detection: DetectionMethod::Which("opencode"),
@@ -134,6 +138,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "vibe",
+        description: "Mistral's coding agent for terminal workflows",
         binary: "vibe",
         aliases: &["mistral-vibe"],
         detection: DetectionMethod::RunWithArg("vibe", "--version"),
@@ -147,6 +152,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "codex",
+        description: "OpenAI's CLI coding agent",
         binary: "codex",
         aliases: &[],
         detection: DetectionMethod::Which("codex"),
@@ -162,6 +168,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "gemini",
+        description: "Google's Gemini CLI coding assistant",
         binary: "gemini",
         aliases: &[],
         detection: DetectionMethod::Which("gemini"),
@@ -199,6 +206,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "cursor",
+        description: "Cursor's background coding agent",
         binary: "agent",
         aliases: &["agent"],
         detection: DetectionMethod::Which("agent"),
@@ -215,6 +223,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "copilot",
+        description: "GitHub Copilot's CLI coding agent",
         binary: "copilot",
         aliases: &["github-copilot"],
         detection: DetectionMethod::Which("copilot"),
@@ -228,6 +237,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "pi",
+        description: "Inflection AI's conversational coding agent",
         binary: "pi",
         aliases: &[],
         detection: DetectionMethod::Which("pi"),
@@ -242,6 +252,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "droid",
+        description: "Factory's autonomous coding agent",
         binary: "droid",
         aliases: &["factory-droid"],
         detection: DetectionMethod::Which("droid"),
@@ -255,6 +266,7 @@ pub const AGENTS: &[AgentDef] = &[
     },
     AgentDef {
         name: "settl",
+        description: "Settlers of Catan in the terminal (host only)",
         binary: "settl",
         aliases: &["settlers", "catan"],
         detection: DetectionMethod::Which("settl"),
