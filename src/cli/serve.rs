@@ -41,6 +41,11 @@ pub struct ServeArgs {
     /// Stop a running daemon
     #[arg(long)]
     pub stop: bool,
+
+    /// Require a passphrase for login (second-factor auth).
+    /// Can also be set via AOE_SERVE_PASSPHRASE environment variable.
+    #[arg(long, env = "AOE_SERVE_PASSPHRASE")]
+    pub passphrase: Option<String>,
 }
 
 fn pid_file_path() -> Result<PathBuf> {
@@ -125,6 +130,23 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         eprintln!();
     }
 
+    // Passphrase strength check
+    if let Some(ref passphrase) = args.passphrase {
+        if let Some(warning) = crate::server::login::check_passphrase_strength(passphrase) {
+            eprintln!("{}", warning);
+            eprintln!();
+        }
+    }
+
+    // Block remote mode without passphrase
+    if args.remote && args.passphrase.is_none() {
+        bail!(
+            "Refusing to start in remote mode without a passphrase.\n\
+             --remote exposes terminal access to the internet.\n\
+             Add --passphrase <VALUE> or set AOE_SERVE_PASSPHRASE."
+        );
+    }
+
     if args.daemon {
         return start_daemon(profile, &args);
     }
@@ -144,6 +166,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         tunnel_name: args.tunnel_name.as_deref(),
         tunnel_url: args.tunnel_url.as_deref(),
         is_daemon: false,
+        passphrase: args.passphrase.as_deref(),
     })
     .await;
 
@@ -185,6 +208,9 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     }
     if let Some(ref url) = args.tunnel_url {
         cmd.args(["--tunnel-url", url]);
+    }
+    if let Some(ref passphrase) = args.passphrase {
+        cmd.args(["--passphrase", passphrase]);
     }
     if !profile.is_empty() {
         cmd.args(["--profile", profile]);

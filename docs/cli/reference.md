@@ -647,6 +647,7 @@ Start a web dashboard for remote session access [experimental]
 * `--tunnel-url <TUNNEL_URL>` — Hostname for a named tunnel (e.g., aoe.example.com)
 * `--daemon` — Run as a background daemon (detach from terminal)
 * `--stop` — Stop a running daemon
+* `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
 
 
 

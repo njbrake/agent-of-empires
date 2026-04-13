@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod login;
 pub mod rate_limit;
 pub mod tunnel;
 pub mod ws;
@@ -151,6 +152,7 @@ pub struct AppState {
     pub read_only: bool,
     pub instances: RwLock<Vec<Instance>>,
     pub token_manager: Arc<TokenManager>,
+    pub login_manager: Arc<login::LoginManager>,
     pub rate_limiter: Arc<RateLimiter>,
     pub devices: RwLock<Vec<DeviceInfo>>,
     pub behind_tunnel: bool,
@@ -168,6 +170,7 @@ pub struct ServerConfig<'a> {
     pub tunnel_name: Option<&'a str>,
     pub tunnel_url: Option<&'a str>,
     pub is_daemon: bool,
+    pub passphrase: Option<&'a str>,
 }
 
 pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
@@ -181,6 +184,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         tunnel_name,
         tunnel_url,
         is_daemon,
+        passphrase,
     } = config;
     let instances = load_all_instances()?;
 
@@ -202,13 +206,19 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     };
 
     let token_manager = Arc::new(TokenManager::new(auth_token.clone(), token_lifetime));
+    let login_manager = Arc::new(login::LoginManager::new(passphrase));
     let rate_limiter = Arc::new(RateLimiter::new());
+
+    if login_manager.is_enabled() {
+        info!("Passphrase login enabled (second-factor authentication)");
+    }
 
     let state = Arc::new(AppState {
         profile: profile.to_string(),
         read_only,
         instances: RwLock::new(instances),
         token_manager: Arc::clone(&token_manager),
+        login_manager: Arc::clone(&login_manager),
         rate_limiter: Arc::clone(&rate_limiter),
         devices: RwLock::new(Vec::new()),
         behind_tunnel: remote,
@@ -288,6 +298,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     });
 
     rate_limiter.spawn_cleanup_task();
+    login_manager.spawn_cleanup_task();
 
     if remote {
         token_manager.spawn_rotation_task();
@@ -344,6 +355,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
+        // Login (second-factor auth)
+        .route("/api/login", post(login::login_handler))
+        .route("/api/logout", post(login::logout_handler))
+        .route("/api/login/status", get(login::login_status_handler))
         // Devices
         .route("/api/devices", get(api::list_devices))
         // Terminal WebSockets

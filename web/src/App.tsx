@@ -1,10 +1,10 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { isSessionActive } from "./lib/session";
-import { createSession } from "./lib/api";
+import { createSession, loginStatus, logout } from "./lib/api";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { ContentSplit } from "./components/ContentSplit";
@@ -14,8 +14,42 @@ import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
 import { Dashboard } from "./components/Dashboard";
+import { LoginPage } from "./components/LoginPage";
 
 export default function App() {
+  const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
+  const [loginAuthenticated, setLoginAuthenticated] = useState(true);
+
+  useEffect(() => {
+    loginStatus().then(({ required, authenticated }) => {
+      setLoginRequired(required);
+      setLoginAuthenticated(authenticated);
+    });
+  }, []);
+
+  const handleLoginSuccess = () => {
+    setLoginAuthenticated(true);
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setLoginAuthenticated(false);
+  };
+
+  // Show login page if required and not authenticated
+  if (loginRequired && !loginAuthenticated) {
+    return <LoginPage onSuccess={handleLoginSuccess} />;
+  }
+
+  // While checking login status, show nothing (brief flash)
+  if (loginRequired === null) {
+    return <div className="h-dvh bg-surface-900" />;
+  }
+
+  return <AppContent loginRequired={loginRequired} onLogout={handleLogout} />;
+}
+
+function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
   const { sessions, error } = useSessions();
   const workspaces = useWorkspaces(sessions);
   const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
@@ -238,6 +272,16 @@ export default function App() {
                 <rect x="3" y="3" width="18" height="18" rx="2" />
                 <line x1="15" y1="3" x2="15" y2="21" />
               </svg>
+            </button>
+          )}
+          {loginRequired && (
+            <button
+              onClick={onLogout}
+              className="px-2 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors text-text-dim hover:text-text-secondary hover:bg-surface-700/50 font-mono text-xs"
+              title="Sign out"
+              aria-label="Sign out"
+            >
+              log out
             </button>
           )}
         </div>
