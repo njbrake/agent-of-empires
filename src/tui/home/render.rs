@@ -1,5 +1,6 @@
 //! Rendering for HomeView
 
+use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::time::{Duration, Instant};
@@ -15,21 +16,30 @@ use crate::tui::components::{HelpOverlay, Preview};
 use crate::tui::styles::Theme;
 use crate::update::UpdateInfo;
 
-fn spinner_running() -> &'static str {
+/// Derive a frame offset from a session's creation timestamp so that
+/// sessions started at different times show visually distinct spinner positions.
+fn session_offset(created_at: &DateTime<Utc>) -> usize {
+    created_at.timestamp_millis() as usize
+}
+
+fn spinner_running(created_at: &DateTime<Utc>) -> &'static str {
     spinners::dots()
         .set_interval(Duration::from_millis(220))
+        .offset(session_offset(created_at))
         .current_frame()
 }
 
-fn spinner_waiting() -> &'static str {
+fn spinner_waiting(created_at: &DateTime<Utc>) -> &'static str {
     spinners::orbit()
         .set_interval(Duration::from_millis(400))
+        .offset(session_offset(created_at))
         .current_frame()
 }
 
-fn spinner_starting() -> &'static str {
+fn spinner_starting(created_at: &DateTime<Utc>) -> &'static str {
     spinners::breathe()
         .set_interval(Duration::from_millis(180))
+        .offset(session_offset(created_at))
         .current_frame()
 }
 
@@ -319,13 +329,13 @@ impl HomeView {
                     match self.view_mode {
                         ViewMode::Agent => {
                             let icon = match inst.status {
-                                Status::Running => spinner_running(),
-                                Status::Waiting => spinner_waiting(),
+                                Status::Running => spinner_running(&inst.created_at),
+                                Status::Waiting => spinner_waiting(&inst.created_at),
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
                                 Status::Error => ICON_ERROR,
-                                Status::Starting => spinner_starting(),
+                                Status::Starting => spinner_starting(&inst.created_at),
                                 Status::Deleting => ICON_DELETING,
                             };
                             let color = match inst.status {
@@ -359,7 +369,7 @@ impl HomeView {
                                     .unwrap_or(false),
                             };
                             let (icon, color) = if terminal_running {
-                                (spinner_running(), theme.terminal_active)
+                                (spinner_running(&inst.created_at), theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
                             };
