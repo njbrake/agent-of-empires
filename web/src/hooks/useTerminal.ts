@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { ResizeMessage } from "../lib/types";
+import { useWebSettings } from "./useWebSettings";
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 5000;
@@ -21,6 +22,7 @@ export function useTerminal(
   sessionId: string | null,
   wsPath: string = "ws",
 ) {
+  const { settings } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -48,7 +50,7 @@ export function useTerminal(
     const container = containerRef.current;
     container.innerHTML = "";
 
-    const fontSize = window.innerWidth < 768 ? 12 : 14;
+    const fontSize = window.innerWidth < 768 ? settings.mobileFontSize : 14;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -203,7 +205,38 @@ export function useTerminal(
     const handleResize = () => fitAddon.fit();
     window.addEventListener("resize", handleResize);
 
+    // Touch-to-scroll: xterm.js doesn't natively translate touch swipes into
+    // buffer scrolling. We track touchmove Y-delta and call scrollLines().
+    // preventDefault stops the browser from pulling-to-refresh.
+    let touchStartY = 0;
+    let touchAccum = 0;
+    const cellHeight = () => term.options.fontSize ?? 14;
+
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (!t) return;
+      touchStartY = t.clientY;
+      touchAccum = 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (!t) return;
+      e.preventDefault();
+      const dy = touchStartY - t.clientY;
+      touchStartY = t.clientY;
+      touchAccum += dy;
+      const lines = Math.trunc(touchAccum / cellHeight());
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        touchAccum -= lines * cellHeight();
+      }
+    };
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchMove, { passive: false });
+
     return () => {
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("resize", handleResize);
       dataDisposable?.dispose();
       resizeDisposable?.dispose();
@@ -215,7 +248,7 @@ export function useTerminal(
       wsRef.current = null;
       fitRef.current = null;
     };
-  }, [sessionId, wsPath]);
+  }, [sessionId, wsPath, settings.mobileFontSize]);
 
   const manualReconnect = () => {
     retryCountRef.current = 0;
@@ -229,5 +262,11 @@ export function useTerminal(
     wsRef.current?.close();
   };
 
-  return { containerRef, state, manualReconnect };
+  const sendData = useCallback((data: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(new TextEncoder().encode(data));
+    }
+  }, []);
+
+  return { containerRef, termRef, state, manualReconnect, sendData };
 }

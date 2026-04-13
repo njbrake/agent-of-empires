@@ -1,4 +1,6 @@
 import { useTerminal } from "../hooks/useTerminal";
+import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
+import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import type { SessionResponse } from "../lib/types";
 import "@xterm/xterm/css/xterm.css";
 
@@ -7,7 +9,9 @@ interface Props {
 }
 
 export function TerminalView({ session }: Props) {
-  const { containerRef, state, manualReconnect } = useTerminal(session.id);
+  const { containerRef, termRef, state, manualReconnect, sendData } =
+    useTerminal(session.id);
+  const { isMobile, keyboardOpen } = useMobileKeyboard(termRef);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
@@ -36,6 +40,10 @@ export function TerminalView({ session }: Props) {
         ref={containerRef}
         className="flex-1 overflow-hidden bg-surface-950"
       />
+
+      {isMobile && keyboardOpen && state.connected && (
+        <MobileTerminalToolbar sendData={sendData} termRef={termRef} />
+      )}
     </div>
   );
 }
