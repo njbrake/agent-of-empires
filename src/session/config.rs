@@ -1015,4 +1015,70 @@ mod tests {
             "agent_extra_args should survive roundtrip"
         );
     }
+
+    #[test]
+    fn test_resolve_tool_command_prefers_command_override() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_command_override
+            .insert("my-agent".to_string(), "override-cmd".to_string());
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "custom-cmd".to_string());
+        assert_eq!(config.resolve_tool_command("my-agent"), "override-cmd");
+    }
+
+    #[test]
+    fn test_resolve_tool_command_falls_back_to_custom_agents() {
+        let mut config = SessionConfig::default();
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "ssh -t host claude".to_string());
+        assert_eq!(
+            config.resolve_tool_command("my-agent"),
+            "ssh -t host claude"
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_command_skips_empty_override() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_command_override
+            .insert("my-agent".to_string(), String::new());
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "custom-cmd".to_string());
+        assert_eq!(config.resolve_tool_command("my-agent"), "custom-cmd");
+    }
+
+    #[test]
+    fn test_resolve_tool_command_returns_empty_for_unknown() {
+        let config = SessionConfig::default();
+        assert_eq!(config.resolve_tool_command("nonexistent"), "");
+    }
+
+    #[test]
+    fn test_custom_agents_roundtrip() {
+        let mut config = Config::default();
+        config.session.custom_agents.insert(
+            "lenovo-claude".to_string(),
+            "ssh -t lenovo claude".to_string(),
+        );
+        config
+            .session
+            .agent_detect_as
+            .insert("lenovo-claude".to_string(), "claude".to_string());
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.session.custom_agents.get("lenovo-claude"),
+            Some(&"ssh -t lenovo claude".to_string()),
+        );
+        assert_eq!(
+            deserialized.session.agent_detect_as.get("lenovo-claude"),
+            Some(&"claude".to_string()),
+        );
+    }
 }
