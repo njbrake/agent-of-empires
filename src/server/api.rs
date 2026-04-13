@@ -560,7 +560,7 @@ pub async fn list_agents() -> Json<Vec<AgentInfo>> {
                 name: a.name.to_string(),
                 binary: a.binary.to_string(),
                 host_only: a.host_only,
-                installed: available.contains(&a.name),
+                installed: available.iter().any(|s| s == a.name),
             })
             .collect::<Vec<_>>()
     })
