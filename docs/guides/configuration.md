@@ -93,6 +93,8 @@ agent_detect_as = { "lenovo-claude" = "claude" }
 
 Both fields are editable from the TUI settings screen and support profile/repo-level overrides.
 
+> **Note:** Profile and repo-level overrides fully replace the global value rather than merging with it. A profile that defines `custom_agents` replaces the entire global set, so you must redeclare any global agents you want to keep in that profile.
+
 ## Worktree
 
 ```toml
