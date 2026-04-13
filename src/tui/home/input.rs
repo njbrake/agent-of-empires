@@ -525,13 +525,9 @@ impl HomeView {
                 }
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Cancel creating session
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if inst.status == Status::Creating {
-                            self.cancel_creation();
-                        }
-                    }
+                // Cancel any in-flight session creation
+                if self.creating_stub_id.is_some() {
+                    self.cancel_creation();
                 }
             }
             KeyCode::Char('c') => {
@@ -596,6 +592,11 @@ impl HomeView {
                     };
                     self.cursor = self.search_matches[self.search_match_index];
                     self.update_selected();
+                } else if self.creating_stub_id.is_some() {
+                    self.info_dialog = Some(InfoDialog::new(
+                        "Please Wait",
+                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
+                    ));
                 } else {
                     // Pre-filled new session from selection
                     let prefill_path = self

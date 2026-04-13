@@ -25,7 +25,8 @@ export type SessionStatus =
   | "Starting"
   | "Stopped"
   | "Unknown"
-  | "Deleting";
+  | "Deleting"
+  | "Creating";
 
 /** WebSocket control messages sent from browser to server */
 export interface ResizeMessage {

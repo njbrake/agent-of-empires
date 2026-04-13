@@ -377,6 +377,16 @@ impl HomeView {
         self.group_trees.retain(|k, _| storage_keys.contains(k));
 
         self.instances = all_instances;
+
+        // Re-inject any in-flight Creating stub that won't be on disk
+        if let Some(ref stub_id) = self.creating_stub_id {
+            if !self.instances.iter().any(|i| i.id == *stub_id) {
+                if let Some(stub) = self.instance_map.get(stub_id).cloned() {
+                    self.instances.push(stub);
+                }
+            }
+        }
+
         self.instance_map = self
             .instances
             .iter()
@@ -535,9 +545,17 @@ impl HomeView {
         self.new_dialog = None;
 
         self.creation_cancelled = false;
+        // Filter out the stub from existing instances so the builder doesn't
+        // treat its placeholder title as a duplicate to auto-increment.
+        let existing_instances: Vec<Instance> = self
+            .instances
+            .iter()
+            .filter(|i| i.id != stub_id)
+            .cloned()
+            .collect();
         let request = CreationRequest {
             data,
-            existing_instances: self.instances.clone(),
+            existing_instances,
             hooks,
         };
         self.creation_poller.request_creation(request);
@@ -564,7 +582,6 @@ impl HomeView {
     pub fn apply_creation_results(&mut self) -> Option<String> {
         use super::creation_poller::CreationResult;
         use crate::session::builder::{self, CreatedWorktree};
-        use crate::session::Status;
         use std::path::PathBuf;
 
         let result = self.creation_poller.try_recv_result()?;
@@ -648,12 +665,12 @@ impl HomeView {
                 Some(session_id)
             }
             CreationResult::Error(error) => {
-                // If we had a stub, transition it to Error status
+                // Remove the stub and show the error in an info dialog
                 if let Some(id) = &stub_id {
-                    self.mutate_instance(id, |inst| {
-                        inst.status = Status::Error;
-                        inst.last_error = Some(error.clone());
-                    });
+                    self.remove_instance(id);
+                    self.rebuild_group_trees();
+                    self.flat_items = self.build_flat_items();
+                    self.update_selected();
                     self.info_dialog = Some(InfoDialog::new("Creation Failed", &error));
                 } else if let Some(dialog) = &mut self.new_dialog {
                     dialog.set_loading(false);
@@ -707,6 +724,10 @@ impl HomeView {
                             }
                             HookProgress::Output(line) => {
                                 progress_buf.hook_output.push(line);
+                                // Cap buffer to prevent unbounded memory growth
+                                if progress_buf.hook_output.len() > 1000 {
+                                    progress_buf.hook_output.drain(..500);
+                                }
                             }
                         }
                         changed = true;
