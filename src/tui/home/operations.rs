@@ -192,6 +192,17 @@ impl HomeView {
         Ok(())
     }
 
+    /// Force-remove a session from storage without any cleanup.
+    /// Used for sessions stuck in the Deleting state where the background
+    /// deletion thread never returned a result.
+    pub(super) fn force_remove_session(&mut self, session_id: &str) -> anyhow::Result<()> {
+        self.remove_instance(session_id);
+        self.rebuild_group_trees();
+        self.save()?;
+        self.reload()?;
+        Ok(())
+    }
+
     pub(super) fn group_has_managed_worktrees(&self, group_path: &str, prefix: &str) -> bool {
         self.instances().iter().any(|i| {
             (i.group_path == group_path || i.group_path.starts_with(prefix))

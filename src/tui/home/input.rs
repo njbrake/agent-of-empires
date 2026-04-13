@@ -273,6 +273,7 @@ impl HomeView {
                 DialogResult::Cancel => {
                     self.confirm_dialog = None;
                     self.pending_stop_session = None;
+                    self.pending_force_remove_session = None;
                 }
                 DialogResult::Submit(_) => {
                     let action = dialog.action().to_string();
@@ -284,6 +285,12 @@ impl HomeView {
                     } else if action == "stop_session" {
                         if let Some(session_id) = self.pending_stop_session.take() {
                             return Some(Action::StopSession(session_id));
+                        }
+                    } else if action == "force_remove_session" {
+                        if let Some(session_id) = self.pending_force_remove_session.take() {
+                            if let Err(e) = self.force_remove_session(&session_id) {
+                                tracing::error!("Failed to force remove session: {}", e);
+                            }
                         }
                     }
                 }
@@ -701,6 +708,17 @@ impl HomeView {
                 if let Some(session_id) = &self.selected_session {
                     if let Some(inst) = self.get_instance(session_id) {
                         if inst.status == Status::Deleting {
+                            let message = format!(
+                                "'{}' is stuck deleting. Force remove it from the session list? \
+                                 (worktrees, branches, and containers will not be cleaned up)",
+                                inst.title
+                            );
+                            self.pending_force_remove_session = Some(session_id.clone());
+                            self.confirm_dialog = Some(ConfirmDialog::new(
+                                "Force Remove",
+                                &message,
+                                "force_remove_session",
+                            ));
                             return None;
                         }
 

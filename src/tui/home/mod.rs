@@ -137,6 +137,8 @@ pub struct HomeView {
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
     pub(super) pending_stop_session: Option<String>,
+    /// Session to force-remove after the confirmation dialog is accepted
+    pub(super) pending_force_remove_session: Option<String>,
     // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
@@ -270,6 +272,7 @@ impl HomeView {
             pending_send_session: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
+            pending_force_remove_session: None,
             search_active: false,
             search_query: Input::default(),
             search_matches: Vec::new(),
