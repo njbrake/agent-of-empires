@@ -371,12 +371,6 @@ mod tests {
             created_at: None,
             extra_env: None,
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let result = collect_environment(&config, &info);
@@ -400,12 +394,6 @@ mod tests {
             created_at: None,
             extra_env: None,
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let result = collect_environment(&config, &info);
@@ -426,12 +414,6 @@ mod tests {
             created_at: None,
             extra_env: Some(vec!["AOE_TEST_EXTRA".to_string(), "FOO=bar".to_string()]),
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let result = collect_environment(&config, &info);
@@ -458,12 +440,6 @@ mod tests {
             created_at: None,
             extra_env: Some(vec!["DUP_KEY=from_session".to_string()]),
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let result = collect_environment(&config, &info);
@@ -486,12 +462,6 @@ mod tests {
             created_at: None,
             extra_env: None,
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let result = collect_environment(&config, &info);
@@ -514,12 +484,6 @@ mod tests {
             created_at: None,
             extra_env: None,
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let result = collect_environment(&config, &info);
@@ -543,12 +507,6 @@ mod tests {
             created_at: None,
             extra_env: None,
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let result = collect_environment(&config, &info);
@@ -610,12 +568,6 @@ mod tests {
             created_at: None,
             extra_env: Some(vec!["AOE_TEST_TOKEN=$AOE_TEST_TOKEN".to_string()]),
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(
@@ -643,12 +595,6 @@ mod tests {
             created_at: None,
             extra_env: Some(vec!["MY_MAPPED=$AOE_TEST_SOURCE".to_string()]),
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(
@@ -675,12 +621,6 @@ mod tests {
             created_at: None,
             extra_env: Some(vec!["AOE_TEST_BARE".to_string()]),
             custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(

@@ -170,18 +170,6 @@ pub struct CreateSessionBody {
     pub command_override: String,
     #[serde(default)]
     pub custom_instruction: Option<String>,
-    #[serde(default)]
-    pub cpu_limit: Option<String>,
-    #[serde(default)]
-    pub memory_limit: Option<String>,
-    #[serde(default)]
-    pub port_mappings: Option<Vec<String>>,
-    #[serde(default)]
-    pub mount_ssh: Option<bool>,
-    #[serde(default)]
-    pub volume_ignores: Option<Vec<String>>,
-    #[serde(default)]
-    pub extra_volumes: Option<Vec<String>>,
 }
 
 pub async fn create_session(
@@ -295,28 +283,9 @@ pub async fn create_session(
         let mut instance = build_result.instance;
 
         // Apply per-session sandbox overrides from the request body.
-        // These are set after build_instance so the builder stays config-only.
         if let Some(ref mut sandbox) = instance.sandbox_info {
             if body.custom_instruction.is_some() {
                 sandbox.custom_instruction = body.custom_instruction;
-            }
-            if body.cpu_limit.is_some() {
-                sandbox.cpu_limit = body.cpu_limit;
-            }
-            if body.memory_limit.is_some() {
-                sandbox.memory_limit = body.memory_limit;
-            }
-            if body.port_mappings.is_some() {
-                sandbox.port_mappings = body.port_mappings;
-            }
-            if let Some(mount) = body.mount_ssh {
-                sandbox.mount_ssh = Some(mount);
-            }
-            if body.volume_ignores.is_some() {
-                sandbox.volume_ignores = body.volume_ignores;
-            }
-            if body.extra_volumes.is_some() {
-                sandbox.extra_volumes = body.extra_volumes;
             }
         }
 

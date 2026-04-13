@@ -297,24 +297,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 created_at: None,
                 extra_env: None,
                 custom_instruction: config.sandbox.custom_instruction.clone(),
-                cpu_limit: config.sandbox.cpu_limit.clone(),
-                memory_limit: config.sandbox.memory_limit.clone(),
-                port_mappings: if config.sandbox.port_mappings.is_empty() {
-                    None
-                } else {
-                    Some(config.sandbox.port_mappings.clone())
-                },
-                mount_ssh: None,
-                volume_ignores: if config.sandbox.volume_ignores.is_empty() {
-                    None
-                } else {
-                    Some(config.sandbox.volume_ignores.clone())
-                },
-                extra_volumes: if config.sandbox.extra_volumes.is_empty() {
-                    None
-                } else {
-                    Some(config.sandbox.extra_volumes.clone())
-                },
             });
         }
     }

@@ -127,10 +127,4 @@ export interface CreateSessionRequest {
   extra_repo_paths?: string[];
   command_override?: string;
   custom_instruction?: string;
-  cpu_limit?: string;
-  memory_limit?: string;
-  port_mappings?: string[];
-  mount_ssh?: boolean;
-  volume_ignores?: string[];
-  extra_volumes?: string[];
 }

@@ -18,12 +18,6 @@ interface WizardData {
   sandboxEnabled: boolean;
   sandboxImage: string;
   extraEnv: string[];
-  cpuLimit: string;
-  memoryLimit: string;
-  portMappings: string[];
-  mountSsh: boolean;
-  volumeIgnores: string[];
-  extraVolumes: string[];
   advancedEnabled: boolean;
   customInstruction: string;
   extraArgs: string;
@@ -54,8 +48,7 @@ type Action =
 const initialData: WizardData = {
   path: "", title: "", group: "", tool: "claude",
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
-  cpuLimit: "", memoryLimit: "", portMappings: [], mountSsh: false,
-  volumeIgnores: [], extraVolumes: [], advancedEnabled: false,
+  advancedEnabled: false,
   customInstruction: "", extraArgs: "", commandOverride: "",
 };
 
@@ -148,12 +141,6 @@ export function SessionWizard({ onClose, onCreated }: Props) {
       extra_args: d.extraArgs || undefined,
       command_override: d.commandOverride || undefined,
       custom_instruction: d.customInstruction || undefined,
-      cpu_limit: d.sandboxEnabled && d.cpuLimit ? d.cpuLimit : undefined,
-      memory_limit: d.sandboxEnabled && d.memoryLimit ? d.memoryLimit : undefined,
-      port_mappings: d.sandboxEnabled && d.portMappings.length > 0 ? d.portMappings.filter(Boolean) : undefined,
-      mount_ssh: d.sandboxEnabled ? d.mountSsh : undefined,
-      volume_ignores: d.sandboxEnabled && d.volumeIgnores.length > 0 ? d.volumeIgnores.filter(Boolean) : undefined,
-      extra_volumes: d.sandboxEnabled && d.extraVolumes.length > 0 ? d.extraVolumes.filter(Boolean) : undefined,
     };
     const result = await createSession(body);
     if (result.ok) { dispatch({ type: "SUBMIT_SUCCESS" }); onCreated(); }
