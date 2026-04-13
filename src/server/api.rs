@@ -552,7 +552,8 @@ pub struct AgentInfo {
 
 pub async fn list_agents() -> Json<Vec<AgentInfo>> {
     let result = tokio::task::spawn_blocking(|| {
-        let available = crate::tmux::AvailableTools::detect().available_list();
+        let tools = crate::tmux::AvailableTools::detect();
+        let available = tools.available_list();
         crate::agents::AGENTS
             .iter()
             .map(|a| AgentInfo {

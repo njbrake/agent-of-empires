@@ -134,6 +134,8 @@ fn test_container_lifecycle() {
 
         anonymous_volumes: vec![],
         environment: vec![],
+        cpu_limit: None,
+        memory_limit: None,
         port_mappings: vec![],
     };
 
@@ -174,6 +176,8 @@ fn test_container_force_remove() {
 
         anonymous_volumes: vec![],
         environment: vec![],
+        cpu_limit: None,
+        memory_limit: None,
         port_mappings: vec![],
     };
 
