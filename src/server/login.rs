@@ -121,23 +121,22 @@ impl LoginManager {
             return false;
         }
 
-        // Read lock first to check validity without blocking other readers
-        {
-            let sessions = self.sessions.read().await;
-            let Some(session) = sessions.get(session_id) else {
-                return false;
-            };
-            if Instant::now() > session.expires_at || session.ip != client_ip {
-                // Expired sessions are cleaned up by the periodic task
-                return false;
-            }
+        let mut sessions = self.sessions.write().await;
+        let Some(session) = sessions.get_mut(session_id) else {
+            return false;
+        };
+
+        if Instant::now() > session.expires_at {
+            sessions.remove(session_id);
+            return false;
         }
 
-        // Only take write lock to extend the sliding window
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(session_id) {
-            session.expires_at = Instant::now() + SESSION_LIFETIME;
+        if session.ip != client_ip {
+            return false;
         }
+
+        // Sliding window: extend expiry on each valid access
+        session.expires_at = Instant::now() + SESSION_LIFETIME;
         true
     }
 
