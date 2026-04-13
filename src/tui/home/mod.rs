@@ -95,6 +95,12 @@ pub(super) const ICON_DELETING: &str = "✕";
 pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
 
+/// Hook progress for a session being created in the background
+pub(super) struct CreatingHookProgress {
+    pub(super) hook_output: Vec<String>,
+    pub(super) current_hook: Option<String>,
+}
+
 pub struct HomeView {
     pub(super) storages: HashMap<String, Storage>,
     pub(super) active_profile: Option<String>,
@@ -161,6 +167,11 @@ pub struct HomeView {
     pub(super) creation_cancelled: bool,
     /// Sessions whose on_launch hooks already ran in the creation poller
     pub(super) on_launch_hooks_ran: HashSet<String>,
+
+    /// Hook progress for sessions in Creating state, keyed by stub instance ID
+    pub(super) creating_hook_progress: HashMap<String, CreatingHookProgress>,
+    /// The stub instance ID for the current background creation
+    pub(super) creating_stub_id: Option<String>,
 
     // Performance: preview caching
     pub(super) preview_cache: PreviewCache,
@@ -284,6 +295,8 @@ impl HomeView {
             creation_poller: CreationPoller::new(),
             creation_cancelled: false,
             on_launch_hooks_ran: HashSet::new(),
+            creating_hook_progress: HashMap::new(),
+            creating_stub_id: None,
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
@@ -297,6 +310,21 @@ impl HomeView {
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
         };
+
+        // Clean up orphaned Creating instances from a prior crash
+        let orphan_ids: Vec<String> = view
+            .instances
+            .iter()
+            .filter(|i| i.status == crate::session::Status::Creating)
+            .map(|i| i.id.clone())
+            .collect();
+        for id in &orphan_ids {
+            view.remove_instance(id);
+        }
+        if !orphan_ids.is_empty() {
+            tracing::info!("Cleaned up {} orphaned creating sessions", orphan_ids.len());
+            let _ = view.save();
+        }
 
         view.flat_items = view.build_flat_items();
         view.update_selected();
@@ -392,6 +420,7 @@ impl HomeView {
 
                 let should_update = old_status.is_some_and(|s| {
                     s != Status::Deleting
+                        && s != Status::Creating
                         && s != Status::Stopped
                         && update.status != Status::Stopped
                 });
@@ -442,18 +471,68 @@ impl HomeView {
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
+    /// Creates a stub instance in the session list with Status::Creating so the user
+    /// can see progress in the preview pane while continuing to use the TUI.
     pub fn request_creation(
         &mut self,
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) {
-        let has_hooks = hooks
-            .as_ref()
-            .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
-        if let Some(dialog) = &mut self.new_dialog {
-            dialog.set_loading(true);
-            dialog.set_has_hooks(has_hooks);
+        // Build a stub instance to show in the list while creation runs
+        let stub_title = if data.title.is_empty() {
+            std::path::Path::new(&data.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "New session".to_string())
+        } else {
+            data.title.clone()
+        };
+        let mut stub = Instance::new(&stub_title, &data.path);
+        stub.tool = if data.tool.is_empty() {
+            "claude".to_string()
+        } else {
+            data.tool.clone()
+        };
+        stub.group_path = data.group.clone();
+        stub.status = crate::session::Status::Creating;
+        stub.yolo_mode = data.yolo_mode;
+        stub.source_profile = data.profile.clone();
+
+        let stub_id = stub.id.clone();
+        let target_profile = data.profile.clone();
+
+        // Add stub to instance list
+        self.add_instance(stub);
+        self.rebuild_group_trees();
+        if !data.group.is_empty() {
+            if let Some(tree) = self.group_trees.get_mut(&target_profile) {
+                tree.create_group(&data.group);
+            }
         }
+
+        // Initialize progress tracking and select the stub
+        self.creating_hook_progress.insert(
+            stub_id.clone(),
+            CreatingHookProgress {
+                hook_output: Vec::new(),
+                current_hook: None,
+            },
+        );
+        self.creating_stub_id = Some(stub_id.clone());
+        self.flat_items = self.build_flat_items();
+
+        // Move cursor to the new stub
+        if let Some(pos) = self
+            .flat_items
+            .iter()
+            .position(|item| matches!(item, Item::Session { id, .. } if id == &stub_id))
+        {
+            self.cursor = pos;
+            self.update_selected();
+        }
+
+        // Close the dialog
+        self.new_dialog = None;
 
         self.creation_cancelled = false;
         let request = CreationRequest {
@@ -464,10 +543,18 @@ impl HomeView {
         self.creation_poller.request_creation(request);
     }
 
-    /// Mark the current creation operation as cancelled (user pressed Esc)
+    /// Mark the current creation operation as cancelled
     pub fn cancel_creation(&mut self) {
         if self.creation_poller.is_pending() {
             self.creation_cancelled = true;
+        }
+        // Remove the stub instance
+        if let Some(stub_id) = self.creating_stub_id.take() {
+            self.remove_instance(&stub_id);
+            self.creating_hook_progress.remove(&stub_id);
+            self.rebuild_group_trees();
+            self.flat_items = self.build_flat_items();
+            self.update_selected();
         }
         self.new_dialog = None;
     }
@@ -477,13 +564,23 @@ impl HomeView {
     pub fn apply_creation_results(&mut self) -> Option<String> {
         use super::creation_poller::CreationResult;
         use crate::session::builder::{self, CreatedWorktree};
+        use crate::session::Status;
         use std::path::PathBuf;
 
         let result = self.creation_poller.try_recv_result()?;
 
+        // Clean up the stub and progress tracking
+        let stub_id = self.creating_stub_id.take();
+        if let Some(ref id) = stub_id {
+            self.creating_hook_progress.remove(id);
+        }
+
         // Check if the user cancelled while waiting
         if self.creation_cancelled {
             self.creation_cancelled = false;
+            if let Some(id) = &stub_id {
+                self.remove_instance(id);
+            }
             if let CreationResult::Success {
                 ref instance,
                 ref created_worktree,
@@ -496,6 +593,9 @@ impl HomeView {
                 });
                 builder::cleanup_instance(instance, worktree.as_ref(), &[]);
             }
+            self.rebuild_group_trees();
+            self.flat_items = self.build_flat_items();
+            self.update_selected();
             return None;
         }
 
@@ -506,6 +606,11 @@ impl HomeView {
                 on_launch_hooks_ran,
                 ..
             } => {
+                // Remove the stub instance
+                if let Some(id) = &stub_id {
+                    self.remove_instance(id);
+                }
+
                 let mut instance = *instance;
                 let target_profile = self.creation_poller.last_profile().unwrap_or_else(|| {
                     self.active_profile
@@ -543,7 +648,14 @@ impl HomeView {
                 Some(session_id)
             }
             CreationResult::Error(error) => {
-                if let Some(dialog) = &mut self.new_dialog {
+                // If we had a stub, transition it to Error status
+                if let Some(id) = &stub_id {
+                    self.mutate_instance(id, |inst| {
+                        inst.status = Status::Error;
+                        inst.last_error = Some(error.clone());
+                    });
+                    self.info_dialog = Some(InfoDialog::new("Creation Failed", &error));
+                } else if let Some(dialog) = &mut self.new_dialog {
                     dialog.set_loading(false);
                     dialog.set_error(error);
                 }
@@ -565,6 +677,8 @@ impl HomeView {
     /// Tick dialog animations/timers and drain hook progress.
     /// Returns true when a redraw is needed.
     pub fn tick_dialog(&mut self) -> bool {
+        use crate::session::repo_config::HookProgress;
+
         let mut changed = false;
 
         if let Some(dialog) = &mut self.new_dialog {
@@ -579,6 +693,31 @@ impl HomeView {
                     changed = true;
                 }
             }
+        }
+
+        // Drain hook progress into the creating buffer when no dialog is open
+        if self.new_dialog.is_none() {
+            if let Some(ref stub_id) = self.creating_stub_id {
+                let stub_id = stub_id.clone();
+                if let Some(progress_buf) = self.creating_hook_progress.get_mut(&stub_id) {
+                    while let Some(progress) = self.creation_poller.try_recv_progress() {
+                        match progress {
+                            HookProgress::Started(cmd) => {
+                                progress_buf.current_hook = Some(cmd);
+                            }
+                            HookProgress::Output(line) => {
+                                progress_buf.hook_output.push(line);
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Trigger redraw for Creating spinner animation
+        if self.creating_stub_id.is_some() {
+            changed = true;
         }
 
         changed

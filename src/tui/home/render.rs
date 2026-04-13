@@ -337,6 +337,7 @@ impl HomeView {
                                 Status::Error => ICON_ERROR,
                                 Status::Starting => spinner_starting(&inst.created_at),
                                 Status::Deleting => ICON_DELETING,
+                                Status::Creating => spinner_starting(&inst.created_at),
                             };
                             let color = match inst.status {
                                 Status::Running => theme.running,
@@ -347,6 +348,7 @@ impl HomeView {
                                 Status::Error => theme.error,
                                 Status::Starting => theme.dimmed,
                                 Status::Deleting => theme.waiting,
+                                Status::Creating => theme.accent,
                             };
                             let style = Style::default().fg(color);
                             (icon, Cow::Owned(inst.title.clone()), style)
@@ -555,24 +557,35 @@ impl HomeView {
 
         match self.view_mode {
             ViewMode::Agent => {
-                // Refresh cache before borrowing from instance_map to avoid borrow conflicts
-                self.refresh_preview_cache_if_needed(inner.width, inner.height);
+                // Check if selected session is being created (show hook progress)
+                let is_creating = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|id| self.get_instance(id))
+                    .is_some_and(|inst| inst.status == Status::Creating);
 
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        Preview::render_with_cache(
-                            frame,
-                            inner,
-                            inst,
-                            &self.preview_cache.content,
-                            theme,
-                        );
-                    }
+                if is_creating {
+                    self.render_creating_preview(frame, inner, theme);
                 } else {
-                    let hint = Paragraph::new("Select a session to preview")
-                        .style(Style::default().fg(theme.dimmed))
-                        .alignment(Alignment::Center);
-                    frame.render_widget(hint, inner);
+                    // Refresh cache before borrowing from instance_map to avoid borrow conflicts
+                    self.refresh_preview_cache_if_needed(inner.width, inner.height);
+
+                    if let Some(id) = &self.selected_session {
+                        if let Some(inst) = self.get_instance(id) {
+                            Preview::render_with_cache(
+                                frame,
+                                inner,
+                                inst,
+                                &self.preview_cache.content,
+                                theme,
+                            );
+                        }
+                    } else {
+                        let hint = Paragraph::new("Select a session to preview")
+                            .style(Style::default().fg(theme.dimmed))
+                            .alignment(Alignment::Center);
+                        frame.render_widget(hint, inner);
+                    }
                 }
             }
             ViewMode::Terminal => {
@@ -642,6 +655,111 @@ impl HomeView {
                     frame.render_widget(hint, inner);
                 }
             }
+        }
+    }
+
+    fn render_creating_preview(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let selected_id = match &self.selected_session {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        let inst = match self.get_instance(&selected_id) {
+            Some(inst) => inst,
+            None => return,
+        };
+
+        let spinner = spinners::orbit()
+            .set_interval(Duration::from_millis(400))
+            .current_frame();
+
+        // Info section (3 lines) + separator + hook output
+        let info_height: u16 = 4;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(info_height), Constraint::Min(1)])
+            .split(area);
+
+        // Info lines
+        let info_lines = vec![
+            Line::from(vec![
+                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
+                Span::styled(&inst.title, Style::default().fg(theme.text).bold()),
+            ]),
+            Line::from(vec![
+                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(&inst.project_path, Style::default().fg(theme.text)),
+            ]),
+            Line::from(vec![
+                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    format!("{} Creating...", spinner),
+                    Style::default().fg(theme.accent),
+                ),
+            ]),
+            Line::from(""),
+        ];
+        frame.render_widget(Paragraph::new(info_lines), chunks[0]);
+
+        // Hook output section
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Hook Output ")
+            .title_style(Style::default().fg(theme.dimmed));
+
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+
+        let progress = self.creating_hook_progress.get(&selected_id);
+        let inner_height = inner.height as usize;
+
+        if let Some(progress) = progress {
+            let mut lines: Vec<Line> = Vec::new();
+
+            // Current hook command
+            if let Some(ref cmd) = progress.current_hook {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", spinner),
+                        Style::default().fg(theme.accent).bold(),
+                    ),
+                    Span::styled(cmd.as_str(), Style::default().fg(theme.text)),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!(" {} Preparing...", spinner),
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+
+            // Show the last N lines of output that fit
+            let max_output = inner_height.saturating_sub(3);
+            let start = progress.hook_output.len().saturating_sub(max_output);
+            for line in &progress.hook_output[start..] {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+
+            // Pad and add cancel hint
+            let used = lines.len();
+            let available = inner_height.saturating_sub(1);
+            for _ in used..available {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(vec![
+                Span::styled(" Press ", Style::default().fg(theme.dimmed)),
+                Span::styled("Ctrl+C", Style::default().fg(theme.hint)),
+                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
+            ]));
+
+            frame.render_widget(Paragraph::new(lines), inner);
+        } else {
+            let hint = Paragraph::new(format!(" {} Setting up session...", spinner))
+                .style(Style::default().fg(theme.dimmed));
+            frame.render_widget(hint, inner);
         }
     }
 

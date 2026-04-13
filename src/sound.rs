@@ -389,6 +389,7 @@ pub fn play_for_transition(old: Status, new: Status, config: &SoundConfig) {
         Status::Unknown => return,
         Status::Stopped => return,
         Status::Deleting => return,
+        Status::Creating => return,
     };
 
     if let Some(name) = resolve_sound_name(override_name, config) {

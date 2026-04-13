@@ -33,6 +33,7 @@ pub enum Status {
     Error,
     Starting,
     Deleting,
+    Creating,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -672,7 +673,10 @@ impl Instance {
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
-        if matches!(self.status, Status::Stopped | Status::Deleting) {
+        if matches!(
+            self.status,
+            Status::Stopped | Status::Deleting | Status::Creating
+        ) {
             return;
         }
 
@@ -1087,6 +1091,7 @@ mod tests {
             Status::Error,
             Status::Starting,
             Status::Deleting,
+            Status::Creating,
         ];
 
         for status in statuses {

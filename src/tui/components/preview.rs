@@ -178,6 +178,7 @@ impl Preview {
                         crate::session::Status::Error => theme.error,
                         crate::session::Status::Starting => theme.dimmed,
                         crate::session::Status::Deleting => theme.waiting,
+                        crate::session::Status::Creating => theme.accent,
                     }),
                 ),
             ]),
