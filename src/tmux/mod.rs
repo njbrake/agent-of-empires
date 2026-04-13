@@ -221,11 +221,15 @@ impl AvailableTools {
         // Append user-defined custom agents (always considered available since the
         // command may target a remote host or a wrapper script).
         if let Ok(config) = crate::session::config::Config::load() {
-            for name in config.session.custom_agents.keys() {
-                if !name.is_empty() && !available.iter().any(|n| n == name) {
-                    available.push(name.clone());
-                }
-            }
+            let mut custom: Vec<_> = config
+                .session
+                .custom_agents
+                .keys()
+                .filter(|name| !name.is_empty() && !available.iter().any(|n| n == *name))
+                .cloned()
+                .collect();
+            custom.sort();
+            available.extend(custom);
         }
 
         Self { available }
