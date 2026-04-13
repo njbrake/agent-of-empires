@@ -235,4 +235,21 @@ for (const page of PAGES) {
   console.log(`  ${page.source} -> ${page.dest}`);
 }
 
+// Verify every synced page appears in docsNav.ts
+const navPath = join(__dirname, "..", "src", "data", "docsNav.ts");
+const navSource = readFileSync(navPath, "utf8");
+const navHrefs = new Set([...navSource.matchAll(/href:\s*"([^"]+)"/g)].map((m) => m[1]));
+let missing = 0;
+for (const page of PAGES) {
+  const url = "/" + page.dest.replace(/\.md$/, "/").replace(/\/index\/$/, "/");
+  if (!navHrefs.has(url)) {
+    console.error(`  WARNING: ${url} (from ${page.source}) is not in docsNav.ts`);
+    missing++;
+  }
+}
+if (missing > 0) {
+  console.error(`\n${missing} page(s) missing from sidebar navigation (website/src/data/docsNav.ts)`);
+  process.exit(1);
+}
+
 console.log("Done.");
