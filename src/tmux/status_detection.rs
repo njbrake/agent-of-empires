@@ -570,6 +570,27 @@ pub fn detect_settl_status(_content: &str) -> Status {
     Status::Idle
 }
 
+/// crush status is detected via hooks (TOML-based) or by parsing the spinner.
+pub fn detect_crush_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let last_lines = if lines.len() > 10 {
+        &lines[lines.len() - 10..]
+    } else {
+        &lines[..]
+    };
+    let last_lines_lower = last_lines.join("\n").to_lowercase();
+
+    // Check for running indicators
+    for spinner in SPINNER_CHARS {
+        if last_lines_lower.contains(spinner) {
+            return Status::Running;
+        }
+    }
+
+    Status::Idle
+}
+
 pub fn detect_gemini_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();

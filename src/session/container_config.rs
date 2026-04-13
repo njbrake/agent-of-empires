@@ -156,6 +156,18 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         clean_files: &[],
     },
     AgentConfigMount {
+        tool_name: "crush",
+        host_rel: ".local/share/crush",
+        container_suffix: ".local/share/crush",
+        skip_entries: &["sandbox"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+        clean_files: &[],
+    },
+    AgentConfigMount {
         tool_name: "copilot",
         host_rel: ".copilot",
         container_suffix: ".copilot",

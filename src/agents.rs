@@ -266,6 +266,22 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: true,
     },
+    AgentDef {
+        name: "crush",
+        binary: "crush",
+        aliases: &["charmbracelet/crush", "charmbracelet-crush"],
+        detection: DetectionMethod::Which("crush"),
+        yolo: Some(YoloMode::AlwaysYolo),
+        instruction_flag: None,
+        set_default_command: false,
+        detect_status: status_detection::detect_crush_status,
+        container_env: &[],
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".local/share/crush/crush.json",
+            events: CLAUDE_CURSOR_HOOK_EVENTS,
+        }),
+        host_only: false,
+    },
 ];
 
 /// Look up an agent by canonical name.
@@ -335,6 +351,7 @@ mod tests {
         assert_eq!(get_agent("pi").unwrap().binary, "pi");
         assert_eq!(get_agent("droid").unwrap().binary, "droid");
         assert_eq!(get_agent("settl").unwrap().binary, "settl");
+        assert_eq!(get_agent("crush").unwrap().binary, "crush");
     }
 
     #[test]
@@ -349,7 +366,7 @@ mod tests {
             names,
             vec![
                 "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi",
-                "droid", "settl"
+                "droid", "settl", "crush"
             ]
         );
     }
@@ -370,6 +387,8 @@ mod tests {
         assert_eq!(resolve_tool_name("settl"), Some("settl"));
         assert_eq!(resolve_tool_name("settlers"), Some("settl"));
         assert_eq!(resolve_tool_name("catan"), Some("settl"));
+        assert_eq!(resolve_tool_name("crush"), Some("crush"));
+        assert_eq!(resolve_tool_name("charmbracelet/crush"), Some("crush"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -385,6 +404,7 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("pi")), 8);
         assert_eq!(settings_index_from_name(Some("droid")), 9);
         assert_eq!(settings_index_from_name(Some("settl")), 10);
+        assert_eq!(settings_index_from_name(Some("crush")), 11);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
@@ -394,6 +414,7 @@ mod tests {
         assert_eq!(name_from_settings_index(8), Some("pi"));
         assert_eq!(name_from_settings_index(9), Some("droid"));
         assert_eq!(name_from_settings_index(10), Some("settl"));
+        assert_eq!(name_from_settings_index(11), Some("crush"));
         assert_eq!(name_from_settings_index(99), None);
     }
 

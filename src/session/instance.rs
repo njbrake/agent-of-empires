@@ -1040,6 +1040,13 @@ mod tests {
     }
 
     #[test]
+    fn test_get_tool_command_crush() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "crush".to_string();
+        assert_eq!(inst.get_tool_command(), "crush");
+    }
+
+    #[test]
     fn test_get_tool_command_unknown_tool() {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "unknown".to_string();

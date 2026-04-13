@@ -42,6 +42,10 @@ const VOLUME_MIGRATIONS: &[VolumeMigration] = &[
         sandbox_rel: ".gemini/sandbox",
     },
     VolumeMigration {
+        volume_name: "aoe-crush-auth",
+        sandbox_rel: ".local/share/crush/sandbox",
+    },
+    VolumeMigration {
         volume_name: "aoe-vibe-auth",
         sandbox_rel: ".vibe/sandbox",
     },
