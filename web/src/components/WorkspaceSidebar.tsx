@@ -71,7 +71,8 @@ const STATIC_GLYPH: Record<SessionStatus, string> = {
 function StatusGlyph({ status, createdAt }: { status: SessionStatus; createdAt: string | null }) {
   const rattleKey = STATUS_RATTLE[status];
   const rattle = rattleKey ? RATTLES[rattleKey] : undefined;
-  const epoch = createdAt ? Date.parse(createdAt) : 0;
+  const parsed = createdAt ? Date.parse(createdAt) : 0;
+  const epoch = Number.isNaN(parsed) ? 0 : parsed;
   const [frame, setFrame] = useState(() => {
     if (!rattle) return 0;
     return Math.floor((Date.now() - epoch) / rattle.interval) % rattle.frames.length;
