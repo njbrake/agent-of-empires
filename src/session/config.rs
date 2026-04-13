@@ -532,7 +532,6 @@ impl Config {
 
         let content = fs::read_to_string(&path)?;
         let config: Config = toml::from_str(&content)?;
-        config.session.warn_custom_agent_issues();
         Ok(config)
     }
 }

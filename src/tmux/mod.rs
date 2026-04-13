@@ -221,6 +221,7 @@ impl AvailableTools {
         // Append user-defined custom agents (always considered available since the
         // command may target a remote host or a wrapper script).
         if let Ok(config) = crate::session::config::Config::load() {
+            config.session.warn_custom_agent_issues();
             let mut custom: Vec<_> = config
                 .session
                 .custom_agents
