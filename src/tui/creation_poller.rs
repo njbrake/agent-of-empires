@@ -114,13 +114,6 @@ impl CreationPoller {
             extra_args: data.extra_args,
             command_override: data.command_override,
             extra_repo_paths: data.extra_repo_paths,
-            custom_instruction: None,
-            cpu_limit: None,
-            memory_limit: None,
-            port_mappings: None,
-            mount_ssh: None,
-            volume_ignores: None,
-            extra_volumes: None,
         };
 
         let build_result = match builder::build_instance(params, &existing_titles, &profile) {

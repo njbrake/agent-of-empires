@@ -289,17 +289,36 @@ pub async fn create_session(
             extra_args: body.extra_args,
             command_override: body.command_override,
             extra_repo_paths,
-            custom_instruction: body.custom_instruction,
-            cpu_limit: body.cpu_limit,
-            memory_limit: body.memory_limit,
-            port_mappings: body.port_mappings,
-            mount_ssh: body.mount_ssh,
-            volume_ignores: body.volume_ignores,
-            extra_volumes: body.extra_volumes,
         };
 
         let build_result = builder::build_instance(params, &title_refs, &profile)?;
         let mut instance = build_result.instance;
+
+        // Apply per-session sandbox overrides from the request body.
+        // These are set after build_instance so the builder stays config-only.
+        if let Some(ref mut sandbox) = instance.sandbox_info {
+            if body.custom_instruction.is_some() {
+                sandbox.custom_instruction = body.custom_instruction;
+            }
+            if body.cpu_limit.is_some() {
+                sandbox.cpu_limit = body.cpu_limit;
+            }
+            if body.memory_limit.is_some() {
+                sandbox.memory_limit = body.memory_limit;
+            }
+            if body.port_mappings.is_some() {
+                sandbox.port_mappings = body.port_mappings;
+            }
+            if let Some(mount) = body.mount_ssh {
+                sandbox.mount_ssh = Some(mount);
+            }
+            if body.volume_ignores.is_some() {
+                sandbox.volume_ignores = body.volume_ignores;
+            }
+            if body.extra_volumes.is_some() {
+                sandbox.extra_volumes = body.extra_volumes;
+            }
+        }
 
         // Save to disk
         let storage = Storage::new(&profile)?;
@@ -557,7 +576,6 @@ pub async fn session_diff(
 #[derive(Serialize)]
 pub struct AgentInfo {
     pub name: String,
-    pub description: String,
     pub binary: String,
     pub host_only: bool,
     pub installed: bool,
@@ -570,7 +588,6 @@ pub async fn list_agents() -> Json<Vec<AgentInfo>> {
             .iter()
             .map(|a| AgentInfo {
                 name: a.name.to_string(),
-                description: a.description.to_string(),
                 binary: a.binary.to_string(),
                 host_only: a.host_only,
                 installed: available.contains(&a.name),

@@ -74,7 +74,6 @@ export interface Workspace {
 /** Agent info returned by /api/agents */
 export interface AgentInfo {
   name: string;
-  description: string;
   binary: string;
   host_only: boolean;
   installed: boolean;

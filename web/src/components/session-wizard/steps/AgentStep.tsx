@@ -59,7 +59,6 @@ export function AgentStep({ data, onChange, agents, dockerAvailable }: Props) {
             }`}
           >
             <div className="text-sm font-semibold text-text-primary">{agent.name}</div>
-            <div className="text-xs text-text-dim mt-0.5 leading-snug">{agent.description}</div>
           </button>
         ))}
       </div>
