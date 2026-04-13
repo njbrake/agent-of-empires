@@ -1,6 +1,6 @@
 //! Input handling for HomeView
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
@@ -1169,25 +1169,5 @@ impl HomeView {
                 None
             }
         }
-    }
-
-    /// Handle a mouse event
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Pass mouse events to diff view if active
-        if let Some(ref mut diff_view) = self.diff_view {
-            match diff_view.handle_mouse(mouse) {
-                DiffAction::Continue => return None,
-                DiffAction::Close => {
-                    self.diff_view = None;
-                    return None;
-                }
-                DiffAction::EditFile(path) => {
-                    return Some(Action::EditFile(path));
-                }
-            }
-        }
-
-        // No mouse handling for other views currently
-        None
     }
 }

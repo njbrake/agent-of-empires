@@ -3,7 +3,7 @@
 use anyhow::Result;
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyModifiers, MouseEvent,
+    KeyModifiers,
 };
 use futures_util::{FutureExt, StreamExt};
 use ratatui::prelude::*;
@@ -17,27 +17,8 @@ use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
-/// Flush stale stdin bytes, pause for the terminal to finish processing
-/// mode-change escape sequences (DisableMouseCapture, LeaveAlternateScreen),
-/// then flush again to catch any late-arriving responses. Without this,
-/// child processes (tmux, editors) can read leftover mouse tracking escape
-/// sequences from stdin and fail to initialize.
-#[cfg(unix)]
-fn settle_stdin() {
-    use std::os::unix::io::AsRawFd;
-    let fd = std::io::stdin().as_raw_fd();
-    unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
-}
-
-#[cfg(not(unix))]
-fn settle_stdin() {
-    std::thread::sleep(std::time::Duration::from_millis(50));
-}
-
 /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
-/// Drains stale events and clears the terminal on return.
+/// Clears the terminal on return.
 fn with_raw_mode_disabled<F, R>(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     f: F,
@@ -49,13 +30,10 @@ where
     crossterm::execute!(
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
         DisableBracketedPaste,
         crossterm::cursor::Show
     )?;
     std::io::Write::flush(terminal.backend_mut())?;
-
-    settle_stdin();
 
     let result = f();
 
@@ -63,7 +41,6 @@ where
     crossterm::execute!(
         terminal.backend_mut(),
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
         EnableBracketedPaste,
         crossterm::cursor::Hide
     )?;
@@ -234,16 +211,7 @@ impl App {
                         Some(Ok(Event::Key(key))) => {
                             self.handle_key(key, terminal).await?;
 
-                            // Check for creation results after key handling so
-                            // the async CreationPoller path isn't starved by
-                            // continuous input events (mouse moves, etc.)
-                            // that `continue` past the periodic refresh section.
-                            if let Some(session_id) = self.home.apply_creation_results() {
-                                self.attach_session(&session_id, terminal)?;
-                            }
-
-                            // Skip the draw when returning from tmux attach
-                            // (handle_key sync path or creation result above).
+                            // Skip the draw when returning from tmux attach.
                             // needs_redraw triggers a clear + stale event drain
                             // on the next iteration; drawing before that drain
                             // wastes a frame and can flicker.
@@ -256,19 +224,7 @@ impl App {
                             }
                             continue;
                         }
-                        Some(Ok(Event::Mouse(mouse))) => {
-                            self.handle_mouse(mouse, terminal).await?;
-
-                            if let Some(session_id) = self.home.apply_creation_results() {
-                                self.attach_session(&session_id, terminal)?;
-                            }
-
-                            if !self.needs_redraw {
-                                terminal.draw(|f| self.render(f))?;
-                            }
-
-                            continue;
-                        }
+                        Some(Ok(Event::Mouse(_))) => continue,
                         Some(Ok(Event::Paste(text))) => {
                             self.home.handle_paste(&text);
 
@@ -452,18 +408,6 @@ impl App {
         }
 
         if let Some(action) = self.home.handle_key(key) {
-            self.execute_action(action, terminal)?;
-        }
-
-        Ok(())
-    }
-
-    async fn handle_mouse(
-        &mut self,
-        mouse: MouseEvent,
-        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    ) -> Result<()> {
-        if let Some(action) = self.home.handle_mouse(mouse) {
             self.execute_action(action, terminal)?;
         }
 
