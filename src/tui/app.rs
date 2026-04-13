@@ -5,7 +5,7 @@ use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
     KeyModifiers,
 };
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use ratatui::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,40 +17,6 @@ use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
-/// Temporarily leave TUI mode, run a closure, and restore TUI mode.
-/// Clears the terminal on return.
-fn with_raw_mode_disabled<F, R>(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    f: F,
-) -> Result<R>
-where
-    F: FnOnce() -> R,
-{
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        DisableBracketedPaste,
-        crossterm::cursor::Show
-    )?;
-    std::io::Write::flush(terminal.backend_mut())?;
-
-    let result = f();
-
-    crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::EnterAlternateScreen,
-        EnableBracketedPaste,
-        crossterm::cursor::Hide
-    )?;
-    std::io::Write::flush(terminal.backend_mut())?;
-
-    terminal.clear()?;
-
-    Ok(result)
-}
-
 pub struct App {
     home: HomeView,
     should_quit: bool,
@@ -58,6 +24,11 @@ pub struct App {
     needs_redraw: bool,
     update_info: Option<UpdateInfo>,
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    /// Held in an Option so `with_raw_mode_disabled` can drop it before
+    /// spawning child processes. Crossterm's EventStream runs a background
+    /// reader thread on stdin; if it's alive when tmux attach-session starts,
+    /// the two compete for stdin and tmux fails to initialize its client.
+    event_stream: Option<EventStream>,
 }
 
 /// Check if the app version changed and return the previous version if changelog should be shown.
@@ -115,7 +86,53 @@ impl App {
             needs_redraw: true,
             update_info: None,
             update_rx: None,
+            event_stream: Some(EventStream::new()),
         })
+    }
+
+    /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
+    /// Drops the EventStream before the closure so child processes (tmux,
+    /// editors) have exclusive access to stdin, then creates a fresh one.
+    fn with_raw_mode_disabled<F, R>(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        f: F,
+    ) -> Result<R>
+    where
+        F: FnOnce() -> R,
+    {
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::LeaveAlternateScreen,
+            DisableBracketedPaste,
+            crossterm::cursor::Show
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        // Drop the event stream so its background reader releases stdin.
+        // Without this, tmux attach-session fails because crossterm's
+        // reader thread competes for stdin reads.
+        self.event_stream.take();
+
+        let result = f();
+
+        // Recreate the event stream with a fresh reader before re-entering
+        // the event loop.
+        self.event_stream = Some(EventStream::new());
+
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::EnterAlternateScreen,
+            EnableBracketedPaste,
+            crossterm::cursor::Hide
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        terminal.clear()?;
+
+        Ok(result)
     }
 
     pub fn show_startup_warning(&mut self, message: &str) {
@@ -167,7 +184,6 @@ impl App {
             (hup.ok(), term.ok())
         };
 
-        let mut event_stream = EventStream::new();
         let mut refresh_interval = tokio::time::interval(Duration::from_millis(50));
         refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_status_refresh = std::time::Instant::now();
@@ -179,34 +195,19 @@ impl App {
         const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
 
         loop {
-            // Force full redraw if needed (e.g., after returning from tmux)
+            // Force full redraw if needed (e.g., after returning from tmux).
+            // with_raw_mode_disabled drops and recreates the EventStream, so
+            // there are no stale events to drain.
             if self.needs_redraw {
                 terminal.clear()?;
                 self.needs_redraw = false;
-                // Drain stale events that accumulated during raw-mode-disabled
-                // operations (tmux attach, editor). The EventStream's background
-                // thread holds the internal lock, so the former sync drain could
-                // not acquire it; drain via the async API instead.
-                loop {
-                    match event_stream.next().now_or_never() {
-                        Some(Some(Ok(_))) => continue,
-                        Some(Some(Err(_))) | Some(None) => {
-                            self.should_quit = true;
-                            break;
-                        }
-                        None => break,
-                    }
-                }
-                if self.should_quit {
-                    break;
-                }
             }
 
             // All event sources are polled cooperatively via tokio::select!.
             // This ensures signal futures actually get scheduled (fixing #608
             // defect 1), and that EOF from a dead tty is detected (defect 2).
             tokio::select! {
-                event = event_stream.next() => {
+                event = self.event_stream.as_mut().expect("event_stream missing").next() => {
                     match event {
                         Some(Ok(Event::Key(key))) => {
                             self.handle_key(key, terminal).await?;
@@ -565,7 +566,7 @@ impl App {
             self.home.set_instance_error(session_id, None);
         }
 
-        let attach_result = with_raw_mode_disabled(terminal, || tmux_session.attach())?;
+        let attach_result = self.with_raw_mode_disabled(terminal, || tmux_session.attach())?;
 
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
@@ -631,7 +632,7 @@ impl App {
             }
         };
 
-        let attach_result = with_raw_mode_disabled(terminal, attach_fn)?;
+        let attach_result = self.with_raw_mode_disabled(terminal, attach_fn)?;
 
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
@@ -679,7 +680,7 @@ impl App {
 
         let path = path.to_owned();
         let editor_clone = editor.clone();
-        let status = with_raw_mode_disabled(terminal, move || {
+        let status = self.with_raw_mode_disabled(terminal, move || {
             std::process::Command::new(&editor_clone)
                 .arg(&path)
                 .status()
