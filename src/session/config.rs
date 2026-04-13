@@ -161,6 +161,46 @@ impl SessionConfig {
             .cloned()
             .unwrap_or_default()
     }
+
+    /// Log warnings for misconfigured custom agent entries.
+    /// Called after config load to surface TOML editing mistakes.
+    pub fn warn_custom_agent_issues(&self) {
+        for (name, command) in &self.custom_agents {
+            if name.is_empty() {
+                tracing::warn!("custom_agents: entry with empty name will be ignored");
+            }
+            if command.is_empty() {
+                tracing::warn!(
+                    "custom_agents: '{}' has an empty command, session will launch with no command",
+                    name
+                );
+            }
+            if crate::agents::get_agent(name).is_some() {
+                tracing::warn!(
+                    "custom_agents: '{}' shadows a built-in agent; use agent_command_override instead",
+                    name
+                );
+            }
+        }
+        for (name, target) in &self.agent_detect_as {
+            if name.is_empty() {
+                tracing::warn!("agent_detect_as: entry with empty agent name will be ignored");
+            }
+            if target.is_empty() {
+                tracing::warn!(
+                    "agent_detect_as: '{}' maps to an empty target, status detection will default to Idle",
+                    name
+                );
+            } else if crate::agents::get_agent(target).is_none() {
+                tracing::warn!(
+                    "agent_detect_as: '{}' maps to unknown agent '{}', status detection will default to Idle. Known agents: {}",
+                    name,
+                    target,
+                    crate::agents::agent_names().join(", ")
+                );
+            }
+        }
+    }
 }
 
 /// Diff view configuration
@@ -492,6 +532,7 @@ impl Config {
 
         let content = fs::read_to_string(&path)?;
         let config: Config = toml::from_str(&content)?;
+        config.session.warn_custom_agent_issues();
         Ok(config)
     }
 }
