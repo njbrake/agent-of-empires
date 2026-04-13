@@ -210,7 +210,8 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
         cmd.args(["--tunnel-url", url]);
     }
     if let Some(ref passphrase) = args.passphrase {
-        cmd.args(["--passphrase", passphrase]);
+        // Pass via env var to avoid exposing the passphrase in the process list
+        cmd.env("AOE_SERVE_PASSPHRASE", passphrase);
     }
     if !profile.is_empty() {
         cmd.args(["--profile", profile]);

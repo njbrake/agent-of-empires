@@ -242,15 +242,11 @@ pub async fn auth_middleware(
                 || path.starts_with("/icon-");
 
             if !is_login_exempt {
-                let has_valid_session =
-                    if let Some(session_id) = super::login::extract_login_session(&request) {
-                        state
-                            .login_manager
-                            .validate_session(&session_id, client_ip)
-                            .await
-                    } else {
-                        false
-                    };
+                let session_id = super::login::extract_login_session(&request);
+                let has_valid_session = match session_id {
+                    Some(ref id) => state.login_manager.validate_session(id, client_ip).await,
+                    None => false,
+                };
 
                 if !has_valid_session {
                     // For API routes, return JSON 401. For HTML routes, redirect.
@@ -284,33 +280,31 @@ pub async fn auth_middleware(
                     }
                 }
 
-                // Sliding window: refresh the login session cookie
-                if let Some(session_id) = super::login::extract_login_session(&request) {
-                    let mut response = next.run(request).await;
+                // Session is valid. Refresh the sliding window cookie.
+                let session_id = session_id.expect("valid session implies session_id exists");
+                let mut response = next.run(request).await;
 
-                    // Set token cookie if needed
-                    let should_set_token = source == TokenSource::QueryParam || needs_upgrade;
-                    if should_set_token {
-                        if let Some(current) = state.token_manager.current_token().await {
-                            let max_age = state.token_manager.lifetime_secs().await;
-                            let cookie = build_cookie(&current, state.behind_tunnel, max_age);
-                            response.headers_mut().insert(
-                                header::SET_COOKIE,
-                                cookie.parse().expect("cookie format must be valid"),
-                            );
-                        }
+                // Set token cookie if needed
+                if source == TokenSource::QueryParam || needs_upgrade {
+                    if let Some(current) = state.token_manager.current_token().await {
+                        let max_age = state.token_manager.lifetime_secs().await;
+                        let cookie = build_cookie(&current, state.behind_tunnel, max_age);
+                        response.headers_mut().insert(
+                            header::SET_COOKIE,
+                            cookie.parse().expect("cookie format must be valid"),
+                        );
                     }
-
-                    // Refresh login session cookie (sliding window)
-                    let login_cookie =
-                        super::login::refresh_login_cookie(&session_id, state.behind_tunnel);
-                    response.headers_mut().append(
-                        header::SET_COOKIE,
-                        login_cookie.parse().expect("cookie format must be valid"),
-                    );
-
-                    return response;
                 }
+
+                // Refresh login session cookie (sliding window)
+                let login_cookie =
+                    super::login::build_login_cookie(&session_id, state.behind_tunnel);
+                response.headers_mut().append(
+                    header::SET_COOKIE,
+                    login_cookie.parse().expect("cookie format must be valid"),
+                );
+
+                return response;
             }
         }
 

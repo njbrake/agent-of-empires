@@ -121,22 +121,23 @@ impl LoginManager {
             return false;
         }
 
+        // Read lock first to check validity without blocking other readers
+        {
+            let sessions = self.sessions.read().await;
+            let Some(session) = sessions.get(session_id) else {
+                return false;
+            };
+            if Instant::now() > session.expires_at || session.ip != client_ip {
+                // Expired sessions are cleaned up by the periodic task
+                return false;
+            }
+        }
+
+        // Only take write lock to extend the sliding window
         let mut sessions = self.sessions.write().await;
-        let Some(session) = sessions.get_mut(session_id) else {
-            return false;
-        };
-
-        if Instant::now() > session.expires_at {
-            sessions.remove(session_id);
-            return false;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.expires_at = Instant::now() + SESSION_LIFETIME;
         }
-
-        if session.ip != client_ip {
-            return false;
-        }
-
-        // Sliding window: extend expiry on each valid access
-        session.expires_at = Instant::now() + SESSION_LIFETIME;
         true
     }
 
@@ -190,9 +191,10 @@ pub struct LoginRequest {
 pub async fn login_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    request: axum::extract::Request,
+    headers: axum::http::HeaderMap,
+    login_body: Result<Json<LoginRequest>, axum::extract::rejection::JsonRejection>,
 ) -> axum::response::Response {
-    let client_ip = resolve_client_ip(addr, request.headers());
+    let client_ip = resolve_client_ip(addr, &headers);
 
     if !state.login_manager.is_enabled() {
         return (
@@ -218,23 +220,8 @@ pub async fn login_handler(
             .into_response();
     }
 
-    // Extract body
-    let body = match axum::body::to_bytes(request.into_body(), 1024).await {
-        Ok(b) => b,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "bad_request",
-                    "message": "Invalid request body"
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    let login_req: LoginRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
+    let login_req = match login_body {
+        Ok(Json(req)) => req,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -256,7 +243,7 @@ pub async fn login_handler(
     if state.login_manager.verify_passphrase(&login_req.passphrase) {
         state.rate_limiter.record_success(client_ip).await;
 
-        let user_agent = addr.to_string(); // simplified
+        let user_agent = addr.to_string();
         let session_id = state
             .login_manager
             .create_session(client_ip, &user_agent)
@@ -359,7 +346,7 @@ pub fn extract_login_session(request: &axum::extract::Request) -> Option<String>
 }
 
 /// Build a Set-Cookie header for the login session.
-fn build_login_cookie(session_id: &str, secure: bool) -> String {
+pub fn build_login_cookie(session_id: &str, secure: bool) -> String {
     let mut cookie = format!(
         "aoe_session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000",
         session_id
@@ -368,11 +355,6 @@ fn build_login_cookie(session_id: &str, secure: bool) -> String {
         cookie.push_str("; Secure");
     }
     cookie
-}
-
-/// Build a Set-Cookie header that refreshes the sliding window.
-pub fn refresh_login_cookie(session_id: &str, secure: bool) -> String {
-    build_login_cookie(session_id, secure)
 }
 
 #[cfg(test)]
