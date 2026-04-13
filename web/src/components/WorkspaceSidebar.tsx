@@ -18,12 +18,13 @@ interface Props {
   onSettings: () => void;
 }
 
-function bestSessionStatus(ws: Workspace): SessionStatus {
+function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string | null } {
   const running = ws.sessions.find((s) => isSessionActive(s.status));
-  if (running) return running.status;
+  if (running) return { status: running.status, createdAt: running.created_at };
   const error = ws.sessions.find((s) => s.status === "Error");
-  if (error) return "Error";
-  return ws.sessions[0]?.status ?? "Unknown";
+  if (error) return { status: "Error", createdAt: error.created_at };
+  const first = ws.sessions[0];
+  return { status: first?.status ?? "Unknown", createdAt: first?.created_at ?? null };
 }
 
 function loadSavedWidth(): number {
@@ -65,23 +66,29 @@ const STATIC_GLYPH: Record<SessionStatus, string> = {
   Deleting: "✕",
 };
 
-/** Animated status glyph that cycles through rattles frames */
-function StatusGlyph({ status }: { status: SessionStatus }) {
+/** Animated status glyph that cycles through rattles frames.
+ *  Each instance offsets by `createdAt` so spinners look unique. */
+function StatusGlyph({ status, createdAt }: { status: SessionStatus; createdAt: string | null }) {
   const rattleKey = STATUS_RATTLE[status];
   const rattle = rattleKey ? RATTLES[rattleKey] : undefined;
-  const [frame, setFrame] = useState(0);
+  const epoch = createdAt ? Date.parse(createdAt) : 0;
+  const [frame, setFrame] = useState(() => {
+    if (!rattle) return 0;
+    return Math.floor((Date.now() - epoch) / rattle.interval) % rattle.frames.length;
+  });
 
   useEffect(() => {
     if (!rattle) return;
     const r = rattle;
-    const id = setInterval(() => {
-      setFrame((f) => (f + 1) % r.frames.length);
-    }, r.interval);
+    const computeFrame = () =>
+      Math.floor((Date.now() - epoch) / r.interval) % r.frames.length;
+    setFrame(computeFrame());
+    const id = setInterval(() => setFrame(computeFrame()), r.interval);
     return () => clearInterval(id);
-  }, [rattle]);
+  }, [rattle, epoch]);
 
   if (!rattle) return <>{STATIC_GLYPH[status]}</>;
-  return <>{rattle.frames[frame % rattle.frames.length]}</>;
+  return <>{rattle.frames[frame]}</>;
 }
 
 const SessionRow = memo(function SessionRow({
@@ -95,7 +102,7 @@ const SessionRow = memo(function SessionRow({
   onClick: () => void;
   indented?: boolean;
 }) {
-  const sessionStatus = bestSessionStatus(workspace);
+  const { status: sessionStatus, createdAt } = bestSession(workspace);
   const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
@@ -115,7 +122,7 @@ const SessionRow = memo(function SessionRow({
         <span
           className={`text-[10px] shrink-0 leading-none font-mono ${textClass}`}
         >
-          <StatusGlyph status={sessionStatus} />
+          <StatusGlyph status={sessionStatus} createdAt={createdAt} />
         </span>
         <span className={`text-[13px] truncate flex-1 ${isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
           {label}
