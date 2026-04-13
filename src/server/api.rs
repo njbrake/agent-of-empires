@@ -108,6 +108,12 @@ pub async fn rename_session(
             Json(serde_json::json!({ "message": "Title cannot be empty" })),
         );
     }
+    if let Err(msg) = validate_no_shell_injection(&title, "title") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": msg })),
+        );
+    }
 
     let mut instances = state.instances.write().await;
     let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
