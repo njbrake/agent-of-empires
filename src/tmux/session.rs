@@ -72,7 +72,12 @@ impl Session {
 
         // Note: With -d flag, tmux new-session returns 0 even if the shell command fails.
         // Log args at debug level for troubleshooting.
-        tracing::debug!("tmux new-session args: {:?}", args);
+        tracing::debug!(
+            "tmux new-session args: {:?}",
+            args.iter()
+                .map(|a| crate::session::environment::redact_env_values(a))
+                .collect::<Vec<_>>()
+        );
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -145,6 +150,12 @@ impl Session {
             bail!("Session does not exist: {}", self.name);
         }
 
+        // Let the terminal finish processing mode-change escape sequences
+        // (LeaveAlternateScreen, DisableMouseCapture) and let crossterm's
+        // EventStream background reader quiesce before tmux takes over
+        // stdin. Without this, tmux can fail to initialize its client.
+        Self::settle_terminal();
+
         if std::env::var("TMUX").is_ok() {
             let status = Command::new("tmux")
                 .args(["switch-client", "-t", &self.name])
@@ -160,7 +171,13 @@ impl Session {
                     .status()?;
 
                 if !status.success() {
-                    bail!("Failed to attach to tmux session");
+                    let diag = self.diagnose_attach_failure();
+                    bail!(
+                        "Failed to attach to tmux session '{}' (exit {}): {}",
+                        self.name,
+                        status.code().unwrap_or(-1),
+                        diag
+                    );
                 }
             }
         } else {
@@ -169,11 +186,65 @@ impl Session {
                 .status()?;
 
             if !status.success() {
-                bail!("Failed to attach to tmux session");
+                let diag = self.diagnose_attach_failure();
+                bail!(
+                    "Failed to attach to tmux session '{}' (exit {}): {}",
+                    self.name,
+                    status.code().unwrap_or(-1),
+                    diag
+                );
             }
         }
 
         Ok(())
+    }
+
+    /// Flush stale stdin bytes and pause briefly so the terminal has time
+    /// to process escape sequences and crossterm's reader can quiesce.
+    fn settle_terminal() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = std::io::stdin().as_raw_fd();
+            unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = std::io::stdin().as_raw_fd();
+            unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
+        }
+    }
+
+    /// Collect diagnostic info after a failed attach attempt.
+    fn diagnose_attach_failure(&self) -> String {
+        let mut info = Vec::new();
+        info.push(format!("exists={}", self.exists()));
+        info.push(format!("pane_dead={}", self.is_pane_dead()));
+
+        if let Ok(output) = Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &self.name,
+                "-p",
+                "#{session_attached} #{pane_pid} #{pane_dead}",
+            ])
+            .output()
+        {
+            let msg = String::from_utf8_lossy(&output.stdout);
+            info.push(format!("tmux_info={}", msg.trim()));
+        }
+
+        if let Ok(pane) = self.capture_pane(5) {
+            let trimmed = pane.trim();
+            if !trimmed.is_empty() {
+                info.push(format!("pane_content={}", trimmed));
+            }
+        }
+
+        info.join(", ")
     }
 
     pub fn capture_pane(&self, lines: usize) -> Result<String> {

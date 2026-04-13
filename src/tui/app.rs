@@ -17,6 +17,19 @@ use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
+/// Discard any bytes buffered on stdin (e.g., stale mouse tracking escape
+/// sequences, terminal responses to LeaveAlternateScreen/DisableMouseCapture).
+/// Uses POSIX tcflush which discards the kernel tty input queue directly.
+#[cfg(unix)]
+fn drain_stdin() {
+    use std::os::unix::io::AsRawFd;
+    let fd = std::io::stdin().as_raw_fd();
+    unsafe { nix::libc::tcflush(fd, nix::libc::TCIFLUSH) };
+}
+
+#[cfg(not(unix))]
+fn drain_stdin() {}
+
 /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
 /// Drains stale events and clears the terminal on return.
 fn with_raw_mode_disabled<F, R>(
@@ -35,6 +48,11 @@ where
         crossterm::cursor::Show
     )?;
     std::io::Write::flush(terminal.backend_mut())?;
+
+    // Discard stale input (mouse tracking escape sequences, terminal
+    // responses to LeaveAlternateScreen, etc.) so child processes
+    // (tmux, editors) don't read leftover bytes from stdin.
+    drain_stdin();
 
     let result = f();
 
@@ -515,7 +533,13 @@ impl App {
         // (Devbox, version managers, custom command overrides) run agents via a
         // shell process, so is_pane_running_shell() returns true even when the
         // agent is healthy.
-        let needs_restart = if !tmux_session.exists() || tmux_session.is_pane_dead() {
+        let exists = tmux_session.exists();
+        let pane_dead = if exists {
+            tmux_session.is_pane_dead()
+        } else {
+            false
+        };
+        let needs_restart = if !exists || pane_dead {
             true
         } else if crate::hooks::read_hook_status(&instance.id).is_some() {
             // Hook status is tracking this session; shell detection is unreliable
@@ -528,6 +552,13 @@ impl App {
         } else {
             !instance.expects_shell() && tmux_session.is_pane_running_shell()
         };
+        tracing::debug!(
+            session_id,
+            exists,
+            pane_dead,
+            needs_restart,
+            "attach_session: restart decision"
+        );
         if needs_restart {
             if tmux_session.exists() {
                 let _ = tmux_session.kill();

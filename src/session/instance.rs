@@ -546,7 +546,12 @@ impl Instance {
             }
         };
 
-        tracing::debug!("container cmd: {}", cmd.as_ref().map_or("none", |v| v));
+        tracing::debug!(
+            "container cmd: {}",
+            cmd.as_ref().map_or("none".to_string(), |v| {
+                super::environment::redact_env_values(v)
+            })
+        );
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)

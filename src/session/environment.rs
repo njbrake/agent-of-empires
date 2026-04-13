@@ -7,6 +7,60 @@ use super::config::SandboxConfig;
 use super::instance::SandboxInfo;
 use crate::containers::container_interface::EnvEntry;
 
+/// Redact secret values from a command string for safe logging.
+/// Replaces `-e KEY='value'` and `-e KEY=value` patterns with `-e KEY=<redacted>`,
+/// except for known-safe keys (TERM, COLORTERM, GIT_CONFIG_GLOBAL, etc.).
+pub(crate) fn redact_env_values(cmd: &str) -> String {
+    let safe_keys: &[&str] = &[
+        "TERM",
+        "COLORTERM",
+        "FORCE_COLOR",
+        "NO_COLOR",
+        "GIT_CONFIG_GLOBAL",
+        "CLAUDE_CONFIG_DIR",
+        "AOE_INSTANCE_ID",
+    ];
+
+    let mut result = String::with_capacity(cmd.len());
+    let mut remaining = cmd;
+
+    while let Some(pos) = remaining.find("-e ") {
+        result.push_str(&remaining[..pos]);
+        remaining = &remaining[pos + 3..]; // skip past "-e "
+
+        // Find the KEY before '='
+        let eq_pos = remaining.find('=');
+        // Find the boundary of this env arg: next " -e " or end of string
+        let next_env = remaining.find(" -e ").unwrap_or(remaining.len());
+
+        if let Some(eq_pos) = eq_pos {
+            // Only treat as KEY=VALUE if '=' comes before the next '-e' boundary
+            if eq_pos < next_env {
+                let key = &remaining[..eq_pos];
+                if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    if safe_keys.contains(&key) {
+                        result.push_str("-e ");
+                        result.push_str(&remaining[..next_env]);
+                    } else {
+                        result.push_str("-e ");
+                        result.push_str(key);
+                        result.push_str("=<redacted>");
+                    }
+                    remaining = &remaining[next_env..];
+                    continue;
+                }
+            }
+        }
+
+        // No '=' found or not a valid key; pass through as-is (e.g., `-e KEY` inherit form)
+        result.push_str("-e ");
+        result.push_str(&remaining[..next_env]);
+        remaining = &remaining[next_env..];
+    }
+    result.push_str(remaining);
+    result
+}
+
 /// Terminal environment variables that are always passed through for proper UI/theming
 pub(crate) const DEFAULT_TERMINAL_ENV_VARS: &[&str] =
     &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];

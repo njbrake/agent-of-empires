@@ -4,7 +4,7 @@ pub mod builder;
 pub mod civilizations;
 pub mod config;
 pub(crate) mod container_config;
-mod environment;
+pub(crate) mod environment;
 mod groups;
 mod instance;
 pub mod profile_config;
