@@ -116,18 +116,28 @@ send Tab; sleep 0.1
 send Tab; sleep 0.1
 send Tab; sleep 0.1
 
-# Submit
+# Submit (auto-attaches to Claude Code session)
 send Enter
-sleep 2
+sleep 3
+
+# Accept Claude Code trust dialog ("Yes, I trust this folder" is selected by default)
+send Enter
+sleep 3
+
+# Send a prompt to make the session look active
+type_text "Analyze this codebase and suggest improvements"
+sleep 0.8
+send Enter
+sleep 5
 
 # Detach from agent session back to TUI
 send C-b
 sleep 0.2
 send d
 wait_for "Agent of Empires"
-sleep 1
+sleep 1.2
 
-# ── Create second session: Web App with OpenCode + worktree ──
+# ── Create second session: Web App with OpenCode + worktree + YOLO ──
 send n
 wait_for "New Session"
 sleep 0.3
@@ -151,11 +161,15 @@ sleep 0.2
 send Right
 sleep 0.5
 
-# Skip YOLO
+# YOLO mode: toggle ON with Space to show the feature
 send Tab
-sleep 0.2
+sleep 0.3
+send Space
+sleep 0.8
 
 # Worktree branch
+send Tab
+sleep 0.2
 type_text "feature/auth"
 sleep 0.5
 
@@ -165,7 +179,7 @@ sleep 0.1
 
 # Submit
 send Enter
-sleep 2
+sleep 2.5
 
 # Detach
 send C-b
@@ -174,7 +188,7 @@ send d
 wait_for "Agent of Empires"
 sleep 1
 
-# ── Create third session: Chat App ──
+# ── Create third session: Chat App with Vibe ──
 send n
 wait_for "New Session"
 sleep 0.3
@@ -192,7 +206,7 @@ sleep 0.1
 type_text "$DEMO_DIR/chat-app"
 sleep 0.5
 
-# Tool: move right twice (to third tool)
+# Tool: move right twice (to Vibe)
 send Tab
 sleep 0.2
 send Right; sleep 0.1
@@ -206,22 +220,22 @@ send Tab; sleep 0.1
 
 # Submit
 send Enter
-sleep 2
+sleep 2.5
 
 # Detach
 send C-b
 sleep 0.2
 send d
 wait_for "Agent of Empires"
-sleep 1
+sleep 1.2
 
 # ── Browse the session list ──
 send k
-sleep 0.8
+sleep 0.9
 send k
-sleep 1
+sleep 1.2
 send j
-sleep 0.8
+sleep 0.9
 send j
 sleep 1.5
 
