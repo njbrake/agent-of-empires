@@ -13,6 +13,8 @@ use std::time::Duration;
 use super::home::{HomeView, TerminalMode};
 use super::styles::load_theme;
 use super::styles::Theme;
+use crate::containers::image_update::{check_image_update, ImageUpdateInfo};
+use crate::containers::{get_container_runtime, ContainerRuntimeInterface};
 use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
@@ -24,6 +26,8 @@ pub struct App {
     needs_redraw: bool,
     update_info: Option<UpdateInfo>,
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    image_update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<ImageUpdateInfo>>>,
+    image_update_notified: bool,
     /// Held in an Option so `with_raw_mode_disabled` can drop it before
     /// spawning child processes. Crossterm's EventStream runs a background
     /// reader thread on stdin; if it's alive when tmux attach-session starts,
@@ -86,6 +90,8 @@ impl App {
             needs_redraw: true,
             update_info: None,
             update_rx: None,
+            image_update_rx: None,
+            image_update_notified: false,
             event_stream: Some(EventStream::new()),
         })
     }
@@ -163,6 +169,16 @@ impl App {
             tokio::spawn(async move {
                 let version = env!("CARGO_PKG_VERSION");
                 let _ = tx.send(check_for_update(version, false).await);
+            });
+        }
+
+        // Spawn async image update check
+        {
+            let image = get_container_runtime().effective_default_image();
+            let (img_tx, img_rx) = tokio::sync::oneshot::channel();
+            self.image_update_rx = Some(img_rx);
+            tokio::spawn(async move {
+                let _ = img_tx.send(check_image_update(&image, false).await);
             });
         }
 
@@ -288,12 +304,21 @@ impl App {
             // Periodic refreshes (only when no input pending)
             let mut refresh_needed = false;
 
+            // Check for image update result (non-blocking)
+            if self.poll_image_update_check() {
+                refresh_needed = true;
+            }
+
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.request_status_refresh();
                 last_status_refresh = std::time::Instant::now();
             }
 
             if self.home.apply_status_updates() {
+                refresh_needed = true;
+            }
+
+            if self.home.check_image_pull_result() {
                 refresh_needed = true;
             }
 
@@ -346,6 +371,32 @@ impl App {
     fn render(&mut self, frame: &mut Frame) {
         self.home
             .render(frame, frame.area(), &self.theme, self.update_info.as_ref());
+    }
+
+    /// Poll for image update check result (non-blocking).
+    /// Shows a dialog if a newer image is available.
+    fn poll_image_update_check(&mut self) -> bool {
+        if self.image_update_notified {
+            return false;
+        }
+        if let Some(mut rx) = self.image_update_rx.take() {
+            match rx.try_recv() {
+                Ok(result) => {
+                    if let Ok(info) = result {
+                        if info.update_available && !self.home.has_dialog() {
+                            self.home.show_image_update_dialog(&info.image);
+                            self.image_update_notified = true;
+                            return true;
+                        }
+                    }
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    self.image_update_rx = Some(rx);
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+            }
+        }
+        false
     }
 
     /// Poll for update check result (non-blocking).
@@ -406,6 +457,10 @@ impl App {
                     self.home.show_quit_during_creation_confirm();
                     return Ok(());
                 }
+                if self.home.is_pulling_image() && !self.home.has_dialog() {
+                    self.home.show_quit_during_pull_confirm();
+                    return Ok(());
+                }
                 self.should_quit = true;
                 return Ok(());
             }
@@ -413,6 +468,10 @@ impl App {
                 if !self.home.has_dialog() {
                     if self.home.is_creation_pending() {
                         self.home.show_quit_during_creation_confirm();
+                        return Ok(());
+                    }
+                    if self.home.is_pulling_image() {
+                        self.home.show_quit_during_pull_confirm();
                         return Ok(());
                     }
                     self.should_quit = true;

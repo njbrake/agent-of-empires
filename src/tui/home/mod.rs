@@ -145,6 +145,12 @@ pub struct HomeView {
     pub(super) pending_stop_session: Option<String>,
     /// Session to force-remove after the confirmation dialog is accepted
     pub(super) pending_force_remove_session: Option<String>,
+    /// Image update dialog (shown when a newer sandbox image is available)
+    pub(super) image_update_dialog: Option<super::dialogs::ImageUpdateDialog>,
+    /// Image name for an in-progress background pull
+    pub(super) pending_image_pull: Option<String>,
+    /// Receiver for background image pull result
+    pub(super) image_pull_rx: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
     // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
@@ -284,6 +290,9 @@ impl HomeView {
             pending_attach_after_warning: None,
             pending_stop_session: None,
             pending_force_remove_session: None,
+            image_update_dialog: None,
+            pending_image_pull: None,
+            image_pull_rx: None,
             search_active: false,
             search_query: Input::default(),
             search_matches: Vec::new(),
@@ -417,6 +426,44 @@ impl HomeView {
             self.status_poller.request_refresh(instances);
             self.pending_status_refresh = true;
         }
+    }
+
+    /// Check if a background image pull has completed.
+    /// Returns true if the pull finished (success or failure).
+    pub fn check_image_pull_result(&mut self) -> bool {
+        if let Some(mut rx) = self.image_pull_rx.take() {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.pending_image_pull = None;
+                    match result {
+                        Ok(()) => {
+                            crate::containers::image_update::invalidate_image_cache();
+                            self.info_dialog =
+                                Some(InfoDialog::new("Image Updated", "Sandbox image updated."));
+                        }
+                        Err(e) => {
+                            self.info_dialog = Some(InfoDialog::new(
+                                "Pull Failed",
+                                &format!("Failed to pull image: {}", e),
+                            ));
+                        }
+                    }
+                    return true;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    self.image_pull_rx = Some(rx);
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.pending_image_pull = None;
+                    self.info_dialog = Some(InfoDialog::new(
+                        "Pull Failed",
+                        "Image pull task was cancelled.",
+                    ));
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Apply any pending status updates from the background poller.
@@ -699,6 +746,14 @@ impl HomeView {
         }
     }
 
+    pub fn show_quit_during_pull_confirm(&mut self) {
+        self.confirm_dialog = Some(ConfirmDialog::new(
+            "Image Pull In Progress",
+            "An image pull is in progress. Quit anyway? The pull will continue in the background.",
+            "quit_during_pull",
+        ));
+    }
+
     /// Show a confirmation dialog warning that a session is being created.
     pub fn show_quit_during_creation_confirm(&mut self) {
         self.confirm_dialog = Some(ConfirmDialog::new(
@@ -809,6 +864,7 @@ impl HomeView {
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
             || self.send_message_dialog.is_some()
+            || self.image_update_dialog.is_some()
             || self.settings_view.is_some()
             || self.diff_view.is_some()
     }
@@ -836,6 +892,43 @@ impl HomeView {
 
     pub fn show_changelog(&mut self, from_version: Option<String>) {
         self.changelog_dialog = Some(ChangelogDialog::new(from_version));
+    }
+
+    pub fn is_pulling_image(&self) -> bool {
+        self.pending_image_pull.is_some()
+    }
+
+    pub fn show_image_update_dialog(&mut self, _image: &str) {
+        if self.pending_image_pull.is_some() {
+            return;
+        }
+        self.image_update_dialog = Some(crate::tui::dialogs::ImageUpdateDialog::new());
+    }
+
+    pub(super) fn start_image_pull(&mut self) {
+        use crate::containers::ContainerRuntimeInterface;
+
+        if self.pending_image_pull.is_some() {
+            return;
+        }
+
+        let image = crate::containers::get_container_runtime().effective_default_image();
+        self.pending_image_pull = Some(image.clone());
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<std::result::Result<(), String>>();
+        tokio::spawn(async move {
+            let result: std::result::Result<(), String> = tokio::task::spawn_blocking(move || {
+                use crate::containers::ContainerRuntimeInterface;
+                let runtime = crate::containers::get_container_runtime();
+                runtime.pull_image(&image).map_err(|e| format!("{}", e))
+            })
+            .await
+            .map_err(|e| format!("{}", e))
+            .and_then(|r| r);
+            let _ = tx.send(result);
+        });
+
+        self.image_pull_rx = Some(rx);
     }
 
     pub fn instances(&self) -> &[Instance] {

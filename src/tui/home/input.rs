@@ -267,6 +267,34 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.image_update_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.image_update_dialog = None;
+                    crate::containers::image_update::snooze_image_update();
+                }
+                DialogResult::Submit(action) => {
+                    self.image_update_dialog = None;
+                    match action {
+                        crate::tui::dialogs::ImageUpdateAction::Pull => {
+                            self.start_image_pull();
+                        }
+                        crate::tui::dialogs::ImageUpdateAction::Snooze => {
+                            crate::containers::image_update::snooze_image_update();
+                        }
+                        crate::tui::dialogs::ImageUpdateAction::Dismiss => {
+                            if let Ok(Some(mut config)) = load_config() {
+                                config.app_state.image_update_check_dismissed = true;
+                                let _ = save_config(&config);
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.confirm_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -292,7 +320,7 @@ impl HomeView {
                                 tracing::error!("Failed to force remove session: {}", e);
                             }
                         }
-                    } else if action == "quit_during_creation" {
+                    } else if action == "quit_during_creation" || action == "quit_during_pull" {
                         return Some(Action::Quit);
                     }
                 }

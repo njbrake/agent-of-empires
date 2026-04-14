@@ -7,6 +7,7 @@ mod delete_options;
 mod group_delete_options;
 mod hook_trust;
 mod hooks_install;
+mod image_update;
 mod info;
 mod new_session;
 mod profile_picker;
@@ -21,6 +22,7 @@ pub use delete_options::{DeleteDialogConfig, DeleteOptions, UnifiedDeleteDialog}
 pub use group_delete_options::{GroupDeleteOptions, GroupDeleteOptionsDialog};
 pub use hook_trust::{HookTrustAction, HookTrustDialog};
 pub use hooks_install::HooksInstallDialog;
+pub use image_update::{ImageUpdateAction, ImageUpdateDialog};
 pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
 pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};

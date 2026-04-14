@@ -72,16 +72,12 @@ impl HomeView {
             return;
         }
 
-        // Layout: main area + status bar + optional update bar at bottom
-        let constraints = if update_info.is_some() {
-            vec![
-                Constraint::Min(0),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-        } else {
-            vec![Constraint::Min(0), Constraint::Length(1)]
-        };
+        // Layout: main area + status bar + optional bars at bottom
+        let extra_bars = update_info.is_some() as u16 + self.is_pulling_image() as u16;
+        let mut constraints = vec![Constraint::Min(0), Constraint::Length(1)];
+        for _ in 0..extra_bars {
+            constraints.push(Constraint::Length(1));
+        }
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -106,8 +102,13 @@ impl HomeView {
         self.render_preview(frame, chunks[1], theme);
         self.render_status_bar(frame, main_chunks[1], theme);
 
+        let mut bar_index = 2;
         if let Some(info) = update_info {
-            self.render_update_bar(frame, main_chunks[2], theme, info);
+            self.render_update_bar(frame, main_chunks[bar_index], theme, info);
+            bar_index += 1;
+        }
+        if self.is_pulling_image() {
+            self.render_pull_bar(frame, main_chunks[bar_index], theme);
         }
 
         // Render dialogs on top
@@ -152,6 +153,10 @@ impl HomeView {
         }
 
         if let Some(dialog) = &self.info_dialog {
+            dialog.render(frame, area, theme);
+        }
+
+        if let Some(dialog) = &self.image_update_dialog {
             dialog.render(frame, area, theme);
         }
 
@@ -856,6 +861,23 @@ impl HomeView {
 
         let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
         frame.render_widget(status, area);
+    }
+
+    fn render_pull_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let frames = ["   ", ".  ", ".. ", "..."];
+        let tick = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 400) as usize;
+        let dots = frames[tick % frames.len()];
+
+        let bar = Paragraph::new(Line::from(vec![Span::styled(
+            format!(" pulling sandbox image{}", dots),
+            Style::default().fg(theme.running).bold(),
+        )]))
+        .style(Style::default().bg(theme.selection));
+        frame.render_widget(bar, area);
     }
 
     fn render_update_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme, info: &UpdateInfo) {
