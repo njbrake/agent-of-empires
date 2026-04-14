@@ -245,8 +245,7 @@ pub async fn create_session(
             .filter(|s| !s.is_empty())
             .collect();
 
-        // When worktree_branch is empty string, generate a name from civilizations
-        // (matches TUI behavior where empty title gets auto-generated).
+        // When worktree_branch is empty string, generate a name from civilizations.
         // The generated name is used as both title and branch.
         let title = body.title.unwrap_or_default();
         let worktree_branch = match body.worktree_branch {

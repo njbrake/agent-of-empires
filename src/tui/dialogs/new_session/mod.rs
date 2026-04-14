@@ -16,9 +16,9 @@ use super::DialogResult;
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::config::{DefaultTerminalMode, SandboxConfig};
 use crate::session::repo_config::HookProgress;
+use crate::session::resolve_config;
 #[cfg(test)]
 use crate::session::Config;
-use crate::session::{civilizations, resolve_config};
 use crate::tmux::AvailableTools;
 use crate::tui::components::{
     DirPicker, DirPickerResult, GroupGhostCompletion, ListPicker, ListPickerResult,
@@ -110,7 +110,6 @@ pub struct NewSessionDialog {
     pub(super) tool_index: usize,
     pub(super) focused_field: usize,
     pub(super) available_tools: Vec<String>,
-    pub(super) existing_titles: Vec<String>,
     pub(super) worktree_branch: Input,
     pub(super) create_new_branch: bool,
     pub(super) sandbox_enabled: bool,
@@ -299,7 +298,6 @@ fn build_inherited_settings(sandbox: &SandboxConfig) -> Vec<(String, String)> {
 impl NewSessionDialog {
     pub fn new(
         tools: AvailableTools,
-        existing_titles: Vec<String>,
         existing_groups: Vec<String>,
         profile: &str,
         available_profiles: Vec<String>,
@@ -374,7 +372,6 @@ impl NewSessionDialog {
             tool_index,
             focused_field: 0,
             available_tools,
-            existing_titles,
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -611,7 +608,6 @@ impl NewSessionDialog {
             tool_index,
             focused_field: 0,
             available_tools: tools,
-            existing_titles: Vec::new(),
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -671,7 +667,6 @@ impl NewSessionDialog {
             tool_index: 0,
             focused_field: 0,
             available_tools: tools.iter().map(|s| s.to_string()).collect(),
-            existing_titles: Vec::new(),
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -1422,12 +1417,7 @@ impl NewSessionDialog {
 
     fn build_submit_result(&self) -> DialogResult<NewSessionData> {
         let title_value = self.title.value().trim();
-        let final_title = if title_value.is_empty() {
-            let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
-            civilizations::generate_random_title(&refs)
-        } else {
-            title_value.to_string()
-        };
+        let final_title = title_value.to_string();
         let worktree_value = self.worktree_branch.value().trim();
         let has_worktree_branch = !worktree_value.is_empty();
         let worktree_branch = if has_worktree_branch {

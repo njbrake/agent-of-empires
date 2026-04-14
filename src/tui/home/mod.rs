@@ -13,7 +13,7 @@ use std::time::Instant;
 use tui_input::Input;
 
 use crate::session::{
-    config::{load_config, save_config, SortOrder},
+    config::{load_config, save_config, GroupByMode, SortOrder},
     flatten_tree, flatten_tree_all_profiles, resolve_config, DefaultTerminalMode, Group, GroupTree,
     Instance, Item, Storage,
 };
@@ -29,6 +29,22 @@ use super::dialogs::{
 use super::diff::DiffView;
 use super::settings::SettingsView;
 use super::status_poller::StatusPoller;
+
+/// Extract a project group name from a session instance.
+/// Uses `worktree_info.main_repo_path` for worktree sessions (so all branches of the
+/// same repo group together), otherwise uses `project_path`. Returns the last path segment.
+fn project_group_name(inst: &Instance) -> String {
+    let base_path = inst
+        .worktree_info
+        .as_ref()
+        .map(|wt| wt.main_repo_path.as_str())
+        .unwrap_or(&inst.project_path);
+
+    std::path::Path::new(base_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| base_path.to_string())
+}
 
 pub(super) struct GroupRenameContext {
     pub(super) old_path: String,
@@ -117,6 +133,7 @@ pub struct HomeView {
     pub(super) selected_group_profile: Option<String>,
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
+    pub(super) group_by: GroupByMode,
 
     // Dialogs
     pub(super) show_help: bool,
@@ -250,6 +267,10 @@ impl HomeView {
             .as_ref()
             .and_then(|c| c.app_state.sort_order)
             .unwrap_or_default();
+        let group_by = user_config
+            .as_ref()
+            .and_then(|c| c.app_state.group_by)
+            .unwrap_or_default();
 
         let mut view = Self {
             storages,
@@ -264,6 +285,7 @@ impl HomeView {
             selected_group_profile: None,
             view_mode: ViewMode::default(),
             sort_order,
+            group_by,
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
@@ -490,10 +512,16 @@ impl HomeView {
     ) {
         // Build a stub instance to show in the list while creation runs
         let stub_title = if data.title.is_empty() {
-            std::path::Path::new(&data.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "New session".to_string())
+            data.worktree_branch
+                .as_deref()
+                .filter(|b| !b.is_empty())
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| {
+                    std::path::Path::new(&data.path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "New session".to_string())
+                })
         } else {
             data.title.clone()
         };
@@ -859,8 +887,11 @@ impl HomeView {
     }
 
     pub(super) fn build_flat_items(&self) -> Vec<Item> {
+        if self.group_by == GroupByMode::Project {
+            return self.build_flat_items_by_project();
+        }
+
         if let Some(profile) = &self.active_profile {
-            // Filtered to a single profile -- only include that profile's instances
             let filtered: Vec<Instance> = self
                 .instances
                 .iter()
@@ -872,7 +903,6 @@ impl HomeView {
                 None => Vec::new(),
             }
         } else if self.storages.len() <= 1 {
-            // All-profiles mode with only one profile -- skip the profile header
             match self.group_trees.values().next() {
                 Some(tree) => flatten_tree(tree, &self.instances, self.sort_order),
                 None => Vec::new(),
@@ -880,6 +910,29 @@ impl HomeView {
         } else {
             flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order)
         }
+    }
+
+    fn build_flat_items_by_project(&self) -> Vec<Item> {
+        let instances: Vec<Instance> = if let Some(profile) = &self.active_profile {
+            self.instances
+                .iter()
+                .filter(|i| i.source_profile == *profile)
+                .cloned()
+                .collect()
+        } else {
+            self.instances.clone()
+        };
+
+        let grouped: Vec<Instance> = instances
+            .into_iter()
+            .map(|mut inst| {
+                inst.group_path = project_group_name(&inst);
+                inst
+            })
+            .collect();
+
+        let tree = GroupTree::new_with_groups(&grouped, &[]);
+        flatten_tree(&tree, &grouped, self.sort_order)
     }
 
     pub fn active_profile_display(&self) -> &str {

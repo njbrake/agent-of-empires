@@ -87,6 +87,31 @@ impl SortOrder {
     }
 }
 
+/// Session list grouping mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupByMode {
+    Manual,
+    #[default]
+    Project,
+}
+
+impl GroupByMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            GroupByMode::Manual => GroupByMode::Project,
+            GroupByMode::Project => GroupByMode::Manual,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GroupByMode::Manual => "Manual",
+            GroupByMode::Project => "Project",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppStateConfig {
     #[serde(default)]
@@ -109,6 +134,9 @@ pub struct AppStateConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<SortOrder>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<GroupByMode>,
 }
 
 /// Session-related configuration defaults

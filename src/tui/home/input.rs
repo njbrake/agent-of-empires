@@ -5,7 +5,7 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::{HomeView, TerminalMode, ViewMode};
-use crate::session::config::{load_config, save_config, SortOrder};
+use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config, Item, Status};
 use crate::tui::app::Action;
 use crate::tui::dialogs::{
@@ -560,8 +560,6 @@ impl HomeView {
                         "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
                     ));
                 } else {
-                    let existing_titles: Vec<String> =
-                        self.instances().iter().map(|i| i.title.clone()).collect();
                     let existing_groups: Vec<String> =
                         self.all_groups().iter().map(|g| g.path.clone()).collect();
                     let current_profile = self
@@ -572,7 +570,6 @@ impl HomeView {
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     self.new_dialog = Some(NewSessionDialog::new(
                         self.available_tools.clone(),
-                        existing_titles,
                         existing_groups,
                         &current_profile,
                         profiles,
@@ -619,8 +616,6 @@ impl HomeView {
                         .or_else(|| self.selected_group.clone());
 
                     if prefill_path.is_some() || prefill_group.is_some() {
-                        let existing_titles: Vec<String> =
-                            self.instances().iter().map(|i| i.title.clone()).collect();
                         let existing_groups: Vec<String> =
                             self.all_groups().iter().map(|g| g.path.clone()).collect();
                         let current_profile = self
@@ -631,7 +626,6 @@ impl HomeView {
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let mut dialog = NewSessionDialog::new(
                             self.available_tools.clone(),
-                            existing_titles,
                             existing_groups,
                             &current_profile,
                             profiles,
@@ -873,9 +867,12 @@ impl HomeView {
             KeyCode::PageDown => {
                 self.move_cursor(10);
             }
-            KeyCode::Home | KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::NONE) => {
+            KeyCode::Home => {
                 self.cursor = 0;
                 self.update_selected();
+            }
+            KeyCode::Char('g') => {
+                self.apply_group_by(self.group_by.cycle());
             }
             KeyCode::End | KeyCode::Char('G') => {
                 if !self.flat_items.is_empty() {
@@ -989,6 +986,19 @@ impl HomeView {
             config.app_state.sort_order = Some(self.sort_order);
             if let Err(e) = save_config(&config) {
                 tracing::warn!("Failed to save sort order: {}", e);
+            }
+        }
+    }
+
+    fn apply_group_by(&mut self, new_mode: GroupByMode) {
+        self.group_by = new_mode;
+        self.flat_items = self.build_flat_items();
+        self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
+        self.update_selected();
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.group_by = Some(self.group_by);
+            if let Err(e) = save_config(&config) {
+                tracing::warn!("Failed to save group_by mode: {}", e);
             }
         }
     }

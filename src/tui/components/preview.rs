@@ -117,12 +117,13 @@ impl Preview {
         cached_output: &str,
         theme: &Theme,
     ) {
-        // 3 base lines (profile+tool / path / status) + optional worktree block
+        // 3 base lines (profile+tool / path / status) + optional sandbox + optional worktree block
         let base = 3;
+        let sandbox_lines = if instance.is_sandboxed() { 1 } else { 0 };
         let info_height = if instance.worktree_info.is_some() {
-            base + 4 // blank + header + branch + main
+            base + sandbox_lines + 4 // blank + header + branch + main
         } else {
-            base
+            base + sandbox_lines
         };
 
         let chunks = Layout::default()
@@ -183,6 +184,16 @@ impl Preview {
                 ),
             ]),
         ]);
+
+        // Add sandbox information if present
+        if let Some(sandbox) = &instance.sandbox_info {
+            if sandbox.enabled {
+                info_lines.push(Line::from(vec![
+                    Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
+                    Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
+                ]));
+            }
+        }
 
         // Add worktree information if present
         if let Some(wt_info) = &instance.worktree_info {

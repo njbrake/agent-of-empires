@@ -15,8 +15,8 @@ mod storage;
 pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub use config::{
     get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
-    ContainerRuntimeName, DefaultTerminalMode, SandboxConfig, SessionConfig, ThemeConfig,
-    TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
+    ContainerRuntimeName, DefaultTerminalMode, GroupByMode, SandboxConfig, SessionConfig,
+    ThemeConfig, TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
 pub(crate) use environment::user_shell;
 pub use environment::validate_env_entry;

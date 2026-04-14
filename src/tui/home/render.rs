@@ -11,6 +11,7 @@ use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
     ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
+use crate::session::config::GroupByMode;
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
 use crate::tui::styles::Theme;
@@ -165,9 +166,22 @@ impl HomeView {
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let group_suffix = if self.group_by == GroupByMode::Project {
+            " (by project)"
+        } else {
+            ""
+        };
         let title = match self.view_mode {
-            ViewMode::Agent => format!(" Agent of Empires [{}] ", self.active_profile_display()),
-            ViewMode::Terminal => format!(" Terminals [{}] ", self.active_profile_display()),
+            ViewMode::Agent => format!(
+                " Agent of Empires [{}]{} ",
+                self.active_profile_display(),
+                group_suffix
+            ),
+            ViewMode::Terminal => format!(
+                " Terminals [{}]{} ",
+                self.active_profile_display(),
+                group_suffix
+            ),
         };
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
@@ -410,28 +424,11 @@ impl HomeView {
                         Style::default().fg(theme.branch),
                     ));
                 } else if let Some(wt_info) = &inst.worktree_info {
-                    line_spans.push(Span::styled(
-                        format!("  {}", wt_info.branch),
-                        Style::default().fg(theme.branch),
-                    ));
-                }
-                if inst.is_sandboxed() {
-                    match self.view_mode {
-                        ViewMode::Agent => {
-                            line_spans.push(Span::styled(
-                                " [sandbox]",
-                                Style::default().fg(theme.sandbox),
-                            ));
-                        }
-                        ViewMode::Terminal => {
-                            let mode = self.get_terminal_mode(id);
-                            let mode_text = match mode {
-                                TerminalMode::Container => " [container]",
-                                TerminalMode::Host => " [host]",
-                            };
-                            line_spans
-                                .push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
-                        }
+                    if wt_info.branch != inst.title {
+                        line_spans.push(Span::styled(
+                            format!("  {}", wt_info.branch),
+                            Style::default().fg(theme.branch),
+                        ));
                     }
                 }
             }
@@ -800,6 +797,9 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" t", key_style),
             Span::styled(" View ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" g", key_style),
+            Span::styled(" Group ", desc_style),
         ]);
 
         // Show c: container/host hint for sandboxed sessions in Terminal view
