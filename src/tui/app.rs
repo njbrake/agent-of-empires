@@ -334,6 +334,8 @@ impl App {
             }
         }
 
+        self.home.cleanup_pending_creation();
+
         if let Err(e) = self.home.save() {
             tracing::error!("Failed to save on quit: {}", e);
         }

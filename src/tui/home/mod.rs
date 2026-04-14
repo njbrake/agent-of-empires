@@ -699,6 +699,44 @@ impl HomeView {
         }
     }
 
+    /// Clean up a pending creation on TUI shutdown. Waits briefly for the
+    /// background thread to finish so we can clean up worktrees/instances.
+    /// If the thread doesn't finish in time, the hook subprocess will
+    /// complete on its own and orphaned Creating stubs are cleaned up on
+    /// next launch.
+    pub fn cleanup_pending_creation(&mut self) {
+        if !self.creation_poller.is_pending() {
+            return;
+        }
+        self.creation_cancelled = true;
+        if let Some(stub_id) = self.creating_stub_id.take() {
+            self.remove_instance(&stub_id);
+            self.creating_hook_progress.remove(&stub_id);
+        }
+
+        // Wait briefly for the background thread to finish
+        let result = self
+            .creation_poller
+            .recv_result_timeout(std::time::Duration::from_secs(2));
+
+        if let Some(crate::tui::creation_poller::CreationResult::Success {
+            ref instance,
+            ref created_worktree,
+            ..
+        }) = result
+        {
+            let worktree =
+                created_worktree
+                    .as_ref()
+                    .map(|wt| crate::session::builder::CreatedWorktree {
+                        path: std::path::PathBuf::from(&wt.path),
+                        main_repo_path: std::path::PathBuf::from(&wt.main_repo_path),
+                    });
+            crate::session::builder::cleanup_instance(instance, worktree.as_ref(), &[]);
+            tracing::info!("Cleaned up cancelled session on exit");
+        }
+    }
+
     /// Tick dialog animations/timers and drain hook progress.
     /// Returns true when a redraw is needed.
     pub fn tick_dialog(&mut self) -> bool {
