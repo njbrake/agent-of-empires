@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { isSessionActive } from "./lib/session";
+import { useDiffFiles } from "./hooks/useDiffFiles";
 import { createSession, loginStatus, logout } from "./lib/api";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
 import { RightPanel } from "./components/RightPanel";
+import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
@@ -36,12 +38,10 @@ export default function App() {
     setLoginAuthenticated(false);
   };
 
-  // Show login page if required and not authenticated
   if (loginRequired && !loginAuthenticated) {
     return <LoginPage onSuccess={handleLoginSuccess} />;
   }
 
-  // While checking login status, show nothing (brief flash)
   if (loginRequired === null) {
     return <div className="h-dvh bg-surface-900" />;
   }
@@ -58,10 +58,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     null,
   );
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [diffCollapsed, setDiffCollapsed] = useState(
     () => window.innerWidth < 768,
   );
-  const [diffFileCount, setDiffFileCount] = useState(0);
   const [showAddProject, setShowAddProject] = useState(false);
   const [creatingForProject, setCreatingForProject] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
@@ -76,15 +76,33 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     (s) => s.id === activeSessionId,
   );
 
-  const alertCounts = useMemo(() => {
-    let errors = 0;
-    let waiting = 0;
-    for (const s of sessions) {
-      if (s.status === "Error") errors++;
-      if (s.status === "Waiting") waiting++;
+  // Fetch diff files at App level so we can share with RightPanel and viewer.
+  // Only poll when a session is selected and the right panel is visible.
+  const { files: diffFiles, baseBranch, warning, loading: diffFilesLoading, revision } =
+    useDiffFiles(activeSessionId, !diffCollapsed);
+
+  // Reset file selection when session changes, when the selected file
+  // disappears from the list, or when the list becomes empty (all changes
+  // reverted/committed). Guard on diffFilesLoading so we don't clear the
+  // selection during the brief gap before the first fetch completes.
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSelectedFilePath(null);
+      return;
     }
-    return { errors, waiting };
-  }, [sessions]);
+    if (
+      selectedFilePath &&
+      !diffFilesLoading &&
+      !diffFiles.some((f) => f.path === selectedFilePath)
+    ) {
+      setSelectedFilePath(null);
+    }
+  }, [activeSessionId, diffFiles, diffFilesLoading, selectedFilePath]);
+
+  // Reset file selection when switching sessions.
+  useEffect(() => {
+    setSelectedFilePath(null);
+  }, [activeSessionId]);
 
   const focusKeyboardProxy = () => {
     if (window.innerWidth < 768 && navigator.maxTouchPoints > 0) {
@@ -97,8 +115,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     if (ws) {
       setActiveWorkspaceId(ws.id);
       setActiveSessionId(sessionId);
-      // Focus proxy input within this tap gesture to open the soft keyboard.
-      // The terminal will steal focus from it on mount via term.focus().
       focusKeyboardProxy();
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
@@ -141,6 +157,14 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   const toggleDiff = () => setDiffCollapsed((c) => !c);
 
+  const handleSelectFile = useCallback((path: string) => {
+    setSelectedFilePath(path);
+  }, []);
+
+  const handleCloseFile = useCallback(() => {
+    setSelectedFilePath(null);
+  }, []);
+
   useKeyboardShortcuts(
     useCallback(
       () => ({
@@ -150,6 +174,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           setShowAddProject(false);
           setShowHelp(false);
           setShowSettings(false);
+          // Also close file diff view if open
+          setSelectedFilePath(null);
         },
         onHelp: () => setShowHelp((h) => !h),
         onSettings: () => setShowSettings((s) => !s),
@@ -178,7 +204,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           workspace={activeWorkspace}
           activeSession={activeSession}
           diffCollapsed={diffCollapsed}
-          diffFileCount={diffFileCount}
+          diffFileCount={diffFiles.length}
           onToggleDiff={toggleDiff}
         />
 
@@ -186,14 +212,38 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           collapsed={diffCollapsed}
           onToggleCollapse={toggleDiff}
           left={
-            <TerminalView key={activeSessionId} session={activeSession} />
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+              {/* Terminal kept mounted (hidden when a file diff is shown) to preserve xterm state */}
+              <div
+                className={
+                  selectedFilePath
+                    ? "hidden"
+                    : "flex-1 flex flex-col min-h-0 overflow-hidden"
+                }
+              >
+                <TerminalView key={activeSessionId} session={activeSession} />
+              </div>
+
+              {selectedFilePath && activeSessionId && (
+                <DiffFileViewer
+                  sessionId={activeSessionId}
+                  filePath={selectedFilePath}
+                  revision={revision}
+                  onClose={handleCloseFile}
+                />
+              )}
+            </div>
           }
           right={
             <RightPanel
               session={activeSession ?? null}
               sessionId={activeSessionId}
-              expanded={!diffCollapsed}
-              onFileCountChange={setDiffFileCount}
+              files={diffFiles}
+              baseBranch={baseBranch}
+              warning={warning}
+              filesLoading={diffFilesLoading}
+              selectedFilePath={selectedFilePath}
+              onSelectFile={handleSelectFile}
             />
           }
         />
@@ -203,7 +253,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   return (
     <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
-
       {/* Header */}
       <header className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2">
         <button
@@ -232,7 +281,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         </button>
 
         <button
-          onClick={() => { setActiveWorkspaceId(null); setActiveSessionId(null); setShowSettings(false); }}
+          onClick={() => { setActiveWorkspaceId(null); setActiveSessionId(null); setShowSettings(false); setSelectedFilePath(null); }}
           className="flex items-center gap-1.5 text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
           aria-label="Go to dashboard"
         >
@@ -243,18 +292,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         <div className="flex-1" />
 
         <div className="flex items-center gap-1.5">
-          {alertCounts.errors > 0 && (
-            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/10 text-status-error">
-              {alertCounts.errors} error{alertCounts.errors !== 1 ? "s" : ""}
-            </span>
-          )}
-          {alertCounts.waiting > 0 && (
-            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-waiting/10 text-status-waiting">
-              {alertCounts.waiting} waiting
-            </span>
-          )}
           {error && (
-            <span className="font-mono text-xs text-status-error">
+            <span
+              className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/10 text-status-error flex items-center gap-1.5"
+              title="Disconnected from backend"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-status-error animate-pulse" />
               offline
             </span>
           )}
@@ -318,7 +361,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         </div>
       </div>
 
-      {/* Add project wizard */}
       {showAddProject && (
         <SessionWizard
           onClose={() => setShowAddProject(false)}
@@ -328,8 +370,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
 
-      {/* Hidden proxy input: focused during session-select tap gesture to open
-          the mobile soft keyboard. The terminal steals focus on mount. */}
       <textarea
         ref={keyboardProxyRef}
         aria-hidden="true"

@@ -1,6 +1,7 @@
 import type {
   SessionResponse,
-  DiffResponse,
+  RichDiffFilesResponse,
+  RichFileDiffResponse,
   AgentInfo,
   ProfileInfo,
   DirEntry,
@@ -37,11 +38,26 @@ export async function ensureTerminal(
   }
 }
 
-export async function getSessionDiff(
+export async function getSessionDiffFiles(
   id: string,
-): Promise<DiffResponse | null> {
+): Promise<RichDiffFilesResponse | null> {
   try {
-    const res = await fetch(`/api/sessions/${id}/diff`);
+    const res = await fetch(`/api/sessions/${id}/diff/files`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getSessionFileDiff(
+  id: string,
+  filePath: string,
+): Promise<RichFileDiffResponse | null> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${id}/diff/file?path=${encodeURIComponent(filePath)}`,
+    );
     if (!res.ok) return null;
     return await res.json();
   } catch {
