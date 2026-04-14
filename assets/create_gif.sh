@@ -125,7 +125,7 @@ send Enter
 sleep 3
 
 # Send a prompt to make the session look active
-type_text "Analyze this codebase and suggest improvements"
+type_text "Write a 1000 word story about Age of Empires"
 sleep 0.8
 send Enter
 sleep 5
@@ -231,13 +231,39 @@ sleep 1.2
 
 # ── Browse the session list ──
 send k
-sleep 0.9
+sleep 1.8
 send k
-sleep 1.2
+sleep 2.2
 send j
-sleep 0.9
+sleep 1.8
 send j
+sleep 2
+
+# ── Show terminal view: toggle mode, open a terminal, run pwd, detach ──
+send t
+wait_for "[Term]"
 sleep 1.5
+# Enter attaches to a newly-created terminal tmux session
+send Enter
+sleep 3
+# Target the dynamic aoe_term_* session for shell input
+TERM_SESSION=$(tmux list-sessions -F "#{session_name}" | grep -E "^aoe_term_" | head -1)
+if [ -n "$TERM_SESSION" ]; then
+    tmux send-keys -t "$TERM_SESSION" -l "pwd"
+    sleep 0.3
+    tmux send-keys -t "$TERM_SESSION" Enter
+    sleep 1.5
+fi
+# Detach back to the aoe TUI
+send C-b
+sleep 0.3
+send d
+wait_for "Terminals"
+sleep 1
+# Toggle back to Agent view
+send t
+wait_for "[Agent]"
+sleep 1
 
 # ── Quit ──
 send q
