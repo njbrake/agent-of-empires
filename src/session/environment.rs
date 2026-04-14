@@ -273,22 +273,36 @@ fn resolved_sandbox_config(project_path: &std::path::Path) -> super::config::San
         .unwrap_or_default()
 }
 
-/// Build docker exec environment flags from config and optional per-session extra entries.
-/// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
-/// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
+/// Result of building docker exec environment arguments.
 ///
-/// Docker exec commands run inside tmux, so there is no reliable way to inject
-/// env vars into the Docker CLI process without putting values in the command
-/// string. This function therefore always uses `-e KEY=VALUE` (the pre-existing
-/// behavior), keeping secrets in the shell command but ensuring they always
-/// reach the container.
+/// Separates secret (inherited from host) env vars from literal (non-secret) ones.
+/// Secrets are injected into the tmux session via `export` shell builtins sent
+/// through `tmux send-keys`, keeping them out of every process's argv/ps output.
+/// The docker exec command then uses `-e KEY` (key only, no value) to inherit
+/// the exported variable from the shell environment.
+pub(crate) struct DockerExecEnv {
+    /// Docker `-e` flags for the exec command line.
+    /// Inherit entries use `-e KEY` (key only); Literal entries use `-e KEY=VALUE`.
+    pub docker_args: String,
+    /// Shell export statements for Inherit (secret) entries.
+    /// Each entry is a complete `export KEY='escaped_value'` command ready
+    /// to be sent via `tmux send-keys`.
+    pub exports: Vec<String>,
+}
+
+/// Build docker exec environment flags from config and optional per-session extra entries.
+/// Used for `docker exec` commands run inside tmux sessions.
+///
+/// Returns a [`DockerExecEnv`] that separates secret values (which must be
+/// injected via `tmux send-keys` + `export`) from literal values (which are
+/// safe to include in the command line).
 ///
 /// The `docker run` path (container creation) is protected separately via
 /// `Command::env()` in `run_create`, which keeps secrets out of argv entirely.
 pub(crate) fn build_docker_env_args(
     sandbox: &SandboxInfo,
     project_path: &std::path::Path,
-) -> String {
+) -> DockerExecEnv {
     let sandbox_config = resolved_sandbox_config(project_path);
 
     tracing::debug!(
@@ -307,16 +321,27 @@ pub(crate) fn build_docker_env_args(
         tracing::debug!("  env: {}=<set>", entry.key());
     }
 
-    // Always pass values explicitly for docker exec via tmux.
-    // We cannot use `-e KEY` (inherit) here because docker exec runs
-    // inside a tmux session whose shell environment may not have the
-    // variable (tmux server may have started before the var was set).
-    let args: Vec<String> = env_entries
-        .iter()
-        .map(|entry| format!("-e {}={}", entry.key(), shell_escape(entry.value())))
-        .collect();
+    let mut docker_flag_parts: Vec<String> = Vec::new();
+    let mut exports: Vec<String> = Vec::new();
 
-    args.join(" ")
+    for entry in &env_entries {
+        match entry {
+            EnvEntry::Inherit { key, value } => {
+                // Key only in docker args; value injected via shell export
+                docker_flag_parts.push(format!("-e {}", key));
+                exports.push(format!("export {}={}", key, shell_escape(value)));
+            }
+            EnvEntry::Literal { key, value } => {
+                // Non-secret literal values are safe in argv
+                docker_flag_parts.push(format!("-e {}={}", key, shell_escape(value)));
+            }
+        }
+    }
+
+    DockerExecEnv {
+        docker_args: docker_flag_parts.join(" "),
+        exports,
+    }
 }
 
 #[cfg(test)]
@@ -610,9 +635,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_docker_env_args_passes_values_explicitly() {
-        // Docker exec runs inside tmux, so values must always be passed
-        // explicitly (tmux's env may not have the variable).
+    fn test_build_docker_env_args_inherit_uses_key_only_in_args() {
+        // Inherited (secret) env vars must NOT have values in docker_args.
+        // Values are in exports for injection via tmux send-keys.
         std::env::set_var("AOE_TEST_TOKEN", "secret123");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -624,22 +649,31 @@ mod tests {
             custom_instruction: None,
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        // docker_args should have the key but NOT the secret value
         assert!(
-            result.contains("AOE_TEST_TOKEN"),
-            "Expected AOE_TEST_TOKEN in args: {}",
-            result
+            result.docker_args.contains("-e AOE_TEST_TOKEN"),
+            "Expected -e AOE_TEST_TOKEN in docker_args: {}",
+            result.docker_args
         );
-        // Value must be present (docker exec via tmux needs explicit values)
         assert!(
-            result.contains("secret123"),
-            "Expected value in args for docker exec: {}",
+            !result.docker_args.contains("secret123"),
+            "Secret value must NOT appear in docker_args: {}",
+            result.docker_args
+        );
+        // exports should have the value for tmux send-keys injection
+        assert!(
             result
+                .exports
+                .iter()
+                .any(|e| e.contains("AOE_TEST_TOKEN") && e.contains("secret123")),
+            "Expected export with secret value in exports: {:?}",
+            result.exports
         );
         std::env::remove_var("AOE_TEST_TOKEN");
     }
 
     #[test]
-    fn test_build_docker_env_args_different_key() {
+    fn test_build_docker_env_args_inherit_with_different_key() {
         std::env::set_var("AOE_TEST_SOURCE", "secret456");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -652,20 +686,30 @@ mod tests {
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(
-            result.contains("MY_MAPPED"),
-            "Expected MY_MAPPED in args: {}",
-            result
+            result.docker_args.contains("-e MY_MAPPED"),
+            "Expected -e MY_MAPPED in docker_args: {}",
+            result.docker_args
         );
         assert!(
-            result.contains("secret456"),
-            "Expected value in args: {}",
+            !result.docker_args.contains("secret456"),
+            "Secret value must NOT appear in docker_args: {}",
+            result.docker_args
+        );
+        assert!(
             result
+                .exports
+                .iter()
+                .any(|e| e.contains("MY_MAPPED") && e.contains("secret456")),
+            "Expected export with value in exports: {:?}",
+            result.exports
         );
         std::env::remove_var("AOE_TEST_SOURCE");
     }
 
     #[test]
-    fn test_build_docker_env_args_bare_key() {
+    fn test_build_docker_env_args_bare_key_uses_export() {
+        // Bare keys (pass-through from host) are Inherit entries,
+        // so they must use exports, not inline values.
         std::env::set_var("AOE_TEST_BARE", "barevalue");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -678,16 +722,85 @@ mod tests {
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(
-            result.contains("AOE_TEST_BARE"),
-            "Expected AOE_TEST_BARE in args: {}",
-            result
+            result.docker_args.contains("-e AOE_TEST_BARE"),
+            "Expected -e AOE_TEST_BARE in docker_args: {}",
+            result.docker_args
         );
         assert!(
-            result.contains("barevalue"),
-            "Expected value in args for docker exec: {}",
+            !result.docker_args.contains("barevalue"),
+            "Secret value must NOT appear in docker_args: {}",
+            result.docker_args
+        );
+        assert!(
             result
+                .exports
+                .iter()
+                .any(|e| e.contains("AOE_TEST_BARE") && e.contains("barevalue")),
+            "Expected export with value: {:?}",
+            result.exports
         );
         std::env::remove_var("AOE_TEST_BARE");
+    }
+
+    #[test]
+    fn test_build_docker_env_args_literal_stays_in_args() {
+        // Literal (non-secret) entries should have values in docker_args
+        // and should NOT produce exports.
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: Some(vec!["MY_LITERAL=some_value".to_string()]),
+            custom_instruction: None,
+        };
+        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        assert!(
+            result.docker_args.contains("MY_LITERAL="),
+            "Expected MY_LITERAL=value in docker_args: {}",
+            result.docker_args
+        );
+        assert!(
+            result.docker_args.contains("some_value"),
+            "Expected literal value in docker_args: {}",
+            result.docker_args
+        );
+        // No exports for literal entries
+        assert!(
+            !result.exports.iter().any(|e| e.contains("MY_LITERAL")),
+            "Literal entries must NOT produce exports: {:?}",
+            result.exports
+        );
+    }
+
+    #[test]
+    fn test_build_docker_env_args_mixed_inherit_and_literal() {
+        std::env::set_var("AOE_TEST_SECRET", "mysecret");
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: Some(vec![
+                "AOE_TEST_SECRET=$AOE_TEST_SECRET".to_string(),
+                "MY_LITERAL=public_val".to_string(),
+            ]),
+            custom_instruction: None,
+        };
+        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        // Secret: key only in docker_args, value in exports
+        assert!(result.docker_args.contains("-e AOE_TEST_SECRET"));
+        assert!(!result.docker_args.contains("mysecret"));
+        assert!(result
+            .exports
+            .iter()
+            .any(|e| e.contains("AOE_TEST_SECRET") && e.contains("mysecret")));
+        // Literal: key=value in docker_args, no export
+        assert!(result.docker_args.contains("MY_LITERAL='public_val'"));
+        assert!(!result.exports.iter().any(|e| e.contains("MY_LITERAL")));
+        std::env::remove_var("AOE_TEST_SECRET");
     }
 
     #[test]

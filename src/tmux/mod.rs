@@ -356,4 +356,162 @@ aoe_proj_c_ghi11111\t0\t1\tbash\n";
         );
         assert!(map.get("aoe_proj_c_ghi11111").unwrap().pane_dead);
     }
+
+    fn tmux_available() -> bool {
+        Command::new("tmux")
+            .arg("-V")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Verify that the compound-command approach (export + exec) correctly
+    /// passes env vars to the exec'd process while keeping secret values
+    /// out of all long-lived process argv.
+    ///
+    /// This simulates the tmux session command:
+    ///   export KEY='secret'; exec printenv KEY
+    /// and verifies the secret reaches the exec'd process.
+    #[test]
+    #[serial_test::serial]
+    fn test_export_exec_compound_command_passes_env() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_compound_{}", std::process::id());
+        let marker = format!("AOE_COMPOUND_TEST_{}", std::process::id());
+        let secret_value = "s3cret_val!@#";
+
+        // Simulate the compound command approach: export + exec as the session command
+        let compound_cmd = format!(
+            "export {}='{}'; exec printenv {}",
+            marker,
+            secret_value.replace('\'', "'\\''"),
+            marker
+        );
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "120",
+                "-y",
+                "24",
+                &compound_cmd,
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success(), "Failed to create tmux session");
+
+        // Wait for printenv to run and exit
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Capture pane output: should contain the secret value
+        let capture = Command::new("tmux")
+            .args([
+                "capture-pane",
+                "-t",
+                &format!("{}:^.0", session_name),
+                "-p",
+                "-S",
+                "-10",
+            ])
+            .output()
+            .expect("capture-pane");
+        let pane_content = String::from_utf8_lossy(&capture.stdout);
+        assert!(
+            pane_content.contains(secret_value),
+            "Expected secret value in pane output (proves export reached exec'd process).\nPane:\n{}",
+            pane_content
+        );
+
+        // Pane should be dead (exec replaced the shell, printenv exited)
+        let dead_check = Command::new("tmux")
+            .args(["display-message", "-t", &session_name, "-p", "#{pane_dead}"])
+            .output()
+            .expect("pane dead check");
+        let is_dead = String::from_utf8_lossy(&dead_check.stdout).trim().eq("1");
+        assert!(
+            is_dead,
+            "Pane should be dead after exec'd command exits (lifecycle preserved)"
+        );
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    /// Verify that after `exec` replaces the outer shell, the secret
+    /// values from export statements are NOT visible in `ps` output.
+    #[test]
+    #[serial_test::serial]
+    fn test_export_exec_secrets_not_in_ps_after_exec() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_ps_{}", std::process::id());
+        let secret_value = format!("UNIQUE_SECRET_{}_xyzzy", std::process::id());
+
+        // Simulate: export SECRET='val'; exec sleep 30
+        // After exec, the shell process (whose argv contained the export) is
+        // replaced by sleep, whose argv is just "sleep 30" (no secret).
+        let compound_cmd = format!("export AOE_PS_TEST='{}'; exec sleep 30", secret_value);
+
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                &compound_cmd,
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        // Wait for exec to complete
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Check ps output for the secret value
+        let ps_output = Command::new("ps")
+            .args(["auxww"])
+            .output()
+            .expect("ps auxww");
+        let ps_text = String::from_utf8_lossy(&ps_output.stdout);
+
+        assert!(
+            !ps_text.contains(&secret_value),
+            "Secret value must NOT appear in ps output after exec.\nFound '{}' in ps:\n{}",
+            secret_value,
+            ps_text
+                .lines()
+                .filter(|l| l.contains(&secret_value))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
 }
