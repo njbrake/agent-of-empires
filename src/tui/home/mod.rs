@@ -736,11 +736,6 @@ impl HomeView {
             }
         }
 
-        // Trigger redraw for Creating spinner animation
-        if self.creating_stub_id.is_some() {
-            changed = true;
-        }
-
         changed
     }
 
@@ -796,14 +791,14 @@ impl HomeView {
         self.instance_map.get(id)
     }
 
-    /// Returns true if any session has an animated status (Running, Waiting, Starting),
-    /// which means the TUI needs periodic redraws for spinner animation.
+    /// Returns true if any session has an animated status (Running, Waiting, Starting,
+    /// Creating), which means the TUI needs periodic redraws for spinner animation.
     pub fn has_animated_sessions(&self) -> bool {
         use crate::session::Status;
         self.instances.iter().any(|inst| {
             matches!(
                 inst.status,
-                Status::Running | Status::Waiting | Status::Starting
+                Status::Running | Status::Waiting | Status::Starting | Status::Creating
             )
         })
     }
