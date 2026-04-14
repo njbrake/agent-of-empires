@@ -32,7 +32,10 @@ pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
 
 /// Resolve the real client IP, trusting X-Forwarded-For only from loopback
 /// (i.e., only when the request came through the cloudflared proxy).
-fn resolve_client_ip(socket_addr: SocketAddr, headers: &axum::http::HeaderMap) -> IpAddr {
+pub(crate) fn resolve_client_ip(
+    socket_addr: SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> IpAddr {
     let socket_ip = socket_addr.ip();
     if socket_ip.is_loopback() {
         if let Some(cf_ip) = headers.get("cf-connecting-ip") {
@@ -101,17 +104,19 @@ async fn record_device(state: &AppState, ip: IpAddr, user_agent: &str) {
     }
 }
 
-/// Extract a token from the request cookie or query parameter.
-/// WebSocket protocols are handled separately since multiple protocols may be
-/// present and each must be tried against the token manager.
-fn extract_token(request: &Request) -> Option<(&str, TokenSource)> {
+/// Extract all token candidates from the request (cookie and query parameter).
+/// Returns them in priority order so callers can try each until one validates.
+/// A stale cookie must not prevent a valid query param from being tried.
+fn extract_tokens(request: &Request) -> Vec<(&str, TokenSource)> {
+    let mut tokens = Vec::new();
+
     // Check cookie
     if let Some(cookie_header) = request.headers().get(header::COOKIE) {
         if let Ok(cookie_str) = cookie_header.to_str() {
             for cookie in cookie_str.split(';') {
                 let cookie = cookie.trim();
                 if let Some(value) = cookie.strip_prefix("aoe_token=") {
-                    return Some((value, TokenSource::Cookie));
+                    tokens.push((value, TokenSource::Cookie));
                 }
             }
         }
@@ -121,12 +126,12 @@ fn extract_token(request: &Request) -> Option<(&str, TokenSource)> {
     if let Some(query) = request.uri().query() {
         for param in query.split('&') {
             if let Some(value) = param.strip_prefix("token=") {
-                return Some((value, TokenSource::QueryParam));
+                tokens.push((value, TokenSource::QueryParam));
             }
         }
     }
 
-    None
+    tokens
 }
 
 /// Extract all WebSocket sub-protocol values from the request.
@@ -183,15 +188,17 @@ pub async fn auth_middleware(
             .into_response();
     }
 
-    // Try cookie/query param first
+    // Try each token source in order: cookie, then query param.
+    // A stale cookie must not block a valid query param token.
     let mut matched_source = None;
     let mut needs_upgrade = false;
 
-    if let Some((token_value, source)) = extract_token(&request) {
+    for (token_value, source) in extract_tokens(&request) {
         let (valid, upgrade) = state.token_manager.validate(token_value).await;
         if valid {
             matched_source = Some(source);
             needs_upgrade = upgrade;
+            break;
         }
     }
 
@@ -219,6 +226,87 @@ pub async fn auth_middleware(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("unknown");
         record_device(&state, client_ip, user_agent).await;
+
+        // Login session check (second factor)
+        if state.login_manager.is_enabled() {
+            let path = request.uri().path();
+
+            // Allow login-related paths and static assets through without a session
+            let is_login_exempt = path == "/login"
+                || path == "/api/login"
+                || path == "/api/login/status"
+                || path == "/api/logout"
+                || path.starts_with("/assets/")
+                || path == "/manifest.json"
+                || path == "/sw.js"
+                || path.starts_with("/icon-");
+
+            if !is_login_exempt {
+                let session_id = super::login::extract_login_session(&request);
+                let has_valid_session = match session_id {
+                    Some(ref id) => state.login_manager.validate_session(id, client_ip).await,
+                    None => false,
+                };
+
+                if !has_valid_session {
+                    // For API routes, return JSON 401. For HTML routes, redirect.
+                    if path.starts_with("/api/") || path.contains("/ws") {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            axum::Json(serde_json::json!({
+                                "error": "login_required",
+                                "message": "Passphrase login required"
+                            })),
+                        )
+                            .into_response();
+                    } else {
+                        let mut response =
+                            axum::response::Redirect::temporary("/login").into_response();
+
+                        // Set token cookie on the redirect so the browser has it
+                        // when following the redirect to /login
+                        if source == TokenSource::QueryParam || needs_upgrade {
+                            if let Some(current) = state.token_manager.current_token().await {
+                                let max_age = state.token_manager.lifetime_secs().await;
+                                let cookie = build_cookie(&current, state.behind_tunnel, max_age);
+                                response.headers_mut().insert(
+                                    header::SET_COOKIE,
+                                    cookie.parse().expect("cookie format must be valid"),
+                                );
+                            }
+                        }
+
+                        return response;
+                    }
+                }
+
+                // Session is valid. Refresh the sliding window cookie.
+                let session_id = session_id.expect("valid session implies session_id exists");
+                let mut response = next.run(request).await;
+
+                // Set token cookie if needed
+                if source == TokenSource::QueryParam || needs_upgrade {
+                    if let Some(current) = state.token_manager.current_token().await {
+                        let max_age = state.token_manager.lifetime_secs().await;
+                        let cookie = build_cookie(&current, state.behind_tunnel, max_age);
+                        response.headers_mut().insert(
+                            header::SET_COOKIE,
+                            cookie.parse().expect("cookie format must be valid"),
+                        );
+                    }
+                }
+
+                // Refresh login session cookie (sliding window)
+                let login_cookie =
+                    super::login::build_login_cookie(&session_id, state.behind_tunnel);
+                response.headers_mut().append(
+                    header::SET_COOKIE,
+                    login_cookie.parse().expect("cookie format must be valid"),
+                );
+
+                return response;
+            }
+        }
 
         let mut response = next.run(request).await;
 

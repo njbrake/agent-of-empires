@@ -208,6 +208,49 @@ export async function createSession(
   }
 }
 
+// --- Login ---
+
+export async function loginStatus(): Promise<{
+  required: boolean;
+  authenticated: boolean;
+}> {
+  try {
+    const res = await fetch("/api/login/status");
+    if (!res.ok) return { required: false, authenticated: true };
+    return await res.json();
+  } catch {
+    return { required: false, authenticated: true };
+  }
+}
+
+export async function login(
+  passphrase: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passphrase }),
+    });
+    if (res.ok) return { ok: true };
+    const data = await res.json().catch(() => null);
+    return {
+      ok: false,
+      error: data?.message ?? `Login failed (${res.status})`,
+    };
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } catch {
+    // Best effort
+  }
+}
+
 export async function renameSession(
   id: string,
   title: string,

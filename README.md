@@ -13,7 +13,7 @@
   </p>
 </p>
 
-A session manager for AI coding agents on Linux and macOS. Use it from the terminal (TUI)or from any browser ([web dashboard](docs/guides/web-dashboard.md).
+A session manager for AI coding agents on Linux and macOS. Use it from the terminal (TUI) or from any browser ([web dashboard](docs/guides/web-dashboard.md), experimental).
 
 Run multiple AI agents in parallel across different branches of your codebase, each in its own isolated session with optional Docker sandboxing. Access your agents from your laptop, phone, or tablet.
 
