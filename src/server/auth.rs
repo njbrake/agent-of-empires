@@ -239,7 +239,8 @@ pub async fn auth_middleware(
                 || path.starts_with("/assets/")
                 || path == "/manifest.json"
                 || path == "/sw.js"
-                || path.starts_with("/icon-");
+                || path.starts_with("/icon-")
+                || path.starts_with("/fonts/");
 
             if !is_login_exempt {
                 let session_id = super::login::extract_login_session(&request);
