@@ -546,6 +546,20 @@ impl HomeView {
         stub.yolo_mode = data.yolo_mode;
         stub.source_profile = data.profile.clone();
 
+        // Set stub worktree_info so project-mode grouping works during creation.
+        // The real worktree_info (with resolved main_repo_path) replaces this
+        // once build_instance completes.
+        if let Some(ref branch) = data.worktree_branch {
+            if !branch.is_empty() {
+                stub.worktree_info = Some(crate::session::WorktreeInfo {
+                    branch: branch.clone(),
+                    main_repo_path: data.path.clone(),
+                    managed_by_aoe: false,
+                    created_at: chrono::Utc::now(),
+                });
+            }
+        }
+
         let stub_id = stub.id.clone();
         let target_profile = data.profile.clone();
 
