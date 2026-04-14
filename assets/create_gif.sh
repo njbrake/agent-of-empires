@@ -35,6 +35,17 @@ type_text() {
     tmux send-keys -t "$SESSION" -l "$1"
 }
 
+# Slower, char-by-char typing for visible human-paced input (session creation)
+type_text_slow() {
+    local text="$1"
+    local delay="${2:-0.05}"
+    local i
+    for ((i = 0; i < ${#text}; i++)); do
+        tmux send-keys -t "$SESSION" -l "${text:$i:1}"
+        sleep "$delay"
+    done
+}
+
 capture() {
     tmux capture-pane -t "$SESSION" -p
 }
@@ -94,27 +105,27 @@ sleep 0.8
 # ── Create first session: API Server with Claude Code ──
 send n
 wait_for "New Session"
-sleep 0.3
+sleep 0.8
 
 # Tab past Profile to Title
 send Tab
-sleep 0.2
-type_text "API Server"
 sleep 0.5
+type_text_slow "API Server"
+sleep 1
 
 # Path
 send Tab
-sleep 0.2
-for i in $(seq 1 80); do send BSpace; done
-sleep 0.1
-type_text "$DEMO_DIR/api-server"
 sleep 0.5
+for i in $(seq 1 80); do send BSpace; done
+sleep 0.3
+type_text_slow "$DEMO_DIR/api-server" 0.025
+sleep 1
 
 # Tool (claude is default), skip through remaining fields
-send Tab; sleep 0.2
-send Tab; sleep 0.1
-send Tab; sleep 0.1
-send Tab; sleep 0.1
+send Tab; sleep 0.6
+send Tab; sleep 0.4
+send Tab; sleep 0.4
+send Tab; sleep 0.4
 
 # Submit (auto-attaches to Claude Code session)
 send Enter
@@ -140,42 +151,42 @@ sleep 1.2
 # ── Create second session: Web App with OpenCode + worktree + YOLO ──
 send n
 wait_for "New Session"
-sleep 0.3
+sleep 0.8
 
 send Tab
-sleep 0.2
-type_text "Web App"
 sleep 0.5
+type_text_slow "Web App"
+sleep 1
 
 # Path
 send Tab
-sleep 0.2
-for i in $(seq 1 80); do send BSpace; done
-sleep 0.1
-type_text "$DEMO_DIR/web-app"
 sleep 0.5
+for i in $(seq 1 80); do send BSpace; done
+sleep 0.3
+type_text_slow "$DEMO_DIR/web-app" 0.025
+sleep 1
 
 # Tool: move right to OpenCode
 send Tab
-sleep 0.2
-send Right
 sleep 0.5
+send Right
+sleep 1
 
 # YOLO mode: toggle ON with Space to show the feature
 send Tab
-sleep 0.3
+sleep 0.6
 send Space
-sleep 0.8
+sleep 1.2
 
 # Worktree branch
 send Tab
-sleep 0.2
-type_text "feature/auth"
 sleep 0.5
+type_text_slow "feature/auth"
+sleep 1
 
 # Skip Group
 send Tab
-sleep 0.1
+sleep 0.4
 
 # Submit
 send Enter
@@ -197,32 +208,32 @@ sleep 1
 # ── Create third session: Chat App with Vibe ──
 send n
 wait_for "New Session"
-sleep 0.3
+sleep 0.8
 
 send Tab
-sleep 0.2
-type_text "Chat App"
 sleep 0.5
+type_text_slow "Chat App"
+sleep 1
 
 # Path
 send Tab
-sleep 0.2
-for i in $(seq 1 80); do send BSpace; done
-sleep 0.1
-type_text "$DEMO_DIR/chat-app"
 sleep 0.5
+for i in $(seq 1 80); do send BSpace; done
+sleep 0.3
+type_text_slow "$DEMO_DIR/chat-app" 0.025
+sleep 1
 
 # Tool: move right twice (to Vibe)
 send Tab
-sleep 0.2
-send Right; sleep 0.1
-send Right
 sleep 0.5
+send Right; sleep 0.4
+send Right
+sleep 1
 
 # Skip YOLO, Worktree, Group
-send Tab; sleep 0.1
-send Tab; sleep 0.1
-send Tab; sleep 0.1
+send Tab; sleep 0.4
+send Tab; sleep 0.4
+send Tab; sleep 0.4
 
 # Submit
 send Enter
