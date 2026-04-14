@@ -456,6 +456,12 @@ aoe_proj_c_ghi11111\t0\t1\tbash\n";
 
     /// Verify that after `exec` replaces the outer shell, the secret
     /// values from export statements are NOT visible in `ps` output.
+    ///
+    /// Note: the tmux server must already be running before this test.
+    /// If the test session is the FIRST tmux process, the `tmux new-session`
+    /// process becomes the server and its argv (which contains the command
+    /// string with the secret) persists. In real aoe usage the server is
+    /// always already running. We start a dummy session first to ensure this.
     #[test]
     #[serial_test::serial]
     fn test_export_exec_secrets_not_in_ps_after_exec() {
@@ -463,6 +469,24 @@ aoe_proj_c_ghi11111\t0\t1\tbash\n";
             eprintln!("Skipping test: tmux not available");
             return;
         }
+
+        // Ensure the tmux server is already running so our test session's
+        // command string doesn't end up in the server process's argv.
+        let dummy = format!("aoe_test_ps_dummy_{}", std::process::id());
+        let _ = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &dummy,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 120",
+            ])
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(200));
 
         let session_name = format!("aoe_test_ps_{}", std::process::id());
         let secret_value = format!("UNIQUE_SECRET_{}_xyzzy", std::process::id());
@@ -512,6 +536,9 @@ aoe_proj_c_ghi11111\t0\t1\tbash\n";
         // Clean up
         let _ = Command::new("tmux")
             .args(["kill-session", "-t", &session_name])
+            .output();
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &dummy])
             .output();
     }
 }
