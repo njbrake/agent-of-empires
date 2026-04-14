@@ -4,7 +4,9 @@ use crate::session::{
     validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
     TmuxMouseMode, TmuxStatusBarMode,
 };
-use crate::sound::{validate_sound_exists, SoundMode};
+use crate::sound::{
+    validate_sound_exists, volume_from_option, volume_options, volume_to_index, SoundMode,
+};
 use crate::tui::styles::available_themes;
 
 use super::SettingsScope;
@@ -78,6 +80,7 @@ pub enum FieldKey {
     // Sound
     SoundEnabled,
     SoundMode,
+    SoundVolume,
     SoundOnStart,
     SoundOnRunning,
     SoundOnWaiting,
@@ -997,6 +1000,10 @@ fn build_sound_fields(
     };
     let sound_mode_options = vec!["Random".into(), "Specific".into()];
 
+    let (volume, o_vol) = resolve_value(scope, global.sound.volume, snd.and_then(|s| s.volume));
+    let vol_opts = volume_options();
+    let vol_idx = volume_to_index(volume);
+
     vec![
         SettingField {
             key: FieldKey::SoundEnabled,
@@ -1022,6 +1029,24 @@ fn build_sound_fields(
                 FieldValue::Select {
                     selected: global_mode_selected,
                     options: sound_mode_options,
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::SoundVolume,
+            label: "Volume",
+            description: "Playback volume (0.0 = silent, 1.0 = normal, 1.5 = max), step 0.1",
+            value: FieldValue::Select {
+                selected: vol_idx,
+                options: vol_opts.clone(),
+            },
+            category: SettingsCategory::Sound,
+            has_override: o_vol,
+            inherited_display: inherited_if(
+                o_vol,
+                FieldValue::Select {
+                    selected: volume_to_index(global.sound.volume),
+                    options: vol_opts,
                 },
             ),
         },
@@ -1261,6 +1286,11 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => SoundMode::Random,
             };
         }
+        (FieldKey::SoundVolume, FieldValue::Select { selected, options }) => {
+            if let Some(s) = options.get(*selected) {
+                config.sound.volume = volume_from_option(s);
+            }
+        }
         (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
             config.sound.on_start = v.clone();
         }
@@ -1465,6 +1495,12 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 _ => SoundMode::Random,
             };
             set_profile_override(mode, &mut config.sound, |s, val| s.mode = val);
+        }
+        (FieldKey::SoundVolume, FieldValue::Select { selected, options }) => {
+            if let Some(s) = options.get(*selected) {
+                let vol = volume_from_option(s);
+                set_profile_override(vol, &mut config.sound, |s, val| s.volume = val);
+            }
         }
         (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
             let s = config

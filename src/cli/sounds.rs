@@ -110,7 +110,7 @@ fn test_sound(name: &str) -> Result<()> {
     print!("🔊 Playing '{}'... ", name);
     std::io::Write::flush(&mut std::io::stdout())?;
 
-    match sound::play_sound_blocking(name) {
+    match sound::play_sound_blocking(name, 1.0) {
         Ok(()) => {
             println!("✓");
             Ok(())
