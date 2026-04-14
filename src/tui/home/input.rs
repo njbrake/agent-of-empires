@@ -760,6 +760,13 @@ impl HomeView {
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
+                    if self.group_by == GroupByMode::Project {
+                        self.info_dialog = Some(InfoDialog::new(
+                            "Cannot Modify Project Groups",
+                            "Project groups are automatic. Press 'g' to switch to manual grouping to manage groups.",
+                        ));
+                        return None;
+                    }
                     let prefix = format!("{}/", group_path);
                     let session_count = self
                         .instances
@@ -810,6 +817,13 @@ impl HomeView {
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
+                    if self.group_by == GroupByMode::Project {
+                        self.info_dialog = Some(InfoDialog::new(
+                            "Cannot Modify Project Groups",
+                            "Project groups are automatic. Press 'g' to switch to manual grouping to manage groups.",
+                        ));
+                        return None;
+                    }
                     let group_path = group_path.clone();
                     let current_profile = self
                         .selected_group_profile
@@ -995,15 +1009,31 @@ impl HomeView {
         self.flat_items = self.build_flat_items();
         self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
         self.update_selected();
-        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
-            config.app_state.group_by = Some(self.group_by);
-            if let Err(e) = save_config(&config) {
-                tracing::warn!("Failed to save group_by mode: {}", e);
+        match load_config().map(|c| c.unwrap_or_default()) {
+            Ok(mut config) => {
+                config.app_state.group_by = Some(self.group_by);
+                if let Err(e) = save_config(&config) {
+                    tracing::warn!("Failed to save group_by mode: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load config for group_by save: {}", e);
             }
         }
     }
 
     fn toggle_group_collapsed(&mut self, path: &str) {
+        if self.group_by == GroupByMode::Project {
+            let collapsed = self
+                .project_group_collapsed
+                .get(path)
+                .copied()
+                .unwrap_or(false);
+            self.project_group_collapsed
+                .insert(path.to_string(), !collapsed);
+            self.flat_items = self.build_flat_items();
+            return;
+        }
         // Route to the correct profile's GroupTree
         let profile = self.profile_for_cursor(self.cursor);
         if let Some(profile) = profile {

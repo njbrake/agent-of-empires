@@ -40,10 +40,17 @@ fn project_group_name(inst: &Instance) -> String {
         .map(|wt| wt.main_repo_path.as_str())
         .unwrap_or(&inst.project_path);
 
-    std::path::Path::new(base_path)
-        .file_name()
+    let path = std::path::Path::new(base_path);
+    path.file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| base_path.to_string())
+        .unwrap_or_else(|| {
+            // For root paths like "/", use a readable fallback
+            if base_path == "/" || base_path.is_empty() {
+                "(root)".to_string()
+            } else {
+                base_path.to_string()
+            }
+        })
 }
 
 pub(super) struct GroupRenameContext {
@@ -134,6 +141,8 @@ pub struct HomeView {
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
     pub(super) group_by: GroupByMode,
+    /// Collapsed state for project-mode groups (persists across rebuilds)
+    pub(super) project_group_collapsed: HashMap<String, bool>,
 
     // Dialogs
     pub(super) show_help: bool,
@@ -286,6 +295,7 @@ impl HomeView {
             view_mode: ViewMode::default(),
             sort_order,
             group_by,
+            project_group_collapsed: HashMap::new(),
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
@@ -913,26 +923,65 @@ impl HomeView {
     }
 
     fn build_flat_items_by_project(&self) -> Vec<Item> {
-        let instances: Vec<Instance> = if let Some(profile) = &self.active_profile {
-            self.instances
+        let apply_project_groups = |instances: Vec<Instance>| -> Vec<Instance> {
+            instances
+                .into_iter()
+                .map(|mut inst| {
+                    inst.group_path = project_group_name(&inst);
+                    inst
+                })
+                .collect()
+        };
+
+        if let Some(profile) = &self.active_profile {
+            let filtered: Vec<Instance> = self
+                .instances
                 .iter()
                 .filter(|i| i.source_profile == *profile)
                 .cloned()
-                .collect()
+                .collect();
+            let grouped = apply_project_groups(filtered);
+            let mut tree = GroupTree::new_with_groups(&grouped, &[]);
+            for (path, &collapsed) in &self.project_group_collapsed {
+                if collapsed {
+                    tree.set_collapsed(path, true);
+                }
+            }
+            flatten_tree(&tree, &grouped, self.sort_order)
+        } else if self.storages.len() <= 1 {
+            let grouped = apply_project_groups(self.instances.clone());
+            let mut tree = GroupTree::new_with_groups(&grouped, &[]);
+            for (path, &collapsed) in &self.project_group_collapsed {
+                if collapsed {
+                    tree.set_collapsed(path, true);
+                }
+            }
+            flatten_tree(&tree, &grouped, self.sort_order)
         } else {
-            self.instances.clone()
-        };
-
-        let grouped: Vec<Instance> = instances
-            .into_iter()
-            .map(|mut inst| {
-                inst.group_path = project_group_name(&inst);
-                inst
-            })
-            .collect();
-
-        let tree = GroupTree::new_with_groups(&grouped, &[]);
-        flatten_tree(&tree, &grouped, self.sort_order)
+            // Multi-profile: build per-profile project trees, then flatten with profile headers
+            let mut per_profile_trees: HashMap<String, GroupTree> = HashMap::new();
+            let mut per_profile_instances: HashMap<String, Vec<Instance>> = HashMap::new();
+            for inst in &self.instances {
+                let mut grouped = inst.clone();
+                grouped.group_path = project_group_name(&grouped);
+                per_profile_instances
+                    .entry(inst.source_profile.clone())
+                    .or_default()
+                    .push(grouped);
+            }
+            for (profile, instances) in &per_profile_instances {
+                let mut tree = GroupTree::new_with_groups(instances, &[]);
+                for (path, &collapsed) in &self.project_group_collapsed {
+                    if collapsed {
+                        tree.set_collapsed(path, true);
+                    }
+                }
+                per_profile_trees.insert(profile.clone(), tree);
+            }
+            let all_grouped: Vec<Instance> =
+                per_profile_instances.into_values().flatten().collect();
+            flatten_tree_all_profiles(&all_grouped, &per_profile_trees, self.sort_order)
+        }
     }
 
     pub fn active_profile_display(&self) -> &str {
