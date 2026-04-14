@@ -1,0 +1,53 @@
+import { useWebSettings } from "../hooks/useWebSettings";
+
+const FONT_SIZES = [6, 7, 8, 9, 10, 11, 12, 13, 14];
+
+export function TerminalSettings() {
+  const { settings, update } = useWebSettings();
+
+  return (
+    <div>
+      <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
+        Terminal
+      </h3>
+
+      <div className="space-y-4">
+        <div>
+          <label className="block text-[13px] text-text-secondary mb-2">
+            Mobile font size
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={6}
+              max={14}
+              step={1}
+              value={settings.mobileFontSize}
+              onChange={(e) =>
+                update({ mobileFontSize: Number(e.target.value) })
+              }
+              className="flex-1 accent-brand-600 h-1.5"
+            />
+            <select
+              value={settings.mobileFontSize}
+              onChange={(e) =>
+                update({ mobileFontSize: Number(e.target.value) })
+              }
+              className="bg-surface-800 border border-surface-700 rounded-md px-2 py-1 text-sm text-text-primary font-mono w-16 text-center"
+            >
+              {FONT_SIZES.map((s) => (
+                <option key={s} value={s}>
+                  {s}px
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-[11px] text-text-muted mt-1">
+            Font size for the terminal on mobile devices. Desktop uses 14px.
+            Changing this will reconnect active sessions.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}

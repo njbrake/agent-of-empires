@@ -90,6 +90,7 @@
 html {
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
     env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overscroll-behavior: none;
 }
 
 body {
@@ -152,13 +153,6 @@ select:focus-visible,
 }
 
 @media (max-width: 768px) {
-  button,
-  [role="button"],
-  a {
-    min-height: 44px;
-    min-width: 44px;
-  }
-
   .safe-area-bottom {
     padding-bottom: env(safe-area-inset-bottom);
   }

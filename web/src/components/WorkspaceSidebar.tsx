@@ -260,20 +260,20 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
         <button
           onClick={onNewSession}
           disabled={creating}
-          className={`w-6 h-6 flex items-center justify-center shrink-0 rounded-md transition-colors ${
+          className={`w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors ${
             creating
               ? "text-text-dim cursor-not-allowed"
-              : "text-text-dim hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
+              : "text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
           }`}
           aria-label={`New session in ${group.displayName}`}
         >
           {creating ? (
-            <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+            <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
           ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
