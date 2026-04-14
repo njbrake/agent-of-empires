@@ -284,11 +284,11 @@ impl Instance {
         let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
-        let env_part = if env_args.is_empty() {
+        let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+        let env_part = if env_info.docker_args.is_empty() {
             String::new()
         } else {
-            format!("{} ", env_args)
+            format!("{} ", env_info.docker_args)
         };
 
         // Get workspace path inside container (handles bare repo worktrees correctly)
@@ -299,10 +299,20 @@ impl Instance {
             "/bin/bash",
         );
 
+        // If there are secret env vars, prepend shell exports and use `exec`
+        // so the outer shell (whose argv briefly contains the export values)
+        // is replaced immediately, keeping secrets out of long-lived process argv.
+        let session_cmd = if env_info.exports.is_empty() {
+            cmd
+        } else {
+            let exports = env_info.exports.join("; ");
+            format!("{}; exec {}", exports, cmd)
+        };
+
         let session = self.container_terminal_tmux_session()?;
         let is_new = !session.exists();
         if is_new {
-            session.create_with_size(&self.project_path, Some(&cmd), size)?;
+            session.create_with_size(&self.project_path, Some(&session_cmd), size)?;
             self.apply_container_terminal_tmux_options();
         }
 
@@ -473,14 +483,24 @@ impl Instance {
                 }
             }
 
-            let mut env_args =
-                build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
-            // Pass AOE_INSTANCE_ID into the container
-            env_args = format!("{} -e AOE_INSTANCE_ID={}", env_args, self.id);
-            let env_part = format!("{} ", env_args);
-            Some(wrap_command_ignore_suspend(
-                &container.exec_command(Some(&env_part), &tool_cmd),
-            ))
+            let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+            // AOE_INSTANCE_ID is not secret, goes directly in docker args
+            let docker_args = format!("{} -e AOE_INSTANCE_ID={}", env_info.docker_args, self.id);
+            let env_part = format!("{} ", docker_args);
+            let wrapped =
+                wrap_command_ignore_suspend(&container.exec_command(Some(&env_part), &tool_cmd));
+            if env_info.exports.is_empty() {
+                Some(wrapped)
+            } else {
+                // Prepend shell exports for secret env vars. The outer shell
+                // runs the exports (builtins), then `exec` replaces it with
+                // the wrapped command. This keeps secret values out of all
+                // long-lived process argv: the outer shell's argv (which
+                // contains the export values) disappears in milliseconds
+                // when exec replaces the process image.
+                let exports = env_info.exports.join("; ");
+                Some(format!("{}; exec {}", exports, wrapped))
+            }
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
             if let Some(ref hook_cmds) = on_launch_hooks {
@@ -553,6 +573,7 @@ impl Instance {
                 super::environment::redact_env_values(v)
             })
         );
+
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
