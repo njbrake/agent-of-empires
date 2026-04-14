@@ -380,6 +380,24 @@ aoe_proj_c_ghi11111\t0\t1\tbash\n";
             return;
         }
 
+        // Ensure the tmux server is already running so the test session's
+        // command string doesn't end up in the server process's argv.
+        let dummy = format!("aoe_test_compound_dummy_{}", std::process::id());
+        let _ = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &dummy,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 120",
+            ])
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
         let session_name = format!("aoe_test_compound_{}", std::process::id());
         let marker = format!("AOE_COMPOUND_TEST_{}", std::process::id());
         let secret_value = "s3cret_val!@#";
@@ -451,6 +469,9 @@ aoe_proj_c_ghi11111\t0\t1\tbash\n";
         // Clean up
         let _ = Command::new("tmux")
             .args(["kill-session", "-t", &session_name])
+            .output();
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &dummy])
             .output();
     }
 

@@ -7,20 +7,28 @@ use super::config::SandboxConfig;
 use super::instance::SandboxInfo;
 use crate::containers::container_interface::EnvEntry;
 
+/// Keys whose values are safe to show in logs (not secrets).
+const SAFE_ENV_KEYS: &[&str] = &[
+    "TERM",
+    "COLORTERM",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "GIT_CONFIG_GLOBAL",
+    "CLAUDE_CONFIG_DIR",
+    "AOE_INSTANCE_ID",
+];
+
 /// Redact secret values from a command string for safe logging.
 /// Replaces `-e KEY='value'` and `-e KEY=value` patterns with `-e KEY=<redacted>`,
+/// and `export KEY='value'` patterns with `export KEY=<redacted>`,
 /// except for known-safe keys (TERM, COLORTERM, GIT_CONFIG_GLOBAL, etc.).
 pub(crate) fn redact_env_values(cmd: &str) -> String {
-    let safe_keys: &[&str] = &[
-        "TERM",
-        "COLORTERM",
-        "FORCE_COLOR",
-        "NO_COLOR",
-        "GIT_CONFIG_GLOBAL",
-        "CLAUDE_CONFIG_DIR",
-        "AOE_INSTANCE_ID",
-    ];
+    let result = redact_docker_env_flags(cmd);
+    redact_export_statements(&result)
+}
 
+/// Redact `-e KEY=VALUE` patterns in a command string.
+fn redact_docker_env_flags(cmd: &str) -> String {
     let mut result = String::with_capacity(cmd.len());
     let mut remaining = cmd;
 
@@ -38,7 +46,7 @@ pub(crate) fn redact_env_values(cmd: &str) -> String {
             if eq_pos < next_env {
                 let key = &remaining[..eq_pos];
                 if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    if safe_keys.contains(&key) {
+                    if SAFE_ENV_KEYS.contains(&key) {
                         result.push_str("-e ");
                         result.push_str(&remaining[..next_env]);
                     } else {
@@ -56,6 +64,46 @@ pub(crate) fn redact_env_values(cmd: &str) -> String {
         result.push_str("-e ");
         result.push_str(&remaining[..next_env]);
         remaining = &remaining[next_env..];
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Redact `export KEY='value'` and `export KEY=value` patterns in a command string.
+fn redact_export_statements(cmd: &str) -> String {
+    let mut result = String::with_capacity(cmd.len());
+    let mut remaining = cmd;
+
+    while let Some(pos) = remaining.find("export ") {
+        result.push_str(&remaining[..pos]);
+        remaining = &remaining[pos + 7..]; // skip past "export "
+
+        // Find the boundary: next "; " or end of string
+        let boundary = remaining.find("; ").unwrap_or(remaining.len());
+
+        let eq_pos = remaining.find('=');
+        if let Some(eq_pos) = eq_pos {
+            if eq_pos < boundary {
+                let key = &remaining[..eq_pos];
+                if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    if SAFE_ENV_KEYS.contains(&key) {
+                        result.push_str("export ");
+                        result.push_str(&remaining[..boundary]);
+                    } else {
+                        result.push_str("export ");
+                        result.push_str(key);
+                        result.push_str("=<redacted>");
+                    }
+                    remaining = &remaining[boundary..];
+                    continue;
+                }
+            }
+        }
+
+        // No '=' or not a valid key; pass through
+        result.push_str("export ");
+        result.push_str(&remaining[..boundary]);
+        remaining = &remaining[boundary..];
     }
     result.push_str(remaining);
     result
@@ -276,26 +324,27 @@ fn resolved_sandbox_config(project_path: &std::path::Path) -> super::config::San
 /// Result of building docker exec environment arguments.
 ///
 /// Separates secret (inherited from host) env vars from literal (non-secret) ones.
-/// Secrets are injected into the tmux session via `export` shell builtins sent
-/// through `tmux send-keys`, keeping them out of every process's argv/ps output.
-/// The docker exec command then uses `-e KEY` (key only, no value) to inherit
-/// the exported variable from the shell environment.
+/// Secret values are prepended to the tmux session command as `export` shell
+/// builtins, followed by `exec` to replace the outer shell process. This keeps
+/// secret values out of every long-lived process's argv/ps output. The docker
+/// exec command then uses `-e KEY` (key only, no value) to inherit the exported
+/// variable from the shell environment.
 pub(crate) struct DockerExecEnv {
     /// Docker `-e` flags for the exec command line.
     /// Inherit entries use `-e KEY` (key only); Literal entries use `-e KEY=VALUE`.
     pub docker_args: String,
     /// Shell export statements for Inherit (secret) entries.
     /// Each entry is a complete `export KEY='escaped_value'` command ready
-    /// to be sent via `tmux send-keys`.
+    /// to be prepended to the tmux session command.
     pub exports: Vec<String>,
 }
 
 /// Build docker exec environment flags from config and optional per-session extra entries.
 /// Used for `docker exec` commands run inside tmux sessions.
 ///
-/// Returns a [`DockerExecEnv`] that separates secret values (which must be
-/// injected via `tmux send-keys` + `export`) from literal values (which are
-/// safe to include in the command line).
+/// Returns a [`DockerExecEnv`] that separates secret values (prepended as
+/// `export` statements to the tmux session command) from literal values
+/// (which are safe to include in the command line).
 ///
 /// The `docker run` path (container creation) is protected separately via
 /// `Command::env()` in `run_create`, which keeps secrets out of argv entirely.
@@ -347,6 +396,35 @@ pub(crate) fn build_docker_env_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_redact_env_values_docker_flags() {
+        let cmd = "docker exec -e GH_TOKEN='secret' -e TERM=xterm container claude";
+        let redacted = redact_env_values(cmd);
+        assert!(redacted.contains("GH_TOKEN=<redacted>"));
+        assert!(redacted.contains("TERM=xterm")); // safe key, not redacted
+        assert!(!redacted.contains("secret"));
+    }
+
+    #[test]
+    fn test_redact_env_values_export_statements() {
+        let cmd = "export GH_TOKEN='secret123'; export TERM='xterm'; exec docker exec -e GH_TOKEN container claude";
+        let redacted = redact_env_values(cmd);
+        assert!(redacted.contains("export GH_TOKEN=<redacted>"));
+        assert!(redacted.contains("export TERM='xterm'")); // safe key, not redacted
+        assert!(!redacted.contains("secret123"));
+    }
+
+    #[test]
+    fn test_redact_env_values_mixed_exports_and_flags() {
+        let cmd = "export API_KEY='sk-abc'; exec bash -lc 'exec env docker exec -e API_KEY -e FOO='bar' container claude'";
+        let redacted = redact_env_values(cmd);
+        assert!(redacted.contains("export API_KEY=<redacted>"));
+        assert!(!redacted.contains("sk-abc"));
+        // -e API_KEY (key only, no value) should pass through unchanged
+        assert!(redacted.contains("-e API_KEY"));
+        assert!(redacted.contains("FOO=<redacted>"));
+    }
 
     #[test]
     fn test_shell_escape_simple() {
