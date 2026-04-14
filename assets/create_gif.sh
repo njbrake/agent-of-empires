@@ -1,55 +1,242 @@
 #!/bin/bash
-# Setup script for generating the demo GIF. Meant to be run from the root of the repo on a mac
-# Requires: vhs, tmux, cargo, docker (for sandbox demo)
+# Generate the README demo GIF using asciinema + agg.
+# Requires: asciinema, agg, tmux, cargo (or a pre-built target/release/aoe)
+#
+# Usage:
+#   ./assets/create_gif.sh
 
-set -ex
+set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Use $HOME instead of /tmp for Docker compatibility on macOS
+AOE="$(pwd)/target/release/aoe"
+CAST_FILE="$(pwd)/docs/assets/demo.cast"
+GIF_FILE="$(pwd)/docs/assets/demo.gif"
 DEMO_DIR="${HOME}/demo-projects"
+PROFILE="demo"
+SESSION="aoe_demo_rec"
+COLS=120
+ROWS=35
+
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 cleanup() {
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
     rm -rf "$DEMO_DIR"
-    rm -rf ~/.agent-of-empires/profiles/demo
+    rm -rf ~/.config/agent-of-empires/profiles/$PROFILE \
+           ~/.agent-of-empires/profiles/$PROFILE 2>/dev/null || true
 }
-
 trap cleanup EXIT
 
-# Check Docker is running (needed for sandbox demo)
-if ! docker info >/dev/null 2>&1; then
-    echo "Error: Docker is not running. Please start Docker for the sandbox demo."
-    exit 1
+send() {
+    tmux send-keys -t "$SESSION" "$@"
+}
+
+type_text() {
+    tmux send-keys -t "$SESSION" -l "$1"
+}
+
+capture() {
+    tmux capture-pane -t "$SESSION" -p
+}
+
+wait_for() {
+    local text="$1"
+    local timeout="${2:-15}"
+    local elapsed=0
+    while ! capture | grep -qF "$text"; do
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+        if [ "$elapsed" -ge "$((timeout * 2))" ]; then
+            echo "ERROR: Timed out waiting for '$text'"
+            echo "Current screen:"
+            capture
+            exit 1
+        fi
+    done
+}
+
+# ── setup ────────────────────────────────────────────────────────────────────
+
+if [ ! -f "$AOE" ]; then
+    echo "Building aoe..."
+    cargo build --release
 fi
 
-# Pull sandbox image to ensure it's available
-docker pull ghcr.io/njbrake/aoe-sandbox:latest
+cleanup
 
-# build the project
-cargo build --release
-
-# Clean and recreate demo project directories
-rm -rf "$DEMO_DIR"
+# Create demo repos
 mkdir -p "$DEMO_DIR/api-server" "$DEMO_DIR/web-app" "$DEMO_DIR/chat-app"
+for dir in api-server web-app chat-app; do
+    pushd "$DEMO_DIR/$dir" > /dev/null
+    git init -q
+    touch README.md
+    git add .
+    git commit -q -m "Initial commit"
+    popd > /dev/null
+done
 
-pushd "$DEMO_DIR/api-server"
-git init -q
-touch README.md
-git add .
-git commit -q -m "Initial commit"
-popd
+mkdir -p "$(dirname "$CAST_FILE")"
 
-pushd "$DEMO_DIR/web-app"
-git init -q
-touch README.md
-git add .
-git commit -q -m "Initial commit"
-popd
+# ── record ───────────────────────────────────────────────────────────────────
 
-pushd "$DEMO_DIR/chat-app"
-git init -q
-touch README.md
-git add .
-git commit -q -m "Initial commit"
-popd
+echo "Recording demo..."
 
-vhs assets/demo.tape
+# Launch aoe wrapped in asciinema inside a detached tmux session.
+# aoe detects TMUX and uses attach-session for sessions,
+# so agent output is captured naturally by asciinema.
+tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
+    "TERM=xterm-256color asciinema rec --overwrite --cols $COLS --rows $ROWS \
+     -c '$AOE -p $PROFILE' '$CAST_FILE'"
+
+wait_for "No sessions yet"
+sleep 0.8
+
+# ── Create first session: API Server with Claude Code ──
+send n
+wait_for "New Session"
+sleep 0.3
+
+# Tab past Profile to Title
+send Tab
+sleep 0.2
+type_text "API Server"
+sleep 0.5
+
+# Path
+send Tab
+sleep 0.2
+for i in $(seq 1 80); do send BSpace; done
+sleep 0.1
+type_text "$DEMO_DIR/api-server"
+sleep 0.5
+
+# Tool (claude is default), skip through remaining fields
+send Tab; sleep 0.2
+send Tab; sleep 0.1
+send Tab; sleep 0.1
+send Tab; sleep 0.1
+
+# Submit
+send Enter
+sleep 2
+
+# Detach from agent session back to TUI
+send C-b
+sleep 0.2
+send d
+wait_for "Agent of Empires"
+sleep 1
+
+# ── Create second session: Web App with OpenCode + worktree ──
+send n
+wait_for "New Session"
+sleep 0.3
+
+send Tab
+sleep 0.2
+type_text "Web App"
+sleep 0.5
+
+# Path
+send Tab
+sleep 0.2
+for i in $(seq 1 80); do send BSpace; done
+sleep 0.1
+type_text "$DEMO_DIR/web-app"
+sleep 0.5
+
+# Tool: move right to OpenCode
+send Tab
+sleep 0.2
+send Right
+sleep 0.5
+
+# Skip YOLO
+send Tab
+sleep 0.2
+
+# Worktree branch
+type_text "feature/auth"
+sleep 0.5
+
+# Skip Group
+send Tab
+sleep 0.1
+
+# Submit
+send Enter
+sleep 2
+
+# Detach
+send C-b
+sleep 0.2
+send d
+wait_for "Agent of Empires"
+sleep 1
+
+# ── Create third session: Chat App ──
+send n
+wait_for "New Session"
+sleep 0.3
+
+send Tab
+sleep 0.2
+type_text "Chat App"
+sleep 0.5
+
+# Path
+send Tab
+sleep 0.2
+for i in $(seq 1 80); do send BSpace; done
+sleep 0.1
+type_text "$DEMO_DIR/chat-app"
+sleep 0.5
+
+# Tool: move right twice (to third tool)
+send Tab
+sleep 0.2
+send Right; sleep 0.1
+send Right
+sleep 0.5
+
+# Skip YOLO, Worktree, Group
+send Tab; sleep 0.1
+send Tab; sleep 0.1
+send Tab; sleep 0.1
+
+# Submit
+send Enter
+sleep 2
+
+# Detach
+send C-b
+sleep 0.2
+send d
+wait_for "Agent of Empires"
+sleep 1
+
+# ── Browse the session list ──
+send k
+sleep 0.8
+send k
+sleep 1
+send j
+sleep 0.8
+send j
+sleep 1.5
+
+# ── Quit ──
+send q
+sleep 1.5
+
+echo "Converting to GIF..."
+agg \
+    --font-size 14 \
+    --speed 1.5 \
+    --idle-time-limit 2 \
+    --last-frame-duration 1 \
+    --theme github-dark \
+    "$CAST_FILE" "$GIF_FILE"
+
+echo "Done! GIF at $GIF_FILE"
+ls -lh "$GIF_FILE"

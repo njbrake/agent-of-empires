@@ -64,3 +64,6 @@ website/src/pages/docs/cli/*.md
 .worktrees/
 .gstack/
 .playwright-mcp/
+
+# Demo recording intermediate files
+*.cast
