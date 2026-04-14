@@ -193,7 +193,7 @@ send Enter
 sleep 4
 
 # Send a prompt into OpenCode
-type_text "Add authentication to this web app"
+type_text "Write a 1000 word story about Age of Empires"
 sleep 0.8
 send Enter
 sleep 3
@@ -259,28 +259,29 @@ sleep 2
 # ── Show terminal view: toggle mode, open a terminal, run pwd, detach ──
 send t
 wait_for "[Term]"
-sleep 1.5
+sleep 3
 # Enter attaches to a newly-created terminal tmux session
 send Enter
-sleep 3
+sleep 4
 # Target the dynamic aoe_term_* session for shell input
 TERM_SESSION=$(tmux list-sessions -F "#{session_name}" | grep -E "^aoe_term_" | head -1)
 if [ -n "$TERM_SESSION" ]; then
+    sleep 1
     tmux send-keys -t "$TERM_SESSION" -l "pwd"
-    sleep 0.3
+    sleep 0.6
     tmux send-keys -t "$TERM_SESSION" Enter
-    sleep 1.5
+    sleep 3
 fi
 # Detach back to the aoe TUI
 send C-b
 sleep 0.3
 send d
 wait_for "Terminals"
-sleep 1
+sleep 2.5
 # Toggle back to Agent view
 send t
 wait_for "[Agent]"
-sleep 1
+sleep 1.5
 
 # ── Quit ──
 send q
