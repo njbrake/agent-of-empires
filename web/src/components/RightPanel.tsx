@@ -122,30 +122,69 @@ export function RightPanel({
     document.body.style.userSelect = "none";
   }, []);
 
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    document.body.style.userSelect = "none";
+  }, []);
+
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!dragging.current || !containerRef.current) return;
+    const applyY = (clientY: number) => {
+      if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
-      const y = e.clientY - rect.top;
+      const y = clientY - rect.top;
       if (y < MIN_TOP_PX || rect.height - y < MIN_BOTTOM_PX) return;
       setTopRatio(y / rect.height);
     };
-    const handleMouseUp = () => {
+    const persistAndSettle = () => {
       if (!dragging.current) return;
       dragging.current = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       setTopRatio((r) => {
-        localStorage.setItem(VSPLIT_STORAGE_KEY, String(r));
+        try {
+          localStorage.setItem(VSPLIT_STORAGE_KEY, String(r));
+        } catch {
+          // quota / private mode — non-fatal
+        }
         return r;
       });
       window.dispatchEvent(new Event("resize"));
     };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      applyY(e.clientY);
+    };
+    const handleMouseUp = () => persistAndSettle();
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!dragging.current) return;
+      const t = e.touches[0];
+      if (!t) return;
+      e.preventDefault();
+      applyY(t.clientY);
+    };
+    const handleTouchEnd = () => persistAndSettle();
+
     document.addEventListener("mousemove", handleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("touchmove", handleTouchMove, { passive: false });
+    document.addEventListener("touchend", handleTouchEnd);
+    document.addEventListener("touchcancel", handleTouchEnd);
     return () => {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("touchmove", handleTouchMove);
+      document.removeEventListener("touchend", handleTouchEnd);
+      document.removeEventListener("touchcancel", handleTouchEnd);
+      // If component unmounts mid-drag, reset body styles so the cursor
+      // doesn't stay in row-resize / text-select-disabled state.
+      if (dragging.current) {
+        dragging.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
     };
   }, []);
 
@@ -169,7 +208,8 @@ export function RightPanel({
       {/* Drag handle */}
       <div
         onMouseDown={handleMouseDown}
-        className="h-1 cursor-row-resize shrink-0 bg-surface-700/20 hover:bg-brand-600/50 transition-colors duration-75"
+        onTouchStart={handleTouchStart}
+        className="h-1 cursor-row-resize shrink-0 bg-surface-700/20 hover:bg-brand-600/50 transition-colors duration-75 touch-none"
       />
 
       {/* Lower: paired terminal */}

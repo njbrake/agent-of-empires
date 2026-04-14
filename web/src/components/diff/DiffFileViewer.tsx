@@ -43,10 +43,9 @@ function DiffLine({ line }: { line: RichDiffLine }) {
     prefix = "-";
   }
 
-  // Strip trailing newline for display
-  const content = line.content.endsWith("\n")
-    ? line.content.slice(0, -1)
-    : line.content;
+  // Strip trailing newline (handles both \n and \r\n) so CRLF files
+  // don't render a stray carriage-return glyph.
+  const content = line.content.replace(/\r?\n$/, "");
 
   return (
     <div className={`flex ${bgClass} hover:brightness-110 transition-[filter] duration-75`}>
@@ -78,7 +77,10 @@ function HunkView({ hunk }: { hunk: RichDiffHunk }) {
         </span>
       </div>
       {hunk.lines.map((line, i) => (
-        <DiffLine key={i} line={line} />
+        <DiffLine
+          key={`${line.old_line_num ?? "_"}-${line.new_line_num ?? "_"}-${i}`}
+          line={line}
+        />
       ))}
     </div>
   );
@@ -155,14 +157,26 @@ export function DiffFileViewer({ sessionId, filePath, revision, onClose }: Props
           <div className="flex items-center justify-center h-full text-text-dim">
             <span className="text-sm">Binary file changed</span>
           </div>
+        ) : diff.truncated ? (
+          <div className="flex items-center justify-center h-full text-text-dim">
+            <div className="text-center px-4">
+              <p className="text-sm mb-1">File too large to diff inline</p>
+              <p className="text-xs">
+                Open it in your editor to review the changes.
+              </p>
+            </div>
+          </div>
         ) : diff.hunks.length === 0 ? (
           <div className="flex items-center justify-center h-full text-text-dim">
             <span className="text-sm">No changes in this file</span>
           </div>
         ) : (
           <div className="leading-[1.6]">
-            {diff.hunks.map((hunk, i) => (
-              <HunkView key={i} hunk={hunk} />
+            {diff.hunks.map((hunk) => (
+              <HunkView
+                key={`${hunk.old_start}-${hunk.new_start}`}
+                hunk={hunk}
+              />
             ))}
           </div>
         )}

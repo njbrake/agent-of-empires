@@ -25,10 +25,15 @@ export function useDiffFiles(
   const [revision, setRevision] = useState(0);
   const lastFingerprintRef = useRef("");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const requestIdRef = useRef(0);
 
   const fetchFiles = useCallback(async () => {
     if (!sessionId) return;
-    const resp = await getSessionDiffFiles(sessionId);
+    const reqId = ++requestIdRef.current;
+    const capturedSessionId = sessionId;
+    const resp = await getSessionDiffFiles(capturedSessionId);
+    // Drop stale responses: another fetch started, or session changed mid-flight
+    if (reqId !== requestIdRef.current || capturedSessionId !== sessionId) return;
     if (resp) {
       const fingerprint = JSON.stringify(resp.files);
       if (fingerprint !== lastFingerprintRef.current) {
@@ -42,10 +47,12 @@ export function useDiffFiles(
     setLoading(false);
   }, [sessionId]);
 
-  // Fetch on session change
+  // Fetch on session change; invalidate any in-flight requests.
   useEffect(() => {
+    requestIdRef.current += 1;
     if (!sessionId) {
       setFiles([]);
+      setLoading(false);
       lastFingerprintRef.current = "";
       setRevision(0);
       return;

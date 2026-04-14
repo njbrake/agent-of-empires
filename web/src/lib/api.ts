@@ -1,6 +1,5 @@
 import type {
   SessionResponse,
-  DiffResponse,
   RichDiffFilesResponse,
   RichFileDiffResponse,
   AgentInfo,
@@ -36,18 +35,6 @@ export async function ensureTerminal(
     return res.ok;
   } catch {
     return false;
-  }
-}
-
-export async function getSessionDiff(
-  id: string,
-): Promise<DiffResponse | null> {
-  try {
-    const res = await fetch(`/api/sessions/${id}/diff`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
   }
 }
 

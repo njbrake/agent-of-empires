@@ -35,17 +35,6 @@ export interface ResizeMessage {
   rows: number;
 }
 
-/** Diff response */
-export interface DiffResponse {
-  files: DiffFileInfo[];
-  raw: string;
-}
-
-export interface DiffFileInfo {
-  path: string;
-  status: string;
-}
-
 /** Rich diff file info with addition/deletion stats */
 export interface RichDiffFile {
   path: string;
@@ -84,6 +73,8 @@ export interface RichFileDiffResponse {
   file: RichDiffFile;
   hunks: RichDiffHunk[];
   is_binary: boolean;
+  /** True if the file was too large to diff inline. */
+  truncated: boolean;
 }
 
 /** Workspace status derived from session states */
@@ -109,7 +100,6 @@ export interface Workspace {
   primaryAgent: string;
   status: WorkspaceStatus;
   sessions: SessionResponse[];
-  diff?: DiffResponse;
 }
 
 /** Agent info returned by /api/agents */

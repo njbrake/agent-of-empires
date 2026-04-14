@@ -454,92 +454,6 @@ pub async fn ensure_container_terminal(
     }
 }
 
-// --- Diff ---
-
-#[derive(Serialize)]
-pub struct DiffResponse {
-    pub files: Vec<DiffFileInfo>,
-    pub raw: String,
-}
-
-#[derive(Serialize)]
-pub struct DiffFileInfo {
-    pub path: String,
-    pub status: String,
-}
-
-pub async fn session_diff(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    let instances = state.instances.read().await;
-    let project_path = match instances.iter().find(|i| i.id == id) {
-        Some(i) => i.project_path.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found", "message": "Session not found"})),
-            )
-                .into_response();
-        }
-    };
-    drop(instances);
-
-    let result = tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new("git")
-            .args(["diff", "HEAD"])
-            .current_dir(&project_path)
-            .output()?;
-        let raw = String::from_utf8_lossy(&output.stdout).to_string();
-
-        let status_output = std::process::Command::new("git")
-            .args(["diff", "HEAD", "--name-status"])
-            .current_dir(&project_path)
-            .output()?;
-        let files: Vec<DiffFileInfo> = String::from_utf8_lossy(&status_output.stdout)
-            .lines()
-            .filter_map(|line| {
-                let parts: Vec<&str> = line.splitn(2, '\t').collect();
-                if parts.len() == 2 {
-                    Some(DiffFileInfo {
-                        status: parts[0].to_string(),
-                        path: parts[1].to_string(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        Ok::<_, anyhow::Error>(DiffResponse { files, raw })
-    })
-    .await;
-
-    match result {
-        Ok(Ok(diff)) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(diff).expect("DiffResponse is always serializable")),
-        )
-            .into_response(),
-        Ok(Err(e)) => {
-            tracing::error!("Diff failed: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "diff_failed", "message": "Failed to compute diff"})),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            tracing::error!("Diff panicked: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
-            )
-                .into_response()
-        }
-    }
-}
-
 // --- Rich Diff (per-file, merge-base aware) ---
 
 #[derive(Serialize)]
@@ -583,6 +497,73 @@ pub struct RichFileDiffResponse {
     pub file: RichDiffFileInfo,
     pub hunks: Vec<RichDiffHunk>,
     pub is_binary: bool,
+    /// True if the file was too large to diff and hunks were omitted.
+    pub truncated: bool,
+}
+
+/// Max combined bytes of old+new content before we bail on diffing.
+const MAX_DIFF_BYTES: usize = 2_000_000;
+/// Max combined line count of old+new before we bail on diffing.
+const MAX_DIFF_LINES: usize = 40_000;
+
+/// Validate a user-supplied relative file path against a workdir.
+///
+/// Returns the canonicalized absolute path if the requested path is safe to
+/// read (no absolute, no `..`, no symlink-escape out of the workdir) and
+/// appears in `changed_files` (so only actually-diffed files are exposed).
+/// Returns `Err(status, message)` otherwise.
+fn validate_diff_path(
+    workdir: &std::path::Path,
+    requested: &std::path::Path,
+    changed_files: &[crate::git::diff::DiffFile],
+) -> Result<std::path::PathBuf, (StatusCode, &'static str)> {
+    use std::path::Component;
+
+    if requested.as_os_str().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "empty path"));
+    }
+    if requested.is_absolute() {
+        return Err((StatusCode::BAD_REQUEST, "absolute path not allowed"));
+    }
+    for comp in requested.components() {
+        match comp {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err((StatusCode::BAD_REQUEST, "path escapes workdir"));
+            }
+            _ => {}
+        }
+    }
+
+    // Cross-check: path must be one of the currently-changed files.
+    // This is the narrowest trust boundary — only files the user actually
+    // modified on this branch are diffable, not arbitrary files in the worktree.
+    let matches_changed = changed_files.iter().any(|f| f.path == requested);
+    if !matches_changed {
+        return Err((StatusCode::NOT_FOUND, "file not in changed set"));
+    }
+
+    // Canonicalize both sides and verify containment as defense in depth
+    // against symlinks that might point outside the workdir.
+    let canonical_workdir = workdir.canonicalize().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "workdir canonicalize failed",
+        )
+    })?;
+    let full = canonical_workdir.join(requested);
+    // The file may not exist on disk (e.g., deleted in the working tree), in
+    // which case canonicalize fails; fall back to the non-canonical path and
+    // just verify textual containment.
+    let final_path = match full.canonicalize() {
+        Ok(c) => {
+            if !c.starts_with(&canonical_workdir) {
+                return Err((StatusCode::BAD_REQUEST, "path escapes workdir"));
+            }
+            c
+        }
+        Err(_) => full,
+    };
+    Ok(final_path)
 }
 
 /// Helper: look up a session's project_path by ID.
@@ -659,6 +640,13 @@ pub struct FileDiffQuery {
     pub path: String,
 }
 
+/// Response for a rejected diff request (bad path, file not changed, etc.).
+enum DiffFileError {
+    BadRequest(&'static str),
+    NotFound(&'static str),
+    Internal(anyhow::Error),
+}
+
 pub async fn session_diff_file(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -669,61 +657,98 @@ pub async fn session_diff_file(
         Err(resp) => return resp,
     };
 
-    let result = tokio::task::spawn_blocking(move || {
-        use crate::git::diff;
-        use similar::ChangeTag;
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<RichFileDiffResponse, DiffFileError> {
+            use crate::git::diff;
+            use similar::ChangeTag;
 
-        let repo_path = std::path::Path::new(&project_path);
-        let file_path = std::path::Path::new(&query.path);
+            let repo_path = std::path::Path::new(&project_path);
+            let file_path = std::path::Path::new(&query.path);
 
-        let base_branch =
-            diff::get_default_branch(repo_path).unwrap_or_else(|_| "main".to_string());
+            let base_branch =
+                diff::get_default_branch(repo_path).unwrap_or_else(|_| "main".to_string());
 
-        let file_diff = diff::compute_file_diff(repo_path, file_path, &base_branch, 3)?;
+            // Validate the requested path against the set of actually-changed files.
+            // This is the primary security boundary: only files modified on this
+            // branch are diffable, preventing arbitrary file reads via ?path=...
+            let changed_files = diff::compute_changed_files(repo_path, &base_branch)
+                .map_err(|e| DiffFileError::Internal(e.into()))?;
+            match validate_diff_path(repo_path, file_path, &changed_files) {
+                Ok(_) => {}
+                Err((status, msg)) => {
+                    return Err(if status == StatusCode::NOT_FOUND {
+                        DiffFileError::NotFound(msg)
+                    } else {
+                        DiffFileError::BadRequest(msg)
+                    });
+                }
+            }
 
-        let file = RichDiffFileInfo {
-            path: file_diff.file.path.to_string_lossy().to_string(),
-            old_path: file_diff
-                .file
-                .old_path
-                .map(|p| p.to_string_lossy().to_string()),
-            status: file_diff.file.status.label().to_string(),
-            additions: file_diff.file.additions,
-            deletions: file_diff.file.deletions,
-        };
+            let file_diff = diff::compute_file_diff(repo_path, file_path, &base_branch, 3)
+                .map_err(|e| DiffFileError::Internal(e.into()))?;
 
-        let hunks: Vec<RichDiffHunk> = file_diff
-            .hunks
-            .into_iter()
-            .map(|h| RichDiffHunk {
-                old_start: h.old_start,
-                old_lines: h.old_lines,
-                new_start: h.new_start,
-                new_lines: h.new_lines,
-                lines: h
-                    .lines
-                    .into_iter()
-                    .map(|l| RichDiffLine {
-                        change_type: match l.tag {
-                            ChangeTag::Insert => "add".to_string(),
-                            ChangeTag::Delete => "delete".to_string(),
-                            ChangeTag::Equal => "equal".to_string(),
-                        },
-                        old_line_num: l.old_line_num,
-                        new_line_num: l.new_line_num,
-                        content: l.content,
-                    })
-                    .collect(),
+            let file = RichDiffFileInfo {
+                path: file_diff.file.path.to_string_lossy().to_string(),
+                old_path: file_diff
+                    .file
+                    .old_path
+                    .map(|p| p.to_string_lossy().to_string()),
+                status: file_diff.file.status.label().to_string(),
+                additions: file_diff.file.additions,
+                deletions: file_diff.file.deletions,
+            };
+
+            // Size cap: avoid OOM'ing the browser on huge files (minified bundles,
+            // generated code, data blobs that slipped past .gitignore).
+            let total_line_count: usize = file_diff.hunks.iter().map(|h| h.lines.len()).sum();
+            let total_bytes: usize = file_diff
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .map(|l| l.content.len())
+                .sum();
+            if total_line_count > MAX_DIFF_LINES || total_bytes > MAX_DIFF_BYTES {
+                return Ok(RichFileDiffResponse {
+                    file,
+                    hunks: Vec::new(),
+                    is_binary: file_diff.is_binary,
+                    truncated: true,
+                });
+            }
+
+            let hunks: Vec<RichDiffHunk> = file_diff
+                .hunks
+                .into_iter()
+                .map(|h| RichDiffHunk {
+                    old_start: h.old_start,
+                    old_lines: h.old_lines,
+                    new_start: h.new_start,
+                    new_lines: h.new_lines,
+                    lines: h
+                        .lines
+                        .into_iter()
+                        .map(|l| RichDiffLine {
+                            change_type: match l.tag {
+                                ChangeTag::Insert => "add".to_string(),
+                                ChangeTag::Delete => "delete".to_string(),
+                                ChangeTag::Equal => "equal".to_string(),
+                            },
+                            old_line_num: l.old_line_num,
+                            new_line_num: l.new_line_num,
+                            content: l.content,
+                        })
+                        .collect(),
+                })
+                .collect();
+
+            Ok(RichFileDiffResponse {
+                file,
+                hunks,
+                is_binary: file_diff.is_binary,
+                truncated: false,
             })
-            .collect();
-
-        Ok::<_, anyhow::Error>(RichFileDiffResponse {
-            file,
-            hunks,
-            is_binary: file_diff.is_binary,
         })
-    })
-    .await;
+        .await;
 
     match result {
         Ok(Ok(resp)) => (
@@ -731,7 +756,17 @@ pub async fn session_diff_file(
             Json(serde_json::to_value(resp).expect("RichFileDiffResponse is always serializable")),
         )
             .into_response(),
-        Ok(Err(e)) => {
+        Ok(Err(DiffFileError::BadRequest(msg))) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "bad_request", "message": msg})),
+        )
+            .into_response(),
+        Ok(Err(DiffFileError::NotFound(msg))) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found", "message": msg})),
+        )
+            .into_response(),
+        Ok(Err(DiffFileError::Internal(e))) => {
             tracing::error!("File diff failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1194,5 +1229,115 @@ mod tests {
         assert_eq!(json["tool"], "claude");
         assert_eq!(json["status"], "Running");
         assert_eq!(json["is_sandboxed"], false);
+    }
+
+    // ── validate_diff_path: security regression tests ──────────────────────────
+    //
+    // Regression for a path-traversal vulnerability in the first cut of the
+    // `/api/sessions/{id}/diff/file?path=...` endpoint. Any authenticated user
+    // could pass `?path=/etc/passwd` or `?path=../../etc/shadow` and have the
+    // server dump the file contents in a diff response. The validator must
+    // reject absolute paths, parent-dir traversal, and any path that isn't in
+    // the set of actually-changed files.
+
+    use crate::git::diff::{DiffFile, FileStatus};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn changed(paths: &[&str]) -> Vec<DiffFile> {
+        paths
+            .iter()
+            .map(|p| DiffFile {
+                path: PathBuf::from(p),
+                old_path: None,
+                status: FileStatus::Modified,
+                additions: 0,
+                deletions: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_absolute() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("/etc/passwd"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_parent_dir() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("../../etc/passwd"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_parent_dir_in_middle() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("src/../../etc/passwd"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_empty() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(dir.path(), std::path::Path::new(""), &[]).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_unchanged_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("existing.txt"), "hello").unwrap();
+        // File exists inside workdir but is not in the changed set.
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("existing.txt"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn validate_diff_path_accepts_changed_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("changed.txt"), "hello").unwrap();
+        let ok = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("changed.txt"),
+            &changed(&["changed.txt"]),
+        );
+        assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
+    }
+
+    #[test]
+    fn validate_diff_path_accepts_deleted_file() {
+        // A file that has been deleted on disk but is in the changed set
+        // (status: Deleted) should still be diffable so the user can see
+        // what was removed. canonicalize() on the joined path will fail —
+        // the validator must fall back to the non-canonical path.
+        let dir = TempDir::new().unwrap();
+        let ok = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("deleted.txt"),
+            &changed(&["deleted.txt"]),
+        );
+        assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
     }
 }
