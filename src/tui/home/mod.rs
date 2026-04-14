@@ -276,10 +276,22 @@ impl HomeView {
             .as_ref()
             .and_then(|c| c.app_state.sort_order)
             .unwrap_or_default();
+        // New users (haven't dismissed the welcome screen) default to Project
+        // grouping so they see the same layout as the web dashboard. Existing
+        // users keep Manual (the existing behavior) unless they explicitly
+        // toggle to Project with `g`.
+        let is_new_user = user_config
+            .as_ref()
+            .is_none_or(|c| !c.app_state.has_seen_welcome);
+        let default_group_by = if is_new_user {
+            GroupByMode::Project
+        } else {
+            GroupByMode::Manual
+        };
         let group_by = user_config
             .as_ref()
             .and_then(|c| c.app_state.group_by)
-            .unwrap_or_default();
+            .unwrap_or(default_group_by);
 
         let mut view = Self {
             storages,

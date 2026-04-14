@@ -91,8 +91,8 @@ impl SortOrder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupByMode {
-    Manual,
     #[default]
+    Manual,
     Project,
 }
 
