@@ -396,6 +396,10 @@ impl App {
         // Global keybindings
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                if self.home.is_creation_pending() {
+                    self.home.cancel_creation();
+                    return Ok(());
+                }
                 self.should_quit = true;
                 return Ok(());
             }

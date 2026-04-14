@@ -524,13 +524,6 @@ impl HomeView {
                     return Some(Action::AttachTerminal(id.clone(), terminal_mode));
                 }
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.creating_stub_id.is_some() {
-                    self.cancel_creation();
-                }
-                // No action when no creation is in progress; fall through
-                // so future Ctrl+C behavior can be added without shadowing.
-            }
             KeyCode::Char('c') => {
                 // Toggle container/host terminal mode (only in Terminal view for sandboxed sessions)
                 if self.view_mode == ViewMode::Terminal {

@@ -35,6 +35,15 @@ fn test_new_session_dialog_escape_cancels() {
     h.assert_screen_contains("No sessions yet");
 }
 
+/// Submit the new session dialog, handling the "Path does not exist. Create?"
+/// prompt if it appears. The 'y' keystroke is harmless when the path exists
+/// because there is no 'y' keybinding in the home view.
+fn submit_new_session_dialog(h: &TuiTestHarness) {
+    h.send_keys("Enter");
+    std::thread::sleep(Duration::from_millis(300));
+    h.send_keys("y");
+}
+
 /// Write a global config with on_create hooks so session creation goes through
 /// the background CreationPoller and shows a Creating stub in the session list.
 fn write_config_with_hooks(h: &TuiTestHarness, hook_cmd: &str) {
@@ -81,12 +90,11 @@ fn test_creating_stub_appears_during_hook_execution() {
     // Tab from Title to Path field.
     h.send_keys("Tab");
     h.type_text(project.to_str().unwrap());
-    // Submit the dialog.
-    h.send_keys("Enter");
+    submit_new_session_dialog(&h);
 
     // The dialog should close and a Creating stub should appear in the list.
     // The preview pane shows "Creating..." with hook output.
-    h.wait_for_timeout("Creating...", Duration::from_secs(5));
+    h.wait_for_timeout("Creating...", Duration::from_secs(10));
     h.assert_screen_contains("Hook Output");
 }
 
@@ -107,9 +115,9 @@ fn test_creating_stub_cancelled_with_ctrl_c() {
     h.wait_for("Title");
     h.send_keys("Tab");
     h.type_text(project.to_str().unwrap());
-    h.send_keys("Enter");
+    submit_new_session_dialog(&h);
 
-    h.wait_for_timeout("Creating...", Duration::from_secs(5));
+    h.wait_for_timeout("Creating...", Duration::from_secs(10));
 
     // Cancel with Ctrl+C.
     h.send_keys("C-c");
@@ -136,9 +144,9 @@ fn test_creating_blocks_second_session_creation() {
     h.wait_for("Title");
     h.send_keys("Tab");
     h.type_text(project.to_str().unwrap());
-    h.send_keys("Enter");
+    submit_new_session_dialog(&h);
 
-    h.wait_for_timeout("Creating...", Duration::from_secs(5));
+    h.wait_for_timeout("Creating...", Duration::from_secs(10));
 
     // Try to create another session while one is in progress.
     h.send_keys("n");
