@@ -2,6 +2,7 @@ mod apple_container;
 pub mod container_interface;
 mod docker;
 pub mod error;
+pub mod image_update;
 pub(crate) mod runtime_base;
 
 use std::collections::HashMap;

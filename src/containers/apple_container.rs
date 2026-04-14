@@ -50,6 +50,14 @@ impl ContainerRuntimeInterface for AppleContainer {
         self.base.image_exists_locally(image)
     }
 
+    fn get_local_image_id(&self, image: &str) -> Result<String> {
+        self.base.get_local_image_id(image)
+    }
+
+    fn get_remote_manifest_digest(&self, image: &str) -> Result<String> {
+        self.base.get_remote_manifest_digest(image)
+    }
+
     fn does_container_exist(&self, name: &str) -> Result<bool> {
         // Apple Container's `inspect` returns success(0) for non-existent containers,
         // so we use `logs` which properly fails for missing containers.

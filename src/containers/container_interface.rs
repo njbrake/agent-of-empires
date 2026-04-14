@@ -71,6 +71,12 @@ pub trait ContainerRuntimeInterface {
 
     fn image_exists_locally(&self, image: &str) -> bool;
 
+    /// Get the local image ID (digest) for a pulled image.
+    fn get_local_image_id(&self, image: &str) -> Result<String>;
+
+    /// Get the remote manifest digest for an image without pulling it.
+    fn get_remote_manifest_digest(&self, image: &str) -> Result<String>;
+
     // container management
     fn does_container_exist(&self, name: &str) -> Result<bool>;
 

@@ -33,6 +33,14 @@ impl ContainerRuntimeInterface for Docker {
         self.base.image_exists_locally(image)
     }
 
+    fn get_local_image_id(&self, image: &str) -> Result<String> {
+        self.base.get_local_image_id(image)
+    }
+
+    fn get_remote_manifest_digest(&self, image: &str) -> Result<String> {
+        self.base.get_remote_manifest_digest(image)
+    }
+
     fn pull_image(&self, image: &str) -> Result<()> {
         self.base.pull_image(image)
     }

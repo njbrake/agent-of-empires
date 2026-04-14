@@ -109,6 +109,11 @@ pub struct AppStateConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<SortOrder>,
+
+    /// When true, the user has permanently dismissed Docker image update notifications.
+    /// Set when the user presses 'd' in the image update dialog.
+    #[serde(default)]
+    pub image_update_check_dismissed: bool,
 }
 
 /// Session-related configuration defaults

@@ -1,6 +1,18 @@
 use super::container_interface::{ContainerConfig, EnvEntry};
 use super::error::{DockerError, Result};
+use sha2::{Digest, Sha256};
 use std::process::Command;
+
+/// Compute a hex-encoded SHA-256 hash of the input string.
+fn sha256_hash(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let result = hasher.finalize();
+    result
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
+}
 
 /// Shared implementation for container runtimes.
 ///
@@ -74,6 +86,89 @@ impl RuntimeBase {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Get the local image's registry digest from RepoDigests.
+    /// Returns the digest portion (e.g., "sha256:abc123...") which matches
+    /// what the registry reports, enabling comparison with remote manifests.
+    pub fn get_local_image_id(&self, image: &str) -> Result<String> {
+        // Use RepoDigests which contains the registry-level digest.
+        // This is comparable to the digest from `docker manifest inspect`.
+        let output = self
+            .command()
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{index .RepoDigests 0}}",
+                image,
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(DockerError::ImageNotFound(image.to_string()));
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if raw.is_empty() {
+            return Err(DockerError::ImageNotFound(image.to_string()));
+        }
+
+        // RepoDigests format: "registry/repo@sha256:abc123..."
+        // Extract just the digest part after '@'
+        let digest = raw
+            .rsplit_once('@')
+            .map(|(_, d)| d.to_string())
+            .unwrap_or(raw);
+        Ok(digest)
+    }
+
+    /// Get the remote manifest digest for an image without pulling it.
+    /// Uses `manifest inspect --verbose` to get the descriptor digest from
+    /// the registry, which matches the RepoDigests format from local inspect.
+    pub fn get_remote_manifest_digest(&self, image: &str) -> Result<String> {
+        let output = self
+            .command()
+            .args(["manifest", "inspect", "--verbose", image])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(DockerError::CommandFailed(format!(
+                "manifest inspect failed for {}: {}",
+                image,
+                stderr.trim()
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // --verbose output is a JSON object (single platform) or array (manifest list).
+        // Both contain a "Descriptor.digest" field with the registry-level digest.
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            // Array (manifest list): the top-level descriptor has the list digest
+            if let Some(arr) = json.as_array() {
+                // Each entry has a Descriptor; use the first one's digest
+                // as a proxy, or look for an overall descriptor
+                if let Some(first) = arr.first() {
+                    if let Some(digest) =
+                        first.pointer("/Descriptor/digest").and_then(|v| v.as_str())
+                    {
+                        return Ok(digest.to_string());
+                    }
+                }
+            }
+            // Single object: Descriptor.digest
+            if let Some(digest) = json.pointer("/Descriptor/digest").and_then(|v| v.as_str()) {
+                return Ok(digest.to_string());
+            }
+            // Fallback: hash the entire manifest for a stable fingerprint
+            return Ok(format!("manifest:{}", sha256_hash(&stdout)));
+        }
+
+        Err(DockerError::CommandFailed(
+            "Failed to parse manifest inspect output".to_string(),
+        ))
     }
 
     pub fn image_exists_locally(&self, image: &str) -> bool {
