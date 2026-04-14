@@ -179,7 +179,13 @@ sleep 0.1
 
 # Submit
 send Enter
-sleep 2.5
+sleep 4
+
+# Send a prompt into OpenCode
+type_text "Add authentication to this web app"
+sleep 0.8
+send Enter
+sleep 3
 
 # Detach
 send C-b
