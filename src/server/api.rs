@@ -540,6 +540,216 @@ pub async fn session_diff(
     }
 }
 
+// --- Rich Diff (per-file, merge-base aware) ---
+
+#[derive(Serialize)]
+pub struct RichDiffFileInfo {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    pub status: String,
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+#[derive(Serialize)]
+pub struct RichDiffFilesResponse {
+    pub files: Vec<RichDiffFileInfo>,
+    pub base_branch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RichDiffLine {
+    #[serde(rename = "type")]
+    pub change_type: String,
+    pub old_line_num: Option<usize>,
+    pub new_line_num: Option<usize>,
+    pub content: String,
+}
+
+#[derive(Serialize)]
+pub struct RichDiffHunk {
+    pub old_start: usize,
+    pub old_lines: usize,
+    pub new_start: usize,
+    pub new_lines: usize,
+    pub lines: Vec<RichDiffLine>,
+}
+
+#[derive(Serialize)]
+pub struct RichFileDiffResponse {
+    pub file: RichDiffFileInfo,
+    pub hunks: Vec<RichDiffHunk>,
+    pub is_binary: bool,
+}
+
+/// Helper: look up a session's project_path by ID.
+async fn resolve_session_path(
+    state: &AppState,
+    id: &str,
+) -> Result<String, axum::response::Response> {
+    let instances = state.instances.read().await;
+    match instances.iter().find(|i| i.id == id) {
+        Some(i) => Ok(i.project_path.clone()),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found", "message": "Session not found"})),
+        )
+            .into_response()),
+    }
+}
+
+pub async fn session_diff_files(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let project_path = match resolve_session_path(&state, &id).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        use crate::git::diff;
+        let path = std::path::Path::new(&project_path);
+
+        let base_branch = diff::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
+        let warning = diff::check_merge_base_status(path, &base_branch);
+        let changed = diff::compute_changed_files(path, &base_branch).unwrap_or_default();
+
+        let files: Vec<RichDiffFileInfo> = changed
+            .into_iter()
+            .map(|f| RichDiffFileInfo {
+                path: f.path.to_string_lossy().to_string(),
+                old_path: f.old_path.map(|p| p.to_string_lossy().to_string()),
+                status: f.status.label().to_string(),
+                additions: f.additions,
+                deletions: f.deletions,
+            })
+            .collect();
+
+        RichDiffFilesResponse {
+            files,
+            base_branch,
+            warning,
+        }
+    })
+    .await;
+
+    match result {
+        Ok(resp) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(resp).expect("RichDiffFilesResponse is always serializable")),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("Diff files panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FileDiffQuery {
+    pub path: String,
+}
+
+pub async fn session_diff_file(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<FileDiffQuery>,
+) -> impl IntoResponse {
+    let project_path = match resolve_session_path(&state, &id).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        use crate::git::diff;
+        use similar::ChangeTag;
+
+        let repo_path = std::path::Path::new(&project_path);
+        let file_path = std::path::Path::new(&query.path);
+
+        let base_branch =
+            diff::get_default_branch(repo_path).unwrap_or_else(|_| "main".to_string());
+
+        let file_diff = diff::compute_file_diff(repo_path, file_path, &base_branch, 3)?;
+
+        let file = RichDiffFileInfo {
+            path: file_diff.file.path.to_string_lossy().to_string(),
+            old_path: file_diff
+                .file
+                .old_path
+                .map(|p| p.to_string_lossy().to_string()),
+            status: file_diff.file.status.label().to_string(),
+            additions: file_diff.file.additions,
+            deletions: file_diff.file.deletions,
+        };
+
+        let hunks: Vec<RichDiffHunk> = file_diff
+            .hunks
+            .into_iter()
+            .map(|h| RichDiffHunk {
+                old_start: h.old_start,
+                old_lines: h.old_lines,
+                new_start: h.new_start,
+                new_lines: h.new_lines,
+                lines: h
+                    .lines
+                    .into_iter()
+                    .map(|l| RichDiffLine {
+                        change_type: match l.tag {
+                            ChangeTag::Insert => "add".to_string(),
+                            ChangeTag::Delete => "delete".to_string(),
+                            ChangeTag::Equal => "equal".to_string(),
+                        },
+                        old_line_num: l.old_line_num,
+                        new_line_num: l.new_line_num,
+                        content: l.content,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Ok::<_, anyhow::Error>(RichFileDiffResponse {
+            file,
+            hunks,
+            is_binary: file_diff.is_binary,
+        })
+    })
+    .await;
+
+    match result {
+        Ok(Ok(resp)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(resp).expect("RichFileDiffResponse is always serializable")),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("File diff failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "diff_failed", "message": "Failed to compute file diff"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("File diff panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 // --- Agents ---
 
 #[derive(Serialize)]

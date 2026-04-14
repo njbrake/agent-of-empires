@@ -336,6 +336,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}", patch(api::rename_session))
         .route("/api/sessions/{id}/diff", get(api::session_diff))
+        .route(
+            "/api/sessions/{id}/diff/files",
+            get(api::session_diff_files),
+        )
+        .route("/api/sessions/{id}/diff/file", get(api::session_diff_file))
         .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
         .route(
             "/api/sessions/{id}/container-terminal",

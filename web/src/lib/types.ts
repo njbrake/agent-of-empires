@@ -46,6 +46,46 @@ export interface DiffFileInfo {
   status: string;
 }
 
+/** Rich diff file info with addition/deletion stats */
+export interface RichDiffFile {
+  path: string;
+  old_path: string | null;
+  status: "added" | "modified" | "deleted" | "renamed" | "copied" | "untracked";
+  additions: number;
+  deletions: number;
+}
+
+/** Response from /api/sessions/{id}/diff/files */
+export interface RichDiffFilesResponse {
+  files: RichDiffFile[];
+  base_branch: string;
+  warning: string | null;
+}
+
+/** A single line in a structured diff */
+export interface RichDiffLine {
+  type: "add" | "delete" | "equal";
+  old_line_num: number | null;
+  new_line_num: number | null;
+  content: string;
+}
+
+/** A hunk in a structured diff */
+export interface RichDiffHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  lines: RichDiffLine[];
+}
+
+/** Response from /api/sessions/{id}/diff/file?path=... */
+export interface RichFileDiffResponse {
+  file: RichDiffFile;
+  hunks: RichDiffHunk[];
+  is_binary: boolean;
+}
+
 /** Workspace status derived from session states */
 export type WorkspaceStatus = "active" | "idle";
 

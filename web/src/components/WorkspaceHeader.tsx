@@ -26,6 +26,8 @@ export function WorkspaceHeader({
         {agentLabel}
       </span>
 
+      <div className="flex-1" />
+
       {diffCollapsed && diffFileCount > 0 && (
         <button
           onClick={onToggleDiff}
