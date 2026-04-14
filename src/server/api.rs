@@ -535,7 +535,7 @@ fn validate_diff_path(
     }
 
     // Cross-check: path must be one of the currently-changed files.
-    // This is the narrowest trust boundary — only files the user actually
+    // This is the narrowest trust boundary: only files the user actually
     // modified on this branch are diffable, not arbitrary files in the worktree.
     let matches_changed = changed_files.iter().any(|f| f.path == requested);
     if !matches_changed {
@@ -1330,8 +1330,8 @@ mod tests {
     fn validate_diff_path_accepts_deleted_file() {
         // A file that has been deleted on disk but is in the changed set
         // (status: Deleted) should still be diffable so the user can see
-        // what was removed. canonicalize() on the joined path will fail —
-        // the validator must fall back to the non-canonical path.
+        // what was removed. canonicalize() on the joined path will fail,
+        // so the validator must fall back to the non-canonical path.
         let dir = TempDir::new().unwrap();
         let ok = validate_diff_path(
             dir.path(),

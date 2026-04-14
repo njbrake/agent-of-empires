@@ -145,7 +145,7 @@ export function RightPanel({
         try {
           localStorage.setItem(VSPLIT_STORAGE_KEY, String(r));
         } catch {
-          // quota / private mode — non-fatal
+          // quota exceeded or private mode; non-fatal
         }
         return r;
       });

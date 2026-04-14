@@ -81,7 +81,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const { files: diffFiles, baseBranch, warning, loading: diffFilesLoading, revision } =
     useDiffFiles(activeSessionId, !diffCollapsed);
 
-  // Reset file selection when session changes or when the selected file disappears.
+  // Reset file selection when session changes, when the selected file
+  // disappears from the list, or when the list becomes empty (all changes
+  // reverted/committed). Guard on diffFilesLoading so we don't clear the
+  // selection during the brief gap before the first fetch completes.
   useEffect(() => {
     if (!activeSessionId) {
       setSelectedFilePath(null);
@@ -89,12 +92,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
     if (
       selectedFilePath &&
-      diffFiles.length > 0 &&
+      !diffFilesLoading &&
       !diffFiles.some((f) => f.path === selectedFilePath)
     ) {
       setSelectedFilePath(null);
     }
-  }, [activeSessionId, diffFiles, selectedFilePath]);
+  }, [activeSessionId, diffFiles, diffFilesLoading, selectedFilePath]);
 
   // Reset file selection when switching sessions.
   useEffect(() => {
