@@ -396,7 +396,7 @@ impl App {
         // Global keybindings
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                if self.home.is_creation_pending() {
+                if self.home.is_creating_stub_selected() {
                     self.home.cancel_creation();
                     return Ok(());
                 }

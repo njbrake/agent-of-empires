@@ -691,6 +691,14 @@ impl HomeView {
         self.creation_poller.is_pending()
     }
 
+    /// Check if the currently selected session is the in-flight creating stub
+    pub fn is_creating_stub_selected(&self) -> bool {
+        match (&self.creating_stub_id, &self.selected_session) {
+            (Some(stub_id), Some(selected)) => stub_id == selected,
+            _ => false,
+        }
+    }
+
     /// Tick dialog animations/timers and drain hook progress.
     /// Returns true when a redraw is needed.
     pub fn tick_dialog(&mut self) -> bool {
