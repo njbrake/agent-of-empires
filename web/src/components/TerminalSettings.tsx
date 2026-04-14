@@ -1,6 +1,6 @@
 import { useWebSettings } from "../hooks/useWebSettings";
 
-const FONT_SIZES = [6, 7, 8, 9, 10, 11, 12, 14];
+const FONT_SIZES = [6, 7, 8, 9, 10, 11, 12, 13, 14];
 
 export function TerminalSettings() {
   const { settings, update } = useWebSettings();

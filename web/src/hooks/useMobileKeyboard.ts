@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
-import type { Terminal } from "@xterm/xterm";
-import type { RefObject } from "react";
+import { useEffect, useState } from "react";
 
 /**
  * Detects mobile touch devices and manages keyboard lifecycle:
@@ -8,9 +6,7 @@ import type { RefObject } from "react";
  * - Fires terminal refit when the soft keyboard opens/closes
  * - Provides focusTerminal() to programmatically open the keyboard
  */
-export function useMobileKeyboard(
-  termRef: RefObject<Terminal | null>,
-) {
+export function useMobileKeyboard() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" &&
     window.innerWidth < 768 &&
@@ -45,14 +41,5 @@ export function useMobileKeyboard(
     return () => vv.removeEventListener("resize", handleResize);
   }, [isMobile]);
 
-  // Programmatically focus the terminal to open the soft keyboard.
-  // Uses requestAnimationFrame delay for iOS Safari compatibility.
-  const focusTerminal = useCallback(() => {
-    if (!isMobile) return;
-    requestAnimationFrame(() => {
-      termRef.current?.focus();
-    });
-  }, [isMobile, termRef]);
-
-  return { isMobile, keyboardOpen, focusTerminal };
+  return { isMobile, keyboardOpen };
 }

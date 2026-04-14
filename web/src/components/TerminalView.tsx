@@ -11,7 +11,7 @@ interface Props {
 export function TerminalView({ session }: Props) {
   const { containerRef, termRef, state, manualReconnect, sendData } =
     useTerminal(session.id);
-  const { isMobile, keyboardOpen } = useMobileKeyboard(termRef);
+  const { isMobile, keyboardOpen } = useMobileKeyboard();
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
