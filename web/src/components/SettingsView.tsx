@@ -1,4 +1,5 @@
 import { ConnectedDevices } from "./ConnectedDevices";
+import { TerminalSettings } from "./TerminalSettings";
 
 interface Props {
   onClose: () => void;
@@ -19,7 +20,8 @@ export function SettingsView({ onClose }: Props) {
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 max-w-[600px]">
+      <div className="flex-1 overflow-y-auto p-6 max-w-[600px] space-y-8">
+        <TerminalSettings />
         <ConnectedDevices />
       </div>
     </div>

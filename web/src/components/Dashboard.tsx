@@ -5,7 +5,6 @@ import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/ses
 interface Props {
   sessions: SessionResponse[];
   onSelectSession: (sessionId: string) => void;
-  onAddProject: () => void;
 }
 
 interface ProjectGroup {
@@ -37,7 +36,7 @@ function timeAgo(iso: string | null): string {
   return `${days}d ago`;
 }
 
-export function Dashboard({ sessions, onSelectSession, onAddProject }: Props) {
+export function Dashboard({ sessions, onSelectSession }: Props) {
   const groups = useMemo(() => {
     const map = new Map<string, ProjectGroup>();
     for (const s of sessions) {
@@ -92,16 +91,10 @@ export function Dashboard({ sessions, onSelectSession, onAddProject }: Props) {
         >
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
-        <p className="text-sm text-text-muted mb-1">No projects yet</p>
-        <p className="text-xs text-text-dim mb-4">
-          Add a project to start working with AI agents.
+        <p className="text-sm text-text-muted mb-1">No sessions yet</p>
+        <p className="text-xs text-text-dim">
+          Create a session from the sidebar to get started.
         </p>
-        <button
-          onClick={onAddProject}
-          className="px-5 py-2.5 text-sm rounded-lg font-semibold bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-surface-900 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
-        >
-          Add project
-        </button>
       </div>
     );
   }
@@ -132,12 +125,6 @@ export function Dashboard({ sessions, onSelectSession, onAddProject }: Props) {
               )}
             </div>
           </div>
-          <button
-            onClick={onAddProject}
-            className="text-sm text-brand-500 hover:text-brand-400 cursor-pointer transition-colors"
-          >
-            + Add project
-          </button>
         </div>
 
         <p className="text-xs text-text-dim mb-4 md:hidden">

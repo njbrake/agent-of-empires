@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
@@ -69,6 +69,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [sidebarOpen, setSidebarOpen] = useState(
     () => window.innerWidth >= 768,
   );
+  const keyboardProxyRef = useRef<HTMLTextAreaElement>(null);
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const activeSession = activeWorkspace?.sessions.find(
@@ -85,11 +86,20 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     return { errors, waiting };
   }, [sessions]);
 
+  const focusKeyboardProxy = () => {
+    if (window.innerWidth < 768 && navigator.maxTouchPoints > 0) {
+      keyboardProxyRef.current?.focus();
+    }
+  };
+
   const handleSelectSession = (sessionId: string) => {
     const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
     if (ws) {
       setActiveWorkspaceId(ws.id);
       setActiveSessionId(sessionId);
+      // Focus proxy input within this tap gesture to open the soft keyboard.
+      // The terminal will steal focus from it on mount via term.focus().
+      focusKeyboardProxy();
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
   };
@@ -101,6 +111,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       const running = ws.sessions.find((s) => isSessionActive(s.status));
       setActiveSessionId(running?.id ?? ws.sessions[0]?.id ?? null);
     }
+    focusKeyboardProxy();
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
@@ -157,7 +168,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         <Dashboard
           sessions={sessions}
           onSelectSession={handleSelectSession}
-          onAddProject={() => setShowAddProject(true)}
         />
       );
     }
@@ -317,6 +327,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       )}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
+
+      {/* Hidden proxy input: focused during session-select tap gesture to open
+          the mobile soft keyboard. The terminal steals focus on mount. */}
+      <textarea
+        ref={keyboardProxyRef}
+        aria-hidden="true"
+        tabIndex={-1}
+        className="fixed opacity-0 w-0 h-0 pointer-events-none"
+        style={{ top: -9999, left: -9999 }}
+      />
     </div>
   );
 }
