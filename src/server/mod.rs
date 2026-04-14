@@ -402,7 +402,7 @@ async fn serve_index(uri: axum::http::Uri) -> impl axum::response::IntoResponse 
     use axum::response::IntoResponse;
 
     let path = uri.path().trim_start_matches('/');
-    if !path.is_empty() && path != "index.html" {
+    if !path.is_empty() && path != "index.html" && path.contains('.') {
         if let Some(file) = StaticAssets::get(path) {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             return (
