@@ -160,3 +160,43 @@ fn test_creating_blocks_second_session_creation() {
     h.send_keys("C-c");
     h.wait_for_absent("Creating...", Duration::from_secs(5));
 }
+
+#[test]
+#[serial]
+fn test_quit_during_creation_shows_confirm() {
+    require_tmux!();
+
+    let mut h = TuiTestHarness::new("quit_creating");
+    write_config_with_hooks(&h, "sleep 10");
+    let project = h.project_path();
+    h.spawn_tui();
+
+    h.wait_for("Agent of Empires");
+
+    // Start creating a session.
+    h.send_keys("n");
+    h.wait_for("Title");
+    h.send_keys("Tab");
+    h.type_text(project.to_str().unwrap());
+    submit_new_session_dialog(&h);
+
+    h.wait_for_timeout("Creating...", Duration::from_secs(10));
+
+    // Navigate away from the creating stub so Ctrl+C triggers quit path.
+    // With only one session (the stub), pressing 'q' is more reliable.
+    h.send_keys("q");
+
+    // Should show a confirmation dialog instead of quitting.
+    h.wait_for_timeout("Session Creating", Duration::from_secs(3));
+    h.assert_screen_contains("Quit anyway");
+
+    // Decline to quit.
+    h.send_keys("n");
+    h.wait_for_absent("Session Creating", Duration::from_secs(3));
+    // TUI is still running with the Creating stub.
+    h.assert_screen_contains("Creating...");
+
+    // Clean up by cancelling creation (stub is selected again).
+    h.send_keys("C-c");
+    h.wait_for_absent("Creating...", Duration::from_secs(5));
+}

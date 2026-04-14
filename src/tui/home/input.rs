@@ -292,6 +292,8 @@ impl HomeView {
                                 tracing::error!("Failed to force remove session: {}", e);
                             }
                         }
+                    } else if action == "quit_during_creation" {
+                        return Some(Action::Quit);
                     }
                 }
             }

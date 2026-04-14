@@ -402,11 +402,19 @@ impl App {
                     self.home.cancel_creation();
                     return Ok(());
                 }
+                if self.home.is_creation_pending() && !self.home.has_dialog() {
+                    self.home.show_quit_during_creation_confirm();
+                    return Ok(());
+                }
                 self.should_quit = true;
                 return Ok(());
             }
             (KeyCode::Char('q'), _) => {
                 if !self.home.has_dialog() {
+                    if self.home.is_creation_pending() {
+                        self.home.show_quit_during_creation_confirm();
+                        return Ok(());
+                    }
                     self.should_quit = true;
                     return Ok(());
                 }

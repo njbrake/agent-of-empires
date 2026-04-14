@@ -699,6 +699,15 @@ impl HomeView {
         }
     }
 
+    /// Show a confirmation dialog warning that a session is being created.
+    pub fn show_quit_during_creation_confirm(&mut self) {
+        self.confirm_dialog = Some(ConfirmDialog::new(
+            "Session Creating",
+            "A session is still being created. Quit anyway? The hook will be cancelled.",
+            "quit_during_creation",
+        ));
+    }
+
     /// Clean up a pending creation on TUI shutdown. Waits briefly for the
     /// background thread to finish so we can clean up worktrees/instances.
     /// If the thread doesn't finish in time, the hook subprocess will
