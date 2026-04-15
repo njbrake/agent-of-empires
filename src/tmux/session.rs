@@ -6,8 +6,8 @@ use std::process::Command;
 use super::{
     refresh_session_cache, session_exists_from_cache,
     utils::{
-        append_pane_base_index_args, append_remain_on_exit_args, is_pane_dead,
-        is_pane_running_shell,
+        append_mouse_on_args, append_pane_base_index_args, append_remain_on_exit_args,
+        is_pane_dead, is_pane_running_shell,
     },
     SESSION_PREFIX,
 };
@@ -67,6 +67,7 @@ impl Session {
         let mut args = build_create_args(&self.name, working_dir, command, size);
         append_remain_on_exit_args(&mut args, &self.name);
         append_pane_base_index_args(&mut args, &self.name);
+        append_mouse_on_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 

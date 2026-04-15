@@ -205,38 +205,147 @@ export function useTerminal(
     const handleResize = () => fitAddon.fit();
     window.addEventListener("resize", handleResize);
 
-    // Touch-to-scroll: xterm.js doesn't natively translate touch swipes into
-    // buffer scrolling. We track touchmove Y-delta and call scrollLines().
-    // preventDefault stops the browser from pulling-to-refresh.
-    let touchStartY = 0;
-    let touchAccum = 0;
-    const cellHeight = () => term.options.fontSize ?? 14;
-
-    const onTouchStart = (e: TouchEvent) => {
-      const t = e.touches[0];
-      if (!t) return;
-      touchStartY = t.clientY;
-      touchAccum = 0;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      const t = e.touches[0];
-      if (!t) return;
-      e.preventDefault();
-      const dy = touchStartY - t.clientY;
-      touchStartY = t.clientY;
-      touchAccum += dy;
-      const lines = Math.trunc(touchAccum / cellHeight());
-      if (lines !== 0) {
-        term.scrollLines(lines);
-        touchAccum -= lines * cellHeight();
+    // Two-finger swipe emits SGR mouse-wheel escape sequences to the PTY,
+    // so tmux mouse-mode enters copy-mode and scrolls (and apps that read
+    // wheel events handle their own scrolling). We intentionally do NOT
+    // call term.scrollLines() — under tmux/alt-screen the local xterm
+    // scrollback is empty, so scrollLines would no-op. One-finger touches
+    // are left to xterm's native handling (text selection, taps). Calling
+    // preventDefault on one-finger moves breaks selection — never do it.
+    //
+    // Why we attach to .xterm and not the outer container: xterm.js
+    // registers document-level touch handlers that dispatch custom gesture
+    // events. Our listener sits on xterm's root element with capture:true
+    // so we fire before xterm's internal handlers. touch-action:none
+    // prevents the browser's native pan from competing for the gesture.
+    const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
+    const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
+    const sendWheel = (dir: "up" | "down", count: number) => {
+      const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
+      const ws = wsRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      for (let i = 0; i < count; i++) {
+        ws.send(new TextEncoder().encode(seq));
       }
     };
-    container.addEventListener("touchstart", onTouchStart, { passive: true });
-    container.addEventListener("touchmove", onTouchMove, { passive: false });
+
+    let touchMidY = 0;
+    let touchAccum = 0;
+    let lastMoveTs = 0;
+    let velocity = 0; // pixels per ms
+    let momentumRaf: number | null = null;
+    const LINES_PER_WHEEL = 2; // swipe pixels-per-wheel-event = cellHeight * 2
+    const MAX_VELOCITY = 2.0; // px/ms — a genuinely fast finger is ~1–2 px/ms
+    const MAX_WHEELS_PER_FRAME = 6; // cap runaway bursts
+    const clampV = (v: number) =>
+      Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
+    const cellHeight = () => term.options.fontSize ?? 14;
+    const pxPerWheel = () => cellHeight() * LINES_PER_WHEEL;
+    const prefersReducedMotion = () =>
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+
+    const midpointY = (e: TouchEvent) => {
+      const a = e.touches[0];
+      const b = e.touches[1];
+      if (!a || !b) return 0;
+      return (a.clientY + b.clientY) / 2;
+    };
+
+    const cancelMomentum = () => {
+      if (momentumRaf !== null) {
+        cancelAnimationFrame(momentumRaf);
+        momentumRaf = null;
+      }
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      cancelMomentum();
+      if (e.touches.length !== 2) return;
+      touchMidY = midpointY(e);
+      touchAccum = 0;
+      velocity = 0;
+      lastMoveTs = performance.now();
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return; // Single-finger = xterm handles it.
+      e.preventDefault();
+      const y = midpointY(e);
+      const now = performance.now();
+      const dy = touchMidY - y;
+      touchMidY = y;
+      touchAccum += dy;
+      const step = pxPerWheel();
+      const rawWheels = Math.trunc(touchAccum / step);
+      const wheels = Math.max(
+        -MAX_WHEELS_PER_FRAME,
+        Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
+      );
+      if (wheels !== 0) {
+        // Positive wheels means scrolled up (dy positive = finger moved up =
+        // content should scroll up to reveal lines above = wheel-up).
+        sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
+        touchAccum -= wheels * step;
+        const dt = Math.max(1, now - lastMoveTs);
+        velocity = clampV(dy / dt);
+      }
+      lastMoveTs = now;
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      // Fires whenever the touch count changes; only decay when all fingers lift.
+      if (e.touches.length > 0) return;
+      if (prefersReducedMotion() || Math.abs(velocity) < 0.05) {
+        velocity = 0;
+        return;
+      }
+      let v = velocity; // px/ms
+      let last = performance.now();
+      let carry = 0;
+      const decay = () => {
+        const now = performance.now();
+        const dt = now - last;
+        last = now;
+        v *= Math.pow(0.92, dt / 16); // ~400ms decay
+        carry += v * dt;
+        const step = pxPerWheel();
+        const rawW = Math.trunc(carry / step);
+        const w = Math.max(
+          -MAX_WHEELS_PER_FRAME,
+          Math.min(MAX_WHEELS_PER_FRAME, rawW),
+        );
+        if (w !== 0) {
+          sendWheel(w > 0 ? "up" : "down", Math.abs(w));
+          carry -= w * step;
+        }
+        if (Math.abs(v) > 0.05) {
+          momentumRaf = requestAnimationFrame(decay);
+        } else {
+          momentumRaf = null;
+        }
+      };
+      momentumRaf = requestAnimationFrame(decay);
+    };
+
+    // Attach to the root `.xterm` element created by term.open. It's the
+    // common parent of .xterm-viewport, .xterm-screen, and helpers, so
+    // touches on any xterm surface bubble here first. Capture phase
+    // guarantees we fire before xterm's document-level gesture handler.
+    const viewport =
+      container.querySelector<HTMLElement>(".xterm") ?? container;
+    viewport.style.touchAction = "none";
+    const touchOpts = { passive: false, capture: true } as const;
+    viewport.addEventListener("touchstart", onTouchStart, touchOpts);
+    viewport.addEventListener("touchmove", onTouchMove, touchOpts);
+    viewport.addEventListener("touchend", onTouchEnd, touchOpts);
+    viewport.addEventListener("touchcancel", onTouchEnd, touchOpts);
 
     return () => {
-      container.removeEventListener("touchstart", onTouchStart);
-      container.removeEventListener("touchmove", onTouchMove);
+      cancelMomentum();
+      viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
+      viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
+      viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
+      viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
       window.removeEventListener("resize", handleResize);
       dataDisposable?.dispose();
       resizeDisposable?.dispose();

@@ -4,7 +4,8 @@ use anyhow::{bail, Result};
 use std::process::Command;
 
 use super::utils::{
-    append_pane_base_index_args, append_remain_on_exit_args, is_pane_dead, sanitize_session_name,
+    append_mouse_on_args, append_pane_base_index_args, append_remain_on_exit_args, is_pane_dead,
+    sanitize_session_name,
 };
 use super::{
     refresh_session_cache, session_exists_from_cache, CONTAINER_TERMINAL_PREFIX, TERMINAL_PREFIX,
@@ -61,6 +62,7 @@ impl TerminalSession {
         let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
         append_remain_on_exit_args(&mut args, &self.name);
         append_pane_base_index_args(&mut args, &self.name);
+        append_mouse_on_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 
@@ -214,6 +216,7 @@ impl ContainerTerminalSession {
         let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
         append_remain_on_exit_args(&mut args, &self.name);
         append_pane_base_index_args(&mut args, &self.name);
+        append_mouse_on_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 

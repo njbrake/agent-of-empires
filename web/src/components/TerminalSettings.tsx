@@ -47,6 +47,28 @@ export function TerminalSettings() {
             Changing this will reconnect active sessions.
           </p>
         </div>
+
+        <div>
+          <label className="flex items-center justify-between gap-3 cursor-pointer">
+            <div>
+              <div className="text-[13px] text-text-secondary">
+                Auto-open keyboard on mobile
+              </div>
+              <p className="text-[11px] text-text-muted mt-1">
+                Open the soft keyboard when you select a session. Turn off for
+                monitoring-first workflows.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={settings.autoOpenKeyboard}
+              onChange={(e) =>
+                update({ autoOpenKeyboard: e.target.checked })
+              }
+              className="accent-brand-600 w-4 h-4 shrink-0"
+            />
+          </label>
+        </div>
       </div>
     </div>
   );

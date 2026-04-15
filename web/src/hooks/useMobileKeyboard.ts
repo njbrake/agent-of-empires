@@ -1,32 +1,25 @@
 import { useEffect, useState } from "react";
 
-/**
- * Detects mobile touch devices and manages keyboard lifecycle:
- * - Tracks whether the soft keyboard is open (via visualViewport height)
- * - Fires terminal refit when the soft keyboard opens/closes
- * - Provides focusTerminal() to programmatically open the keyboard
- */
+// Detects touch-primary devices and tracks soft-keyboard state via visualViewport.
+// isMobile is used to decide whether the mobile toolbar renders at all.
+// keyboardOpen and keyboardHeight are used for POSITIONING the toolbar above
+// the soft keyboard, not for gating whether it renders.
 export function useMobileKeyboard() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" &&
-    window.innerWidth < 768 &&
-    navigator.maxTouchPoints > 0,
+    window.matchMedia?.("(pointer: coarse)").matches,
   );
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-  // Re-evaluate on resize (e.g., device rotation or resizing browser)
   useEffect(() => {
-    const check = () => {
-      setIsMobile(window.innerWidth < 768 && navigator.maxTouchPoints > 0);
-    };
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia("(pointer: coarse)");
+    const onChange = () => setIsMobile(mql.matches);
+    mql.addEventListener?.("change", onChange);
+    return () => mql.removeEventListener?.("change", onChange);
   }, []);
 
-  // Detect keyboard open/close via visualViewport and trigger terminal refit.
-  // When the keyboard opens, visualViewport.height shrinks well below
-  // window.innerHeight. A threshold of 150px avoids false positives from
-  // browser chrome changes.
   useEffect(() => {
     if (!isMobile) return;
     const vv = window.visualViewport;
@@ -34,12 +27,16 @@ export function useMobileKeyboard() {
 
     const handleResize = () => {
       const heightDiff = window.innerHeight - vv.height;
-      setKeyboardOpen(heightDiff > 150);
+      // Threshold avoids false positives from browser chrome changes.
+      const open = heightDiff > 150;
+      setKeyboardOpen(open);
+      setKeyboardHeight(open ? heightDiff : 0);
       window.dispatchEvent(new Event("resize"));
     };
+    handleResize();
     vv.addEventListener("resize", handleResize);
     return () => vv.removeEventListener("resize", handleResize);
   }, [isMobile]);
 
-  return { isMobile, keyboardOpen };
+  return { isMobile, keyboardOpen, keyboardHeight };
 }
