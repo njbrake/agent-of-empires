@@ -58,7 +58,7 @@ pub struct SoundConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<String>,
 
-    /// Playback volume (0.0 = silent, 1.0 = normal, 1.5 = max)
+    /// Playback volume (0.1 = min, 1.0 = normal, 1.5 = max)
     #[serde(default = "default_volume", skip_serializing_if = "is_default_volume")]
     pub volume: f64,
 }
@@ -113,19 +113,19 @@ const BUNDLED_SOUND_FILES: &[&str] = &[
     "gem.wav",
 ];
 
-/// Returns the 16 volume level strings "0.0", "0.1", ..., "1.5"
+/// Returns the 15 volume level strings "0.1", "0.2", ..., "1.5"
 pub fn volume_options() -> Vec<String> {
-    (0..=15).map(|i| format!("{:.1}", i as f64 * 0.1)).collect()
+    (1..=15).map(|i| format!("{:.1}", i as f64 * 0.1)).collect()
 }
 
-/// Convert an f64 volume to the nearest Select index (0..=15)
+/// Convert an f64 volume to the nearest Select index (1..=15)
 pub fn volume_to_index(v: f64) -> usize {
-    ((v.clamp(0.0, 1.5) / 0.1).round() as usize).min(15)
+    ((v.clamp(0.1, 1.5) / 0.1).round() as usize).min(15) - 1
 }
 
 /// Parse a volume option string back to f64
 pub fn volume_from_option(s: &str) -> f64 {
-    s.parse::<f64>().unwrap_or(1.0).clamp(0.0, 1.5)
+    s.parse::<f64>().unwrap_or(1.0).clamp(0.1, 1.5)
 }
 
 /// Get the directory where sound files are stored
