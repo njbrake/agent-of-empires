@@ -113,7 +113,6 @@ fn build_frontend() {
 fn maybe_install_web_deps() {
     use std::path::Path;
     use std::process::Command;
-    use std::time::SystemTime;
 
     let node_modules_marker = Path::new("web/node_modules/.package-lock.json");
     let package_json = Path::new("web/package.json");
@@ -132,8 +131,6 @@ fn maybe_install_web_deps() {
         return;
     }
 
-    eprintln!("Installing web dependencies (node_modules is stale or missing)...");
-
     // Prefer `npm ci` when a lockfile exists: it is deterministic and cleans
     // up drift from manual edits. Fall back to `npm install` for projects
     // without a lockfile (unusual, but keeps first-time setup working).
@@ -142,6 +139,12 @@ fn maybe_install_web_deps() {
     } else {
         "install"
     };
+
+    // Use `cargo:warning=` so the notice shows in a default `cargo build`
+    // (plain eprintln! is suppressed unless the user passes -vv).
+    println!(
+        "cargo:warning=Installing web dependencies via `npm {install_cmd}` (node_modules is stale or missing)..."
+    );
 
     let status = Command::new("npm")
         .args([install_cmd])
@@ -155,10 +158,6 @@ fn maybe_install_web_deps() {
              Run `cd web && npm {install_cmd}` to see the full error."
         );
     }
-
-    // Touch the marker so future builds see the fresh install, even if
-    // npm didn't update its mtime for some reason.
-    let _ = SystemTime::now(); // no-op: filesystem mtime is set by npm itself
 }
 
 #[cfg(feature = "serve")]
