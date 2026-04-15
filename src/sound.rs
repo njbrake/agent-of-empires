@@ -30,7 +30,7 @@ pub enum SoundMode {
     Specific(String),
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SoundConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -61,6 +61,21 @@ pub struct SoundConfig {
     /// Playback volume (0.1 = min, 1.0 = normal, 1.5 = max)
     #[serde(default = "default_volume", skip_serializing_if = "is_default_volume")]
     pub volume: f64,
+}
+
+impl Default for SoundConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: SoundMode::default(),
+            on_start: None,
+            on_running: None,
+            on_waiting: None,
+            on_idle: None,
+            on_error: None,
+            volume: default_volume(),
+        }
+    }
 }
 
 fn default_volume() -> f64 {
@@ -289,6 +304,7 @@ fn get_audio_command(path: &str, volume: f64) -> Result<(String, Vec<String>), s
                 ))
             } else if which_command("aplay").is_ok() {
                 tracing::warn!("paplay not found, using aplay (may not support .ogg files)");
+                warn_aplay_volume_once(volume);
                 Ok(("aplay".to_string(), vec![path.to_string()]))
             } else {
                 Err(std::io::Error::new(
@@ -299,6 +315,7 @@ fn get_audio_command(path: &str, volume: f64) -> Result<(String, Vec<String>), s
         } else {
             // WAV files
             if which_command("aplay").is_ok() {
+                warn_aplay_volume_once(volume);
                 Ok(("aplay".to_string(), vec![path.to_string()]))
             } else if which_command("paplay").is_ok() {
                 Ok((
@@ -312,6 +329,20 @@ fn get_audio_command(path: &str, volume: f64) -> Result<(String, Vec<String>), s
                 ))
             }
         }
+    }
+}
+
+/// aplay has no volume flag, so the configured volume is ignored when it's
+/// the backend. Warn the user once per process so the "slider does nothing"
+/// case isn't silent.
+fn warn_aplay_volume_once(volume: f64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !is_default_volume(&volume) && !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "aplay does not support volume control; ignoring configured volume {:.1}. Install pulseaudio-utils (paplay) to enable volume.",
+            volume
+        );
     }
 }
 
@@ -479,6 +510,9 @@ mod tests {
         assert!(config.on_waiting.is_none());
         assert!(config.on_idle.is_none());
         assert!(config.on_error.is_none());
+        // Fresh installs load `Config::default()` when no config.toml exists;
+        // a 0.0 default here would mute all playback on first run.
+        assert!((config.volume - 1.0).abs() < 1e-9);
     }
 
     #[test]

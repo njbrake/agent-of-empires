@@ -1112,7 +1112,7 @@ fn build_sound_fields(
         SettingField {
             key: FieldKey::SoundVolume,
             label: "Volume",
-            description: "Playback volume (0.1 = min, 1.0 = normal, 1.5 = max), step 0.1",
+            description: "Playback volume (0.1 = min, 1.0 = normal, 1.5 = max), step 0.1. Ignored when aplay is the Linux backend.",
             value: FieldValue::Select {
                 selected: vol_idx,
                 options: vol_opts.clone(),
