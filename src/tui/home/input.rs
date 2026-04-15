@@ -427,12 +427,12 @@ impl HomeView {
 
         // Remote-access dialog (serve feature only)
         #[cfg(feature = "serve")]
-        if let Some(dialog) = &mut self.remote_dialog {
+        if let Some(dialog) = &mut self.serve_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
                 DialogResult::Cancel | DialogResult::Submit(_) => {
                     // Dropping the dialog kills the subprocess via kill_on_drop.
-                    self.remote_dialog = None;
+                    self.serve_dialog = None;
                 }
             }
             return None;
@@ -515,7 +515,7 @@ impl HomeView {
             }
             #[cfg(feature = "serve")]
             KeyCode::Char('R') => {
-                self.remote_dialog = Some(crate::tui::dialogs::RemoteDialog::new());
+                self.serve_dialog = Some(crate::tui::dialogs::ServeDialog::new());
             }
             #[cfg(not(feature = "serve"))]
             KeyCode::Char('R') => {

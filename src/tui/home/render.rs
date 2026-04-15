@@ -165,7 +165,7 @@ impl HomeView {
         }
 
         #[cfg(feature = "serve")]
-        if let Some(dialog) = &self.remote_dialog {
+        if let Some(dialog) = &self.serve_dialog {
             dialog.render(frame, area, theme);
         }
     }
@@ -772,17 +772,36 @@ impl HomeView {
 
         let mut spans: Vec<Span> = Vec::new();
 
-        // Remote-access indicator: shown only when the `aoe serve --remote`
-        // daemon is live. The TUI does not own the daemon, so we probe the
-        // PID file each render. Feature-gated alongside the rest of the
-        // serve-specific code.
+        // Serve indicator: shown only when the `aoe serve` daemon is live.
+        // The TUI does not own the daemon, so we probe the PID file each
+        // render. Mode is read from serve.mode (written by the daemon) so
+        // the status bar can distinguish Local vs Tunnel. Feature-gated
+        // alongside the rest of the serve-specific code.
         #[cfg(feature = "serve")]
         if crate::cli::serve::daemon_pid().is_some() {
+            let mode_label = match std::fs::read_to_string(
+                crate::session::get_app_dir()
+                    .map(|d| d.join("serve.mode"))
+                    .unwrap_or_default(),
+            )
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            {
+                Some("local") => Some("local"),
+                Some("tunnel") => Some("tunnel"),
+                _ => None,
+            };
+            // Drop the parenthetical under ~40 cols worth of status-bar
+            // budget. We don't know the width here, so rely on the full
+            // label and let the right-edge truncate do its thing — the
+            // important part (● Serving) lands first.
+            let label = match mode_label {
+                Some(m) => format!(" \u{25CF} Serving ({}) ", m),
+                None => " \u{25CF} Serving ".to_string(),
+            };
             spans.extend([
-                Span::styled(
-                    " \u{25CF} Remote on ",
-                    Style::default().fg(theme.running).bold(),
-                ),
+                Span::styled(label, Style::default().fg(theme.running).bold()),
                 Span::styled("│", sep_style),
             ]);
         }

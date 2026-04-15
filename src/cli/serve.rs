@@ -109,6 +109,7 @@ pub fn daemon_pid() -> Option<u32> {
                 if let Ok(dir) = crate::session::get_app_dir() {
                     let _ = std::fs::remove_file(dir.join("serve.url"));
                     let _ = std::fs::remove_file(dir.join("serve.log"));
+                    let _ = std::fs::remove_file(dir.join("serve.mode"));
                 }
                 None
             }
@@ -245,6 +246,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     }
     if let Ok(dir) = crate::session::get_app_dir() {
         let _ = std::fs::remove_file(dir.join("serve.url"));
+        let _ = std::fs::remove_file(dir.join("serve.mode"));
     }
 
     result
@@ -362,6 +364,7 @@ fn stop_daemon() -> Result<()> {
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
                 let _ = std::fs::remove_file(dir.join("serve.log"));
+                let _ = std::fs::remove_file(dir.join("serve.mode"));
             }
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
@@ -371,6 +374,7 @@ fn stop_daemon() -> Result<()> {
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
                 let _ = std::fs::remove_file(dir.join("serve.log"));
+                let _ = std::fs::remove_file(dir.join("serve.mode"));
             }
             println!("Daemon was not running (stale PID file cleaned up)");
         }

@@ -22,7 +22,7 @@ use crate::tmux::AvailableTools;
 use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
 #[cfg(feature = "serve")]
-use super::dialogs::RemoteDialog;
+use super::dialogs::ServeDialog;
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, HooksInstallDialog,
     InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerDialog, RenameDialog,
@@ -165,7 +165,7 @@ pub struct HomeView {
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     #[cfg(feature = "serve")]
-    pub(super) remote_dialog: Option<RemoteDialog>,
+    pub(super) serve_dialog: Option<ServeDialog>,
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
@@ -328,7 +328,7 @@ impl HomeView {
             info_dialog: None,
             profile_picker_dialog: None,
             #[cfg(feature = "serve")]
-            remote_dialog: None,
+            serve_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
             pending_attach_after_warning: None,
@@ -839,7 +839,7 @@ impl HomeView {
 
         // Poll remote-access dialog for subprocess startup events.
         #[cfg(feature = "serve")]
-        if let Some(dialog) = &mut self.remote_dialog {
+        if let Some(dialog) = &mut self.serve_dialog {
             if dialog.tick() {
                 changed = true;
             }
@@ -874,9 +874,9 @@ impl HomeView {
 
     pub fn has_dialog(&self) -> bool {
         #[cfg(feature = "serve")]
-        let remote_open = self.remote_dialog.is_some();
+        let serve_open = self.serve_dialog.is_some();
         #[cfg(not(feature = "serve"))]
-        let remote_open = false;
+        let serve_open = false;
 
         self.show_help
             || self.search_active
@@ -892,7 +892,7 @@ impl HomeView {
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
             || self.send_message_dialog.is_some()
-            || remote_open
+            || serve_open
             || self.settings_view.is_some()
             || self.diff_view.is_some()
     }

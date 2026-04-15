@@ -1,7 +1,8 @@
-//! Remote access dialog: drives the `aoe serve --remote --daemon` daemon
-//! lifecycle and shows a QR + URL + passphrase + log tail so a phone can
-//! connect. The TUI is a controller here, not a host: it spawns the daemon,
-//! reads `$APP_DIR/serve.{pid,url,log}` files, and runs `aoe serve --stop`
+//! Serve dialog: drives the `aoe serve --daemon` lifecycle (either Local
+//! network mode on 0.0.0.0, or Cloudflare Tunnel mode) and shows a QR +
+//! URL + (passphrase for Tunnel) + log tail so a phone can connect. The
+//! TUI is a controller here, not a host: it spawns the daemon, reads
+//! `$APP_DIR/serve.{pid,url,log,mode}` files, and runs `aoe serve --stop`
 //! to tear down. The daemon survives across TUI quits, just like tmux
 //! sessions or the CLI-invoked daemon path.
 //!
@@ -23,6 +24,43 @@ use ratatui::widgets::*;
 
 use super::DialogResult;
 use crate::tui::styles::Theme;
+
+/// Which transport the daemon is serving over. Persisted to
+/// `$APP_DIR/serve.mode` so a reattaching TUI can render the right label
+/// and the right set of controls (Tab to cycle is Local-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServeMode {
+    Local,
+    Tunnel,
+}
+
+impl ServeMode {
+    fn file_token(self) -> &'static str {
+        match self {
+            ServeMode::Local => "local",
+            ServeMode::Tunnel => "tunnel",
+        }
+    }
+
+    fn from_file_token(s: &str) -> Option<Self> {
+        match s.trim() {
+            "local" => Some(ServeMode::Local),
+            "tunnel" => Some(ServeMode::Tunnel),
+            _ => None,
+        }
+    }
+}
+
+/// One URL we can show in the Active state. Tunnel mode has exactly one.
+/// Local mode may have multiple (Tailscale + LAN + localhost), and the
+/// user can Tab-cycle between them.
+#[derive(Debug, Clone)]
+pub struct ServeUrl {
+    /// Optional human-readable label ("tailscale", "lan", "localhost").
+    /// None for the single tunnel URL, which doesn't need one.
+    pub label: Option<String>,
+    pub url: String,
+}
 
 /// Passphrase cache for daemons this TUI process spawned, so reopening
 /// the Remote Access dialog after closing it can re-display the same
@@ -53,26 +91,43 @@ const TUNNEL_STARTUP_TIMEOUT_SECS: u64 = 60;
 /// How much of `serve.log` to keep in memory for the tail pane.
 const LOG_TAIL_LINES: usize = 200;
 
-pub enum RemoteDialogState {
-    /// No daemon running; show the two-factor explanation and wait for the
-    /// user to confirm via Y/Enter/arrows. `confirm_selected` tracks which
-    /// button (Enable vs Cancel) is currently highlighted so Enter picks it.
-    /// Default is Cancel so a stray Enter doesn't expose the tunnel.
+pub enum ServeDialogState {
+    /// No daemon running; first screen the user sees. They pick Local
+    /// (bind 0.0.0.0, token auth only) or Tunnel (cloudflared + passphrase).
+    /// `cloudflared_available` gates the Tunnel card; `local_available`
+    /// is false when the host has no non-loopback interface (dockerized
+    /// dev env with only lo).
+    ModePicker {
+        selected: ServeMode,
+        cloudflared_available: bool,
+        local_available: bool,
+        /// Transient flash message shown for ~1s after a rejected keypress
+        /// (e.g., picking Tunnel when cloudflared isn't installed).
+        flash: Option<(String, Instant)>,
+    },
+    /// Tunnel-only: show the two-factor explanation and wait for the user
+    /// to confirm via Y/Enter/arrows. Local mode never enters Confirm —
+    /// it goes ModePicker → Starting directly.
     Confirm {
         confirm_selected: bool,
     },
-    /// We issued `aoe serve --remote --daemon`; now polling `serve.url`.
-    /// If `passphrase` is Some, the TUI spawned the daemon and knows it;
-    /// if None, a daemon was already running when the dialog opened.
+    /// We issued `aoe serve --daemon`; now polling `serve.url`.
+    /// `passphrase` is Some only for Tunnel spawns from this TUI.
     Starting {
+        mode: ServeMode,
         passphrase: Option<String>,
         started_at: Instant,
     },
     /// Daemon is live. No child field — the TUI does not own it.
     Active {
-        url: String,
+        mode: ServeMode,
+        urls: Vec<ServeUrl>,
+        /// Which `urls` entry is the primary QR target. Starts at 0.
+        /// Tab advances; cycles; no-op when urls.len() <= 1.
+        url_index: usize,
         /// Only known when this TUI started the daemon. For daemons
         /// started via the CLI we show a "set at startup" placeholder.
+        /// Always None for Local mode.
         passphrase: Option<String>,
         opened_at: Instant,
         log_tail: Vec<String>,
@@ -82,53 +137,82 @@ pub enum RemoteDialogState {
     Error(String),
 }
 
-pub struct RemoteDialog {
-    state: RemoteDialogState,
-    /// Passphrase we will use if the user confirms. Regenerated each time
-    /// the user opens the Confirm screen so leaked-to-stdout values rotate.
+pub struct ServeDialog {
+    state: ServeDialogState,
+    /// Passphrase we will use if the user picks Tunnel and confirms.
+    /// Regenerated each time the dialog opens so leaked-to-stdout values
+    /// rotate.
     pending_passphrase: String,
 }
 
-impl Default for RemoteDialog {
+impl Default for ServeDialog {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RemoteDialog {
+impl ServeDialog {
     /// Construct the dialog. If a daemon is already running (detected via
     /// `$APP_DIR/serve.pid`), jump straight to Active so the user can see
-    /// the URL and stop it; otherwise show Confirm.
+    /// the URL and stop it; otherwise show ModePicker.
     pub fn new() -> Self {
         if crate::cli::serve::daemon_pid().is_some() {
-            // There's already a daemon running. If this TUI process spawned
-            // it earlier, recall its passphrase so reopening the dialog
-            // shows it again. A daemon started outside this TUI (via CLI)
-            // leaves this None and renders the placeholder.
-            let remembered = recall_passphrase();
-            match read_serve_url() {
-                Some(url) => Self {
-                    state: RemoteDialogState::Active {
-                        url,
+            // There's already a daemon running. Read its mode from
+            // serve.mode (written by the server). If missing (older daemon
+            // from pre-mode-split version), assume Tunnel — that was the
+            // only mode the TUI could spawn before.
+            let mode = read_serve_mode().unwrap_or(ServeMode::Tunnel);
+            // Recall the passphrase only for Tunnel (Local has no passphrase).
+            let remembered = if matches!(mode, ServeMode::Tunnel) {
+                recall_passphrase()
+            } else {
+                None
+            };
+            let urls = read_serve_urls();
+            if urls.is_empty() {
+                Self {
+                    state: ServeDialogState::Starting {
+                        mode,
+                        passphrase: remembered,
+                        started_at: Instant::now(),
+                    },
+                    pending_passphrase: generate_passphrase(),
+                }
+            } else {
+                Self {
+                    state: ServeDialogState::Active {
+                        mode,
+                        urls,
+                        url_index: 0,
                         passphrase: remembered,
                         opened_at: Instant::now(),
                         log_tail: initial_log_tail(),
                         log_offset: log_file_size(),
                     },
                     pending_passphrase: generate_passphrase(),
-                },
-                None => Self {
-                    state: RemoteDialogState::Starting {
-                        passphrase: remembered,
-                        started_at: Instant::now(),
-                    },
-                    pending_passphrase: generate_passphrase(),
-                },
+                }
             }
         } else {
+            let cloudflared_available = crate::server::tunnel::check_cloudflared().is_ok();
+            let local_available = !crate::server::discover_tagged_ips().is_empty();
+            // Default highlight: the last mode the user successfully
+            // launched (read from serve.last_mode). Fall back to Local as
+            // safer first-time default. If Local isn't actually available,
+            // prefer Tunnel (and vice versa for cloudflared-missing).
+            let remembered_default = read_last_mode().unwrap_or(ServeMode::Local);
+            let selected = match remembered_default {
+                ServeMode::Local if local_available => ServeMode::Local,
+                ServeMode::Local if cloudflared_available => ServeMode::Tunnel,
+                ServeMode::Tunnel if cloudflared_available => ServeMode::Tunnel,
+                ServeMode::Tunnel if local_available => ServeMode::Local,
+                _ => ServeMode::Local, // no-op default when neither works; picker handles it
+            };
             Self {
-                state: RemoteDialogState::Confirm {
-                    confirm_selected: false,
+                state: ServeDialogState::ModePicker {
+                    selected,
+                    cloudflared_available,
+                    local_available,
+                    flash: None,
                 },
                 pending_passphrase: generate_passphrase(),
             }
@@ -137,18 +221,133 @@ impl RemoteDialog {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
         match &mut self.state {
-            RemoteDialogState::Confirm { confirm_selected } => match key.code {
+            ServeDialogState::ModePicker {
+                selected,
+                cloudflared_available,
+                local_available,
+                flash,
+            } => {
+                // Helper: attempt to commit the current `selected` mode,
+                // transitioning to Confirm (Tunnel) or Starting (Local).
+                // Rejects with a flash message if the mode isn't available.
+                let commit = |dialog: &mut ServeDialog| -> DialogResult<()> {
+                    let ServeDialogState::ModePicker {
+                        selected,
+                        cloudflared_available,
+                        local_available,
+                        ..
+                    } = &dialog.state
+                    else {
+                        return DialogResult::Continue;
+                    };
+                    let mode = *selected;
+                    let cf = *cloudflared_available;
+                    let la = *local_available;
+                    match mode {
+                        ServeMode::Tunnel if !cf => {
+                            if let ServeDialogState::ModePicker { flash, .. } = &mut dialog.state {
+                                *flash = Some((
+                                    "Install cloudflared to enable Tunnel mode.".to_string(),
+                                    Instant::now(),
+                                ));
+                            }
+                            DialogResult::Continue
+                        }
+                        ServeMode::Local if !la => {
+                            if let ServeDialogState::ModePicker { flash, .. } = &mut dialog.state {
+                                *flash = Some((
+                                    "No non-loopback network interface available.".to_string(),
+                                    Instant::now(),
+                                ));
+                            }
+                            DialogResult::Continue
+                        }
+                        ServeMode::Tunnel => {
+                            dialog.state = ServeDialogState::Confirm {
+                                confirm_selected: false,
+                            };
+                            DialogResult::Continue
+                        }
+                        ServeMode::Local => {
+                            match spawn_daemon(ServeMode::Local, None) {
+                                Ok(()) => {
+                                    remember_last_mode(ServeMode::Local);
+                                    dialog.state = ServeDialogState::Starting {
+                                        mode: ServeMode::Local,
+                                        passphrase: None,
+                                        started_at: Instant::now(),
+                                    };
+                                }
+                                Err(e) => dialog.state = ServeDialogState::Error(e),
+                            }
+                            DialogResult::Continue
+                        }
+                    }
+                };
+
+                // Clear stale flash on any key press (helps the user feel
+                // they're making progress even if the next key is invalid).
+                if flash
+                    .as_ref()
+                    .map(|(_, t)| t.elapsed() > Duration::from_millis(1500))
+                    .unwrap_or(false)
+                {
+                    *flash = None;
+                }
+
+                match key.code {
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        *selected = ServeMode::Local;
+                        DialogResult::Continue
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        // Only move to Tunnel if it's usable; otherwise
+                        // keep Local selected (don't let the user park
+                        // the cursor on a dimmed card).
+                        if *cloudflared_available {
+                            *selected = ServeMode::Tunnel;
+                        }
+                        DialogResult::Continue
+                    }
+                    KeyCode::Tab => {
+                        *selected = match *selected {
+                            ServeMode::Local if *cloudflared_available => ServeMode::Tunnel,
+                            ServeMode::Tunnel if *local_available => ServeMode::Local,
+                            other => other,
+                        };
+                        DialogResult::Continue
+                    }
+                    KeyCode::Char('t') | KeyCode::Char('T') => {
+                        *selected = ServeMode::Tunnel;
+                        commit(self)
+                    }
+                    KeyCode::Char('L') => {
+                        // Capital L as the explicit-Local shortcut. Keep
+                        // lowercase `l` as "→ move right" per the arrow-key
+                        // parallel above, which is the existing convention
+                        // in the rest of the TUI.
+                        *selected = ServeMode::Local;
+                        commit(self)
+                    }
+                    KeyCode::Enter => commit(self),
+                    KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
+                    _ => DialogResult::Continue,
+                }
+            }
+            ServeDialogState::Confirm { confirm_selected } => match key.code {
                 // Y always enables, regardless of which button is highlighted.
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    match spawn_daemon(&self.pending_passphrase) {
+                    match spawn_daemon(ServeMode::Tunnel, Some(&self.pending_passphrase)) {
                         Ok(()) => {
-                            self.state = RemoteDialogState::Starting {
+                            remember_last_mode(ServeMode::Tunnel);
+                            self.state = ServeDialogState::Starting {
+                                mode: ServeMode::Tunnel,
                                 passphrase: Some(self.pending_passphrase.clone()),
                                 started_at: Instant::now(),
                             };
                         }
                         Err(e) => {
-                            self.state = RemoteDialogState::Error(e);
+                            self.state = ServeDialogState::Error(e);
                         }
                     }
                     DialogResult::Continue
@@ -156,15 +355,17 @@ impl RemoteDialog {
                 // Enter picks whichever button is currently highlighted.
                 KeyCode::Enter => {
                     if *confirm_selected {
-                        match spawn_daemon(&self.pending_passphrase) {
+                        match spawn_daemon(ServeMode::Tunnel, Some(&self.pending_passphrase)) {
                             Ok(()) => {
-                                self.state = RemoteDialogState::Starting {
+                                remember_last_mode(ServeMode::Tunnel);
+                                self.state = ServeDialogState::Starting {
+                                    mode: ServeMode::Tunnel,
                                     passphrase: Some(self.pending_passphrase.clone()),
                                     started_at: Instant::now(),
                                 };
                             }
                             Err(e) => {
-                                self.state = RemoteDialogState::Error(e);
+                                self.state = ServeDialogState::Error(e);
                             }
                         }
                         DialogResult::Continue
@@ -189,7 +390,7 @@ impl RemoteDialog {
                 }
                 _ => DialogResult::Continue,
             },
-            RemoteDialogState::Starting { .. } => match key.code {
+            ServeDialogState::Starting { .. } => match key.code {
                 // Esc just closes the dialog; the daemon keeps coming up.
                 KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
                 KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -199,23 +400,32 @@ impl RemoteDialog {
                 }
                 _ => DialogResult::Continue,
             },
-            RemoteDialogState::Active { .. } => match key.code {
+            ServeDialogState::Active {
+                urls, url_index, ..
+            } => match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => match stop_daemon() {
                     Ok(()) => DialogResult::Cancel,
                     Err(e) => {
-                        self.state = RemoteDialogState::Error(format!(
+                        self.state = ServeDialogState::Error(format!(
                                 "Stop failed: {}. Daemon may still be running; retry or use `aoe serve --stop` from a shell.",
                                 e
                             ));
                         DialogResult::Continue
                     }
                 },
+                // Tab cycles URLs in Local mode (Tailscale ↔ LAN ↔ localhost).
+                // No-op when there's only one URL (Tunnel mode, or a Local
+                // host with just loopback).
+                KeyCode::Tab if urls.len() > 1 => {
+                    *url_index = (*url_index + 1) % urls.len();
+                    DialogResult::Continue
+                }
                 // Closing without stopping is explicitly allowed — TUI is a
                 // controller, the daemon keeps running.
                 KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
                 _ => DialogResult::Continue,
             },
-            RemoteDialogState::Error(_) => match key.code {
+            ServeDialogState::Error(_) => match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     // Best-effort stop for a daemon that may still be
                     // lingering. Ignore the result — if there's no daemon
@@ -235,13 +445,29 @@ impl RemoteDialog {
     /// the visible state changed and a redraw is needed.
     pub fn tick(&mut self) -> bool {
         match &mut self.state {
-            RemoteDialogState::Starting {
+            ServeDialogState::ModePicker { flash, .. } => {
+                // Expire the flash message after 1.5s so it doesn't stick
+                // around forever without a follow-up key press.
+                if let Some((_, t)) = flash {
+                    if t.elapsed() > Duration::from_millis(1500) {
+                        *flash = None;
+                        return true;
+                    }
+                }
+                false
+            }
+            ServeDialogState::Starting {
+                mode,
                 passphrase,
                 started_at,
             } => {
-                if let Some(url) = read_serve_url() {
-                    self.state = RemoteDialogState::Active {
-                        url,
+                let mode = *mode;
+                let urls = read_serve_urls();
+                if !urls.is_empty() {
+                    self.state = ServeDialogState::Active {
+                        mode,
+                        urls,
+                        url_index: 0,
                         passphrase: passphrase.clone(),
                         opened_at: Instant::now(),
                         log_tail: initial_log_tail(),
@@ -251,27 +477,38 @@ impl RemoteDialog {
                 }
                 // If the daemon process dies before writing serve.url,
                 // fail fast with the last few log lines so the user can see
-                // why.
+                // why. Common Local mode causes: port in use, EADDRNOTAVAIL
+                // (Tailscale iface went away), permission denied.
                 if crate::cli::serve::daemon_pid().is_none() {
                     let tail = initial_log_tail();
-                    let detail = if tail.is_empty() {
+                    let joined = tail.join("\n");
+                    let hint = diagnose_daemon_exit(&joined, mode);
+                    let detail = if joined.is_empty() {
                         String::new()
                     } else {
-                        format!("\n\nLast log lines:\n{}", tail.join("\n"))
+                        format!("\n\nLast log lines:\n{}", joined)
                     };
-                    self.state = RemoteDialogState::Error(format!(
-                        "`aoe serve --remote --daemon` exited before the tunnel came up.{}",
-                        detail
-                    ));
+                    let prefix = match mode {
+                        ServeMode::Tunnel => {
+                            "`aoe serve --remote --daemon` exited before the tunnel came up."
+                        }
+                        ServeMode::Local => {
+                            "`aoe serve --daemon` exited before the server started."
+                        }
+                    };
+                    self.state = ServeDialogState::Error(format!("{}{}{}", prefix, hint, detail));
                     return true;
                 }
-                if started_at.elapsed() > Duration::from_secs(TUNNEL_STARTUP_TIMEOUT_SECS) {
+                // Local mode comes up ~instantly; no need for the 60s
+                // cloudflared-timeout path. Tunnel mode keeps it.
+                if matches!(mode, ServeMode::Tunnel)
+                    && started_at.elapsed() > Duration::from_secs(TUNNEL_STARTUP_TIMEOUT_SECS)
+                {
                     // Timeout: the daemon is alive but never produced a
                     // tunnel URL (cloudflared rate-limited, captive portal,
                     // etc.). Stop it now so we don't leave a zombie that
-                    // can never serve phones but keeps tripping "● Remote
-                    // on" in the status bar. Fall through to a log-tail
-                    // error view the user can act on.
+                    // can never serve phones but keeps tripping the status
+                    // bar indicator. Fall through to a log-tail error view.
                     let stop_note = match stop_daemon() {
                         Ok(()) => "Stuck daemon stopped.".to_string(),
                         Err(e) => format!(
@@ -286,7 +523,7 @@ impl RemoteDialog {
                     } else {
                         format!("\n\nLast log lines:\n{}", tail.join("\n"))
                     };
-                    self.state = RemoteDialogState::Error(format!(
+                    self.state = ServeDialogState::Error(format!(
                         "Cloudflare tunnel did not announce a URL within {}s. \
                          {}\n\n\
                          Most likely cause: `cloudflared` rate-limited, \
@@ -297,7 +534,7 @@ impl RemoteDialog {
                 }
                 false
             }
-            RemoteDialogState::Active {
+            ServeDialogState::Active {
                 log_tail,
                 log_offset,
                 ..
@@ -308,14 +545,30 @@ impl RemoteDialog {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         match &self.state {
-            RemoteDialogState::Confirm { confirm_selected } => {
+            ServeDialogState::ModePicker {
+                selected,
+                cloudflared_available,
+                local_available,
+                flash,
+            } => render_mode_picker(
+                frame,
+                area,
+                theme,
+                *selected,
+                *cloudflared_available,
+                *local_available,
+                flash.as_ref().map(|(m, _)| m.as_str()),
+            ),
+            ServeDialogState::Confirm { confirm_selected } => {
                 render_confirm(frame, area, theme, *confirm_selected)
             }
-            RemoteDialogState::Starting { started_at, .. } => {
-                render_starting(frame, area, theme, started_at.elapsed())
-            }
-            RemoteDialogState::Active {
-                url,
+            ServeDialogState::Starting {
+                mode, started_at, ..
+            } => render_starting(frame, area, theme, *mode, started_at.elapsed()),
+            ServeDialogState::Active {
+                mode,
+                urls,
+                url_index,
                 passphrase,
                 opened_at,
                 log_tail,
@@ -324,63 +577,109 @@ impl RemoteDialog {
                 frame,
                 area,
                 theme,
-                url,
+                *mode,
+                urls,
+                *url_index,
                 passphrase.as_deref(),
                 opened_at.elapsed(),
                 log_tail,
             ),
-            RemoteDialogState::Error(msg) => render_error(frame, area, theme, msg),
+            ServeDialogState::Error(msg) => render_error(frame, area, theme, msg),
         }
     }
 }
 
-fn spawn_daemon(passphrase: &str) -> Result<(), String> {
+/// Spawn the aoe serve daemon in the requested mode. Tunnel requires a
+/// passphrase (it's public-internet exposure); Local ignores it.
+fn spawn_daemon(mode: ServeMode, passphrase: Option<&str>) -> Result<(), String> {
     use std::process::Command;
 
     let exe =
         std::env::current_exe().map_err(|e| format!("Could not resolve aoe binary path: {}", e))?;
 
-    // Delete any stale serve.url from a previous hard-killed daemon
-    // before launching. Without this, Starting-state polling could latch
-    // onto the old URL before the new daemon writes the new one.
+    // Delete stale serve.url / serve.mode from a previous hard-killed
+    // daemon before launching. Without this, Starting-state polling could
+    // latch onto the old URL before the new daemon writes the new one.
     if let Ok(dir) = crate::session::get_app_dir() {
         let _ = std::fs::remove_file(dir.join("serve.url"));
+        let _ = std::fs::remove_file(dir.join("serve.mode"));
     }
 
     // Use a high ephemeral port so we don't collide with a user's own
     // `aoe serve` on 8080.
     let port: u16 = rand::rng().random_range(49152..65535);
 
-    let status = Command::new(&exe)
-        .args([
-            "serve",
-            "--remote",
-            "--daemon",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ])
-        .env("AOE_SERVE_PASSPHRASE", passphrase)
-        .stdin(std::process::Stdio::null())
+    let mut cmd = Command::new(&exe);
+    cmd.args(["serve", "--daemon", "--port", &port.to_string()]);
+    match mode {
+        ServeMode::Tunnel => {
+            cmd.args(["--remote", "--host", "127.0.0.1"]);
+            if let Some(pp) = passphrase {
+                cmd.env("AOE_SERVE_PASSPHRASE", pp);
+            }
+        }
+        ServeMode::Local => {
+            // 0.0.0.0 makes the server reachable on every local
+            // interface (Tailscale, LAN, loopback). The server-side
+            // serve.url writer picks Tailscale > LAN > localhost as the
+            // primary URL in the QR.
+            cmd.args(["--host", "0.0.0.0"]);
+        }
+    }
+    cmd.stdin(std::process::Stdio::null())
         // The daemon path forks and logs to serve.log; we only need its
         // exit status here (it's synchronous since it just double-forks).
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let status = cmd
         .status()
-        .map_err(|e| format!("Failed to launch `aoe serve --remote --daemon`: {}", e))?;
+        .map_err(|e| format!("Failed to launch `aoe serve --daemon`: {}", e))?;
 
     if !status.success() {
+        let hint = match mode {
+            ServeMode::Tunnel => format!(
+                "Most likely `cloudflared` is not installed \
+                 (brew install cloudflared) or port {} is in use.",
+                port
+            ),
+            ServeMode::Local => format!("Most likely port {} is in use.", port),
+        };
         return Err(format!(
-            "`aoe serve --remote --daemon` exited with {:?}. \
-             Most likely `cloudflared` is not installed \
-             (brew install cloudflared) or port {} is in use.",
+            "`aoe serve --daemon` exited with {:?}. {}",
             status.code(),
-            port
+            hint
         ));
     }
-    remember_passphrase(passphrase);
+    if let Some(pp) = passphrase {
+        remember_passphrase(pp);
+    }
     Ok(())
+}
+
+/// Map a common Linux/BSD errno string found in the daemon log tail to a
+/// one-line user hint. Returns either `""` (no recognized error) or a
+/// hint prefixed with a blank line, suitable for string concat into an
+/// error message.
+fn diagnose_daemon_exit(log: &str, mode: ServeMode) -> &'static str {
+    if log.contains("EADDRNOTAVAIL") || log.contains("Cannot assign requested address") {
+        return match mode {
+            ServeMode::Local => {
+                "\n\nHint: the interface we tried to bind on went away. \
+                 Is Tailscale still up?"
+            }
+            ServeMode::Tunnel => "",
+        };
+    }
+    if log.contains("EADDRINUSE") || log.contains("Address already in use") {
+        return "\n\nHint: the picked port is already in use. Try again; \
+                we pick a new random port each attempt.";
+    }
+    if log.contains("Permission denied") {
+        return "\n\nHint: permission denied on bind. Are you trying a \
+                privileged port (<1024)? We normally pick a high port.";
+    }
+    ""
 }
 
 fn stop_daemon() -> Result<(), String> {
@@ -402,14 +701,70 @@ fn stop_daemon() -> Result<(), String> {
     Ok(())
 }
 
-fn read_serve_url() -> Option<String> {
+/// Read serve.url as a list of labeled URLs. File format:
+///
+/// ```text
+/// <primary-url>           ← line 1, unlabeled (backward-compatible)
+/// <label>\t<alt-url>      ← line 2+, tab-separated label/url
+/// ```
+///
+/// Returns `[]` when the file is missing or empty. The primary URL gets
+/// `label: None` for rendering. Alternates carry their label.
+fn read_serve_urls() -> Vec<ServeUrl> {
+    let Some(dir) = crate::session::get_app_dir().ok() else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(dir.join("serve.url")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ServeUrl> = Vec::new();
+    for (i, line) in raw.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            // Primary line is the bare URL.
+            out.push(ServeUrl {
+                label: None,
+                url: line.to_string(),
+            });
+        } else if let Some((label, url)) = line.split_once('\t') {
+            out.push(ServeUrl {
+                label: Some(label.to_string()),
+                url: url.to_string(),
+            });
+        } else {
+            // Defensive: unlabeled extra line. Show as a nameless extra.
+            out.push(ServeUrl {
+                label: None,
+                url: line.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// Read the current daemon's mode marker (`serve.mode`). Returns None
+/// when the file is absent (pre-mode-split daemon) or unparseable.
+fn read_serve_mode() -> Option<ServeMode> {
     let dir = crate::session::get_app_dir().ok()?;
-    let raw = std::fs::read_to_string(dir.join("serve.url")).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+    let raw = std::fs::read_to_string(dir.join("serve.mode")).ok()?;
+    ServeMode::from_file_token(&raw)
+}
+
+/// Read the last mode the user picked (across TUI restarts). Used to
+/// default the ModePicker highlight on subsequent opens. Stored in a
+/// separate file from `serve.mode` so it survives `aoe serve --stop`.
+fn read_last_mode() -> Option<ServeMode> {
+    let dir = crate::session::get_app_dir().ok()?;
+    let raw = std::fs::read_to_string(dir.join("serve.last_mode")).ok()?;
+    ServeMode::from_file_token(&raw)
+}
+
+fn remember_last_mode(mode: ServeMode) {
+    if let Ok(dir) = crate::session::get_app_dir() {
+        let _ = std::fs::write(dir.join("serve.last_mode"), mode.file_token());
     }
 }
 
@@ -492,6 +847,192 @@ fn append_new_log_lines_from(
     changed
 }
 
+fn render_mode_picker(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    selected: ServeMode,
+    cloudflared_available: bool,
+    local_available: bool,
+    flash: Option<&str>,
+) {
+    let dialog = super::centered_rect(area, 72, 16);
+    frame.render_widget(Clear, dialog);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Line::styled(
+            " Serve ",
+            Style::default().fg(theme.accent).bold(),
+        ));
+    let inner = block.inner(dialog);
+    frame.render_widget(block, dialog);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(1), // question
+            Constraint::Length(1), // spacer
+            Constraint::Min(7),    // cards
+            Constraint::Length(1), // flash
+            Constraint::Length(1), // keybinds
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "How should this be reachable?",
+            Style::default().fg(theme.title).bold(),
+        )))
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+
+    let cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Length(1),
+            Constraint::Percentage(50),
+        ])
+        .split(rows[2]);
+
+    // ── Local card ────────────────────────────────────────────────────────
+    let local_primary = crate::server::discover_tagged_ips()
+        .into_iter()
+        .next()
+        .map(|(kind, ip)| match kind {
+            crate::server::IpKind::Tailscale => format!("{} (Tailscale)", ip),
+            crate::server::IpKind::Lan => format!("{} (LAN)", ip),
+            crate::server::IpKind::Loopback => format!("{} (loopback)", ip),
+        })
+        .unwrap_or_else(|| "only localhost available".to_string());
+    let (local_border, local_title_style, local_body_style) =
+        if selected == ServeMode::Local && local_available {
+            (theme.accent, theme.accent, theme.text)
+        } else if !local_available {
+            (theme.dimmed, theme.dimmed, theme.dimmed)
+        } else {
+            (theme.border, theme.title, theme.text)
+        };
+    let local_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(local_border))
+        .padding(Padding::horizontal(1))
+        .title(Line::styled(
+            " Local network ",
+            Style::default().fg(local_title_style).bold(),
+        ));
+    let local_inner = local_block.inner(cards[0]);
+    frame.render_widget(local_block, cards[0]);
+    let local_body = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            local_primary,
+            Style::default().fg(if local_available {
+                theme.accent
+            } else {
+                theme.dimmed
+            }),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Token auth, no passphrase.",
+            Style::default().fg(local_body_style),
+        )),
+        Line::from(Span::styled(
+            "LAN + Tailscale. Instant.",
+            Style::default().fg(local_body_style),
+        )),
+        if !local_available {
+            Line::from(Span::styled(
+                "  (no non-loopback interface)",
+                Style::default().fg(theme.dimmed),
+            ))
+        } else {
+            Line::from("")
+        },
+    ];
+    frame.render_widget(Paragraph::new(local_body), local_inner);
+
+    // ── Tunnel card ───────────────────────────────────────────────────────
+    let (tunnel_border, tunnel_title_style, tunnel_body_style) =
+        if selected == ServeMode::Tunnel && cloudflared_available {
+            (theme.accent, theme.accent, theme.text)
+        } else if !cloudflared_available {
+            (theme.dimmed, theme.dimmed, theme.dimmed)
+        } else {
+            (theme.border, theme.title, theme.text)
+        };
+    let tunnel_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(tunnel_border))
+        .padding(Padding::horizontal(1))
+        .title(Line::styled(
+            " Cloudflare tunnel ",
+            Style::default().fg(tunnel_title_style).bold(),
+        ));
+    let tunnel_inner = tunnel_block.inner(cards[2]);
+    frame.render_widget(tunnel_block, cards[2]);
+    let tunnel_body = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            if cloudflared_available {
+                "public HTTPS URL"
+            } else {
+                "cloudflared not installed"
+            },
+            Style::default().fg(if cloudflared_available {
+                theme.accent
+            } else {
+                theme.dimmed
+            }),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Token + passphrase (2FA).",
+            Style::default().fg(tunnel_body_style),
+        )),
+        Line::from(Span::styled(
+            "Reachable from anywhere.",
+            Style::default().fg(tunnel_body_style),
+        )),
+        if !cloudflared_available {
+            Line::from(Span::styled(
+                "  (brew install cloudflared)",
+                Style::default().fg(theme.dimmed),
+            ))
+        } else {
+            Line::from("")
+        },
+    ];
+    frame.render_widget(Paragraph::new(tunnel_body), tunnel_inner);
+
+    // ── Flash line ────────────────────────────────────────────────────────
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            flash.unwrap_or(""),
+            Style::default().fg(theme.error).bold(),
+        )))
+        .alignment(Alignment::Center),
+        rows[3],
+    );
+
+    // ── Keybinds ──────────────────────────────────────────────────────────
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[←/→] choose    [L] Local    [T] Tunnel    [Enter] confirm    [Esc] cancel",
+            Style::default().fg(theme.dimmed),
+        )))
+        .alignment(Alignment::Center),
+        rows[4],
+    );
+}
+
 fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected: bool) {
     let dialog = super::centered_rect(area, 70, 22);
     frame.render_widget(Clear, dialog);
@@ -500,7 +1041,7 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected:
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Line::styled(
-            " Enable remote access? ",
+            " Enable Cloudflare tunnel? ",
             Style::default().fg(theme.accent).bold(),
         ));
     let inner = block.inner(dialog);
@@ -613,30 +1154,39 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected:
     );
 }
 
-fn render_starting(frame: &mut Frame, area: Rect, theme: &Theme, elapsed: Duration) {
+fn render_starting(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    mode: ServeMode,
+    elapsed: Duration,
+) {
     let dialog = super::centered_rect(area, 60, 9);
     frame.render_widget(Clear, dialog);
+    let (title, wait_line1, wait_line2) = match mode {
+        ServeMode::Tunnel => (
+            " Starting Cloudflare tunnel... ",
+            "Waiting for the daemon to bring the tunnel up",
+            "(usually 5\u{2013}15 seconds).",
+        ),
+        ServeMode::Local => (
+            " Starting local server... ",
+            "Binding on 0.0.0.0 and discovering interfaces",
+            "(usually under a second).",
+        ),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
-        .title(Line::styled(
-            " Starting remote access... ",
-            Style::default().fg(theme.title).bold(),
-        ));
+        .title(Line::styled(title, Style::default().fg(theme.title).bold()));
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
     let body = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "Waiting for the daemon to bring the tunnel up",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(Span::styled(
-            "(usually 5\u{2013}15 seconds).",
-            Style::default().fg(theme.text),
-        )),
+        Line::from(Span::styled(wait_line1, Style::default().fg(theme.text))),
+        Line::from(Span::styled(wait_line2, Style::default().fg(theme.text))),
         Line::from(""),
         Line::from(Span::styled(
             format!("Elapsed: {}s    [Esc close]  [S stop]", elapsed.as_secs()),
@@ -646,15 +1196,28 @@ fn render_starting(frame: &mut Frame, area: Rect, theme: &Theme, elapsed: Durati
     frame.render_widget(Paragraph::new(body).alignment(Alignment::Center), inner);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_active(
     frame: &mut Frame,
     area: Rect,
     theme: &Theme,
-    url: &str,
+    mode: ServeMode,
+    urls: &[ServeUrl],
+    url_index: usize,
     passphrase: Option<&str>,
     elapsed: Duration,
     log_tail: &[String],
 ) {
+    // Defensive: callers should never hand us an empty urls slice (the
+    // Starting → Active transition gates on non-empty serve.url). But if
+    // we somehow get here, fall through to an obvious-empty render.
+    let Some(active_url) = urls.get(url_index).or_else(|| urls.first()) else {
+        let msg = "Daemon started but no URL available yet.";
+        render_error(frame, area, theme, msg);
+        return;
+    };
+    let url = &active_url.url;
+    let kind_label = active_url.label.as_deref();
     // Encode the full URL including `?token=...` — the server's auth
     // middleware rejects requests on `/` with "invalid or missing auth
     // token" when the query param isn't present, so the phone would hit
@@ -703,13 +1266,21 @@ fn render_active(
     frame.render_widget(Clear, dialog);
 
     let eight_hours = Duration::from_secs(8 * 3600);
+    let base_title = match mode {
+        ServeMode::Local => " Serving (local) ",
+        ServeMode::Tunnel => " Serving (tunnel) ",
+    };
     let reminder = if elapsed >= eight_hours {
         format!(
-            " Remote access (open {}h) \u{2014} still need it? ",
+            " Serving ({}) open {}h \u{2014} still need it? ",
+            match mode {
+                ServeMode::Local => "local",
+                ServeMode::Tunnel => "tunnel",
+            },
             elapsed.as_secs() / 3600
         )
     } else {
-        " Remote access ".to_string()
+        base_title.to_string()
     };
     let title_color = if elapsed >= eight_hours {
         theme.waiting
@@ -728,15 +1299,22 @@ fn render_active(
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
-    let mut constraints = vec![
-        Constraint::Length(qr_height),
-        Constraint::Length(1), // url
-    ];
+    // Layout: QR, optional kind label (Local mode w/ label), URL, optional
+    // token, optional passphrase (Tunnel only), elapsed, log tail, footer.
+    let show_passphrase = matches!(mode, ServeMode::Tunnel);
+    let show_kind_label = kind_label.is_some();
+    let mut constraints = vec![Constraint::Length(qr_height)];
+    if show_kind_label {
+        constraints.push(Constraint::Length(1)); // kind label
+    }
+    constraints.push(Constraint::Length(1)); // url
     if display_token.is_some() {
         constraints.push(Constraint::Length(1)); // token
     }
+    if show_passphrase {
+        constraints.push(Constraint::Length(1)); // passphrase
+    }
     constraints.extend_from_slice(&[
-        Constraint::Length(1), // passphrase
         Constraint::Length(1), // elapsed
         Constraint::Min(1),    // log tail
         Constraint::Length(1), // footer
@@ -757,6 +1335,17 @@ fn render_active(
     );
 
     let mut idx = 1;
+    if let Some(label) = kind_label {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("via {}", label),
+                Style::default().fg(theme.dimmed).italic(),
+            )))
+            .alignment(Alignment::Center),
+            chunks[idx],
+        );
+        idx += 1;
+    }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("URL: ", Style::default().fg(theme.dimmed)),
@@ -779,23 +1368,25 @@ fn render_active(
         idx += 1;
     }
 
-    let (pp_label, pp_style) = match passphrase {
-        Some(pp) => (pp.to_string(), Style::default().fg(theme.accent).bold()),
-        None => (
-            "(set when the daemon started \u{2014} check the shell that ran `aoe serve`)"
-                .to_string(),
-            Style::default().fg(theme.dimmed),
-        ),
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Passphrase: ", Style::default().fg(theme.dimmed)),
-            Span::styled(pp_label, pp_style),
-        ]))
-        .alignment(Alignment::Center),
-        chunks[idx],
-    );
-    idx += 1;
+    if show_passphrase {
+        let (pp_label, pp_style) = match passphrase {
+            Some(pp) => (pp.to_string(), Style::default().fg(theme.accent).bold()),
+            None => (
+                "(set when the daemon started \u{2014} check the shell that ran `aoe serve`)"
+                    .to_string(),
+                Style::default().fg(theme.dimmed),
+            ),
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Passphrase: ", Style::default().fg(theme.dimmed)),
+                Span::styled(pp_label, pp_style),
+            ]))
+            .alignment(Alignment::Center),
+            chunks[idx],
+        );
+        idx += 1;
+    }
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -827,9 +1418,14 @@ fn render_active(
     frame.render_widget(Paragraph::new(log_lines), log_inner);
     idx += 1;
 
+    let footer = if urls.len() > 1 {
+        "[Tab] switch URL   [S] Stop   [Esc] Close (daemon keeps running)"
+    } else {
+        "[S] Stop daemon    [Esc] Close (daemon keeps running)"
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "[S] Stop daemon    [Esc] Close (daemon keeps running)",
+            footer,
             Style::default().fg(theme.dimmed),
         )))
         .alignment(Alignment::Center),
@@ -869,7 +1465,7 @@ fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.error))
         .title(Line::styled(
-            " Remote access failed ",
+            " Serve failed ",
             Style::default().fg(theme.error).bold(),
         ));
     let inner = block.inner(dialog);
@@ -1193,5 +1789,119 @@ mod tests {
             split_url_and_token("https://foo.trycloudflare.com/?token=abc123&foo=bar");
         assert_eq!(base, "https://foo.trycloudflare.com/");
         assert_eq!(token, Some("abc123"));
+    }
+
+    #[test]
+    fn serve_mode_file_token_roundtrip() {
+        assert_eq!(ServeMode::from_file_token("local"), Some(ServeMode::Local));
+        assert_eq!(
+            ServeMode::from_file_token("tunnel"),
+            Some(ServeMode::Tunnel)
+        );
+        // Trailing newline (the way the server writes it) still parses.
+        assert_eq!(
+            ServeMode::from_file_token("local\n"),
+            Some(ServeMode::Local)
+        );
+        assert_eq!(ServeMode::from_file_token("garbage"), None);
+        assert_eq!(ServeMode::from_file_token(""), None);
+    }
+
+    #[test]
+    fn diagnose_daemon_exit_recognizes_common_errnos() {
+        // Tailscale drop on Local: EADDRNOTAVAIL
+        let hint = diagnose_daemon_exit(
+            "ERROR: bind: Cannot assign requested address",
+            ServeMode::Local,
+        );
+        assert!(hint.contains("interface"));
+        // Same errno in Tunnel is not actionable in the same way, so we
+        // don't surface a hint.
+        assert_eq!(
+            diagnose_daemon_exit(
+                "ERROR: bind: Cannot assign requested address",
+                ServeMode::Tunnel,
+            ),
+            ""
+        );
+        // Port-in-use
+        assert!(diagnose_daemon_exit("Address already in use", ServeMode::Local).contains("port"));
+        // Permission denied on privileged port
+        assert!(diagnose_daemon_exit("Permission denied", ServeMode::Tunnel).contains("permission"));
+        // No match
+        assert_eq!(
+            diagnose_daemon_exit("some unrelated line", ServeMode::Local),
+            ""
+        );
+    }
+
+    // ── read_serve_urls ───────────────────────────────────────────────────
+    //
+    // The helper reads from $APP_DIR/serve.url, which is outside our
+    // control in unit tests. These tests exercise the parsing logic via a
+    // small shim that mirrors read_serve_urls' line-by-line behavior; the
+    // integration with the real file lives in e2e.
+    fn parse_serve_url_contents(raw: &str) -> Vec<ServeUrl> {
+        let mut out: Vec<ServeUrl> = Vec::new();
+        for (i, line) in raw.lines().enumerate() {
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                continue;
+            }
+            if i == 0 {
+                out.push(ServeUrl {
+                    label: None,
+                    url: line.to_string(),
+                });
+            } else if let Some((label, url)) = line.split_once('\t') {
+                out.push(ServeUrl {
+                    label: Some(label.to_string()),
+                    url: url.to_string(),
+                });
+            } else {
+                out.push(ServeUrl {
+                    label: None,
+                    url: line.to_string(),
+                });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn serve_url_parses_single_line_backward_compat() {
+        // Tunnel mode writes a single URL on line 1.
+        let out = parse_serve_url_contents("https://foo.trycloudflare.com/?token=abc\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].label, None);
+        assert_eq!(out[0].url, "https://foo.trycloudflare.com/?token=abc");
+    }
+
+    #[test]
+    fn serve_url_parses_multi_line_with_labels() {
+        // Local mode writes primary on line 1, `kind\turl` on alternates.
+        let raw = "\
+http://100.64.0.5:54321/?token=abc\n\
+lan\thttp://192.168.1.20:54321/?token=abc\n\
+localhost\thttp://localhost:54321/?token=abc\n";
+        let out = parse_serve_url_contents(raw);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].label, None);
+        assert_eq!(out[0].url, "http://100.64.0.5:54321/?token=abc");
+        assert_eq!(out[1].label.as_deref(), Some("lan"));
+        assert_eq!(out[1].url, "http://192.168.1.20:54321/?token=abc");
+        assert_eq!(out[2].label.as_deref(), Some("localhost"));
+    }
+
+    #[test]
+    fn serve_url_tolerates_empty_and_unlabeled_extras() {
+        // Defensive: if someone hand-edits serve.url and an extra line
+        // has no tab, we treat it as an unlabeled alt rather than
+        // dropping it.
+        let raw = "http://primary/\n\nhttp://no-label-here/\n";
+        let out = parse_serve_url_contents(raw);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].label, None);
+        assert_eq!(out[1].url, "http://no-label-here/");
     }
 }
