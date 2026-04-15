@@ -9,7 +9,7 @@ Start agents on your laptop. Check on them from your phone.
 3. **Press `R`**, confirm, and wait ~10 seconds for the Cloudflare tunnel to come up.
 4. **Scan the QR code** with your phone camera, then type the displayed four-word passphrase.
 
-You're in.
+You're in. Tap **Share → Add to Home Screen** (iOS) or **three-dot menu → Install** (Android Chrome) and the dashboard installs as a PWA — launches from your home screen, standalone window, no browser chrome.
 
 ## How it's protected
 
