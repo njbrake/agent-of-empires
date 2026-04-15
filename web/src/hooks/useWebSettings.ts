@@ -4,11 +4,13 @@ const STORAGE_KEY = "aoe-web-settings";
 
 export interface WebSettings {
   mobileFontSize: number;
+  desktopFontSize: number;
   autoOpenKeyboard: boolean;
 }
 
 const DEFAULTS: WebSettings = {
   mobileFontSize: 8,
+  desktopFontSize: 14,
   autoOpenKeyboard: true,
 };
 

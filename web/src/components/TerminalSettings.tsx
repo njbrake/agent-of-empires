@@ -1,6 +1,6 @@
 import { useWebSettings } from "../hooks/useWebSettings";
 
-const FONT_SIZES = [6, 7, 8, 9, 10, 11, 12, 13, 14];
+const FONT_SIZES = Array.from({ length: 23 }, (_, i) => i + 6); // 6..28
 
 export function TerminalSettings() {
   const { settings, update } = useWebSettings();
@@ -20,7 +20,7 @@ export function TerminalSettings() {
             <input
               type="range"
               min={6}
-              max={14}
+              max={28}
               step={1}
               value={settings.mobileFontSize}
               onChange={(e) =>
@@ -43,8 +43,8 @@ export function TerminalSettings() {
             </select>
           </div>
           <p className="text-[11px] text-text-muted mt-1">
-            Font size for the terminal on mobile devices. Desktop uses 14px.
-            Changing this will reconnect active sessions.
+            Font size for the terminal on mobile devices. Pinch the terminal
+            with two fingers to zoom; the new size is saved here.
           </p>
         </div>
 
