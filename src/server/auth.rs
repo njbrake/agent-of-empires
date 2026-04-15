@@ -73,6 +73,29 @@ fn build_cookie(token: &str, secure: bool, max_age_secs: u64) -> String {
     cookie
 }
 
+/// Attach both the Set-Cookie and X-Aoe-Token headers to a response. The
+/// cookie covers the browser flow; X-Aoe-Token lets the PWA update its
+/// localStorage-cached token when the server rotates. Without the header,
+/// a rotated token would brick the PWA until the user manually re-visits
+/// with a fresh `?token=` URL.
+async fn attach_token_headers(
+    response: &mut Response,
+    state: &AppState,
+) {
+    let Some(current) = state.token_manager.current_token().await else {
+        return;
+    };
+    let max_age = state.token_manager.lifetime_secs().await;
+    let cookie = build_cookie(&current, state.behind_tunnel, max_age);
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        cookie.parse().expect("cookie format must be valid"),
+    );
+    if let Ok(value) = current.parse() {
+        response.headers_mut().insert("x-aoe-token", value);
+    }
+}
+
 const MAX_DEVICES: usize = 100;
 
 /// Record a successful device connection for tracking.
@@ -278,17 +301,10 @@ pub async fn auth_middleware(
                         let mut response =
                             axum::response::Redirect::temporary("/login").into_response();
 
-                        // Set token cookie on the redirect so the browser has it
-                        // when following the redirect to /login
+                        // Set token cookie/header on the redirect so the browser
+                        // has the current token when it follows the redirect.
                         if source == TokenSource::QueryParam || needs_upgrade {
-                            if let Some(current) = state.token_manager.current_token().await {
-                                let max_age = state.token_manager.lifetime_secs().await;
-                                let cookie = build_cookie(&current, state.behind_tunnel, max_age);
-                                response.headers_mut().insert(
-                                    header::SET_COOKIE,
-                                    cookie.parse().expect("cookie format must be valid"),
-                                );
-                            }
+                            attach_token_headers(&mut response, &state).await;
                         }
 
                         return response;
@@ -299,16 +315,9 @@ pub async fn auth_middleware(
                 let session_id = session_id.expect("valid session implies session_id exists");
                 let mut response = next.run(request).await;
 
-                // Set token cookie if needed
+                // Set token cookie/header if needed
                 if source == TokenSource::QueryParam || needs_upgrade {
-                    if let Some(current) = state.token_manager.current_token().await {
-                        let max_age = state.token_manager.lifetime_secs().await;
-                        let cookie = build_cookie(&current, state.behind_tunnel, max_age);
-                        response.headers_mut().insert(
-                            header::SET_COOKIE,
-                            cookie.parse().expect("cookie format must be valid"),
-                        );
-                    }
+                    attach_token_headers(&mut response, &state).await;
                 }
 
                 // Refresh login session cookie (sliding window)
@@ -325,18 +334,13 @@ pub async fn auth_middleware(
 
         let mut response = next.run(request).await;
 
-        // Set cookie if authenticated via query param or if token needs upgrade
-        let should_set_cookie = source == TokenSource::QueryParam || needs_upgrade;
+        // Set cookie/X-Aoe-Token if authenticated via query param or if token
+        // needs upgrade. The X-Aoe-Token header lets the PWA update its
+        // localStorage-cached token without a full page reload.
+        let should_refresh = source == TokenSource::QueryParam || needs_upgrade;
 
-        if should_set_cookie {
-            if let Some(current) = state.token_manager.current_token().await {
-                let max_age = state.token_manager.lifetime_secs().await;
-                let cookie = build_cookie(&current, state.behind_tunnel, max_age);
-                response.headers_mut().insert(
-                    header::SET_COOKIE,
-                    cookie.parse().expect("cookie format must be valid"),
-                );
-            }
+        if should_refresh {
+            attach_token_headers(&mut response, &state).await;
         }
 
         return response;

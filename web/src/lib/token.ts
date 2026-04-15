@@ -43,6 +43,20 @@ export function getToken(): string | null {
   }
 }
 
+// Called when the server sends X-Aoe-Token on a response, indicating the
+// auth token has been rotated. Keeps the PWA in sync without a page reload.
+export function saveToken(token: string): void {
+  const trimmed = token.trim();
+  if (!trimmed) return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, trimmed);
+  } catch {
+    // Private mode or quota exceeded: nothing to do. The request that
+    // prompted this save still succeeded on its cookie/header, so the
+    // user isn't locked out until the next session.
+  }
+}
+
 export function clearToken(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);

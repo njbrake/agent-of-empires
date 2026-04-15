@@ -109,14 +109,20 @@ export function useTerminal(
 
     function connect() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      // The browser can't set custom headers on a WebSocket handshake, so we
-      // pass the auth token via `?token=` (server's auth middleware accepts
-      // it there). The PWA needs this because cookies may not be available
-      // after an iOS home-screen relaunch.
+      // Pass the auth token via the WebSocket subprotocol list instead of
+      // the URL query string. URLs land in access logs (axum, cloudflared,
+      // Tailscale, any reverse proxy); subprotocol headers don't.
+      //
+      // We offer two protocols: a marker ("aoe-auth") that the server echoes
+      // back to complete the handshake, and the token itself which the auth
+      // middleware validates. The server-side `extract_ws_protocols` tries
+      // every offered protocol as a candidate token, so the token position
+      // in the list doesn't matter.
       const token = getToken();
-      const base = `${proto}//${location.host}/sessions/${sessionId}/${wsPath}`;
-      const url = token ? `${base}?token=${encodeURIComponent(token)}` : base;
-      const ws = new WebSocket(url);
+      const url = `${proto}//${location.host}/sessions/${sessionId}/${wsPath}`;
+      const ws = token
+        ? new WebSocket(url, ["aoe-auth", token])
+        : new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 

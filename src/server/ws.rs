@@ -35,7 +35,13 @@ pub async fn paired_terminal_ws(
     let read_only = state.read_only;
 
     match session_info {
+        // Accept the "aoe-auth" subprotocol so the browser's handshake
+        // completes. The client offers `["aoe-auth", <token>]`; the auth
+        // middleware validates the token from the same header, and the
+        // server echoes back "aoe-auth" to satisfy the WS spec. The token
+        // itself is not echoed, only the marker.
         Some(tmux_name) => ws
+            .protocols(["aoe-auth"])
             .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
@@ -58,7 +64,13 @@ pub async fn container_terminal_ws(
     let read_only = state.read_only;
 
     match session_info {
+        // Accept the "aoe-auth" subprotocol so the browser's handshake
+        // completes. The client offers `["aoe-auth", <token>]`; the auth
+        // middleware validates the token from the same header, and the
+        // server echoes back "aoe-auth" to satisfy the WS spec. The token
+        // itself is not echoed, only the marker.
         Some(tmux_name) => ws
+            .protocols(["aoe-auth"])
             .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
@@ -82,7 +94,13 @@ pub async fn terminal_ws(
     let read_only = state.read_only;
 
     match session_info {
+        // Accept the "aoe-auth" subprotocol so the browser's handshake
+        // completes. The client offers `["aoe-auth", <token>]`; the auth
+        // middleware validates the token from the same header, and the
+        // server echoes back "aoe-auth" to satisfy the WS spec. The token
+        // itself is not echoed, only the marker.
         Some(tmux_name) => ws
+            .protocols(["aoe-auth"])
             .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
