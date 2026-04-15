@@ -23,14 +23,45 @@ export async function fetchSessions(): Promise<SessionResponse[] | null> {
   }
 }
 
-export async function ensureSession(id: string): Promise<boolean> {
+export interface EnsureSessionResult {
+  ok: boolean;
+  status?: "alive" | "restarted";
+  error?: string;
+  message?: string;
+}
+
+export async function ensureSession(
+  id: string,
+  signal?: AbortSignal,
+): Promise<EnsureSessionResult> {
   try {
     const res = await fetch(`/api/sessions/${id}/ensure`, {
       method: "POST",
+      signal,
     });
-    return res.ok;
-  } catch {
-    return false;
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: typeof body.error === "string" ? body.error : undefined,
+        message:
+          typeof body.message === "string"
+            ? body.message
+            : `Server error (${res.status})`,
+      };
+    }
+    return {
+      ok: true,
+      status: body.status as "alive" | "restarted" | undefined,
+    };
+  } catch (e) {
+    if ((e as { name?: string }).name === "AbortError") {
+      return { ok: false, error: "aborted" };
+    }
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : "Network error",
+    };
   }
 }
 

@@ -156,6 +156,30 @@ pub struct AppState {
     pub rate_limiter: Arc<RateLimiter>,
     pub devices: RwLock<Vec<DeviceInfo>>,
     pub behind_tunnel: bool,
+    /// Per-instance mutex guarding mutations that must not interleave
+    /// (e.g. `ensure_session` decide-and-restart). Entries are created on
+    /// first use and live for the lifetime of the process — there are only
+    /// as many as the user has sessions.
+    pub instance_locks: RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl AppState {
+    /// Get or create the per-instance serialization mutex. The outer
+    /// `RwLock` is only held long enough to insert/lookup the `Arc<Mutex>`;
+    /// the caller awaits the inner mutex without holding the map lock.
+    pub async fn instance_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        {
+            let guard = self.instance_locks.read().await;
+            if let Some(lock) = guard.get(id) {
+                return lock.clone();
+            }
+        }
+        let mut guard = self.instance_locks.write().await;
+        guard
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
 }
 
 // ── Server ──────────────────────────────────────────────────────────────────
@@ -222,6 +246,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         rate_limiter: Arc::clone(&rate_limiter),
         devices: RwLock::new(Vec::new()),
         behind_tunnel: remote,
+        instance_locks: RwLock::new(std::collections::HashMap::new()),
     });
 
     let app = build_router(state.clone());

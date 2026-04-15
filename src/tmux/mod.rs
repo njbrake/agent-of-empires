@@ -39,10 +39,10 @@ struct SessionCache {
 
 // Field separator for multi-field tmux `-F` format strings. Must be a
 // printable ASCII byte that does not appear in `sanitize_session_name` output
-// (which is restricted to alphanumerics + `_`). tmux 3.4 mangles whitespace
-// (tab, newline become `_`) and octal-escapes control bytes (ASCII 0x1F is
-// emitted as the literal 4-char sequence `\037`), so anything non-printable
-// is unreliable. Pipe is safe.
+// (which preserves `[A-Za-z0-9_-]` and replaces everything else with `_`).
+// tmux 3.4 mangles whitespace (tab, newline become `_`) and octal-escapes
+// control bytes (ASCII 0x1F is emitted as the literal 4-char sequence
+// `\037`), so anything non-printable is unreliable. Pipe is safe.
 const FIELD_SEP: char = '|';
 
 pub fn refresh_session_cache() {

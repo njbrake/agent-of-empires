@@ -339,6 +339,13 @@ pub async fn create_session(
 /// state (exists / pane dead / running unexpected shell) and restarts the
 /// instance when needed. Returns the resulting status so the frontend can
 /// decide whether to proceed with the WebSocket attach.
+///
+/// Concurrency: a per-instance `tokio::sync::Mutex` serializes ensure calls
+/// for the same session so two rapid POSTs don't both decide "dead" and race
+/// on `tmux new-session`.
+///
+/// Read-only: in read-only mode, the endpoint may report `alive` but will
+/// refuse to kill+restart a session. Returns 403 when a restart is needed.
 pub async fn ensure_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -352,6 +359,12 @@ pub async fn ensure_session(
             .into_response();
     };
     drop(instances);
+
+    // Serialize concurrent ensure calls for the same session. The decision
+    // phase reads tmux state and the restart phase mutates it; any other
+    // ensure for this id must wait so both see a consistent view.
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
 
     // Inspect tmux + make the restart decision on a blocking thread. Refresh
     // the cache first so rapid re-calls see the true current state (the
@@ -410,6 +423,20 @@ pub async fn ensure_session(
         return (StatusCode::OK, Json(serde_json::json!({"status": "alive"}))).into_response();
     }
 
+    if state.read_only {
+        // Read-only viewers must not kill + respawn a dead session. Signal
+        // the frontend so it can show "session is stopped; ask an owner to
+        // reattach" instead of silently replacing the agent process.
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Session is stopped or errored. Restart requires write access.",
+            })),
+        )
+            .into_response();
+    }
+
     {
         let mut instances = state.instances.write().await;
         if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
@@ -452,9 +479,10 @@ pub async fn ensure_session(
             }
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::json!({"error": "restart_failed", "message": "Failed to restart session"}),
-                ),
+                Json(serde_json::json!({
+                    "error": "restart_failed",
+                    "message": msg,
+                })),
             )
                 .into_response()
         }

@@ -154,11 +154,16 @@ test.describe("ensure_session restart flow", () => {
   });
 
   test.afterAll(async () => {
-    if (serverProc && !serverProc.killed) {
-      serverProc.kill("SIGKILL");
+    // Each cleanup step is guarded so partial setup from a failing
+    // `beforeAll` still tears down what was created.
+    try {
+      if (serverProc && !serverProc.killed) {
+        serverProc.kill("SIGKILL");
+      }
+    } catch {
+      // server already gone
     }
-    if (process.env.AGENT_OF_EMPIRES_DEBUG) {
-      // Surface the debug log tail when debugging a failing run.
+    if (process.env.AGENT_OF_EMPIRES_DEBUG && sandboxHome) {
       try {
         const logPath = join(
           sandboxHome,
@@ -171,29 +176,53 @@ test.describe("ensure_session restart flow", () => {
         const tail = log.split("\n").slice(-40).join("\n");
         console.log(`[aoe debug.log tail]\n${tail}`);
       } catch {
-        // ignore if missing
+        // log absent
       }
     }
-    spawnSync("tmux", ["kill-server"], {
-      env: { ...process.env, HOME: join(sandboxHome, "home") },
-    });
     if (sandboxHome) {
-      rmSync(sandboxHome, { recursive: true, force: true });
+      try {
+        spawnSync("tmux", ["kill-server"], {
+          env: { ...process.env, HOME: join(sandboxHome, "home") },
+        });
+      } catch {
+        // tmux not running or already torn down
+      }
+      try {
+        rmSync(sandboxHome, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
     }
     if (sessionId) {
-      rmSync(`/tmp/aoe-hooks/${sessionId}`, {
-        recursive: true,
-        force: true,
-      });
+      try {
+        rmSync(`/tmp/aoe-hooks/${sessionId}`, {
+          recursive: true,
+          force: true,
+        });
+      } catch {
+        // best-effort
+      }
     }
   });
+
+  // Helper: query tmux for session presence, scoped to the test's HOME so we
+  // don't see other sessions on the dev machine.
+  function tmuxHasSession(name: string): boolean {
+    const res = spawnSync("tmux", ["has-session", "-t", name], {
+      env: { ...process.env, HOME: join(sandboxHome, "home") },
+    });
+    return res.status === 0;
+  }
 
   test("dead session is restarted by /ensure, live session stays alive", async () => {
     // Initial state: aoe add persists the record but does not launch tmux, so
     // the background poller has marked the session Error ("tmux session is
-    // gone").
+    // gone"). Belt + suspenders: also assert tmux has no session, so this
+    // test still tests the dead path even if `aoe add` ever changes to
+    // auto-launch (we'd notice the assertion flip immediately).
     const before = await fetch(`${baseUrl}/api/sessions`).then((r) => r.json());
     expect(before[0].status).toBe("Error");
+    expect(tmuxHasSession(tmuxName)).toBe(false);
 
     // First /ensure: session is dead, must restart.
     const r1 = await fetch(`${baseUrl}/api/sessions/${sessionId}/ensure`, {
@@ -202,15 +231,15 @@ test.describe("ensure_session restart flow", () => {
     expect(r1.ok).toBeTruthy();
     const body1 = await r1.json();
     expect(body1.status).toBe("restarted");
+    expect(tmuxHasSession(tmuxName)).toBe(true);
 
-    // Real agents write `/tmp/aoe-hooks/<id>/status` via their settings.json
-    // hooks so AoE can read authoritative status. Simulate that here — with
-    // a hook status file present, ensure's shell-detection fallback
-    // short-circuits (hook-tracked sessions can't be judged by pane cmd).
-    // Without this, the outer `/bin/bash -lc '... exec env ... claude'`
-    // wrapper leaves `pane_current_command = "bash"` for the first several
-    // hundred ms, racing with ensure and falsely flagging the session as
-    // needing a restart.
+    // Real agents write a hook status file so AoE can read authoritative
+    // status. The path layout is owned by `crate::hooks::status_file` —
+    // `HOOK_STATUS_BASE` (`/tmp/aoe-hooks`) joined with the instance id;
+    // see `src/hooks/status_file.rs::hook_status_dir` for the contract.
+    // With a hook status file present, ensure's shell-detection fallback
+    // short-circuits (hook-tracked sessions can't be judged by pane cmd),
+    // which avoids racing with the wrapper bash before it execs the agent.
     const fs = await import("node:fs");
     const hookDir = `/tmp/aoe-hooks/${sessionId}`;
     fs.mkdirSync(hookDir, { recursive: true });

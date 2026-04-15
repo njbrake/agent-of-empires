@@ -19,6 +19,7 @@ export function TerminalView({ session }: Props) {
   const [ensureState, setEnsureState] = useState<"pending" | "ready" | "error">(
     "pending",
   );
+  const [ensureError, setEnsureError] = useState<string | null>(null);
   const { containerRef, termRef, state, manualReconnect, sendData } =
     useTerminal(ensureState === "ready" ? session.id : null);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
@@ -27,21 +28,40 @@ export function TerminalView({ session }: Props) {
   const [proxyFocused, setProxyFocused] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     setEnsureState("pending");
-    ensureSession(session.id).then((ok) => {
-      if (cancelled) return;
-      setEnsureState(ok ? "ready" : "error");
+    setEnsureError(null);
+    ensureSession(session.id, controller.signal).then((res) => {
+      if (controller.signal.aborted) return;
+      if (res.ok) {
+        setEnsureState("ready");
+      } else {
+        setEnsureState("error");
+        setEnsureError(res.message ?? "Could not start session.");
+      }
     });
-    return () => {
-      cancelled = true;
-    };
+    // Abort the in-flight ensure when the selected session changes or the
+    // component unmounts. Without this, switching sessions mid-ensure would
+    // let the server restart the previous session after the user moved on.
+    return () => controller.abort();
   }, [session.id]);
 
   const retryEnsure = useCallback(() => {
-    setEnsureState("pending");
-    ensureSession(session.id).then((ok) => {
-      setEnsureState(ok ? "ready" : "error");
+    // Re-entrancy guard: ignore clicks while a retry is already in flight.
+    setEnsureState((prev) => {
+      if (prev === "pending") return prev;
+      setEnsureError(null);
+      const controller = new AbortController();
+      ensureSession(session.id, controller.signal).then((res) => {
+        if (controller.signal.aborted) return;
+        if (res.ok) {
+          setEnsureState("ready");
+        } else {
+          setEnsureState("error");
+          setEnsureError(res.message ?? "Could not start session.");
+        }
+      });
+      return "pending";
     });
   }, [session.id]);
   const [hintDismissed, setHintDismissed] = useState(() => {
@@ -122,9 +142,9 @@ export function TerminalView({ session }: Props) {
 
   if (ensureState === "error") {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 gap-2">
-        <span className="text-xs text-status-error">
-          Could not start session.
+      <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 gap-2 px-4 text-center">
+        <span className="text-xs text-status-error max-w-md break-words">
+          {ensureError ?? "Could not start session."}
         </span>
         <button
           onClick={retryEnsure}
