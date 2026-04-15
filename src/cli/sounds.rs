@@ -107,10 +107,14 @@ fn test_sound(name: &str) -> Result<()> {
         return Ok(());
     }
 
-    print!("🔊 Playing '{}'... ", name);
+    let volume = crate::session::Config::load()
+        .map(|c| c.sound.volume)
+        .unwrap_or(1.0);
+
+    print!("🔊 Playing '{}' at volume {:.1}... ", name, volume);
     std::io::Write::flush(&mut std::io::stdout())?;
 
-    match sound::play_sound_blocking(name) {
+    match sound::play_sound_blocking(name, volume) {
         Ok(()) => {
             println!("✓");
             Ok(())
