@@ -35,17 +35,16 @@ Some integration tests require `tmux` to be available and will skip if it's not 
 The demo GIF in the docs is created using [VHS](https://github.com/charmbracelet/vhs).
 
 ```bash
-# Install VHS
+# Install VHS (macOS)
 brew install vhs
 
-# Clear the demo profile
-rm -rf ~/.agent-of-empires/profiles/demo
+# Build aoe with the serve feature so the tape can exercise remote access
+cargo build --release --features serve
 
-# Ensure demo directories exist
-mkdir -p /tmp/demo-projects/api-server /tmp/demo-projects/web-app
-
-# Generate the GIF (from repo root)
+# Generate the GIF (from repo root). The tape cleans its own profile
+# (`~/.config/agent-of-empires/profiles/demo` on Linux,
+# `~/.agent-of-empires/profiles/demo` on macOS) and demo scratch repo.
 vhs assets/demo.tape
 ```
 
-This creates `docs/assets/demo.gif`. The demo uses `-p demo` to run in a separate profile.
+This writes `docs/assets/demo.gif`. The tape runs `aoe -p demo` so your real profile is untouched.
