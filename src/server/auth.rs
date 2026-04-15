@@ -78,10 +78,7 @@ fn build_cookie(token: &str, secure: bool, max_age_secs: u64) -> String {
 /// localStorage-cached token when the server rotates. Without the header,
 /// a rotated token would brick the PWA until the user manually re-visits
 /// with a fresh `?token=` URL.
-async fn attach_token_headers(
-    response: &mut Response,
-    state: &AppState,
-) {
+async fn attach_token_headers(response: &mut Response, state: &AppState) {
     let Some(current) = state.token_manager.current_token().await else {
         return;
     };
