@@ -1,7 +1,6 @@
 ---
 name: aoe
 description: Manage AI coding agent sessions via Agent of Empires (aoe)
-version: 0.15.1
 metadata:
   openclaw:
     requires:

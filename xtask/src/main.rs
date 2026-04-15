@@ -65,6 +65,27 @@ fn check_skill() {
 
     let content = fs::read_to_string(skill_path).expect("Failed to read SKILL.md");
 
+    let mut has_error = false;
+
+    // The skill's published version is managed by clawhub via _meta.json and
+    // the release workflow's `--version` flag. A static `version:` in the
+    // frontmatter goes stale on every release, so disallow it.
+    if let Some(frontmatter) = content
+        .strip_prefix("---\n")
+        .and_then(|s| s.split_once("\n---"))
+    {
+        for line in frontmatter.0.lines() {
+            if line.trim_start().starts_with("version:") {
+                eprintln!(
+                    "ERROR: SKILL.md frontmatter must not contain a `version:` field; \
+                     clawhub's _meta.json is the source of truth"
+                );
+                has_error = true;
+                break;
+            }
+        }
+    }
+
     // Build the clap command tree
     let cli_cmd = agent_of_empires::cli::Cli::command();
     let mut cli_commands: BTreeSet<String> = BTreeSet::new();
@@ -109,8 +130,6 @@ fn check_skill() {
             skill_commands.insert(best);
         }
     }
-
-    let mut has_error = false;
 
     // Check for skill references to commands that don't exist
     for skill_cmd in &skill_commands {
