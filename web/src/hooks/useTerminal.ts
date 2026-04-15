@@ -6,6 +6,12 @@ import { useWebSettings } from "./useWebSettings";
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 5000;
+const MIN_FONT_SIZE = 6;
+const MAX_FONT_SIZE = 28;
+const DEFAULT_FONT_SIZE = 14;
+const MOBILE_BREAKPOINT_PX = 768;
+const WHEEL_ZOOM_SENSITIVITY = 0.05;
+const WHEEL_PERSIST_DEBOUNCE_MS = 400;
 
 export interface TerminalState {
   connected: boolean;
@@ -22,7 +28,7 @@ export function useTerminal(
   sessionId: string | null,
   wsPath: string = "ws",
 ) {
-  const { settings } = useWebSettings();
+  const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -50,7 +56,14 @@ export function useTerminal(
     const container = containerRef.current;
     container.innerHTML = "";
 
-    const fontSize = window.innerWidth < 768 ? settings.mobileFontSize : 14;
+    const isMobileViewport = () => window.innerWidth < MOBILE_BREAKPOINT_PX;
+    const readFontSize = () =>
+      isMobileViewport() ? settings.mobileFontSize : settings.desktopFontSize;
+    const persistFontSize = (size: number) => {
+      if (isMobileViewport()) update({ mobileFontSize: size });
+      else update({ desktopFontSize: size });
+    };
+    const fontSize = readFontSize();
 
     const term = new Terminal({
       cursorBlink: true,
@@ -234,12 +247,19 @@ export function useTerminal(
     let lastMoveTs = 0;
     let velocity = 0; // pixels per ms
     let momentumRaf: number | null = null;
+    // Pinch state: once a two-finger gesture exceeds a small deadzone, we
+    // lock into either 'pinch' (zoom) or 'scroll' for the rest of the gesture.
+    let gestureMode: "pinch" | "scroll" | null = null;
+    let pinchStartDist = 0;
+    let pinchStartSize = DEFAULT_FONT_SIZE;
+    let pinchStartMidY = 0;
+    const GESTURE_LOCK_PX = 12;
     const LINES_PER_WHEEL = 2; // swipe pixels-per-wheel-event = cellHeight * 2
     const MAX_VELOCITY = 2.0; // px/ms — a genuinely fast finger is ~1–2 px/ms
     const MAX_WHEELS_PER_FRAME = 6; // cap runaway bursts
     const clampV = (v: number) =>
       Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
-    const cellHeight = () => term.options.fontSize ?? 14;
+    const cellHeight = () => term.options.fontSize ?? DEFAULT_FONT_SIZE;
     const pxPerWheel = () => cellHeight() * LINES_PER_WHEEL;
     const prefersReducedMotion = () =>
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -250,6 +270,53 @@ export function useTerminal(
       if (!a || !b) return 0;
       return (a.clientY + b.clientY) / 2;
     };
+
+    const touchDistance = (e: TouchEvent) => {
+      const a = e.touches[0];
+      const b = e.touches[1];
+      if (!a || !b) return 0;
+      return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    };
+
+    const clampFont = (n: number) =>
+      Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, n));
+
+    // Pinch/wheel events fire faster than the frame rate; coalesce font-size
+    // updates to at most one fitAddon.fit() per animation frame to avoid
+    // layout thrash and spamming PTY resize messages over the WebSocket.
+    let pendingFontSize: number | null = null;
+    let fontSizeRaf: number | null = null;
+    const applyFontSize = (size: number) => {
+      const next = clampFont(Math.round(size));
+      if (next !== term.options.fontSize) {
+        term.options.fontSize = next;
+        fitAddon.fit();
+      }
+      return next;
+    };
+    const scheduleFontSize = (size: number) => {
+      pendingFontSize = clampFont(Math.round(size));
+      if (fontSizeRaf !== null) return;
+      fontSizeRaf = requestAnimationFrame(() => {
+        fontSizeRaf = null;
+        if (pendingFontSize !== null) {
+          applyFontSize(pendingFontSize);
+          pendingFontSize = null;
+        }
+      });
+    };
+    const flushFontSize = () => {
+      if (fontSizeRaf !== null) {
+        cancelAnimationFrame(fontSizeRaf);
+        fontSizeRaf = null;
+      }
+      if (pendingFontSize !== null) {
+        applyFontSize(pendingFontSize);
+        pendingFontSize = null;
+      }
+    };
+    const currentPendingOrLiveSize = () =>
+      pendingFontSize ?? term.options.fontSize ?? DEFAULT_FONT_SIZE;
 
     const cancelMomentum = () => {
       if (momentumRaf !== null) {
@@ -265,6 +332,10 @@ export function useTerminal(
       touchAccum = 0;
       velocity = 0;
       lastMoveTs = performance.now();
+      gestureMode = null;
+      pinchStartDist = touchDistance(e);
+      pinchStartSize = term.options.fontSize ?? DEFAULT_FONT_SIZE;
+      pinchStartMidY = touchMidY;
     };
 
     const onTouchMove = (e: TouchEvent) => {
@@ -272,6 +343,28 @@ export function useTerminal(
       e.preventDefault();
       const y = midpointY(e);
       const now = performance.now();
+      const dist = touchDistance(e);
+
+      if (gestureMode === null) {
+        const distDelta = Math.abs(dist - pinchStartDist);
+        const panDelta = Math.abs(y - pinchStartMidY);
+        if (Math.max(distDelta, panDelta) < GESTURE_LOCK_PX) {
+          lastMoveTs = now;
+          return;
+        }
+        gestureMode = distDelta > panDelta ? "pinch" : "scroll";
+        // Reset scroll baseline so we don't replay the deadzone travel.
+        touchMidY = y;
+      }
+
+      if (gestureMode === "pinch") {
+        if (pinchStartDist > 0) {
+          scheduleFontSize(pinchStartSize * (dist / pinchStartDist));
+        }
+        lastMoveTs = now;
+        return;
+      }
+
       const dy = touchMidY - y;
       touchMidY = y;
       touchAccum += dy;
@@ -295,6 +388,14 @@ export function useTerminal(
     const onTouchEnd = (e: TouchEvent) => {
       // Fires whenever the touch count changes; only decay when all fingers lift.
       if (e.touches.length > 0) return;
+      if (gestureMode === "pinch") {
+        flushFontSize();
+        persistFontSize(term.options.fontSize ?? DEFAULT_FONT_SIZE);
+        gestureMode = null;
+        velocity = 0;
+        return;
+      }
+      gestureMode = null;
       if (prefersReducedMotion() || Math.abs(velocity) < 0.05) {
         velocity = 0;
         return;
@@ -340,12 +441,40 @@ export function useTerminal(
     viewport.addEventListener("touchend", onTouchEnd, touchOpts);
     viewport.addEventListener("touchcancel", onTouchEnd, touchOpts);
 
+    // Trackpad pinch fires wheel events with ctrlKey=true (and Ctrl+wheel
+    // mouse zoom matches the same convention). Debounce persistence so we
+    // don't hammer localStorage on every frame of a pinch.
+    let wheelAccum = 0;
+    let wheelPersistTimer: ReturnType<typeof setTimeout> | null = null;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      wheelAccum -= e.deltaY * WHEEL_ZOOM_SENSITIVITY;
+      if (Math.abs(wheelAccum) < 1) return;
+      const delta = Math.trunc(wheelAccum);
+      wheelAccum -= delta;
+      const base = currentPendingOrLiveSize();
+      const next = clampFont(Math.round(base + delta));
+      if (next === base) return;
+      scheduleFontSize(next);
+      if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+      wheelPersistTimer = setTimeout(() => {
+        flushFontSize();
+        persistFontSize(term.options.fontSize ?? DEFAULT_FONT_SIZE);
+        wheelPersistTimer = null;
+      }, WHEEL_PERSIST_DEBOUNCE_MS);
+    };
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+
     return () => {
       cancelMomentum();
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
+      viewport.removeEventListener("wheel", onWheel);
+      if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+      if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
       window.removeEventListener("resize", handleResize);
       dataDisposable?.dispose();
       resizeDisposable?.dispose();
@@ -357,7 +486,28 @@ export function useTerminal(
       wsRef.current = null;
       fitRef.current = null;
     };
-  }, [sessionId, wsPath, settings.mobileFontSize]);
+    // We intentionally do NOT depend on settings.{mobile,desktop}FontSize —
+    // that would tear down and reconnect the PTY every time the font
+    // changed (via slider or pinch). The sync effect below mutates
+    // term.options.fontSize in-place instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, wsPath]);
+
+  // Apply font size changes (from settings UI or pinch persistence) to the
+  // live terminal without recreating it.
+  useEffect(() => {
+    const term = termRef.current;
+    const fit = fitRef.current;
+    if (!term) return;
+    const size =
+      window.innerWidth < MOBILE_BREAKPOINT_PX
+        ? settings.mobileFontSize
+        : settings.desktopFontSize;
+    if (term.options.fontSize !== size) {
+      term.options.fontSize = size;
+      fit?.fit();
+    }
+  }, [settings.mobileFontSize, settings.desktopFontSize]);
 
   const manualReconnect = () => {
     retryCountRef.current = 0;
