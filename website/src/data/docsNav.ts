@@ -21,6 +21,7 @@ export const docsNav: NavSection[] = [
     title: "Guides",
     items: [
       { title: "Docker Sandbox", href: "/guides/sandbox/" },
+      { title: "Web Dashboard", href: "/guides/web-dashboard/" },
       { title: "Repo Config & Hooks", href: "/guides/repo-config/" },
       { title: "Git Worktrees", href: "/guides/worktrees/" },
       { title: "Diff View", href: "/guides/diff-view/" },

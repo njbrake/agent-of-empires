@@ -13,6 +13,8 @@ use super::list::ListArgs;
 use super::profile::ProfileCommands;
 use super::remove::RemoveArgs;
 use super::send::SendArgs;
+#[cfg(feature = "serve")]
+use super::serve::ServeArgs;
 use super::session::SessionCommands;
 use super::sounds::SoundsCommands;
 use super::status::StatusArgs;
@@ -104,6 +106,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: ThemeCommands,
     },
+
+    /// Start a web dashboard for remote session access [experimental]
+    #[cfg(feature = "serve")]
+    Serve(ServeArgs),
 
     /// Uninstall Agent of Empires
     Uninstall(UninstallArgs),

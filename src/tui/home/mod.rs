@@ -13,7 +13,7 @@ use std::time::Instant;
 use tui_input::Input;
 
 use crate::session::{
-    config::{load_config, save_config, SortOrder},
+    config::{load_config, save_config, GroupByMode, SortOrder},
     flatten_tree, flatten_tree_all_profiles, resolve_config, DefaultTerminalMode, Group, GroupTree,
     Instance, Item, Storage,
 };
@@ -29,6 +29,29 @@ use super::dialogs::{
 use super::diff::DiffView;
 use super::settings::SettingsView;
 use super::status_poller::StatusPoller;
+
+/// Extract a project group name from a session instance.
+/// Uses `worktree_info.main_repo_path` for worktree sessions (so all branches of the
+/// same repo group together), otherwise uses `project_path`. Returns the last path segment.
+fn project_group_name(inst: &Instance) -> String {
+    let base_path = inst
+        .worktree_info
+        .as_ref()
+        .map(|wt| wt.main_repo_path.as_str())
+        .unwrap_or(&inst.project_path);
+
+    let path = std::path::Path::new(base_path);
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            // For root paths like "/", use a readable fallback
+            if base_path == "/" || base_path.is_empty() {
+                "(root)".to_string()
+            } else {
+                base_path.to_string()
+            }
+        })
+}
 
 pub(super) struct GroupRenameContext {
     pub(super) old_path: String,
@@ -87,16 +110,19 @@ pub(super) fn get_indent(depth: usize) -> &'static str {
     INDENTS.get(depth).copied().unwrap_or(INDENTS[9])
 }
 
-pub(super) const ICON_RUNNING: &str = "●";
-pub(super) const ICON_WAITING: &str = "◐";
-pub(super) const ICON_IDLE: &str = "○";
+pub(super) const ICON_IDLE: &str = "⠒";
 pub(super) const ICON_ERROR: &str = "✕";
-pub(super) const ICON_STARTING: &str = "◌";
-pub(super) const ICON_UNKNOWN: &str = "?";
-pub(super) const ICON_STOPPED: &str = "■";
-pub(super) const ICON_DELETING: &str = "✗";
+pub(super) const ICON_UNKNOWN: &str = "⠤";
+pub(super) const ICON_STOPPED: &str = "⠒";
+pub(super) const ICON_DELETING: &str = "✕";
 pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
+
+/// Hook progress for a session being created in the background
+pub(super) struct CreatingHookProgress {
+    pub(super) hook_output: Vec<String>,
+    pub(super) current_hook: Option<String>,
+}
 
 pub struct HomeView {
     pub(super) storages: HashMap<String, Storage>,
@@ -114,6 +140,9 @@ pub struct HomeView {
     pub(super) selected_group_profile: Option<String>,
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
+    pub(super) group_by: GroupByMode,
+    /// Collapsed state for project-mode groups (persists across rebuilds)
+    pub(super) project_group_collapsed: HashMap<String, bool>,
 
     // Dialogs
     pub(super) show_help: bool,
@@ -140,6 +169,8 @@ pub struct HomeView {
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
     pub(super) pending_stop_session: Option<String>,
+    /// Session to force-remove after the confirmation dialog is accepted
+    pub(super) pending_force_remove_session: Option<String>,
     // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
@@ -162,6 +193,11 @@ pub struct HomeView {
     pub(super) creation_cancelled: bool,
     /// Sessions whose on_launch hooks already ran in the creation poller
     pub(super) on_launch_hooks_ran: HashSet<String>,
+
+    /// Hook progress for sessions in Creating state, keyed by stub instance ID
+    pub(super) creating_hook_progress: HashMap<String, CreatingHookProgress>,
+    /// The stub instance ID for the current background creation
+    pub(super) creating_stub_id: Option<String>,
 
     // Performance: preview caching
     pub(super) preview_cache: PreviewCache,
@@ -240,6 +276,22 @@ impl HomeView {
             .as_ref()
             .and_then(|c| c.app_state.sort_order)
             .unwrap_or_default();
+        // New users (haven't dismissed the welcome screen) default to Project
+        // grouping so they see the same layout as the web dashboard. Existing
+        // users keep Manual (the existing behavior) unless they explicitly
+        // toggle to Project with `g`.
+        let is_new_user = user_config
+            .as_ref()
+            .is_none_or(|c| !c.app_state.has_seen_welcome);
+        let default_group_by = if is_new_user {
+            GroupByMode::Project
+        } else {
+            GroupByMode::Manual
+        };
+        let group_by = user_config
+            .as_ref()
+            .and_then(|c| c.app_state.group_by)
+            .unwrap_or(default_group_by);
 
         let mut view = Self {
             storages,
@@ -254,6 +306,8 @@ impl HomeView {
             selected_group_profile: None,
             view_mode: ViewMode::default(),
             sort_order,
+            group_by,
+            project_group_collapsed: HashMap::new(),
             show_help: false,
             new_dialog: None,
             confirm_dialog: None,
@@ -273,6 +327,7 @@ impl HomeView {
             pending_send_session: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
+            pending_force_remove_session: None,
             search_active: false,
             search_query: Input::default(),
             search_matches: Vec::new(),
@@ -284,6 +339,8 @@ impl HomeView {
             creation_poller: CreationPoller::new(),
             creation_cancelled: false,
             on_launch_hooks_ran: HashSet::new(),
+            creating_hook_progress: HashMap::new(),
+            creating_stub_id: None,
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
@@ -297,6 +354,21 @@ impl HomeView {
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
         };
+
+        // Clean up orphaned Creating instances from a prior crash
+        let orphan_ids: Vec<String> = view
+            .instances
+            .iter()
+            .filter(|i| i.status == crate::session::Status::Creating)
+            .map(|i| i.id.clone())
+            .collect();
+        for id in &orphan_ids {
+            view.remove_instance(id);
+        }
+        if !orphan_ids.is_empty() {
+            tracing::info!("Cleaned up {} orphaned creating sessions", orphan_ids.len());
+            let _ = view.save();
+        }
 
         view.flat_items = view.build_flat_items();
         view.update_selected();
@@ -349,6 +421,16 @@ impl HomeView {
         self.group_trees.retain(|k, _| storage_keys.contains(k));
 
         self.instances = all_instances;
+
+        // Re-inject any in-flight Creating stub that won't be on disk
+        if let Some(ref stub_id) = self.creating_stub_id {
+            if !self.instances.iter().any(|i| i.id == *stub_id) {
+                if let Some(stub) = self.instance_map.get(stub_id).cloned() {
+                    self.instances.push(stub);
+                }
+            }
+        }
+
         self.instance_map = self
             .instances
             .iter()
@@ -392,6 +474,7 @@ impl HomeView {
 
                 let should_update = old_status.is_some_and(|s| {
                     s != Status::Deleting
+                        && s != Status::Creating
                         && s != Status::Stopped
                         && update.status != Status::Stopped
                 });
@@ -442,32 +525,118 @@ impl HomeView {
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
+    /// Creates a stub instance in the session list with Status::Creating so the user
+    /// can see progress in the preview pane while continuing to use the TUI.
     pub fn request_creation(
         &mut self,
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) {
-        let has_hooks = hooks
-            .as_ref()
-            .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
-        if let Some(dialog) = &mut self.new_dialog {
-            dialog.set_loading(true);
-            dialog.set_has_hooks(has_hooks);
+        // Build a stub instance to show in the list while creation runs
+        let stub_title = if data.title.is_empty() {
+            data.worktree_branch
+                .as_deref()
+                .filter(|b| !b.is_empty())
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| {
+                    std::path::Path::new(&data.path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "New session".to_string())
+                })
+        } else {
+            data.title.clone()
+        };
+        let mut stub = Instance::new(&stub_title, &data.path);
+        stub.tool = if data.tool.is_empty() {
+            "claude".to_string()
+        } else {
+            data.tool.clone()
+        };
+        stub.group_path = data.group.clone();
+        stub.status = crate::session::Status::Creating;
+        stub.yolo_mode = data.yolo_mode;
+        stub.source_profile = data.profile.clone();
+
+        // Set stub worktree_info so project-mode grouping works during creation.
+        // The real worktree_info (with resolved main_repo_path) replaces this
+        // once build_instance completes.
+        if let Some(ref branch) = data.worktree_branch {
+            if !branch.is_empty() {
+                stub.worktree_info = Some(crate::session::WorktreeInfo {
+                    branch: branch.clone(),
+                    main_repo_path: data.path.clone(),
+                    managed_by_aoe: false,
+                    created_at: chrono::Utc::now(),
+                });
+            }
         }
 
+        let stub_id = stub.id.clone();
+        let target_profile = data.profile.clone();
+
+        // Add stub to instance list
+        self.add_instance(stub);
+        self.rebuild_group_trees();
+        if !data.group.is_empty() {
+            if let Some(tree) = self.group_trees.get_mut(&target_profile) {
+                tree.create_group(&data.group);
+            }
+        }
+
+        // Initialize progress tracking and select the stub
+        self.creating_hook_progress.insert(
+            stub_id.clone(),
+            CreatingHookProgress {
+                hook_output: Vec::new(),
+                current_hook: None,
+            },
+        );
+        self.creating_stub_id = Some(stub_id.clone());
+        self.flat_items = self.build_flat_items();
+
+        // Move cursor to the new stub
+        if let Some(pos) = self
+            .flat_items
+            .iter()
+            .position(|item| matches!(item, Item::Session { id, .. } if id == &stub_id))
+        {
+            self.cursor = pos;
+            self.update_selected();
+        }
+
+        // Close the dialog
+        self.new_dialog = None;
+
         self.creation_cancelled = false;
+        // Filter out the stub from existing instances so the builder doesn't
+        // treat its placeholder title as a duplicate to auto-increment.
+        let existing_instances: Vec<Instance> = self
+            .instances
+            .iter()
+            .filter(|i| i.id != stub_id)
+            .cloned()
+            .collect();
         let request = CreationRequest {
             data,
-            existing_instances: self.instances.clone(),
+            existing_instances,
             hooks,
         };
         self.creation_poller.request_creation(request);
     }
 
-    /// Mark the current creation operation as cancelled (user pressed Esc)
+    /// Mark the current creation operation as cancelled
     pub fn cancel_creation(&mut self) {
         if self.creation_poller.is_pending() {
             self.creation_cancelled = true;
+        }
+        // Remove the stub instance
+        if let Some(stub_id) = self.creating_stub_id.take() {
+            self.remove_instance(&stub_id);
+            self.creating_hook_progress.remove(&stub_id);
+            self.rebuild_group_trees();
+            self.flat_items = self.build_flat_items();
+            self.update_selected();
         }
         self.new_dialog = None;
     }
@@ -481,9 +650,18 @@ impl HomeView {
 
         let result = self.creation_poller.try_recv_result()?;
 
+        // Clean up the stub and progress tracking
+        let stub_id = self.creating_stub_id.take();
+        if let Some(ref id) = stub_id {
+            self.creating_hook_progress.remove(id);
+        }
+
         // Check if the user cancelled while waiting
         if self.creation_cancelled {
             self.creation_cancelled = false;
+            if let Some(id) = &stub_id {
+                self.remove_instance(id);
+            }
             if let CreationResult::Success {
                 ref instance,
                 ref created_worktree,
@@ -496,6 +674,9 @@ impl HomeView {
                 });
                 builder::cleanup_instance(instance, worktree.as_ref(), &[]);
             }
+            self.rebuild_group_trees();
+            self.flat_items = self.build_flat_items();
+            self.update_selected();
             return None;
         }
 
@@ -506,6 +687,11 @@ impl HomeView {
                 on_launch_hooks_ran,
                 ..
             } => {
+                // Remove the stub instance
+                if let Some(id) = &stub_id {
+                    self.remove_instance(id);
+                }
+
                 let mut instance = *instance;
                 let target_profile = self.creation_poller.last_profile().unwrap_or_else(|| {
                     self.active_profile
@@ -543,7 +729,14 @@ impl HomeView {
                 Some(session_id)
             }
             CreationResult::Error(error) => {
-                if let Some(dialog) = &mut self.new_dialog {
+                // Remove the stub and show the error in an info dialog
+                if let Some(id) = &stub_id {
+                    self.remove_instance(id);
+                    self.rebuild_group_trees();
+                    self.flat_items = self.build_flat_items();
+                    self.update_selected();
+                    self.info_dialog = Some(InfoDialog::new("Creation Failed", &error));
+                } else if let Some(dialog) = &mut self.new_dialog {
                     dialog.set_loading(false);
                     dialog.set_error(error);
                 }
@@ -562,9 +755,66 @@ impl HomeView {
         self.creation_poller.is_pending()
     }
 
+    /// Check if the currently selected session is the in-flight creating stub
+    pub fn is_creating_stub_selected(&self) -> bool {
+        match (&self.creating_stub_id, &self.selected_session) {
+            (Some(stub_id), Some(selected)) => stub_id == selected,
+            _ => false,
+        }
+    }
+
+    /// Show a confirmation dialog warning that a session is being created.
+    pub fn show_quit_during_creation_confirm(&mut self) {
+        self.confirm_dialog = Some(ConfirmDialog::new(
+            "Session Creating",
+            "A session is still being created. Quit anyway? The hook will be cancelled.",
+            "quit_during_creation",
+        ));
+    }
+
+    /// Clean up a pending creation on TUI shutdown. Waits briefly for the
+    /// background thread to finish so we can clean up worktrees/instances.
+    /// If the thread doesn't finish in time, the hook subprocess will
+    /// complete on its own and orphaned Creating stubs are cleaned up on
+    /// next launch.
+    pub fn cleanup_pending_creation(&mut self) {
+        if !self.creation_poller.is_pending() {
+            return;
+        }
+        self.creation_cancelled = true;
+        if let Some(stub_id) = self.creating_stub_id.take() {
+            self.remove_instance(&stub_id);
+            self.creating_hook_progress.remove(&stub_id);
+        }
+
+        // Wait briefly for the background thread to finish
+        let result = self
+            .creation_poller
+            .recv_result_timeout(std::time::Duration::from_secs(2));
+
+        if let Some(crate::tui::creation_poller::CreationResult::Success {
+            ref instance,
+            ref created_worktree,
+            ..
+        }) = result
+        {
+            let worktree =
+                created_worktree
+                    .as_ref()
+                    .map(|wt| crate::session::builder::CreatedWorktree {
+                        path: std::path::PathBuf::from(&wt.path),
+                        main_repo_path: std::path::PathBuf::from(&wt.main_repo_path),
+                    });
+            crate::session::builder::cleanup_instance(instance, worktree.as_ref(), &[]);
+            tracing::info!("Cleaned up cancelled session on exit");
+        }
+    }
+
     /// Tick dialog animations/timers and drain hook progress.
     /// Returns true when a redraw is needed.
     pub fn tick_dialog(&mut self) -> bool {
+        use crate::session::repo_config::HookProgress;
+
         let mut changed = false;
 
         if let Some(dialog) = &mut self.new_dialog {
@@ -577,6 +827,30 @@ impl HomeView {
                 while let Some(progress) = self.creation_poller.try_recv_progress() {
                     dialog.push_hook_progress(progress);
                     changed = true;
+                }
+            }
+        }
+
+        // Drain hook progress into the creating buffer when no dialog is open
+        if self.new_dialog.is_none() {
+            if let Some(ref stub_id) = self.creating_stub_id {
+                let stub_id = stub_id.clone();
+                if let Some(progress_buf) = self.creating_hook_progress.get_mut(&stub_id) {
+                    while let Some(progress) = self.creation_poller.try_recv_progress() {
+                        match progress {
+                            HookProgress::Started(cmd) => {
+                                progress_buf.current_hook = Some(cmd);
+                            }
+                            HookProgress::Output(line) => {
+                                progress_buf.hook_output.push(line);
+                                // Cap buffer to prevent unbounded memory growth
+                                if progress_buf.hook_output.len() > 1000 {
+                                    progress_buf.hook_output.drain(..500);
+                                }
+                            }
+                        }
+                        changed = true;
+                    }
                 }
             }
         }
@@ -636,9 +910,24 @@ impl HomeView {
         self.instance_map.get(id)
     }
 
+    /// Returns true if any session has an animated status (Running, Waiting, Starting,
+    /// Creating), which means the TUI needs periodic redraws for spinner animation.
+    pub fn has_animated_sessions(&self) -> bool {
+        use crate::session::Status;
+        self.instances.iter().any(|inst| {
+            matches!(
+                inst.status,
+                Status::Running | Status::Waiting | Status::Starting | Status::Creating
+            )
+        })
+    }
+
     pub(super) fn build_flat_items(&self) -> Vec<Item> {
+        if self.group_by == GroupByMode::Project {
+            return self.build_flat_items_by_project();
+        }
+
         if let Some(profile) = &self.active_profile {
-            // Filtered to a single profile -- only include that profile's instances
             let filtered: Vec<Instance> = self
                 .instances
                 .iter()
@@ -650,7 +939,6 @@ impl HomeView {
                 None => Vec::new(),
             }
         } else if self.storages.len() <= 1 {
-            // All-profiles mode with only one profile -- skip the profile header
             match self.group_trees.values().next() {
                 Some(tree) => flatten_tree(tree, &self.instances, self.sort_order),
                 None => Vec::new(),
@@ -658,6 +946,36 @@ impl HomeView {
         } else {
             flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order)
         }
+    }
+
+    fn build_flat_items_by_project(&self) -> Vec<Item> {
+        // In project mode, always merge all sessions into one tree regardless of
+        // profile count. Project grouping unifies by repo across profiles.
+        let base_instances: Vec<Instance> = if let Some(profile) = &self.active_profile {
+            self.instances
+                .iter()
+                .filter(|i| i.source_profile == *profile)
+                .cloned()
+                .collect()
+        } else {
+            self.instances.clone()
+        };
+
+        let grouped: Vec<Instance> = base_instances
+            .into_iter()
+            .map(|mut inst| {
+                inst.group_path = project_group_name(&inst);
+                inst
+            })
+            .collect();
+
+        let mut tree = GroupTree::new_with_groups(&grouped, &[]);
+        for (path, &collapsed) in &self.project_group_collapsed {
+            if collapsed {
+                tree.set_collapsed(path, true);
+            }
+        }
+        flatten_tree(&tree, &grouped, self.sort_order)
     }
 
     pub fn active_profile_display(&self) -> &str {

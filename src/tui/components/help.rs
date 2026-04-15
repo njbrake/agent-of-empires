@@ -7,7 +7,7 @@ use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 37;
+const DIALOG_HEIGHT: u16 = 38;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -24,7 +24,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("k/↑", "Move up"),
                 ("h/←", "Collapse group"),
                 ("l/→", "Expand group"),
-                ("g/G", "Go to top / bottom"),
+                ("Home/End", "Go to top / bottom"),
                 ("PgUp/Dn", "Move 10 items up / down"),
             ],
         ),
@@ -50,6 +50,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("H/L", "Resize list panel"),
                 ("o", "Cycle sort forward"),
                 ("Ctrl+o", "Cycle sort backward"),
+                ("g", "Toggle group by project"),
             ],
         ),
         (

@@ -1,2 +1,5 @@
+[build]
+jobs = 8
+
 [alias]
 xtask = "run -p xtask --"

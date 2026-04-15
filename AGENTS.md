@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-> `CLAUDE.md` is a symlink to this file. Do not edit `CLAUDE.md` directly -- edit `AGENTS.md` instead.
+> `CLAUDE.md` is a symlink to this file. Do not edit `CLAUDE.md` directly; edit `AGENTS.md` instead.
 
 ## Project Structure & Module Organization
 
@@ -13,7 +13,9 @@
 - `src/process/`: OS-specific process handling (`macos.rs`, `linux.rs`).
 - `src/docker/`: Docker sandboxing and container management.
 - `src/git/`: git worktree operations and template resolution.
+- `src/server/`: web dashboard backend (axum server, REST API, WebSocket PTY relay, auth), gated behind `serve` feature.
 - `src/update/`: version checking against GitHub releases.
+- `web/`: React + TypeScript frontend for the web dashboard (built with Vite + Tailwind CSS).
 - `src/migrations/`: versioned data migrations for breaking changes (see below).
 - `tests/`: integration tests (`tests/*.rs`).
 - `tests/e2e/`: end-to-end tests exercising the full `aoe` binary (see E2E Tests below).
@@ -25,13 +27,26 @@
 
 ## Build, Test, and Development Commands
 
-- `cargo build` / `cargo build --release`: compile (release binary at `target/release/aoe`).
+- `cargo build` / `cargo build --release`: compile TUI-only (release binary at `target/release/aoe`).
+- `cargo build --profile dev-release`: faster optimized builds for local development. Skips LTO for quicker compile times while still producing an optimized binary. Use `--release` for final/CI builds.
+- `cargo build --features serve`: compile with web dashboard support (requires Node.js + npm).
 - `cargo run --release`: run from source; requires `tmux` installed.
 - `cargo check`: fast type-checking during development.
 - `cargo test`: run unit + integration tests (some tests skip if `tmux` is unavailable).
 - `cargo fmt`: format with rustfmt (run before pushing).
 - `cargo clippy`: lint (fix warnings unless there’s a strong reason not to).
 - Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes to `debug.log` in app data dir).
+
+### Web Dashboard (experimental)
+
+The web dashboard (`aoe serve`) is behind the `serve` Cargo feature flag. It is experimental and subject to major changes.
+
+- **Build**: `cargo build --features serve` (build.rs auto-runs `npm install && npm run build` in `web/` if needed).
+- **Run**: `aoe serve --host 0.0.0.0` starts the embedded web server with token-based auth.
+- **Frontend dev**: `cd web && npm run dev` for Vite HMR during development. The Rust server must also be running for API/WebSocket requests.
+- **Stack**: React 19, TypeScript, Vite, Tailwind CSS v4, xterm.js v6 for terminal rendering.
+- **PWA**: The dashboard is installable as a Progressive Web App. In Chrome: three-dot menu > "Install Agent of Empires". On iOS: Share > "Add to Home Screen". This creates a standalone window with no browser chrome.
+- **No npm for TUI-only builds**: `cargo build` (without `--features serve`) requires zero JavaScript tooling.
 
 ## Settings & Configuration
 
@@ -45,7 +60,7 @@
 ## Coding Style & Naming Conventions
 
 - Prefer "let the tools decide": keep code `cargo fmt`-clean and `cargo clippy`-clean.
-- **Never use emdashes (—)** in documentation or comments.
+- **Never use emdashes (—) or double-dashes (--)** as separators in documentation or comments. Use commas, semicolons, or rephrase instead.
 - Rust naming: `snake_case` for modules/functions, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
 - Keep OS-specific logic in `src/process/{macos,linux}.rs` rather than sprinkling `cfg` checks.
 - Do not be concerned about maintaining backwards compatibility. You should not assume that it needs to be backwards compatible, but you should mention when you make a change that breaks backwards compatibility.
@@ -70,11 +85,11 @@ cargo test --test e2e -- --nocapture  # with screen dumps on failure
 ```
 
 The test harness (`tests/e2e/harness.rs`) provides `TuiTestHarness` with:
-- `spawn_tui()` / `spawn(args)` -- launch `aoe` in a detached tmux session with isolated `$HOME`
-- `send_keys(keys)` / `type_text(text)` -- send keystrokes or literal text
-- `wait_for(text)` -- poll the screen until text appears (10s timeout, panics with screen dump)
-- `capture_screen()` / `assert_screen_contains(text)` -- one-shot screen assertions
-- `run_cli(args)` -- run `aoe` as a subprocess with the same env isolation
+- `spawn_tui()` / `spawn(args)`: launch `aoe` in a detached tmux session with isolated `$HOME`
+- `send_keys(keys)` / `type_text(text)`: send keystrokes or literal text
+- `wait_for(text)`: poll the screen until text appears (10s timeout, panics with screen dump)
+- `capture_screen()` / `assert_screen_contains(text)`: one-shot screen assertions
+- `run_cli(args)`: run `aoe` as a subprocess with the same env isolation
 
 TUI tests auto-skip if tmux is not installed. Docker-dependent tests use `#[ignore]` and require a running daemon. All tests use `#[serial]` for tmux isolation.
 
@@ -144,7 +159,22 @@ When making breaking changes to stored data (file locations, config schema, etc.
 - Platform-specific migrations should use `#[cfg(target_os = "...")]`
 - Test migrations by creating the old state manually and verifying the transition
 - Before finishing any feature request, make sure that you have run cargo fmt, clippy, and tests.
-- `docs/cli/reference.md` is auto-generated by `cargo xtask gen-docs`. Do not edit it by hand -- update the clap help text in `src/cli/` instead and re-run the generator. CI checks that this file is in sync.
+- `docs/cli/reference.md` is auto-generated by `cargo xtask gen-docs`. Do not edit it by hand; update the clap help text in `src/cli/` instead and re-run the generator. CI checks that this file is in sync.
+
+## Website & Documentation
+
+The public website (agent-of-empires.com) is an Astro static site in `website/`.
+
+- **`docs/`** is the canonical source for all documentation and guide content. Edit docs here, never on the website side.
+- Astro component pages (`*.astro`) like `website/src/pages/guides/index.astro` are not generated; edit them directly.
+
+**Adding a new page to the website:**
+1. Create the page in `docs/` (with a `# Title` as the first line).
+2. Add an entry to the `PAGES` array in `website/scripts/sync-docs.mjs` with `source`, `dest`, `title`, and `description`.
+3. Add the page's source path → website URL mapping to `URL_MAP` in the same script.
+4. Add a nav entry in `website/src/data/docsNav.ts`.
+
+The CI workflow (`.github/workflows/docs.yml`) triggers on changes to `docs/**`, `website/**`, and other relevant paths.
 
 ## Design System
 Always read `DESIGN.md` before making any visual or UI decisions.

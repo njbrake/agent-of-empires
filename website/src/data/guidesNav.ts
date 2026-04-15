@@ -8,4 +8,5 @@ export const guidesNav: GuideNavItem[] = [
   { title: "Git Worktrees", href: "/guides/git-worktrees-ai-development/" },
   { title: "Docker Sandbox", href: "/guides/docker-sandbox-ai-agents/" },
   { title: "tmux Workflow", href: "/guides/tmux-ai-coding-workflow/" },
+  { title: "Web Dashboard", href: "/guides/web-dashboard/" },
 ];

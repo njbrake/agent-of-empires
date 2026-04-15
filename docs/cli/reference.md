@@ -45,6 +45,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe theme list`↴](#aoe-theme-list)
 * [`aoe theme export`↴](#aoe-theme-export)
 * [`aoe theme dir`↴](#aoe-theme-dir)
+* [`aoe serve`↴](#aoe-serve)
 * [`aoe uninstall`↴](#aoe-uninstall)
 * [`aoe completion`↴](#aoe-completion)
 
@@ -71,6 +72,7 @@ Run without arguments to launch the TUI dashboard.
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
 * `theme` — Manage color themes (list, export, customize)
+* `serve` — Start a web dashboard for remote session access [experimental]
 * `uninstall` — Uninstall Agent of Empires
 * `completion` — Generate shell completions
 
@@ -621,6 +623,31 @@ Export a built-in theme as a TOML file for customization
 Show the custom themes directory path
 
 **Usage:** `aoe theme dir`
+
+
+
+## `aoe serve`
+
+Start a web dashboard for remote session access [experimental]
+
+**Usage:** `aoe serve [OPTIONS]`
+
+###### **Options:**
+
+* `--port <PORT>` — Port to listen on
+
+  Default value: `8080`
+* `--host <HOST>` — Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)
+
+  Default value: `127.0.0.1`
+* `--no-auth` — Disable authentication (only allowed with localhost binding)
+* `--read-only` — Read-only mode: view terminals but cannot send keystrokes
+* `--remote` — Expose via Cloudflare Tunnel for secure remote access
+* `--tunnel-name <TUNNEL_NAME>` — Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+* `--tunnel-url <TUNNEL_URL>` — Hostname for a named tunnel (e.g., aoe.example.com)
+* `--daemon` — Run as a background daemon (detach from terminal)
+* `--stop` — Stop a running daemon
+* `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
 
 
 

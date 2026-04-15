@@ -1,0 +1,483 @@
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
+import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
+import { renameSession } from "../lib/api";
+import { StatusGlyph } from "./StatusGlyph";
+
+const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
+const DEFAULT_WIDTH = 280;
+const MIN_WIDTH = 200;
+const MAX_WIDTH = 480;
+
+interface Props {
+  groups: RepoGroup[];
+  activeId: string | null;
+  creatingForProject: string | null;
+  onToggle: () => void;
+  onSelect: (workspaceId: string) => void;
+  onToggleRepo: (repoId: string) => void;
+  onNew: () => void;
+  onCreateSession: (repoPath: string) => void;
+  onSettings: () => void;
+}
+
+function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string | null } {
+  const running = ws.sessions.find((s) => isSessionActive(s.status));
+  if (running) return { status: running.status, createdAt: running.created_at };
+  const error = ws.sessions.find((s) => s.status === "Error");
+  if (error) return { status: "Error", createdAt: error.created_at };
+  const first = ws.sessions[0];
+  return { status: first?.status ?? "Unknown", createdAt: first?.created_at ?? null };
+}
+
+function loadSavedWidth(): number {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (saved) {
+      const w = parseInt(saved, 10);
+      if (w >= MIN_WIDTH && w <= MAX_WIDTH) return w;
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_WIDTH;
+}
+
+const SessionRow = memo(function SessionRow({
+  workspace,
+  isActive,
+  onClick,
+  indented,
+}: {
+  workspace: Workspace;
+  isActive: boolean;
+  onClick: () => void;
+  indented?: boolean;
+}) {
+  const { status: sessionStatus, createdAt } = bestSession(workspace);
+  const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
+  const label =
+    workspace.branch ?? workspace.sessions[0]?.title ?? "default";
+  const sessionId = workspace.sessions[0]?.id;
+
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(label);
+  const renameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renaming) renameRef.current?.select();
+  }, [renaming]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    document.addEventListener("click", close);
+    document.addEventListener("contextmenu", close);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("contextmenu", close);
+    };
+  }, [contextMenu]);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const startRename = () => {
+    setContextMenu(null);
+    setRenameValue(label);
+    setRenaming(true);
+  };
+
+  const commitRename = async () => {
+    setRenaming(false);
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === label || !sessionId) return;
+    await renameSession(sessionId, trimmed);
+  };
+
+  if (renaming) {
+    return (
+      <div className={`py-1 ${indented ? "pl-6 pr-3" : "px-3"}`}>
+        <input
+          ref={renameRef}
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitRename();
+            if (e.key === "Escape") setRenaming(false);
+          }}
+          className="w-full bg-surface-900 border border-brand-600 rounded px-2 py-1 text-[13px] md:text-[14px] font-mono text-text-primary focus:outline-none"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <button
+        onClick={onClick}
+        onContextMenu={handleContextMenu}
+        className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
+          indented ? "pl-6 pr-3" : "px-3"
+        } ${
+          isActive
+            ? "bg-surface-850 border-l-2 border-brand-600"
+            : "border-l-2 border-transparent hover:bg-surface-800/50"
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-sm shrink-0 leading-none font-mono ${textClass}`}
+          >
+            <StatusGlyph status={sessionStatus} createdAt={createdAt} />
+          </span>
+          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive(sessionStatus) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+            {label}
+          </span>
+        </div>
+      </button>
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            onClick={startRename}
+            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+          >
+            Rename
+          </button>
+        </div>
+      )}
+    </>
+  );
+});
+
+const RepoGroupHeader = memo(function RepoGroupHeader({
+  group,
+  hasActiveChild,
+  creating,
+  onClick,
+  onNewSession,
+}: {
+  group: RepoGroup;
+  hasActiveChild: boolean;
+  creating: boolean;
+  onClick: () => void;
+  onNewSession: () => void;
+}) {
+  const dotClass =
+    STATUS_DOT_CLASS[
+      group.status === "active" ? "Running" : "Idle"
+    ] ?? "bg-status-idle";
+
+  return (
+    <div
+      className={`flex items-center gap-2 px-3 py-2 transition-colors duration-75 text-text-secondary hover:bg-surface-800/50 ${
+        hasActiveChild ? "border-l-2 border-brand-600" : ""
+      }`}
+    >
+      <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
+      <button
+        onClick={onClick}
+        aria-expanded={!group.collapsed}
+        className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
+      >
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          fill="currentColor"
+          className={`shrink-0 text-text-dim transition-transform duration-75 ${
+            group.collapsed ? "-rotate-90" : ""
+          }`}
+        >
+          <path d="M2 3 L5 6.5 L8 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span className="text-[13px] md:text-[14px] font-medium truncate flex-1" title={group.repoPath}>
+          {group.displayName}
+        </span>
+      </button>
+      <Tooltip text={creating ? "Creating..." : "New session"}>
+        <button
+          onClick={onNewSession}
+          disabled={creating}
+          className={`w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors ${
+            creating
+              ? "text-text-dim cursor-not-allowed"
+              : "text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
+          }`}
+          aria-label={`New session in ${group.displayName}`}
+        >
+          {creating ? (
+            <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          )}
+        </button>
+      </Tooltip>
+    </div>
+  );
+});
+
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="relative group/tip inline-flex">
+      {children}
+      <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-1.5 px-2 py-1 rounded bg-surface-950 border border-surface-700 text-[11px] text-text-secondary whitespace-nowrap opacity-0 scale-95 transition-all duration-100 group-hover/tip:opacity-100 group-hover/tip:scale-100 z-50">
+        {text}
+      </span>
+    </span>
+  );
+}
+
+function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
+  return (
+    ws.displayName.toLowerCase().includes(q) ||
+    ws.projectPath.toLowerCase().includes(q) ||
+    ws.agents.some((a) => a.toLowerCase().includes(q)) ||
+    ws.sessions.some((s) => s.title.toLowerCase().includes(q))
+  );
+}
+
+export function WorkspaceSidebar({
+  groups,
+  activeId,
+  creatingForProject,
+  onToggle,
+  onSelect,
+  onToggleRepo,
+  onNew,
+  onCreateSession,
+  onSettings,
+}: Props) {
+  const [width, setWidth] = useState(loadSavedWidth);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
+  const filterRef = useRef<HTMLInputElement>(null);
+  const dragging = useRef(false);
+
+  const q = filterQuery.trim().toLowerCase();
+
+  const filteredGroups = q
+    ? groups
+        .map((g) => ({
+          ...g,
+          workspaces: g.workspaces.filter((ws) =>
+            workspaceMatchesFilter(ws, q) ||
+            g.displayName.toLowerCase().includes(q),
+          ),
+        }))
+        .filter((g) => g.workspaces.length > 0)
+    : groups;
+
+  const hasResults = filteredGroups.length > 0;
+
+  const toggleFilter = () => {
+    setFilterOpen((o) => {
+      if (o) setFilterQuery("");
+      return !o;
+    });
+  };
+
+  useEffect(() => {
+    if (filterOpen) filterRef.current?.focus();
+  }, [filterOpen]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, e.clientX));
+      setWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setWidth((w) => {
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
+        return w;
+      });
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 bg-black/50 z-30 md:hidden"
+        onClick={onToggle}
+      />
+      <div
+        style={{ width }}
+        className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0"
+      >
+        <div className="px-3 pt-3 pb-1 flex items-center">
+          <span className="text-sm text-text-muted flex-1">
+            Projects
+          </span>
+          <Tooltip text="Filter">
+            <button
+              onClick={toggleFilter}
+              className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
+                filterOpen
+                  ? "text-text-secondary"
+                  : "text-text-dim hover:text-text-secondary"
+              }`}
+              aria-label="Filter sessions"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+              </svg>
+            </button>
+          </Tooltip>
+          <Tooltip text="Add project">
+            <button
+              onClick={onNew}
+              className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
+              aria-label="Add project"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                <line x1="12" y1="11" x2="12" y2="17" />
+                <line x1="9" y1="14" x2="15" y2="14" />
+              </svg>
+            </button>
+          </Tooltip>
+          <button
+            onClick={onToggle}
+            className="md:hidden w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-800 ml-1"
+          >
+            &times;
+          </button>
+        </div>
+
+        {filterOpen && (
+          <div className="px-3 pb-2">
+            <input
+              ref={filterRef}
+              type="text"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") toggleFilter();
+              }}
+              placeholder="Filter by name, branch, agent..."
+              className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+            />
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto">
+          {filteredGroups.map((group) => {
+            const showExpanded = q ? true : !group.collapsed;
+            const hasActiveChild = group.workspaces.some(
+              (ws) => ws.id === activeId,
+            );
+            return (
+              <div key={group.id}>
+                <RepoGroupHeader
+                  group={{ ...group, collapsed: !showExpanded }}
+                  hasActiveChild={!showExpanded && hasActiveChild}
+                  creating={creatingForProject === group.repoPath}
+                  onClick={() => !q && onToggleRepo(group.id)}
+                  onNewSession={() => onCreateSession(group.repoPath)}
+                />
+                {showExpanded &&
+                  group.workspaces.map((ws) => (
+                    <SessionRow
+                      key={ws.id}
+                      workspace={ws}
+                      isActive={ws.id === activeId}
+                      onClick={() => onSelect(ws.id)}
+                      indented
+                    />
+                  ))}
+              </div>
+            );
+          })}
+
+          {!hasResults && filterQuery && (
+            <div className="px-4 py-8 text-center">
+              <p className="text-sm text-text-muted">
+                No matches for &ldquo;{filterQuery}&rdquo;
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-surface-700/20 p-2">
+          <button
+            onClick={onSettings}
+            className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
+            title="Settings"
+            aria-label="Settings"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      {/* Resize handle (desktop only) */}
+      <div
+        onMouseDown={handleMouseDown}
+        className="hidden md:block w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
+      />
+    </>
+  );
+}

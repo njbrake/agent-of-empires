@@ -5,6 +5,109 @@
 
 use super::config::SandboxConfig;
 use super::instance::SandboxInfo;
+use crate::containers::container_interface::EnvEntry;
+
+/// Keys whose values are safe to show in logs (not secrets).
+const SAFE_ENV_KEYS: &[&str] = &[
+    "TERM",
+    "COLORTERM",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "GIT_CONFIG_GLOBAL",
+    "CLAUDE_CONFIG_DIR",
+    "AOE_INSTANCE_ID",
+];
+
+/// Redact secret values from a command string for safe logging.
+/// Replaces `-e KEY='value'` and `-e KEY=value` patterns with `-e KEY=<redacted>`,
+/// and `export KEY='value'` patterns with `export KEY=<redacted>`,
+/// except for known-safe keys (TERM, COLORTERM, GIT_CONFIG_GLOBAL, etc.).
+pub(crate) fn redact_env_values(cmd: &str) -> String {
+    let result = redact_docker_env_flags(cmd);
+    redact_export_statements(&result)
+}
+
+/// Redact `-e KEY=VALUE` patterns in a command string.
+fn redact_docker_env_flags(cmd: &str) -> String {
+    let mut result = String::with_capacity(cmd.len());
+    let mut remaining = cmd;
+
+    while let Some(pos) = remaining.find("-e ") {
+        result.push_str(&remaining[..pos]);
+        remaining = &remaining[pos + 3..]; // skip past "-e "
+
+        // Find the KEY before '='
+        let eq_pos = remaining.find('=');
+        // Find the boundary of this env arg: next " -e " or end of string
+        let next_env = remaining.find(" -e ").unwrap_or(remaining.len());
+
+        if let Some(eq_pos) = eq_pos {
+            // Only treat as KEY=VALUE if '=' comes before the next '-e' boundary
+            if eq_pos < next_env {
+                let key = &remaining[..eq_pos];
+                if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    if SAFE_ENV_KEYS.contains(&key) {
+                        result.push_str("-e ");
+                        result.push_str(&remaining[..next_env]);
+                    } else {
+                        result.push_str("-e ");
+                        result.push_str(key);
+                        result.push_str("=<redacted>");
+                    }
+                    remaining = &remaining[next_env..];
+                    continue;
+                }
+            }
+        }
+
+        // No '=' found or not a valid key; pass through as-is (e.g., `-e KEY` inherit form)
+        result.push_str("-e ");
+        result.push_str(&remaining[..next_env]);
+        remaining = &remaining[next_env..];
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Redact `export KEY='value'` and `export KEY=value` patterns in a command string.
+fn redact_export_statements(cmd: &str) -> String {
+    let mut result = String::with_capacity(cmd.len());
+    let mut remaining = cmd;
+
+    while let Some(pos) = remaining.find("export ") {
+        result.push_str(&remaining[..pos]);
+        remaining = &remaining[pos + 7..]; // skip past "export "
+
+        // Find the boundary: next "; " or end of string
+        let boundary = remaining.find("; ").unwrap_or(remaining.len());
+
+        let eq_pos = remaining.find('=');
+        if let Some(eq_pos) = eq_pos {
+            if eq_pos < boundary {
+                let key = &remaining[..eq_pos];
+                if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    if SAFE_ENV_KEYS.contains(&key) {
+                        result.push_str("export ");
+                        result.push_str(&remaining[..boundary]);
+                    } else {
+                        result.push_str("export ");
+                        result.push_str(key);
+                        result.push_str("=<redacted>");
+                    }
+                    remaining = &remaining[boundary..];
+                    continue;
+                }
+            }
+        }
+
+        // No '=' or not a valid key; pass through
+        result.push_str("export ");
+        result.push_str(&remaining[..boundary]);
+        remaining = &remaining[boundary..];
+    }
+    result.push_str(remaining);
+    result
+}
 
 /// Terminal environment variables that are always passed through for proper UI/theming
 pub(crate) const DEFAULT_TERMINAL_ENV_VARS: &[&str] =
@@ -123,14 +226,19 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
 /// Collect all environment entries from defaults, global config, and per-session extras.
 ///
 /// Each entry is either:
-/// - `KEY` (no `=`) -- pass through from host
-/// - `KEY=VALUE` -- set explicit value (VALUE supports `$HOST_VAR` and `$$` escaping)
+/// - `KEY` (no `=`) -- pass through from host (inherited, not in argv)
+/// - `KEY=$VAR` -- read from host env (inherited, not in argv)
+/// - `KEY=literal` -- literal value (appears in argv, safe for non-secrets)
 ///
-/// Returns resolved `(key, value)` pairs. Deduplicates by key (first wins).
+/// Returns `EnvEntry` values that distinguish inherited-from-host entries
+/// (which use Docker `-e KEY` to avoid leaking secrets in argv/ps) from
+/// literal entries (which use `-e KEY=VALUE`).
+///
+/// Deduplicates by key (first wins).
 pub(crate) fn collect_environment(
     sandbox_config: &SandboxConfig,
     sandbox_info: &SandboxInfo,
-) -> Vec<(String, String)> {
+) -> Vec<EnvEntry> {
     let mut seen_keys = std::collections::HashSet::new();
     let mut result = Vec::new();
 
@@ -147,7 +255,10 @@ pub(crate) fn collect_environment(
     for &key in DEFAULT_TERMINAL_ENV_VARS {
         if seen_keys.insert(key.to_string()) {
             if let Ok(val) = std::env::var(key) {
-                result.push((key.to_string(), val));
+                result.push(EnvEntry::Inherit {
+                    key: key.to_string(),
+                    value: val,
+                });
             }
         }
     }
@@ -155,15 +266,39 @@ pub(crate) fn collect_environment(
     for entry in entries {
         if let Some((key, value)) = entry.split_once('=') {
             if seen_keys.insert(key.to_string()) {
-                if let Some(resolved) = resolve_env_value(value) {
-                    result.push((key.to_string(), resolved));
+                if let Some(rest) = value.strip_prefix("$$") {
+                    // Escaped literal $, e.g. KEY=$$FOO -> KEY=$FOO
+                    let literal = format!("${}", rest);
+                    result.push(EnvEntry::Literal {
+                        key: key.to_string(),
+                        value: literal,
+                    });
+                } else if value.starts_with('$') {
+                    // Host env reference, e.g. GH_TOKEN=$GH_TOKEN
+                    if let Some(resolved) = resolve_env_value(value) {
+                        result.push(EnvEntry::Inherit {
+                            key: key.to_string(),
+                            value: resolved,
+                        });
+                    }
+                } else {
+                    // Literal value, e.g. TERM=xterm-256color
+                    result.push(EnvEntry::Literal {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    });
                 }
             }
         } else {
             // Bare key -- pass through from host
             if seen_keys.insert(entry.clone()) {
                 match std::env::var(entry) {
-                    Ok(val) => result.push((entry.clone(), val)),
+                    Ok(val) => {
+                        result.push(EnvEntry::Inherit {
+                            key: entry.clone(),
+                            value: val,
+                        });
+                    }
                     Err(_) => {
                         tracing::warn!(
                             "Environment variable {} is not set on host, skipping",
@@ -186,13 +321,37 @@ fn resolved_sandbox_config(project_path: &std::path::Path) -> super::config::San
         .unwrap_or_default()
 }
 
+/// Result of building docker exec environment arguments.
+///
+/// Separates secret (inherited from host) env vars from literal (non-secret) ones.
+/// Secret values are prepended to the tmux session command as `export` shell
+/// builtins, followed by `exec` to replace the outer shell process. This keeps
+/// secret values out of every long-lived process's argv/ps output. The docker
+/// exec command then uses `-e KEY` (key only, no value) to inherit the exported
+/// variable from the shell environment.
+pub(crate) struct DockerExecEnv {
+    /// Docker `-e` flags for the exec command line.
+    /// Inherit entries use `-e KEY` (key only); Literal entries use `-e KEY=VALUE`.
+    pub docker_args: String,
+    /// Shell export statements for Inherit (secret) entries.
+    /// Each entry is a complete `export KEY='escaped_value'` command ready
+    /// to be prepended to the tmux session command.
+    pub exports: Vec<String>,
+}
+
 /// Build docker exec environment flags from config and optional per-session extra entries.
-/// Used for `docker exec` commands (shell string interpolation, hence shell-escaping).
-/// Container creation uses `ContainerConfig.environment` (separate args, no escaping needed).
+/// Used for `docker exec` commands run inside tmux sessions.
+///
+/// Returns a [`DockerExecEnv`] that separates secret values (prepended as
+/// `export` statements to the tmux session command) from literal values
+/// (which are safe to include in the command line).
+///
+/// The `docker run` path (container creation) is protected separately via
+/// `Command::env()` in `run_create`, which keeps secrets out of argv entirely.
 pub(crate) fn build_docker_env_args(
     sandbox: &SandboxInfo,
     project_path: &std::path::Path,
-) -> String {
+) -> DockerExecEnv {
     let sandbox_config = resolved_sandbox_config(project_path);
 
     tracing::debug!(
@@ -201,27 +360,71 @@ pub(crate) fn build_docker_env_args(
         sandbox.extra_env
     );
 
-    let env_pairs = collect_environment(&sandbox_config, sandbox);
+    let env_entries = collect_environment(&sandbox_config, sandbox);
 
     tracing::debug!(
-        "build_docker_env_args: resolved {} env pairs",
-        env_pairs.len()
+        "build_docker_env_args: resolved {} env entries",
+        env_entries.len()
     );
-    for (k, _) in &env_pairs {
-        tracing::debug!("  env: {}=<set>", k);
+    for entry in &env_entries {
+        tracing::debug!("  env: {}=<set>", entry.key());
     }
 
-    let args: Vec<String> = env_pairs
-        .iter()
-        .map(|(key, val)| format!("-e {}={}", key, shell_escape(val)))
-        .collect();
+    let mut docker_flag_parts: Vec<String> = Vec::new();
+    let mut exports: Vec<String> = Vec::new();
 
-    args.join(" ")
+    for entry in &env_entries {
+        match entry {
+            EnvEntry::Inherit { key, value } => {
+                // Key only in docker args; value injected via shell export
+                docker_flag_parts.push(format!("-e {}", key));
+                exports.push(format!("export {}={}", key, shell_escape(value)));
+            }
+            EnvEntry::Literal { key, value } => {
+                // Non-secret literal values are safe in argv
+                docker_flag_parts.push(format!("-e {}={}", key, shell_escape(value)));
+            }
+        }
+    }
+
+    DockerExecEnv {
+        docker_args: docker_flag_parts.join(" "),
+        exports,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_redact_env_values_docker_flags() {
+        let cmd = "docker exec -e GH_TOKEN='secret' -e TERM=xterm container claude";
+        let redacted = redact_env_values(cmd);
+        assert!(redacted.contains("GH_TOKEN=<redacted>"));
+        assert!(redacted.contains("TERM=xterm")); // safe key, not redacted
+        assert!(!redacted.contains("secret"));
+    }
+
+    #[test]
+    fn test_redact_env_values_export_statements() {
+        let cmd = "export GH_TOKEN='secret123'; export TERM='xterm'; exec docker exec -e GH_TOKEN container claude";
+        let redacted = redact_env_values(cmd);
+        assert!(redacted.contains("export GH_TOKEN=<redacted>"));
+        assert!(redacted.contains("export TERM='xterm'")); // safe key, not redacted
+        assert!(!redacted.contains("secret123"));
+    }
+
+    #[test]
+    fn test_redact_env_values_mixed_exports_and_flags() {
+        let cmd = "export API_KEY='sk-abc'; exec bash -lc 'exec env docker exec -e API_KEY -e FOO='bar' container claude'";
+        let redacted = redact_env_values(cmd);
+        assert!(redacted.contains("export API_KEY=<redacted>"));
+        assert!(!redacted.contains("sk-abc"));
+        // -e API_KEY (key only, no value) should pass through unchanged
+        assert!(redacted.contains("-e API_KEY"));
+        assert!(redacted.contains("FOO=<redacted>"));
+    }
 
     #[test]
     fn test_shell_escape_simple() {
@@ -305,6 +508,11 @@ mod tests {
         assert_eq!(escaped, "'He said \"don'\\''t\"'");
     }
 
+    /// Helper to find an entry by key and check its value
+    fn find_entry<'a>(entries: &'a [EnvEntry], key: &str) -> Option<&'a EnvEntry> {
+        entries.iter().find(|e| e.key() == key)
+    }
+
     #[test]
     fn test_collect_environment_passthrough() {
         std::env::set_var("AOE_TEST_ENV_PT", "test_value");
@@ -323,9 +531,9 @@ mod tests {
         };
 
         let result = collect_environment(&config, &info);
-        assert!(result
-            .iter()
-            .any(|(k, v)| k == "AOE_TEST_ENV_PT" && v == "test_value"));
+        let entry = find_entry(&result, "AOE_TEST_ENV_PT").expect("AOE_TEST_ENV_PT not found");
+        assert_eq!(entry.value(), "test_value");
+        assert!(matches!(entry, EnvEntry::Inherit { .. }));
         std::env::remove_var("AOE_TEST_ENV_PT");
     }
 
@@ -346,7 +554,9 @@ mod tests {
         };
 
         let result = collect_environment(&config, &info);
-        assert!(result.iter().any(|(k, v)| k == "MY_KEY" && v == "my_value"));
+        let entry = find_entry(&result, "MY_KEY").expect("MY_KEY not found");
+        assert_eq!(entry.value(), "my_value");
+        assert!(matches!(entry, EnvEntry::Literal { .. }));
     }
 
     #[test]
@@ -364,10 +574,12 @@ mod tests {
         };
 
         let result = collect_environment(&config, &info);
-        assert!(result
-            .iter()
-            .any(|(k, v)| k == "AOE_TEST_EXTRA" && v == "extra_val"));
-        assert!(result.iter().any(|(k, v)| k == "FOO" && v == "bar"));
+        let extra = find_entry(&result, "AOE_TEST_EXTRA").expect("AOE_TEST_EXTRA not found");
+        assert_eq!(extra.value(), "extra_val");
+        assert!(matches!(extra, EnvEntry::Inherit { .. }));
+        let foo = find_entry(&result, "FOO").expect("FOO not found");
+        assert_eq!(foo.value(), "bar");
+        assert!(matches!(foo, EnvEntry::Literal { .. }));
         std::env::remove_var("AOE_TEST_EXTRA");
     }
 
@@ -388,9 +600,9 @@ mod tests {
         };
 
         let result = collect_environment(&config, &info);
-        let dup_entries: Vec<_> = result.iter().filter(|(k, _)| k == "DUP_KEY").collect();
+        let dup_entries: Vec<_> = result.iter().filter(|e| e.key() == "DUP_KEY").collect();
         assert_eq!(dup_entries.len(), 1);
-        assert_eq!(dup_entries[0].1, "from_session");
+        assert_eq!(dup_entries[0].value(), "from_session");
     }
 
     #[test]
@@ -410,9 +622,8 @@ mod tests {
         };
 
         let result = collect_environment(&config, &info);
-        assert!(result
-            .iter()
-            .any(|(k, v)| k == "CONFIG_KEY" && v == "config_val"));
+        let entry = find_entry(&result, "CONFIG_KEY").expect("CONFIG_KEY not found");
+        assert_eq!(entry.value(), "config_val");
     }
 
     #[test]
@@ -433,9 +644,9 @@ mod tests {
         };
 
         let result = collect_environment(&config, &info);
-        assert!(result
-            .iter()
-            .any(|(k, v)| k == "INJECTED" && v == "host_val"));
+        let entry = find_entry(&result, "INJECTED").expect("INJECTED not found");
+        assert_eq!(entry.value(), "host_val");
+        assert!(matches!(entry, EnvEntry::Inherit { .. }));
         std::env::remove_var("AOE_TEST_HOST_REF");
     }
 
@@ -456,9 +667,9 @@ mod tests {
         };
 
         let result = collect_environment(&config, &info);
-        assert!(result
-            .iter()
-            .any(|(k, v)| k == "ESCAPED" && v == "$LITERAL"));
+        let entry = find_entry(&result, "ESCAPED").expect("ESCAPED not found");
+        assert_eq!(entry.value(), "$LITERAL");
+        assert!(matches!(entry, EnvEntry::Literal { .. }));
     }
 
     #[test]
@@ -502,7 +713,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_docker_env_args_with_extra_env() {
+    fn test_build_docker_env_args_inherit_uses_key_only_in_args() {
+        // Inherited (secret) env vars must NOT have values in docker_args.
+        // Values are in exports for injection via tmux send-keys.
         std::env::set_var("AOE_TEST_TOKEN", "secret123");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -510,25 +723,71 @@ mod tests {
             image: "test".to_string(),
             container_name: "test".to_string(),
             created_at: None,
-            extra_env: Some(vec!["MY_TOKEN=$AOE_TEST_TOKEN".to_string()]),
+            extra_env: Some(vec!["AOE_TEST_TOKEN=$AOE_TEST_TOKEN".to_string()]),
             custom_instruction: None,
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        // docker_args should have the key but NOT the secret value
         assert!(
-            result.contains("MY_TOKEN"),
-            "Expected MY_TOKEN in args: {}",
-            result
+            result.docker_args.contains("-e AOE_TEST_TOKEN"),
+            "Expected -e AOE_TEST_TOKEN in docker_args: {}",
+            result.docker_args
         );
         assert!(
-            result.contains("secret123"),
-            "Expected secret123 in args: {}",
+            !result.docker_args.contains("secret123"),
+            "Secret value must NOT appear in docker_args: {}",
+            result.docker_args
+        );
+        // exports should have the value for tmux send-keys injection
+        assert!(
             result
+                .exports
+                .iter()
+                .any(|e| e.contains("AOE_TEST_TOKEN") && e.contains("secret123")),
+            "Expected export with secret value in exports: {:?}",
+            result.exports
         );
         std::env::remove_var("AOE_TEST_TOKEN");
     }
 
     #[test]
-    fn test_build_docker_env_args_bare_key() {
+    fn test_build_docker_env_args_inherit_with_different_key() {
+        std::env::set_var("AOE_TEST_SOURCE", "secret456");
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: Some(vec!["MY_MAPPED=$AOE_TEST_SOURCE".to_string()]),
+            custom_instruction: None,
+        };
+        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        assert!(
+            result.docker_args.contains("-e MY_MAPPED"),
+            "Expected -e MY_MAPPED in docker_args: {}",
+            result.docker_args
+        );
+        assert!(
+            !result.docker_args.contains("secret456"),
+            "Secret value must NOT appear in docker_args: {}",
+            result.docker_args
+        );
+        assert!(
+            result
+                .exports
+                .iter()
+                .any(|e| e.contains("MY_MAPPED") && e.contains("secret456")),
+            "Expected export with value in exports: {:?}",
+            result.exports
+        );
+        std::env::remove_var("AOE_TEST_SOURCE");
+    }
+
+    #[test]
+    fn test_build_docker_env_args_bare_key_uses_export() {
+        // Bare keys (pass-through from host) are Inherit entries,
+        // so they must use exports, not inline values.
         std::env::set_var("AOE_TEST_BARE", "barevalue");
         let sandbox = SandboxInfo {
             enabled: true,
@@ -541,16 +800,85 @@ mod tests {
         };
         let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
         assert!(
-            result.contains("AOE_TEST_BARE"),
-            "Expected AOE_TEST_BARE in args: {}",
-            result
+            result.docker_args.contains("-e AOE_TEST_BARE"),
+            "Expected -e AOE_TEST_BARE in docker_args: {}",
+            result.docker_args
         );
         assert!(
-            result.contains("barevalue"),
-            "Expected barevalue in args: {}",
+            !result.docker_args.contains("barevalue"),
+            "Secret value must NOT appear in docker_args: {}",
+            result.docker_args
+        );
+        assert!(
             result
+                .exports
+                .iter()
+                .any(|e| e.contains("AOE_TEST_BARE") && e.contains("barevalue")),
+            "Expected export with value: {:?}",
+            result.exports
         );
         std::env::remove_var("AOE_TEST_BARE");
+    }
+
+    #[test]
+    fn test_build_docker_env_args_literal_stays_in_args() {
+        // Literal (non-secret) entries should have values in docker_args
+        // and should NOT produce exports.
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: Some(vec!["MY_LITERAL=some_value".to_string()]),
+            custom_instruction: None,
+        };
+        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        assert!(
+            result.docker_args.contains("MY_LITERAL="),
+            "Expected MY_LITERAL=value in docker_args: {}",
+            result.docker_args
+        );
+        assert!(
+            result.docker_args.contains("some_value"),
+            "Expected literal value in docker_args: {}",
+            result.docker_args
+        );
+        // No exports for literal entries
+        assert!(
+            !result.exports.iter().any(|e| e.contains("MY_LITERAL")),
+            "Literal entries must NOT produce exports: {:?}",
+            result.exports
+        );
+    }
+
+    #[test]
+    fn test_build_docker_env_args_mixed_inherit_and_literal() {
+        std::env::set_var("AOE_TEST_SECRET", "mysecret");
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            created_at: None,
+            extra_env: Some(vec![
+                "AOE_TEST_SECRET=$AOE_TEST_SECRET".to_string(),
+                "MY_LITERAL=public_val".to_string(),
+            ]),
+            custom_instruction: None,
+        };
+        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        // Secret: key only in docker_args, value in exports
+        assert!(result.docker_args.contains("-e AOE_TEST_SECRET"));
+        assert!(!result.docker_args.contains("mysecret"));
+        assert!(result
+            .exports
+            .iter()
+            .any(|e| e.contains("AOE_TEST_SECRET") && e.contains("mysecret")));
+        // Literal: key=value in docker_args, no export
+        assert!(result.docker_args.contains("MY_LITERAL='public_val'"));
+        assert!(!result.exports.iter().any(|e| e.contains("MY_LITERAL")));
+        std::env::remove_var("AOE_TEST_SECRET");
     }
 
     #[test]

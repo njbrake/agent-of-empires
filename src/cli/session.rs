@@ -234,8 +234,8 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (instances, _) = storage.load_with_groups()?;
 
-    let inst = if let Some(id) = &args.identifier {
-        super::resolve_session(id, &instances)?
+    let mut inst = if let Some(id) = &args.identifier {
+        super::resolve_session(id, &instances)?.clone()
     } else {
         // Auto-detect from tmux
         let current_session = std::env::var("TMUX_PANE")
@@ -252,10 +252,16 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
                 .ok_or_else(|| {
                     anyhow::anyhow!("Current tmux session is not an Agent of Empires session")
                 })?
+                .clone()
         } else {
             bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
         }
     };
+
+    // Refresh status from tmux so the output reflects current state
+    // rather than the stale persisted value.
+    crate::tmux::refresh_session_cache();
+    inst.update_status();
 
     if args.json {
         let details = SessionDetails {

@@ -4,6 +4,7 @@
 
 - [tmux](https://github.com/tmux/tmux/wiki) (required)
 - [Docker](https://www.docker.com/) (optional, for sandboxing agents in containers)
+- [Node.js](https://nodejs.org/) (optional, only for building the web dashboard with `--features serve`)
 
 ## Install Agent of Empires
 
@@ -23,6 +24,8 @@ curl -fsSL \
 brew install aoe
 ```
 
+> **Note:** The Homebrew formula does not yet include the web dashboard (`aoe serve`) since the feature is still experimental. To use the web dashboard, install via the [quick install script](#quick-install-recommended) or [build from source](#build-from-source) with `--features serve`.
+
 ### Build from Source
 
 ```bash
@@ -32,6 +35,14 @@ cargo build --release
 ```
 
 The binary will be at `target/release/aoe`.
+
+To include the web dashboard (browser access):
+
+```bash
+cargo build --release --features serve
+```
+
+This requires Node.js and npm. The web frontend is built automatically during compilation.
 
 ## Verify Installation
 

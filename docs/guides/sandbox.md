@@ -165,6 +165,16 @@ If the referenced host env var is not set, the entry is silently skipped.
 
 To use a literal value starting with `$`, double it: `$$LITERAL` is injected as `$LITERAL`.
 
+### GitHub authentication with `GH_TOKEN`
+
+Forwarding `GH_TOKEN` (e.g. `"GH_TOKEN=$GH_TOKEN"` in `sandbox.environment`) enables both `gh` and plain `git push` to authenticate against `github.com` inside the container. AOE seeds a scoped credential helper in the sandbox gitconfig that reads the token at push time; no credential is ever written to disk.
+
+Security notes:
+
+- The helper only fires for `https://github.com` remotes; other hosts are unaffected.
+- Any process running in the sandbox can obtain the token by invoking `git credential fill`. Prefer **fine-grained** PATs limited to the specific repositories you expect the agent to push to.
+- If `GH_TOKEN` is unset at push time the helper stays silent and git falls through to its normal credential flow. Unset the env var to temporarily disable sandboxed pushes without deleting the gitconfig.
+
 ## Available Images
 
 AOE provides two official sandbox images:

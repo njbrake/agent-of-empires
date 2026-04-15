@@ -77,6 +77,8 @@ pub enum FieldKey {
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
+    CustomAgents,
+    AgentDetectAs,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -872,6 +874,56 @@ fn build_session_fields(
         items
     };
 
+    // Custom agents: HashMap -> Vec<String> of "name=command" items
+    let (custom_agents_map, custom_agents_override) = resolve_value(
+        scope,
+        global.session.custom_agents.clone(),
+        session.and_then(|s| s.custom_agents.clone()),
+    );
+    let custom_agents_list: Vec<String> = {
+        let mut items: Vec<_> = custom_agents_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_custom_agents_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .custom_agents
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    // Agent detect_as: HashMap -> Vec<String> of "name=builtin" items
+    let (detect_as_map, detect_as_override) = resolve_value(
+        scope,
+        global.session.agent_detect_as.clone(),
+        session.and_then(|s| s.agent_detect_as.clone()),
+    );
+    let detect_as_list: Vec<String> = {
+        let mut items: Vec<_> = detect_as_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_detect_as_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_detect_as
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
     vec![
         SettingField {
             key: FieldKey::DefaultTool,
@@ -926,6 +978,31 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 cmd_override_override,
                 FieldValue::List(global_cmd_override_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::CustomAgents,
+            label: "Custom Agents",
+            description:
+                "User-defined agents: name=command (e.g. lenovo-claude=ssh -t lenovo claude)",
+            value: FieldValue::List(custom_agents_list),
+            category: SettingsCategory::Session,
+            has_override: custom_agents_override,
+            inherited_display: inherited_if(
+                custom_agents_override,
+                FieldValue::List(global_custom_agents_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentDetectAs,
+            label: "Agent Detect As",
+            description: "Status detection mapping: agent=builtin (e.g. lenovo-claude=claude)",
+            value: FieldValue::List(detect_as_list),
+            category: SettingsCategory::Session,
+            has_override: detect_as_override,
+            inherited_display: inherited_if(
+                detect_as_override,
+                FieldValue::List(global_detect_as_list),
             ),
         },
         SettingField {
@@ -1278,6 +1355,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::AgentCommandOverride, FieldValue::List(v)) => {
             config.session.agent_command_override = parse_key_value_list(v);
         }
+        (FieldKey::CustomAgents, FieldValue::List(v)) => {
+            config.session.custom_agents = parse_key_value_list(v);
+        }
+        (FieldKey::AgentDetectAs, FieldValue::List(v)) => {
+            config.session.agent_detect_as = parse_key_value_list(v);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
         (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
@@ -1484,6 +1567,22 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .session
                 .get_or_insert_with(SessionConfigOverride::default);
             s.agent_command_override = Some(map);
+        }
+        (FieldKey::CustomAgents, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            use crate::session::SessionConfigOverride;
+            let s = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            s.custom_agents = Some(map);
+        }
+        (FieldKey::AgentDetectAs, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            use crate::session::SessionConfigOverride;
+            let s = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            s.agent_detect_as = Some(map);
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {

@@ -81,37 +81,35 @@ fn test_session_name_format() {
 /// Test terminal mode switching sequence
 ///
 /// This test documents the expected sequence for attach/detach:
-/// 1. Disable raw mode
-/// 2. Leave alternate screen
-/// 3. Disable mouse capture
+/// 1. Drop EventStream (stop background stdin reader)
+/// 2. Disable raw mode
+/// 3. Leave alternate screen
 /// 4. Show cursor
 /// 5. [user interacts with tmux]
-/// 6. Enable raw mode
-/// 7. Enter alternate screen
-/// 8. Enable mouse capture
+/// 6. Recreate EventStream (fresh stdin reader)
+/// 7. Enable raw mode
+/// 8. Enter alternate screen
 /// 9. Hide cursor
 /// 10. Clear terminal
-/// 11. Drain stale events
 #[test]
 fn test_terminal_mode_sequence_documented() {
     // This test documents the expected behavior rather than testing it directly
     // since testing terminal modes requires actual terminal interaction.
 
     let expected_exit_sequence = [
+        "drop_event_stream",
         "disable_raw_mode",
         "LeaveAlternateScreen",
-        "DisableMouseCapture",
         "cursor::Show",
         "flush",
     ];
 
     let expected_reenter_sequence = [
+        "recreate_event_stream",
         "enable_raw_mode",
         "EnterAlternateScreen",
-        "EnableMouseCapture",
         "cursor::Hide",
         "flush",
-        "drain_events",
         "terminal.clear",
         "set_needs_redraw",
     ];
@@ -119,27 +117,11 @@ fn test_terminal_mode_sequence_documented() {
     // Verify sequences have all required steps
     assert!(expected_exit_sequence.contains(&"disable_raw_mode"));
     assert!(expected_exit_sequence.contains(&"LeaveAlternateScreen"));
+    assert!(expected_exit_sequence.contains(&"drop_event_stream"));
     assert!(expected_reenter_sequence.contains(&"enable_raw_mode"));
     assert!(expected_reenter_sequence.contains(&"EnterAlternateScreen"));
+    assert!(expected_reenter_sequence.contains(&"recreate_event_stream"));
     assert!(expected_reenter_sequence.contains(&"terminal.clear"));
-    assert!(expected_reenter_sequence.contains(&"drain_events"));
-}
-
-/// Test that draining events prevents stale input
-#[test]
-fn test_event_draining_concept() {
-    // When returning from tmux, there may be stale keyboard events
-    // in the crossterm event queue. These must be drained to prevent
-    // the TUI from receiving and acting on old input.
-    //
-    // The drain loop should:
-    // 1. Poll with zero timeout (non-blocking)
-    // 2. Read and discard any available events
-    // 3. Continue until no more events are available
-
-    // This is a conceptual test - actual draining is tested in integration
-    let drain_timeout_ms = 0;
-    assert_eq!(drain_timeout_ms, 0, "Drain should use zero timeout");
 }
 
 /// Test that attach/detach uses terminal backend, not std::io::stdout()

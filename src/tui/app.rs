@@ -2,13 +2,12 @@
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseEvent,
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyModifiers,
 };
+use futures_util::StreamExt;
 use ratatui::prelude::*;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
@@ -18,46 +17,6 @@ use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
-/// Temporarily leave TUI mode, run a closure, and restore TUI mode.
-/// Drains stale events and clears the terminal on return.
-fn with_raw_mode_disabled<F, R>(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    f: F,
-) -> Result<R>
-where
-    F: FnOnce() -> R,
-{
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-        DisableBracketedPaste,
-        crossterm::cursor::Show
-    )?;
-    std::io::Write::flush(terminal.backend_mut())?;
-
-    let result = f();
-
-    crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
-        EnableBracketedPaste,
-        crossterm::cursor::Hide
-    )?;
-    std::io::Write::flush(terminal.backend_mut())?;
-
-    while event::poll(Duration::from_millis(0))? {
-        let _ = event::read();
-    }
-
-    terminal.clear()?;
-
-    Ok(result)
-}
-
 pub struct App {
     home: HomeView,
     should_quit: bool,
@@ -65,6 +24,11 @@ pub struct App {
     needs_redraw: bool,
     update_info: Option<UpdateInfo>,
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    /// Held in an Option so `with_raw_mode_disabled` can drop it before
+    /// spawning child processes. Crossterm's EventStream runs a background
+    /// reader thread on stdin; if it's alive when tmux attach-session starts,
+    /// the two compete for stdin and tmux fails to initialize its client.
+    event_stream: Option<EventStream>,
 }
 
 /// Check if the app version changed and return the previous version if changelog should be shown.
@@ -122,7 +86,53 @@ impl App {
             needs_redraw: true,
             update_info: None,
             update_rx: None,
+            event_stream: Some(EventStream::new()),
         })
+    }
+
+    /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
+    /// Drops the EventStream before the closure so child processes (tmux,
+    /// editors) have exclusive access to stdin, then creates a fresh one.
+    fn with_raw_mode_disabled<F, R>(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        f: F,
+    ) -> Result<R>
+    where
+        F: FnOnce() -> R,
+    {
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::LeaveAlternateScreen,
+            DisableBracketedPaste,
+            crossterm::cursor::Show
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        // Drop the event stream so its background reader releases stdin.
+        // Without this, tmux attach-session fails because crossterm's
+        // reader thread competes for stdin reads.
+        self.event_stream.take();
+
+        let result = f();
+
+        // Recreate the event stream with a fresh reader before re-entering
+        // the event loop.
+        self.event_stream = Some(EventStream::new());
+
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::EnterAlternateScreen,
+            EnableBracketedPaste,
+            crossterm::cursor::Hide
+        )?;
+        std::io::Write::flush(terminal.backend_mut())?;
+
+        terminal.clear()?;
+
+        Ok(result)
     }
 
     pub fn show_startup_warning(&mut self, message: &str) {
@@ -156,77 +166,117 @@ impl App {
             });
         }
 
-        // Listen for SIGHUP/SIGTERM so we exit cleanly when the terminal
+        // SIGHUP/SIGTERM futures so we exit cleanly when the terminal
         // emulator is force-quit, preventing PTY slot leaks (#541).
-        let signal_quit = Arc::new(AtomicBool::new(false));
+        // These are polled directly inside tokio::select!, which guarantees
+        // they get scheduled even when no terminal events arrive.
         #[cfg(unix)]
-        {
-            let quit = signal_quit.clone();
-            tokio::spawn(async move {
-                use tokio::signal::unix::{signal, SignalKind};
-                let Ok(mut sighup) = signal(SignalKind::hangup()) else {
-                    tracing::warn!("Failed to register SIGHUP handler");
-                    return;
-                };
-                let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
-                    tracing::warn!("Failed to register SIGTERM handler");
-                    return;
-                };
-                tokio::select! {
-                    _ = sighup.recv() => {}
-                    _ = sigterm.recv() => {}
-                }
-                quit.store(true, Ordering::SeqCst);
-            });
-        }
+        let (mut sighup, mut sigterm) = {
+            use tokio::signal::unix::{signal, SignalKind};
+            let hup = signal(SignalKind::hangup());
+            let term = signal(SignalKind::terminate());
+            if let Err(ref e) = hup {
+                tracing::warn!("Failed to register SIGHUP handler: {}", e);
+            }
+            if let Err(ref e) = term {
+                tracing::warn!("Failed to register SIGTERM handler: {}", e);
+            }
+            (hup.ok(), term.ok())
+        };
 
+        let mut refresh_interval = tokio::time::interval(Duration::from_millis(50));
+        refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
+        let mut last_spinner_redraw = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+        // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
+        const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
 
         loop {
-            // Check for OS signals (SIGHUP/SIGTERM) each iteration
-            if signal_quit.load(Ordering::Relaxed) {
-                self.should_quit = true;
-                break;
-            }
-            // Force full redraw if needed (e.g., after returning from tmux)
+            // Force full redraw if needed (e.g., after returning from tmux).
+            // with_raw_mode_disabled drops and recreates the EventStream, so
+            // there are no stale events to drain.
             if self.needs_redraw {
                 terminal.clear()?;
                 self.needs_redraw = false;
             }
 
-            // Poll with short timeout for responsive input
-            if event::poll(Duration::from_millis(50))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        self.handle_key(key, terminal).await?;
+            // All event sources are polled cooperatively via tokio::select!.
+            // This ensures signal futures actually get scheduled (fixing #608
+            // defect 1), and that EOF from a dead tty is detected (defect 2).
+            tokio::select! {
+                event = self.event_stream.as_mut().expect("event_stream missing").next() => {
+                    match event {
+                        Some(Ok(Event::Key(key))) => {
+                            self.handle_key(key, terminal).await?;
 
-                        // Draw immediately after input for responsiveness
-                        terminal.draw(|f| self.render(f))?;
+                            // Skip the draw when returning from tmux attach.
+                            // needs_redraw triggers a clear + stale event drain
+                            // on the next iteration; drawing before that drain
+                            // wastes a frame and can flicker.
+                            if !self.needs_redraw {
+                                terminal.draw(|f| self.render(f))?;
+                            }
 
-                        if self.should_quit {
+                            if self.should_quit {
+                                break;
+                            }
+                            continue;
+                        }
+                        Some(Ok(Event::Mouse(_))) => continue,
+                        Some(Ok(Event::Paste(text))) => {
+                            self.home.handle_paste(&text);
+
+                            terminal.draw(|f| self.render(f))?;
+
+                            continue;
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            // IO error reading from the terminal (broken pipe,
+                            // EOF, etc.) means the tty is gone. Exit cleanly
+                            // instead of spinning (#608 defect 2).
+                            tracing::info!("Terminal event stream error, exiting: {}", e);
+                            self.should_quit = true;
                             break;
                         }
-                        continue; // Skip status refresh this iteration for responsiveness
+                        None => {
+                            // EventStream ended (EOF on stdin). The terminal is
+                            // gone; exit instead of busy-looping (#608 defect 2).
+                            tracing::info!("Terminal event stream ended (EOF), exiting");
+                            self.should_quit = true;
+                            break;
+                        }
                     }
-                    Event::Mouse(mouse) => {
-                        self.handle_mouse(mouse, terminal).await?;
-
-                        // Draw immediately after input for responsiveness
-                        terminal.draw(|f| self.render(f))?;
-
-                        continue;
+                }
+                _ = refresh_interval.tick() => {}
+                _ = async {
+                    #[cfg(unix)]
+                    match sighup {
+                        Some(ref mut s) => { s.recv().await; }
+                        None => { std::future::pending::<()>().await; }
                     }
-                    Event::Paste(text) => {
-                        self.home.handle_paste(&text);
-
-                        terminal.draw(|f| self.render(f))?;
-
-                        continue;
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                } => {
+                    tracing::info!("Received SIGHUP, exiting");
+                    self.should_quit = true;
+                    break;
+                }
+                _ = async {
+                    #[cfg(unix)]
+                    match sigterm {
+                        Some(ref mut s) => { s.recv().await; }
+                        None => { std::future::pending::<()>().await; }
                     }
-                    _ => {}
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                } => {
+                    tracing::info!("Received SIGTERM, exiting");
+                    self.should_quit = true;
+                    break;
                 }
             }
 
@@ -238,42 +288,43 @@ impl App {
             // Periodic refreshes (only when no input pending)
             let mut refresh_needed = false;
 
-            // Request status refresh every interval (non-blocking)
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.request_status_refresh();
                 last_status_refresh = std::time::Instant::now();
             }
 
-            // Always check for and apply status updates (non-blocking)
             if self.home.apply_status_updates() {
                 refresh_needed = true;
             }
 
-            // Check for and apply deletion results (non-blocking)
             if self.home.apply_deletion_results() {
                 refresh_needed = true;
             }
 
-            // Check for and apply creation results (non-blocking)
             if let Some(session_id) = self.home.apply_creation_results() {
-                // Creation succeeded - attach to the new session
                 self.attach_session(&session_id, terminal)?;
                 refresh_needed = true;
             }
 
-            // Tick dialog animations/timers (spinner, transient flashes)
             if self.home.tick_dialog() {
                 refresh_needed = true;
             }
 
-            // Periodic disk refresh to sync with other instances
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;
             }
 
-            // Single draw after all refreshes to avoid flicker
+            // Animated spinners (rattles) need periodic redraws, but only at
+            // the spinner frame rate to avoid unnecessary widget tree rebuilds
+            if last_spinner_redraw.elapsed() >= SPINNER_REDRAW_INTERVAL
+                && self.home.has_animated_sessions()
+            {
+                last_spinner_redraw = std::time::Instant::now();
+                refresh_needed = true;
+            }
+
             if refresh_needed {
                 terminal.draw(|f| self.render(f))?;
             }
@@ -282,6 +333,8 @@ impl App {
                 break;
             }
         }
+
+        self.home.cleanup_pending_creation();
 
         if let Err(e) = self.home.save() {
             tracing::error!("Failed to save on quit: {}", e);
@@ -345,11 +398,23 @@ impl App {
         // Global keybindings
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                if self.home.is_creating_stub_selected() {
+                    self.home.cancel_creation();
+                    return Ok(());
+                }
+                if self.home.is_creation_pending() && !self.home.has_dialog() {
+                    self.home.show_quit_during_creation_confirm();
+                    return Ok(());
+                }
                 self.should_quit = true;
                 return Ok(());
             }
             (KeyCode::Char('q'), _) => {
                 if !self.home.has_dialog() {
+                    if self.home.is_creation_pending() {
+                        self.home.show_quit_during_creation_confirm();
+                        return Ok(());
+                    }
                     self.should_quit = true;
                     return Ok(());
                 }
@@ -358,18 +423,6 @@ impl App {
         }
 
         if let Some(action) = self.home.handle_key(key) {
-            self.execute_action(action, terminal)?;
-        }
-
-        Ok(())
-    }
-
-    async fn handle_mouse(
-        &mut self,
-        mouse: MouseEvent,
-        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    ) -> Result<()> {
-        if let Some(action) = self.home.handle_mouse(mouse) {
             self.execute_action(action, terminal)?;
         }
 
@@ -442,7 +495,13 @@ impl App {
         // (Devbox, version managers, custom command overrides) run agents via a
         // shell process, so is_pane_running_shell() returns true even when the
         // agent is healthy.
-        let needs_restart = if !tmux_session.exists() || tmux_session.is_pane_dead() {
+        let exists = tmux_session.exists();
+        let pane_dead = if exists {
+            tmux_session.is_pane_dead()
+        } else {
+            false
+        };
+        let needs_restart = if !exists || pane_dead {
             true
         } else if crate::hooks::read_hook_status(&instance.id).is_some() {
             // Hook status is tracking this session; shell detection is unreliable
@@ -455,6 +514,13 @@ impl App {
         } else {
             !instance.expects_shell() && tmux_session.is_pane_running_shell()
         };
+        tracing::debug!(
+            session_id,
+            exists,
+            pane_dead,
+            needs_restart,
+            "attach_session: restart decision"
+        );
         if needs_restart {
             if tmux_session.exists() {
                 let _ = tmux_session.kill();
@@ -514,7 +580,7 @@ impl App {
             self.home.set_instance_error(session_id, None);
         }
 
-        let attach_result = with_raw_mode_disabled(terminal, || tmux_session.attach())?;
+        let attach_result = self.with_raw_mode_disabled(terminal, || tmux_session.attach())?;
 
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
@@ -580,7 +646,7 @@ impl App {
             }
         };
 
-        let attach_result = with_raw_mode_disabled(terminal, attach_fn)?;
+        let attach_result = self.with_raw_mode_disabled(terminal, attach_fn)?;
 
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
@@ -628,7 +694,7 @@ impl App {
 
         let path = path.to_owned();
         let editor_clone = editor.clone();
-        let status = with_raw_mode_disabled(terminal, move || {
+        let status = self.with_raw_mode_disabled(terminal, move || {
             std::process::Command::new(&editor_clone)
                 .arg(&path)
                 .status()

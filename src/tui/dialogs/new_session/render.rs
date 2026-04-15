@@ -3,7 +3,9 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
+use rattles::presets::prelude as spinners;
+
+use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
 use crate::tui::components::{render_text_field, render_text_field_with_ghost};
 use crate::tui::styles::Theme;
 
@@ -186,7 +188,7 @@ impl NewSessionDialog {
                     tool_spans.push(Span::raw("  "));
                 }
                 tool_spans.push(Span::styled(if is_selected { "● " } else { "○ " }, style));
-                tool_spans.push(Span::styled(*tool_name, style));
+                tool_spans.push(Span::styled(tool_name.as_str(), style));
             }
 
             // Show Ctrl+P hint and summary of tool config
@@ -215,7 +217,10 @@ impl NewSessionDialog {
             let mut tool_spans = vec![
                 Span::styled("Tool:", tool_style),
                 Span::raw(" "),
-                Span::styled(self.available_tools[0], Style::default().fg(theme.accent)),
+                Span::styled(
+                    self.available_tools[0].as_str(),
+                    Style::default().fg(theme.accent),
+                ),
             ];
 
             let has_config =
@@ -702,7 +707,7 @@ impl NewSessionDialog {
             .available_tools
             .get(self.tool_index)
             .or_else(|| self.available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         let title = format!(" Tool Configuration: {} ", selected_tool);
 
@@ -1280,7 +1285,9 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let spinner = SPINNER_FRAMES[self.spinner_frame];
+        let spinner = spinners::orbit()
+            .set_interval(std::time::Duration::from_millis(400))
+            .current_frame();
 
         if show_hook_output {
             let mut lines = vec![];

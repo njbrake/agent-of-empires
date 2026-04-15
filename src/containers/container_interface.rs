@@ -9,11 +9,42 @@ pub struct VolumeMount {
     pub read_only: bool,
 }
 
+/// An environment variable entry for a container.
+///
+/// `Inherit` entries use Docker's `-e KEY` form (no value in argv), which reads
+/// the value from the calling process's environment. This prevents secrets from
+/// leaking into `ps` output.
+///
+/// `Literal` entries use `-e KEY=VALUE` and are appropriate for non-secret,
+/// hard-coded values.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnvEntry {
+    /// Value inherited from host environment. Only the key appears in argv;
+    /// the value is passed to Docker via the process environment.
+    Inherit { key: String, value: String },
+    /// Literal (non-secret) value. Both key and value appear in argv.
+    Literal { key: String, value: String },
+}
+
+impl EnvEntry {
+    pub fn key(&self) -> &str {
+        match self {
+            EnvEntry::Inherit { key, .. } | EnvEntry::Literal { key, .. } => key,
+        }
+    }
+
+    pub fn value(&self) -> &str {
+        match self {
+            EnvEntry::Inherit { value, .. } | EnvEntry::Literal { value, .. } => value,
+        }
+    }
+}
+
 pub struct ContainerConfig {
     pub working_dir: String,
     pub volumes: Vec<VolumeMount>,
     pub anonymous_volumes: Vec<String>,
-    pub environment: Vec<(String, String)>,
+    pub environment: Vec<EnvEntry>,
     pub cpu_limit: Option<String>,
     pub memory_limit: Option<String>,
     pub port_mappings: Vec<String>,

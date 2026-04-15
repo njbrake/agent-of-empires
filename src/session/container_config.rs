@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::containers::{ContainerConfig, VolumeMount};
+use crate::containers::{ContainerConfig, EnvEntry, VolumeMount};
 use crate::git::GitWorktree;
 
 use super::environment::collect_environment;
@@ -16,6 +16,14 @@ use super::instance::SandboxInfo;
 
 /// Subdirectory name inside each agent's config dir for the shared sandbox config.
 const SANDBOX_SUBDIR: &str = "sandbox";
+
+/// Content seeded into the Claude sandbox `.sandbox-gitconfig`. Scoped to github.com;
+/// the helper emits credentials only on `get` and only when GH_TOKEN is non-empty, so
+/// other remotes and sessions without a forwarded token fall through to normal git
+/// behavior.
+const SANDBOX_GITCONFIG_SEED: &str = r#"[credential "https://github.com"]
+	helper = "!f() { test \"$1\" = get || exit 0; test -n \"$GH_TOKEN\" || exit 0; echo username=x-access-token; echo \"password=$GH_TOKEN\"; }; f"
+"#;
 
 /// Declarative definition of an agent CLI's config directory for sandbox mounting.
 struct AgentConfigMount {
@@ -66,10 +74,15 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
         // Claude Code sets GIT_CONFIG_GLOBAL=/root/.sandbox-gitconfig when IS_SANDBOX=1;
-        // the file must exist or all git commands fail.
+        // the file must exist or all git commands fail. The seeded credential helper
+        // lets `git push` to github.com authenticate automatically when GH_TOKEN is
+        // forwarded via `sandbox.environment` (e.g. "GH_TOKEN=$GH_TOKEN"). Without a
+        // helper, git ignores GH_TOKEN and prompts for a username; `gh auth setup-git`
+        // can't fix it in-container because the gitconfig is a single-file bind mount
+        // that can't be rewritten via atomic rename.
         home_seed_files: &[
             (".claude.json", r#"{"hasCompletedOnboarding":true}"#),
-            (".sandbox-gitconfig", ""),
+            (".sandbox-gitconfig", SANDBOX_GITCONFIG_SEED),
         ],
         preserve_files: &[".credentials.json", "history.jsonl"],
         clean_files: &[],
@@ -775,6 +788,17 @@ pub(crate) fn build_container_config(
         compute_volume_paths(project_path, project_path_str)?
     };
 
+    // Collect all paths that should receive volume_ignores: the workspace_path
+    // (where builds happen) plus every project mount root (which may differ in
+    // bare-repo layouts where workspace_path is a subdirectory of the mount).
+    let mut volume_ignore_bases: Vec<String> = project_volumes
+        .iter()
+        .map(|v| v.container_path.clone())
+        .collect();
+    if !volume_ignore_bases.contains(&workspace_path) {
+        volume_ignore_bases.push(workspace_path.clone());
+    }
+
     let mut volumes = project_volumes;
 
     let sandbox_config = {
@@ -903,15 +927,21 @@ pub(crate) fn build_container_config(
         }
     }
 
-    let mut environment: Vec<(String, String)> = collect_environment(&sandbox_config, sandbox_info);
+    let mut environment = collect_environment(&sandbox_config, sandbox_info);
 
     if let Some(agent) = crate::agents::get_agent(tool) {
         for &(key, value) in agent.container_env {
-            environment.push((key.to_string(), value.to_string()));
+            environment.push(EnvEntry::Literal {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
         }
         if is_yolo_mode {
             if let Some(crate::agents::YoloMode::EnvVar(key, value)) = &agent.yolo {
-                environment.push((key.to_string(), value.to_string()));
+                environment.push(EnvEntry::Literal {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                });
             }
         }
     }
@@ -950,10 +980,14 @@ pub(crate) fn build_container_config(
     //   - Exact match: both point to same path
     //   - Anonymous volume is parent of extra_volume (would shadow the mount)
     //   - Anonymous volume is inside extra_volume (redundant/conflicting)
-    let anonymous_volumes: Vec<String> = sandbox_config
-        .volume_ignores
+    let anonymous_volumes: Vec<String> = volume_ignore_bases
         .iter()
-        .map(|ignore| format!("{}/{}", workspace_path, ignore))
+        .flat_map(|base_path| {
+            sandbox_config
+                .volume_ignores
+                .iter()
+                .map(move |ignore| format!("{}/{}", base_path, ignore))
+        })
         .filter(|anon_path| {
             !extra_volume_container_paths.iter().any(|extra_path| {
                 anon_path == extra_path
@@ -1620,6 +1654,38 @@ mod tests {
     }
 
     #[test]
+    fn test_sandbox_gitconfig_seed_is_valid_gitconfig() {
+        let dir = TempDir::new().unwrap();
+        let gitconfig = dir.path().join("gitconfig");
+        fs::write(&gitconfig, SANDBOX_GITCONFIG_SEED).unwrap();
+
+        let out = std::process::Command::new("git")
+            .args([
+                "config",
+                "--file",
+                gitconfig.to_str().unwrap(),
+                "--get",
+                "credential.https://github.com.helper",
+            ])
+            .output();
+        let Ok(out) = out else {
+            eprintln!("skipping: git not available");
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "git failed to parse seeded gitconfig: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let helper = String::from_utf8_lossy(&out.stdout);
+        assert!(helper.starts_with('!'), "helper must be a shell snippet");
+        assert!(
+            helper.contains("$GH_TOKEN"),
+            "helper must read GH_TOKEN at runtime"
+        );
+    }
+
+    #[test]
     fn test_home_seed_files_written_to_sandbox_root() {
         let dir = TempDir::new().unwrap();
         let sandbox_base = dir.path().join("sandbox-root");
@@ -2117,7 +2183,7 @@ extra_volumes = ["/host/data:/container/data:ro"]
         .unwrap();
 
         // Verify environment variables from repo config are present
-        let env_keys: Vec<&str> = config.environment.iter().map(|(k, _)| k.as_str()).collect();
+        let env_keys: Vec<&str> = config.environment.iter().map(|e| e.key()).collect();
         assert!(
             env_keys.contains(&"MY_VAR"),
             "MY_VAR should be in environment, got: {:?}",
@@ -2154,6 +2220,189 @@ extra_volumes = ["/host/data:/container/data:ro"]
             volume_pairs.contains(&("/host/data", "/container/data")),
             "extra_volumes should include /host/data:/container/data, got: {:?}",
             volume_pairs
+        );
+    }
+
+    /// Regression test for #597: volume_ignores must apply to the parent repo
+    /// mount as well as the worktree mount in sibling-worktree sessions.
+    #[test]
+    #[serial_test::serial]
+    fn test_volume_ignores_applied_to_parent_repo_mount() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        let (_dir, repo_path) = setup_regular_repo();
+
+        // Create a sibling worktree (non-bare layout)
+        let worktree_path = repo_path.parent().unwrap().join("my-worktree");
+        let head = git2::Repository::open(&repo_path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
+            .unwrap();
+        drop(repo);
+
+        let output = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "wt-branch",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            return; // git not available, skip
+        }
+
+        // Write repo-level config with volume_ignores
+        let config_dir = worktree_path.join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+volume_ignores = ["target", "node_modules"]
+"#,
+        )
+        .unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let project_path_str = worktree_path.to_str().unwrap();
+        let config = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+        )
+        .unwrap();
+
+        // Verify volume_ignores are applied to the worktree mount
+        assert!(
+            config
+                .anonymous_volumes
+                .iter()
+                .any(|v| v.ends_with("/my-worktree/target")),
+            "anonymous_volumes should contain worktree target, got: {:?}",
+            config.anonymous_volumes
+        );
+        assert!(
+            config
+                .anonymous_volumes
+                .iter()
+                .any(|v| v.ends_with("/my-worktree/node_modules")),
+            "anonymous_volumes should contain worktree node_modules, got: {:?}",
+            config.anonymous_volumes
+        );
+
+        // Verify volume_ignores are also applied to the parent repo mount (the fix for #597)
+        let repo_name = repo_path
+            .canonicalize()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let expected_repo_target = format!("/workspace/{}/target", repo_name);
+        let expected_repo_node = format!("/workspace/{}/node_modules", repo_name);
+        assert!(
+            config.anonymous_volumes.contains(&expected_repo_target),
+            "anonymous_volumes should contain parent repo target ({}), got: {:?}",
+            expected_repo_target,
+            config.anonymous_volumes
+        );
+        assert!(
+            config.anonymous_volumes.contains(&expected_repo_node),
+            "anonymous_volumes should contain parent repo node_modules ({}), got: {:?}",
+            expected_repo_node,
+            config.anonymous_volumes
+        );
+    }
+
+    /// Regression test: volume_ignores must still apply to the workspace_path
+    /// in bare-repo layouts where workspace_path is a subdirectory of the mount.
+    #[test]
+    #[serial_test::serial]
+    fn test_volume_ignores_applied_to_bare_repo_worktree() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        let (_dir, main_repo_path, worktree_path) = setup_bare_repo_with_worktree();
+
+        if !worktree_path.exists() {
+            return; // git worktree add failed, skip
+        }
+
+        // Write repo-level config with volume_ignores
+        let config_dir = worktree_path.join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+volume_ignores = ["target"]
+"#,
+        )
+        .unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let project_path_str = worktree_path.to_str().unwrap();
+        let config = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+        )
+        .unwrap();
+
+        // In bare-repo layout, workspace_path is a subdirectory of the single mount.
+        // volume_ignores must apply to the workspace_path (where builds run), not
+        // just the mount root.
+        let main_name = main_repo_path
+            .canonicalize()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let expected_wt_target = format!("/workspace/{}/main/target", main_name);
+        assert!(
+            config.anonymous_volumes.contains(&expected_wt_target),
+            "anonymous_volumes should contain worktree target ({}), got: {:?}",
+            expected_wt_target,
+            config.anonymous_volumes
         );
     }
 
