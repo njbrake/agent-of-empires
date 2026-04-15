@@ -610,4 +610,73 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_volume_options_count_and_range() {
+        let options = volume_options();
+        assert_eq!(options.len(), 15);
+        assert_eq!(options[0], "0.1");
+        assert_eq!(options[14], "1.5");
+    }
+
+    #[test]
+    fn test_volume_options_step() {
+        let options = volume_options();
+        for (i, opt) in options.iter().enumerate() {
+            let expected = format!("{:.1}", (i + 1) as f64 * 0.1);
+            assert_eq!(opt, &expected);
+        }
+    }
+
+    #[test]
+    fn test_volume_to_index_normal_values() {
+        assert_eq!(volume_to_index(0.1), 0);
+        assert_eq!(volume_to_index(1.0), 9);
+        assert_eq!(volume_to_index(1.5), 14);
+    }
+
+    #[test]
+    fn test_volume_to_index_clamps_below_min() {
+        assert_eq!(volume_to_index(0.0), 0);
+        assert_eq!(volume_to_index(-1.0), 0);
+    }
+
+    #[test]
+    fn test_volume_to_index_clamps_above_max() {
+        assert_eq!(volume_to_index(2.0), 14);
+        assert_eq!(volume_to_index(99.0), 14);
+    }
+
+    #[test]
+    fn test_volume_from_option_valid() {
+        assert!((volume_from_option("0.1") - 0.1).abs() < 1e-9);
+        assert!((volume_from_option("1.0") - 1.0).abs() < 1e-9);
+        assert!((volume_from_option("1.5") - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_from_option_clamps_below_min() {
+        assert!((volume_from_option("0.0") - 0.1).abs() < 1e-9);
+        assert!((volume_from_option("-1.0") - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_from_option_clamps_above_max() {
+        assert!((volume_from_option("2.0") - 1.5).abs() < 1e-9);
+        assert!((volume_from_option("99.9") - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_from_option_invalid_falls_back_to_default() {
+        assert!((volume_from_option("") - 1.0).abs() < 1e-9);
+        assert!((volume_from_option("bad") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_options_roundtrip() {
+        for (i, opt) in volume_options().iter().enumerate() {
+            let v = volume_from_option(opt);
+            assert_eq!(volume_to_index(v), i);
+        }
+    }
 }
