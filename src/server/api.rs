@@ -353,10 +353,51 @@ pub async fn ensure_session(
     };
     drop(instances);
 
-    let tmux_session = match instance.tmux_session() {
-        Ok(s) => s,
+    // Inspect tmux + make the restart decision on a blocking thread. Refresh
+    // the cache first so rapid re-calls see the true current state (the
+    // background status poller only refreshes every 2s).
+    let decision_instance = instance.clone();
+    let id_for_log = id.clone();
+    let decision = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        crate::tmux::refresh_session_cache();
+        let tmux_session = decision_instance.tmux_session()?;
+        let exists = tmux_session.exists();
+        let pane_dead = exists && tmux_session.is_pane_dead();
+        let needs_restart = if !exists || pane_dead {
+            true
+        } else if crate::hooks::read_hook_status(&decision_instance.id).is_some() {
+            // Hook status tracks this session; shell detection is unreliable.
+            false
+        } else if decision_instance.has_command_override() {
+            // Custom command overrides run agents through wrapper scripts that
+            // look like shells to tmux. Don't restart based on shell detection.
+            false
+        } else {
+            !decision_instance.expects_shell() && tmux_session.is_pane_running_shell()
+        };
+        tracing::debug!(
+            session_id = id_for_log,
+            exists,
+            pane_dead,
+            needs_restart,
+            "ensure_session: restart decision"
+        );
+        Ok(needs_restart)
+    })
+    .await;
+
+    let needs_restart = match decision {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::error!("ensure_session: failed to inspect tmux for {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response();
+        }
         Err(e) => {
-            tracing::error!("Failed to resolve tmux session for {id}: {e}");
+            tracing::error!("ensure_session inspect panicked for {id}: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal"})),
@@ -364,33 +405,6 @@ pub async fn ensure_session(
                 .into_response();
         }
     };
-
-    let exists = tmux_session.exists();
-    let pane_dead = if exists {
-        tmux_session.is_pane_dead()
-    } else {
-        false
-    };
-    let needs_restart = if !exists || pane_dead {
-        true
-    } else if crate::hooks::read_hook_status(&instance.id).is_some() {
-        // Hook status is tracking this session; shell detection is unreliable.
-        false
-    } else if instance.has_command_override() {
-        // Custom command overrides run agents through wrapper scripts that appear
-        // as shell processes to tmux. Don't restart based on shell detection.
-        false
-    } else {
-        !instance.expects_shell() && tmux_session.is_pane_running_shell()
-    };
-
-    tracing::debug!(
-        session_id = id,
-        exists,
-        pane_dead,
-        needs_restart,
-        "ensure_session: restart decision"
-    );
 
     if !needs_restart {
         return (StatusCode::OK, Json(serde_json::json!({"status": "alive"}))).into_response();
@@ -404,12 +418,14 @@ pub async fn ensure_session(
         }
     }
 
-    let restart_result = tokio::task::spawn_blocking(move || {
+    let restart_result = tokio::task::spawn_blocking(move || -> anyhow::Result<Instance> {
+        let tmux_session = instance.tmux_session()?;
         if tmux_session.exists() {
             let _ = tmux_session.kill();
         }
         let mut inst = instance;
-        inst.start_with_size_opts(None, false).map(|_| inst)
+        inst.start_with_size_opts(None, false)?;
+        Ok(inst)
     })
     .await;
 

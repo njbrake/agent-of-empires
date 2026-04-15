@@ -37,13 +37,17 @@ struct SessionCache {
     time: Option<Instant>,
 }
 
+// Field separator for multi-field tmux `-F` format strings. Must be a
+// printable ASCII byte that does not appear in `sanitize_session_name` output
+// (which is restricted to alphanumerics + `_`). tmux 3.4 mangles whitespace
+// (tab, newline become `_`) and octal-escapes control bytes (ASCII 0x1F is
+// emitted as the literal 4-char sequence `\037`), so anything non-printable
+// is unreliable. Pipe is safe.
+const FIELD_SEP: char = '|';
+
 pub fn refresh_session_cache() {
     let output = Command::new("tmux")
-        .args([
-            "list-sessions",
-            "-F",
-            "#{session_name}\t#{session_activity}",
-        ])
+        .args(["list-sessions", "-F", "#{session_name}|#{session_activity}"])
         .output();
 
     let new_data = match output {
@@ -51,7 +55,7 @@ pub fn refresh_session_cache() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let mut map = HashMap::new();
             for line in stdout.lines() {
-                if let Some((name, activity)) = line.split_once('\t') {
+                if let Some((name, activity)) = line.split_once(FIELD_SEP) {
                     let activity: i64 = activity.parse().unwrap_or(0);
                     map.insert(name.to_string(), activity);
                 }
@@ -75,7 +79,7 @@ pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}\t#{pane_index}\t#{pane_dead}\t#{pane_current_command}",
+            "#{session_name}|#{pane_index}|#{pane_dead}|#{pane_current_command}",
         ])
         .output();
 
@@ -94,7 +98,7 @@ fn parse_pane_metadata(output: &str) -> HashMap<String, PaneMetadata> {
     let mut map = HashMap::new();
 
     for line in output.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
+        let parts: Vec<&str> = line.split(FIELD_SEP).collect();
         if parts.len() < 4 {
             continue;
         }
@@ -258,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_parse_pane_metadata_basic() {
-        let output = "aoe_my_proj_abc12345\t0\t0\tclaude\n";
+        let output = "aoe_my_proj_abc12345|0|0|claude\n";
         let map = parse_pane_metadata(output);
         assert_eq!(map.len(), 1);
         let meta = map.get("aoe_my_proj_abc12345").unwrap();
@@ -268,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_parse_pane_metadata_dead_pane() {
-        let output = "aoe_proj_abc12345\t0\t1\tbash\n";
+        let output = "aoe_proj_abc12345|0|1|bash\n";
         let map = parse_pane_metadata(output);
         let meta = map.get("aoe_proj_abc12345").unwrap();
         assert!(meta.pane_dead);
@@ -277,9 +281,9 @@ mod tests {
     #[test]
     fn test_parse_pane_metadata_filters_non_aoe_sessions() {
         let output = "\
-user_session\t0\t0\tbash\n\
-aoe_proj_abc12345\t0\t0\tclaude\n\
-my_tmux\t0\t0\tvim\n";
+user_session|0|0|bash\n\
+aoe_proj_abc12345|0|0|claude\n\
+my_tmux|0|0|vim\n";
         let map = parse_pane_metadata(output);
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("aoe_proj_abc12345"));
@@ -288,8 +292,8 @@ my_tmux\t0\t0\tvim\n";
     #[test]
     fn test_parse_pane_metadata_filters_non_zero_panes() {
         let output = "\
-aoe_proj_abc12345\t0\t0\tclaude\n\
-aoe_proj_abc12345\t1\t0\tbash\n";
+aoe_proj_abc12345|0|0|claude\n\
+aoe_proj_abc12345|1|0|bash\n";
         let map = parse_pane_metadata(output);
         assert_eq!(map.len(), 1);
         let meta = map.get("aoe_proj_abc12345").unwrap();
@@ -300,8 +304,8 @@ aoe_proj_abc12345\t1\t0\tbash\n";
     fn test_parse_pane_metadata_first_window_wins() {
         // Two windows both have pane 0, first window's data should be kept
         let output = "\
-aoe_proj_abc12345\t0\t0\tclaude\n\
-aoe_proj_abc12345\t0\t1\tbash\n";
+aoe_proj_abc12345|0|0|claude\n\
+aoe_proj_abc12345|0|1|bash\n";
         let map = parse_pane_metadata(output);
         assert_eq!(map.len(), 1);
         let meta = map.get("aoe_proj_abc12345").unwrap();
@@ -317,8 +321,8 @@ aoe_proj_abc12345\t0\t1\tbash\n";
     #[test]
     fn test_parse_pane_metadata_malformed_lines() {
         let output = "\
-too\tfew\tfields\n\
-aoe_proj_abc12345\t0\t0\tclaude\n\
+too|few|fields\n\
+aoe_proj_abc12345|0|0|claude\n\
 \n";
         let map = parse_pane_metadata(output);
         assert_eq!(map.len(), 1);
@@ -326,7 +330,7 @@ aoe_proj_abc12345\t0\t0\tclaude\n\
 
     #[test]
     fn test_parse_pane_metadata_empty_command() {
-        let output = "aoe_proj_abc12345\t0\t0\t\n";
+        let output = "aoe_proj_abc12345|0|0|\n";
         let map = parse_pane_metadata(output);
         let meta = map.get("aoe_proj_abc12345").unwrap();
         assert!(meta.pane_current_command.is_none());
@@ -335,9 +339,9 @@ aoe_proj_abc12345\t0\t0\tclaude\n\
     #[test]
     fn test_parse_pane_metadata_multiple_sessions() {
         let output = "\
-aoe_proj_a_abc12345\t0\t0\tclaude\n\
-aoe_proj_b_def67890\t0\t0\topencode\n\
-aoe_proj_c_ghi11111\t0\t1\tbash\n";
+aoe_proj_a_abc12345|0|0|claude\n\
+aoe_proj_b_def67890|0|0|opencode\n\
+aoe_proj_c_ghi11111|0|1|bash\n";
         let map = parse_pane_metadata(output);
         assert_eq!(map.len(), 3);
         assert_eq!(
