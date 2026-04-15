@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
+use qrcode::render::unicode::Dense1x2;
 use qrcode::QrCode;
 use rand::prelude::IndexedRandom;
 use rand::RngExt;
@@ -628,14 +629,18 @@ fn render_active(
     // Encode the full URL including `?token=...` — the server's auth
     // middleware rejects requests on `/` with "invalid or missing auth
     // token" when the query param isn't present, so the phone would hit
-    // 401 before ever seeing the passphrase login. The QR is a little
-    // larger as a result; users with narrow terminals can always type
-    // the plain URL shown beneath it.
+    // 401 before ever seeing the passphrase login.
+    //
+    // Use half-block Unicode rendering (Dense1x2): each terminal row
+    // carries two QR module rows via `\u{2580}` / `\u{2584}` / space /
+    // full-block. That's roughly 4× smaller than the previous 2\u{00D7}1 char
+    // rendering while staying scannable on any phone camera.
     let qr_text = match QrCode::new(url.as_bytes()) {
         Ok(code) => code
-            .render::<char>()
+            .render::<Dense1x2>()
             .quiet_zone(true)
-            .module_dimensions(2, 1)
+            .dark_color(Dense1x2::Dark)
+            .light_color(Dense1x2::Light)
             .build(),
         Err(_) => String::from("(QR unavailable \u{2014} use the URL below)"),
     };
