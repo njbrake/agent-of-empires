@@ -1,4 +1,5 @@
 import { ConnectedDevices } from "./ConnectedDevices";
+import { SecuritySettings } from "./SecuritySettings";
 import { TerminalSettings } from "./TerminalSettings";
 
 interface Props {
@@ -21,6 +22,7 @@ export function SettingsView({ onClose }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 max-w-[600px] space-y-8">
+        <SecuritySettings />
         <TerminalSettings />
         <ConnectedDevices />
       </div>

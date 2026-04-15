@@ -724,6 +724,11 @@ impl Instance {
                     self.title
                 );
                 self.status = Status::Error;
+                if self.last_error.is_none() {
+                    self.last_error = Some(
+                        "Could not reach tmux. Is tmux still running on the host?".to_string(),
+                    );
+                }
                 self.last_error_check = Some(std::time::Instant::now());
                 return;
             }
@@ -736,6 +741,12 @@ impl Instance {
                 tmux::Session::generate_name(&self.id, &self.title)
             );
             self.status = Status::Error;
+            if self.last_error.is_none() {
+                self.last_error = Some(
+                    "tmux session is gone. The agent process may have exited or been killed."
+                        .to_string(),
+                );
+            }
             self.last_error_check = Some(std::time::Instant::now());
             return;
         }
@@ -767,8 +778,16 @@ impl Instance {
                 hook_status,
                 is_dead
             );
-            self.status = if is_dead { Status::Error } else { hook_status };
-            self.last_error = None;
+            if is_dead {
+                self.status = Status::Error;
+                if self.last_error.is_none() {
+                    let pane_content = session.capture_pane(20).unwrap_or_default();
+                    self.last_error = Some(summarize_error_from_pane(&pane_content));
+                }
+            } else {
+                self.status = hook_status;
+                self.last_error = None;
+            }
             return;
         }
 
@@ -840,7 +859,13 @@ impl Instance {
 
         tracing::trace!("status '{}': final={:?}", self.title, self.status);
 
-        self.last_error = None;
+        if self.status == Status::Error {
+            if self.last_error.is_none() {
+                self.last_error = Some(summarize_error_from_pane(&pane_content));
+            }
+        } else {
+            self.last_error = None;
+        }
     }
 
     pub fn update_status(&mut self) {
@@ -860,6 +885,66 @@ impl Instance {
 
 fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
+}
+
+/// Build a short human-readable hint for why a session transitioned to Error.
+///
+/// Called when we set Status::Error but don't already have a `last_error`
+/// populated (e.g. an agent process exited on its own). We grab the last few
+/// non-empty lines of the pane and pick something that looks like an error
+/// message; otherwise fall back to a generic "stopped responding" string so
+/// the UI never renders an Error state without any explanation.
+fn summarize_error_from_pane(pane_content: &str) -> String {
+    let cleaned = crate::tmux::utils::strip_ansi(pane_content);
+    let tail: Vec<&str> = cleaned
+        .lines()
+        .rev()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .take(12)
+        .collect();
+
+    for line in &tail {
+        let lower = line.to_lowercase();
+        if lower.contains("error")
+            || lower.contains("command not found")
+            || lower.contains("permission denied")
+            || lower.contains("cannot")
+            || lower.contains("failed")
+            || lower.contains("no such file")
+            || lower.contains("traceback")
+            || lower.contains("panic")
+        {
+            return truncate_error_line(line);
+        }
+    }
+
+    if let Some(last) = tail.first() {
+        return format!(
+            "Agent stopped responding. Last line: {}",
+            truncate_error_line(last)
+        );
+    }
+
+    "Agent stopped responding and the pane is empty.".to_string()
+}
+
+fn truncate_error_line(line: &str) -> String {
+    const MAX: usize = 200;
+    let trimmed = line.trim();
+    if trimmed.len() <= MAX {
+        trimmed.to_string()
+    } else {
+        let mut out = String::with_capacity(MAX + 1);
+        for (i, ch) in trimmed.char_indices() {
+            if i >= MAX {
+                break;
+            }
+            out.push(ch);
+        }
+        out.push('…');
+        out
+    }
 }
 
 /// Format an environment variable assignment as a shell-safe command prefix.

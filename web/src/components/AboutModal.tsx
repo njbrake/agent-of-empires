@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { fetchAbout } from "../lib/api";
 
 interface Props {
   onClose: () => void;
@@ -28,11 +29,37 @@ const LINKS: LinkRow[] = [
   },
 ];
 
+function buildFeedbackUrl(version: string | null): string {
+  const body = [
+    "<!-- Replace with a description of what happened and what you expected. -->",
+    "",
+    "**Environment**",
+    `- Version: ${version ?? "unknown"}`,
+    `- Platform: ${navigator.platform}`,
+    `- User agent: ${navigator.userAgent}`,
+    "",
+    "**Steps to reproduce**",
+    "1. ",
+    "",
+    "**Expected**",
+    "",
+    "**Actual**",
+  ].join("\n");
+  const params = new URLSearchParams({
+    title: "web dashboard: ",
+    body,
+    labels: "web,feedback",
+  });
+  return `https://github.com/njbrake/agent-of-empires/issues/new?${params.toString()}`;
+}
+
 export function AboutModal({ onClose }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [version, setVersion] = useState<string | null>(null);
 
   useEffect(() => {
     closeRef.current?.focus();
+    fetchAbout().then((a) => setVersion(a?.version ?? null));
   }, []);
 
   return (
@@ -48,25 +75,33 @@ export function AboutModal({ onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <img
               src="/icon-192.png"
               alt=""
               width="24"
               height="24"
-              className="rounded-sm"
+              className="rounded-sm shrink-0"
             />
             <h2
               id="about-modal-title"
-              className="text-sm font-semibold text-text-bright"
+              className="text-sm font-semibold text-text-bright truncate"
             >
               Agent of Empires
             </h2>
+            {version && (
+              <span
+                className="font-mono text-[11px] text-text-muted shrink-0"
+                aria-label={`Version ${version}`}
+              >
+                v{version}
+              </span>
+            )}
           </div>
           <button
             ref={closeRef}
             onClick={onClose}
-            className="text-text-muted hover:text-text-secondary cursor-pointer"
+            className="text-text-muted hover:text-text-secondary cursor-pointer text-lg leading-none px-1"
             aria-label="Close"
           >
             &times;
@@ -97,6 +132,15 @@ export function AboutModal({ onClose }: Props) {
               </a>
             ))}
           </div>
+
+          <a
+            href={buildFeedbackUrl(version)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block text-center py-2 rounded-md border border-surface-700/50 text-sm text-text-secondary hover:bg-surface-850 hover:text-text-primary hover:border-surface-700 transition-colors"
+          >
+            Send feedback
+          </a>
         </div>
 
         <div className="px-5 py-3 border-t border-surface-700">

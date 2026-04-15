@@ -241,6 +241,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         <Dashboard
           sessions={sessions}
           onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
         />
       );
     }

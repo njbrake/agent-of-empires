@@ -1158,6 +1158,28 @@ pub async fn docker_status() -> Json<DockerStatus> {
     Json(result)
 }
 
+#[derive(Serialize)]
+pub struct ServerAbout {
+    pub version: String,
+    pub auth_required: bool,
+    pub passphrase_enabled: bool,
+    pub read_only: bool,
+    pub behind_tunnel: bool,
+    pub profile: String,
+}
+
+pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
+    let auth_required = !state.token_manager.is_no_auth().await;
+    Json(ServerAbout {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        auth_required,
+        passphrase_enabled: state.login_manager.is_enabled(),
+        read_only: state.read_only,
+        behind_tunnel: state.behind_tunnel,
+        profile: state.profile.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

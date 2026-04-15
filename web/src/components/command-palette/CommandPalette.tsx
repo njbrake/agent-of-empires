@@ -47,7 +47,7 @@ export function CommandPalette({ open, onClose, actions }: Props) {
       role="dialog"
       aria-modal="true"
       aria-label="Command palette"
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/60 animate-fade-in pt-[15vh] px-3"
+      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/80 backdrop-blur-sm animate-fade-in pt-[15vh] px-3"
       onClick={onClose}
       data-testid="command-palette-backdrop"
     >

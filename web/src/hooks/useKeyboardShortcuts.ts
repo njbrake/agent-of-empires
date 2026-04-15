@@ -44,15 +44,19 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
 
       switch (e.key) {
         case "n":
+          e.preventDefault();
           actions.onNew();
           break;
         case "D":
+          e.preventDefault();
           actions.onDiff();
           break;
         case "?":
+          e.preventDefault();
           actions.onHelp();
           break;
         case "s":
+          e.preventDefault();
           actions.onSettings();
           break;
       }

@@ -83,14 +83,15 @@ export function TopBar({
           <span className="font-mono text-xs leading-none">aoe</span>
         </button>
 
-        {/* Breadcrumb (hidden on mobile) */}
+        {/* Breadcrumb (hidden on mobile). Suppress the workspace crumb when it
+            equals the repo name to avoid "/ foo / foo" duplication. */}
         {(repoName || activeWorkspace) && (
           <div className="hidden sm:flex items-center gap-1.5 min-w-0 text-xs font-mono">
             <span className="text-text-dim">/</span>
             {repoName && (
               <span className="text-text-muted truncate max-w-[140px]">{repoName}</span>
             )}
-            {activeWorkspace && (
+            {activeWorkspace && activeWorkspace.displayName !== repoName && (
               <>
                 <span className="text-text-dim">/</span>
                 <span className="text-accent-600 truncate max-w-[200px]">

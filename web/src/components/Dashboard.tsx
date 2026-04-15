@@ -6,6 +6,7 @@ import { StatusGlyph } from "./StatusGlyph";
 interface Props {
   sessions: SessionResponse[];
   onSelectSession: (sessionId: string) => void;
+  onNewSession: () => void;
 }
 
 interface ProjectGroup {
@@ -40,7 +41,7 @@ function timeAgo(iso: string | null): string {
   return `${days}d`;
 }
 
-export function Dashboard({ sessions, onSelectSession }: Props) {
+export function Dashboard({ sessions, onSelectSession, onNewSession }: Props) {
   const groups = useMemo<ProjectGroup[]>(() => {
     const map = new Map<string, ProjectGroup>();
     for (const s of sessions) {
@@ -103,8 +104,17 @@ export function Dashboard({ sessions, onSelectSession }: Props) {
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
         <p className="text-sm text-text-muted mb-1">No sessions yet</p>
-        <p className="text-xs text-text-dim">
-          Create a session from the sidebar to get started.
+        <p className="text-xs text-text-dim mb-5">
+          Point aoe at a project folder and pick an agent.
+        </p>
+        <button
+          onClick={onNewSession}
+          className="px-5 py-2.5 rounded-lg bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-surface-900 text-sm font-semibold cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+        >
+          New session
+        </button>
+        <p className="mt-4 text-[11px] font-mono text-text-dim hidden md:block">
+          press <kbd className="px-1 py-0.5 rounded bg-surface-800 border border-surface-700/40">n</kbd> anywhere
         </p>
       </div>
     );
@@ -139,10 +149,16 @@ export function Dashboard({ sessions, onSelectSession }: Props) {
               </span>
             )}
           </div>
+          <button
+            onClick={onNewSession}
+            className="ml-auto md:hidden px-3 py-1.5 rounded-md bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-surface-900 text-xs font-semibold cursor-pointer transition-colors"
+          >
+            + New
+          </button>
         </div>
 
         <p className="text-xs text-text-dim mb-4 md:hidden">
-          Tap the sidebar icon in the top left for projects and settings.
+          Tap a project to jump in. Use the top-left icon to reveal the sidebar.
         </p>
 
         {/* Grid of project cards */}

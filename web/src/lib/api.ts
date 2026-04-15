@@ -92,6 +92,27 @@ export async function updateSettings(
   }
 }
 
+// --- About / server info ---
+
+export interface ServerAbout {
+  version: string;
+  auth_required: boolean;
+  passphrase_enabled: boolean;
+  read_only: boolean;
+  behind_tunnel: boolean;
+  profile: string;
+}
+
+export async function fetchAbout(): Promise<ServerAbout | null> {
+  try {
+    const res = await fetch("/api/about");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 // --- Devices ---
 
 export interface DeviceInfo {

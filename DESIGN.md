@@ -1,5 +1,7 @@
 # Design System -- Agent of Empires
 
+> **Scope note (2026-04-15):** The system below applies to the TUI, the marketing site (`website/`), and anywhere brand identity is expressed. The **web dashboard** (`web/`) runs a deliberately lighter subset documented in the [Web Dashboard section](#web-dashboard-subset) at the bottom. When you touch `web/`, read that section first.
+
 ## Product Context
 - **What this is:** Terminal session manager for AI coding agents (Claude Code, Gemini CLI, OpenCode, Codex, Mistral Vibe, etc.)
 - **Who it's for:** Developers who run multiple AI coding agents in parallel and want a single dashboard to manage them
@@ -203,3 +205,43 @@ This makes the two panels feel like one cohesive surface with a divider rather t
 | 2026-03-22 | Rounded borders in TUI | Sharp box-drawing corners feel dated. Rounded corners (╭╮╰╯) are the single highest-impact modernization for a ratatui app. |
 | 2026-03-22 | Inner padding in TUI panels | 1 char horizontal padding prevents content from touching borders. Gives breathing room without sacrificing density. |
 | 2026-03-22 | Single panel seam | Double-border between list and preview panels looks heavy. One shared divider line reads as a cohesive surface. |
+| 2026-04-15 | Web dashboard diverges to Geist + neutral zinc | The web dashboard is a utility surface (sessions, terminals, diffs) not a brand surface. Warm copper at full saturation competes with terminal content and xterm ANSI colors. Geist + zinc surfaces let the content lead; brand amber stays as the accent for CTAs, focus rings, and the logo. See the Web Dashboard section below. |
+
+## Web Dashboard subset
+
+The web dashboard (`web/`) is a utility that sits between a developer and a terminal. It is dark-only, dense, keyboard-driven, and deliberately quieter than the marketing site. Use these rules when editing anything under `web/`.
+
+### Typography
+
+- **Sans:** Geist Sans (400, 500, 600). Self-hosted from `/public/fonts/`. Replaces Satoshi + DM Sans in this surface only.
+- **Mono:** Geist Mono (400, 500). Replaces JetBrains Mono in this surface only.
+- **Why:** Geist Sans has a slightly narrower x-height and more humanist terminals than Satoshi, which reads better alongside live monospace terminal output. Keeping the sans and mono in the same family eliminates the mixed-voice feeling that Satoshi + JetBrains Mono produces at 13-14px UI sizes.
+- Monospace is the workhorse for session names, paths, status glyphs, and keyboard hints. Sans is for modal headings and body copy only.
+
+### Color
+
+- **Brand amber** is still the primary and still uses the same brand-400 through brand-700 tokens as the rest of the system. It appears on CTAs, focus rings, the logo mark, section anchors, and the inline code color. Do not introduce a separate brand palette for the dashboard.
+- **Accent teal** appears on secondary affordances: branch names in breadcrumbs, diff file count badges, keyboard shortcut pills in the help overlay.
+- **Surfaces** are neutral zinc (`--color-surface-700` through `--color-surface-950` in `web/src/index.css`), not the warm navy from the brand system. Neutral surfaces keep xterm's ANSI colors legible and prevent the "everything is orange-tinted" feeling that a warm surface palette produces behind a terminal.
+- **Status colors** (running, waiting, idle, error, starting, stopped) are defined as semantic tokens in `web/src/index.css` and are the only non-brand/non-accent colors allowed in the dashboard chrome.
+
+### Density and motion
+
+- Row heights: 28-32px. Buttons: 32-40px. The dashboard is denser than the marketing site on purpose.
+- Border radii: `rounded-md` (6px) for inline affordances, `rounded-lg` (8px) for panels and dialogs. No `rounded-xl` or larger in the dashboard.
+- Motion: `animate-fade-in` and `animate-slide-up` are the only named transitions. Prefer `transition-colors` for hover/focus. Avoid scaling, parallax, or layered motion.
+
+### What stays consistent with the brand system
+
+- Brand amber is still the primary.
+- Accent teal is still the secondary.
+- Status color semantics are unchanged.
+- The "engineer-made, warm when it matters" tone still applies; the dashboard is just quieter about it so the terminal can lead.
+
+### What is explicitly allowed to differ
+
+- Font families (Geist everywhere, not Satoshi/DM Sans/JetBrains Mono).
+- Surface palette (neutral zinc, not warm navy).
+- Brand saturation (used as an accent, not a primary surface treatment).
+
+If a change to `web/` would require deviating from any of the above, update this section first.

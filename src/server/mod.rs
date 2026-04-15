@@ -365,6 +365,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/login/status", get(login::login_status_handler))
         // Devices
         .route("/api/devices", get(api::list_devices))
+        // About (version, auth status, read-only state)
+        .route("/api/about", get(api::get_about))
         // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))
