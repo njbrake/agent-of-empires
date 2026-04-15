@@ -34,29 +34,22 @@ Enter
 Sleep 900ms
 
 # === Session 1: API Server with Claude Code ===
+# Boring part (filling the dialog): crank the typing speed and cut sleeps
+# so we can get to the interesting stuff.
 Type "n"
-Sleep 600ms
-
-Tab
-Sleep 200ms
-Type "API Server"
 Sleep 400ms
 
+Set TypingSpeed 5ms
 Tab
-Sleep 200ms
+Type "API Server"
+Tab
 Backspace 80
 Type "/root/demo-projects/api-server"
-Sleep 400ms
-
-# Tool (claude is default), skip YOLO / Worktree / Sandbox / Group.
-Tab
-Sleep 150ms
-Tab
-Sleep 150ms
-Tab
-Sleep 150ms
-Tab
-Sleep 150ms
+Tab@20ms
+Tab@20ms
+Tab@20ms
+Tab@20ms
+Set TypingSpeed 30ms
 
 Enter
 Sleep 2200ms
@@ -98,32 +91,21 @@ Sleep 1200ms
 
 # === Session 2: Web App with OpenCode, server still running ===
 Type "n"
-Sleep 600ms
-
-Tab
-Sleep 200ms
-Type "Web App"
 Sleep 400ms
 
+Set TypingSpeed 5ms
 Tab
-Sleep 200ms
+Type "Web App"
+Tab
 Backspace 80
 Type "/root/demo-projects/web-app"
-Sleep 400ms
-
+Tab
 # Tool: right-arrow from Claude to OpenCode.
-Tab
-Sleep 200ms
 Right
-Sleep 400ms
-
-# Skip YOLO / Worktree / Sandbox / Group.
-Tab
-Sleep 150ms
-Tab
-Sleep 150ms
-Tab
-Sleep 150ms
+Tab@20ms
+Tab@20ms
+Tab@20ms
+Set TypingSpeed 30ms
 
 Enter
 Sleep 2500ms
