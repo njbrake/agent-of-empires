@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use clap::Args;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 #[derive(Args)]
 pub struct ServeArgs {
@@ -51,6 +52,47 @@ pub struct ServeArgs {
 pub fn pid_file_path() -> Result<PathBuf> {
     let dir = crate::session::get_app_dir()?;
     Ok(dir.join("serve.pid"))
+}
+
+/// Cached read of `$APP_DIR/serve.mode`, keyed on the current daemon
+/// PID. The status bar calls this on every render frame; without
+/// caching, that's a syscall + file read per frame just to compute a
+/// one-word label. We re-read the mode file only when the PID changes
+/// (daemon restart, fresh spawn), which is exactly when the mode could
+/// have changed.
+///
+/// Returns `None` when no daemon is running OR when the mode file is
+/// missing/unparseable. Callers can treat both cases the same way:
+/// "show the generic Serving label, no mode tag."
+pub fn cached_serve_mode_label() -> Option<&'static str> {
+    static CACHE: Mutex<Option<(u32, Option<&'static str>)>> = Mutex::new(None);
+
+    let pid = daemon_pid()?;
+    if let Ok(mut guard) = CACHE.lock() {
+        if let Some((cached_pid, cached_label)) = *guard {
+            if cached_pid == pid {
+                return cached_label;
+            }
+        }
+        let label = read_serve_mode_label();
+        *guard = Some((pid, label));
+        label
+    } else {
+        // Lock poisoned (only happens if a previous holder panicked
+        // while reading the file); fall back to a fresh read so the
+        // status bar still works.
+        read_serve_mode_label()
+    }
+}
+
+fn read_serve_mode_label() -> Option<&'static str> {
+    let dir = crate::session::get_app_dir().ok()?;
+    let raw = std::fs::read_to_string(dir.join("serve.mode")).ok()?;
+    match raw.trim() {
+        "local" => Some("local"),
+        "tunnel" => Some("tunnel"),
+        _ => None,
+    }
 }
 
 /// Cross-platform check that `pid` belongs to an aoe / agent-of-empires

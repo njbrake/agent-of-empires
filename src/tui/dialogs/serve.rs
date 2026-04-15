@@ -672,8 +672,8 @@ fn diagnose_daemon_exit(log: &str, mode: ServeMode) -> &'static str {
         };
     }
     if log.contains("EADDRINUSE") || log.contains("Address already in use") {
-        return "\n\nHint: the picked port is already in use. Try again; \
-                we pick a new random port each attempt.";
+        return "\n\nHint: the daemon couldn't bind the picked port. \
+                Reopen the dialog to try again with a fresh random port.";
     }
     if log.contains("Permission denied") {
         return "\n\nHint: permission denied on bind. Are you trying a \
@@ -1252,8 +1252,6 @@ fn render_active(
     let url_prefix = "URL: ";
     let full_url_len = url_prefix.chars().count() + full_url.chars().count();
     let (split_url, split_token) = split_url_and_token(full_url);
-    let split_url_line_len = url_prefix.chars().count() + split_url.chars().count();
-    let split_token_line_len = split_token.map(|t| 7 + t.chars().count()).unwrap_or(0);
 
     // Dialog wants to fit the full URL on one line. Floor at 80 for
     // breathing room; cap by terminal width.
@@ -1414,9 +1412,6 @@ fn render_active(
             idx += 1;
         }
     }
-    // Currently unused but kept for future layout tweaks that might
-    // want to size against the split lengths.
-    let _ = (split_url_line_len, split_token_line_len);
 
     if show_passphrase {
         let (pp_label, pp_style) = match passphrase {

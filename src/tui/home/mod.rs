@@ -837,7 +837,7 @@ impl HomeView {
             }
         }
 
-        // Poll remote-access dialog for subprocess startup events.
+        // Poll serve dialog for subprocess startup events.
         #[cfg(feature = "serve")]
         if let Some(dialog) = &mut self.serve_dialog {
             if dialog.tick() {

@@ -774,36 +774,26 @@ impl HomeView {
 
         // Serve indicator: shown only when the `aoe serve` daemon is live.
         // The TUI does not own the daemon, so we probe the PID file each
-        // render. Mode is read from serve.mode (written by the daemon) so
-        // the status bar can distinguish Local vs Tunnel. Feature-gated
-        // alongside the rest of the serve-specific code.
+        // render. Mode comes from a PID-keyed cache so we don't read the
+        // serve.mode file from disk on every frame; the cache invalidates
+        // whenever the daemon PID changes (restart / fresh spawn).
         #[cfg(feature = "serve")]
-        if crate::cli::serve::daemon_pid().is_some() {
-            let mode_label = match std::fs::read_to_string(
-                crate::session::get_app_dir()
-                    .map(|d| d.join("serve.mode"))
-                    .unwrap_or_default(),
-            )
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            {
-                Some("local") => Some("local"),
-                Some("tunnel") => Some("tunnel"),
-                _ => None,
-            };
-            // Drop the parenthetical under ~40 cols worth of status-bar
-            // budget. We don't know the width here, so rely on the full
-            // label and let the right-edge truncate do its thing — the
-            // important part (● Serving) lands first.
-            let label = match mode_label {
-                Some(m) => format!(" \u{25CF} Serving ({}) ", m),
-                None => " \u{25CF} Serving ".to_string(),
-            };
-            spans.extend([
-                Span::styled(label, Style::default().fg(theme.running).bold()),
-                Span::styled("│", sep_style),
-            ]);
+        {
+            let mode_label = crate::cli::serve::cached_serve_mode_label();
+            // cached_serve_mode_label() returns None both for "no daemon"
+            // and "daemon but mode unknown", so check the daemon PID to
+            // distinguish — only render the indicator when there's a
+            // daemon, with the mode tag if we have it.
+            if crate::cli::serve::daemon_pid().is_some() {
+                let label = match mode_label {
+                    Some(m) => format!(" \u{25CF} Serving ({}) ", m),
+                    None => " \u{25CF} Serving ".to_string(),
+                };
+                spans.extend([
+                    Span::styled(label, Style::default().fg(theme.running).bold()),
+                    Span::styled("│", sep_style),
+                ]);
+            }
         }
 
         spans.extend([

@@ -60,7 +60,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("n/N", "Next/prev match"),
                 ("s", "Settings"),
                 ("P", "Profiles"),
-                ("R", "Remote access (phone)"),
+                ("R", "Serve (LAN / Tunnel)"),
                 ("?", "Toggle help"),
                 ("q", "Quit"),
             ],
