@@ -12,6 +12,7 @@ interface Args {
   onToggleDiff: () => void;
   onOpenSettings: () => void;
   onOpenHelp: () => void;
+  onOpenAbout: () => void;
   onGoDashboard: () => void;
   onToggleSidebar: () => void;
   onLogout: () => void;
@@ -27,6 +28,7 @@ export function useCommandActions({
   onToggleDiff,
   onOpenSettings,
   onOpenHelp,
+  onOpenAbout,
   onGoDashboard,
   onToggleSidebar,
   onLogout,
@@ -79,6 +81,14 @@ export function useCommandActions({
       perform: onOpenHelp,
     });
 
+    actions.push({
+      id: "action:about",
+      title: "About Agent of Empires",
+      group: "Actions",
+      keywords: ["info", "version", "links", "github", "website"],
+      perform: onOpenAbout,
+    });
+
     if (loginRequired) {
       actions.push({
         id: "action:logout",
@@ -125,6 +135,7 @@ export function useCommandActions({
     onToggleDiff,
     onOpenSettings,
     onOpenHelp,
+    onOpenAbout,
     onGoDashboard,
     onToggleSidebar,
     onLogout,

@@ -12,11 +12,16 @@ interface Props {
 
 export function CommandPalette({ open, onClose, actions }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (open) {
+      previousFocusRef.current = document.activeElement as HTMLElement | null;
       const t = setTimeout(() => inputRef.current?.focus(), 0);
-      return () => clearTimeout(t);
+      return () => {
+        clearTimeout(t);
+        previousFocusRef.current?.focus?.();
+      };
     }
   }, [open]);
 
@@ -39,6 +44,9 @@ export function CommandPalette({ open, onClose, actions }: Props) {
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
       className="fixed inset-0 z-[60] flex items-start justify-center bg-black/60 animate-fade-in pt-[15vh] px-3"
       onClick={onClose}
       data-testid="command-palette-backdrop"

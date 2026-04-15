@@ -96,6 +96,16 @@ test.describe("Command palette", () => {
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).toBeVisible();
   });
 
+  test("About action opens About modal", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/");
+    await page.locator("body").click();
+    await page.keyboard.press("Control+k");
+    await page.getByPlaceholder("Search actions, sessions, settings…").fill("About Agent");
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("heading", { name: "Agent of Empires" })).toBeVisible();
+  });
+
   test("mobile: palette icon button opens palette", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");

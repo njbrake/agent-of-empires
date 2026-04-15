@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import type { SessionResponse, Workspace } from "../lib/types";
 import { PaletteTriggerPill } from "./PaletteTriggerPill";
 import { OverflowMenu, type OverflowItem } from "./OverflowMenu";
@@ -12,6 +13,7 @@ interface Props {
   diffFileCount: number;
   onOpenSettings: () => void;
   onOpenHelp: () => void;
+  onOpenAbout: () => void;
   onLogout: () => void;
   loginRequired: boolean;
   isOffline: boolean;
@@ -28,6 +30,7 @@ export function TopBar({
   diffFileCount,
   onOpenSettings,
   onOpenHelp,
+  onOpenAbout,
   onLogout,
   loginRequired,
   isOffline,
@@ -36,11 +39,15 @@ export function TopBar({
   const repoName =
     activeWorkspace?.projectPath.split("/").filter(Boolean).pop() ?? null;
 
-  const overflowItems: OverflowItem[] = [
-    { label: "Settings", onClick: onOpenSettings },
-    { label: "Keyboard shortcuts", onClick: onOpenHelp },
-  ];
-  if (loginRequired) overflowItems.push({ label: "Sign out", onClick: onLogout });
+  const overflowItems = useMemo<OverflowItem[]>(() => {
+    const items: OverflowItem[] = [
+      { label: "Settings", onClick: onOpenSettings },
+      { label: "Keyboard shortcuts", onClick: onOpenHelp },
+      { label: "About", onClick: onOpenAbout },
+    ];
+    if (loginRequired) items.push({ label: "Sign out", onClick: onLogout });
+    return items;
+  }, [onOpenSettings, onOpenHelp, onOpenAbout, onLogout, loginRequired]);
 
   return (
     <header className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2">

@@ -18,6 +18,7 @@ import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
+import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 
 export default function App() {
@@ -69,6 +70,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => window.innerWidth >= 768,
   );
@@ -177,6 +179,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setShowHelp(true);
   }, []);
 
+  const handleOpenAbout = useCallback(() => {
+    setShowAbout(true);
+  }, []);
+
   const handleToggleSidebar = useCallback(() => {
     setSidebarOpen((o) => !o);
   }, []);
@@ -198,6 +204,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           setShowAddProject(false);
           setShowHelp(false);
           setShowSettings(false);
+          setShowAbout(false);
           setSelectedFilePath(null);
         },
         onHelp: () => setShowHelp((h) => !h),
@@ -218,6 +225,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     onToggleDiff: toggleDiff,
     onOpenSettings: handleOpenSettings,
     onOpenHelp: handleOpenHelp,
+    onOpenAbout: handleOpenAbout,
     onGoDashboard: handleGoDashboard,
     onToggleSidebar: handleToggleSidebar,
     onLogout,
@@ -293,6 +301,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         diffFileCount={diffFiles.length}
         onOpenSettings={handleOpenSettings}
         onOpenHelp={handleOpenHelp}
+        onOpenAbout={handleOpenAbout}
         onLogout={onLogout}
         loginRequired={loginRequired}
         isOffline={!!error}
@@ -327,6 +336,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       )}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
+
+      {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
 
       <CommandPalette
         open={showPalette}

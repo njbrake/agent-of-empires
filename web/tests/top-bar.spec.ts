@@ -43,6 +43,27 @@ test.describe("Top bar", () => {
     await expect(page.getByRole("heading", { name: "Keyboard Shortcuts" })).toBeVisible();
   });
 
+  test("overflow About opens About modal with links", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "More options" }).click();
+    await page.getByRole("menuitem", { name: "About" }).click();
+    await expect(page.getByRole("heading", { name: "Agent of Empires" })).toBeVisible();
+    await expect(page.getByRole("link", { name: /agent-of-empires\.com/i })).toBeVisible();
+    await expect(page.getByRole("link", { name: /github\.com\/njbrake/i })).toBeVisible();
+    await expect(page.getByRole("link", { name: /@natebrake/i })).toBeVisible();
+  });
+
+  test("About modal closes on Escape", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "More options" }).click();
+    await page.getByRole("menuitem", { name: "About" }).click();
+    await expect(page.getByRole("heading", { name: "Agent of Empires" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("heading", { name: "Agent of Empires" })).not.toBeVisible();
+  });
+
   test("offline indicator shows when API unreachable", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByText("offline")).toBeVisible();
