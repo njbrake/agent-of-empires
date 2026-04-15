@@ -4,6 +4,7 @@ import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { useWebSettings } from "../hooks/useWebSettings";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
+import { ensureSession } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
 import "@xterm/xterm/css/xterm.css";
 
@@ -15,12 +16,34 @@ const SCROLL_HINT_SEEN_KEY = "aoe-mobile-scroll-hint-seen";
 const SCROLL_HINT_TIMEOUT_MS = 8000;
 
 export function TerminalView({ session }: Props) {
+  const [ensureState, setEnsureState] = useState<"pending" | "ready" | "error">(
+    "pending",
+  );
   const { containerRef, termRef, state, manualReconnect, sendData } =
-    useTerminal(session.id);
+    useTerminal(ensureState === "ready" ? session.id : null);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const { settings } = useWebSettings();
   const proxyRef = useRef<HTMLInputElement>(null);
   const [proxyFocused, setProxyFocused] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEnsureState("pending");
+    ensureSession(session.id).then((ok) => {
+      if (cancelled) return;
+      setEnsureState(ok ? "ready" : "error");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.id]);
+
+  const retryEnsure = useCallback(() => {
+    setEnsureState("pending");
+    ensureSession(session.id).then((ok) => {
+      setEnsureState(ok ? "ready" : "error");
+    });
+  }, [session.id]);
   const [hintDismissed, setHintDismissed] = useState(() => {
     try {
       return localStorage.getItem(SCROLL_HINT_SEEN_KEY) === "1";
@@ -88,6 +111,30 @@ export function TerminalView({ session }: Props) {
       c?.removeEventListener("touchmove", markSeen);
     };
   }, [showScrollHint, containerRef]);
+
+  if (ensureState === "pending") {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
+        <span className="text-xs">Starting session...</span>
+      </div>
+    );
+  }
+
+  if (ensureState === "error") {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 gap-2">
+        <span className="text-xs text-status-error">
+          Could not start session.
+        </span>
+        <button
+          onClick={retryEnsure}
+          className="text-xs text-brand-500 hover:text-brand-400 cursor-pointer underline"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">

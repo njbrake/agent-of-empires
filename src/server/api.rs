@@ -331,6 +331,128 @@ pub async fn create_session(
     }
 }
 
+// --- Ensure agent session ---
+
+/// Ensure the main agent tmux session is alive, restarting it if dead.
+///
+/// Mirrors the TUI's `attach_session` restart logic: checks the actual tmux
+/// state (exists / pane dead / running unexpected shell) and restarts the
+/// instance when needed. Returns the resulting status so the frontend can
+/// decide whether to proceed with the WebSocket attach.
+pub async fn ensure_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let instances = state.instances.read().await;
+    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response();
+    };
+    drop(instances);
+
+    let tmux_session = match instance.tmux_session() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to resolve tmux session for {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response();
+        }
+    };
+
+    let exists = tmux_session.exists();
+    let pane_dead = if exists {
+        tmux_session.is_pane_dead()
+    } else {
+        false
+    };
+    let needs_restart = if !exists || pane_dead {
+        true
+    } else if crate::hooks::read_hook_status(&instance.id).is_some() {
+        // Hook status is tracking this session; shell detection is unreliable.
+        false
+    } else if instance.has_command_override() {
+        // Custom command overrides run agents through wrapper scripts that appear
+        // as shell processes to tmux. Don't restart based on shell detection.
+        false
+    } else {
+        !instance.expects_shell() && tmux_session.is_pane_running_shell()
+    };
+
+    tracing::debug!(
+        session_id = id,
+        exists,
+        pane_dead,
+        needs_restart,
+        "ensure_session: restart decision"
+    );
+
+    if !needs_restart {
+        return (StatusCode::OK, Json(serde_json::json!({"status": "alive"}))).into_response();
+    }
+
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            inst.status = crate::session::Status::Starting;
+            inst.last_error = None;
+        }
+    }
+
+    let restart_result = tokio::task::spawn_blocking(move || {
+        if tmux_session.exists() {
+            let _ = tmux_session.kill();
+        }
+        let mut inst = instance;
+        inst.start_with_size_opts(None, false).map(|_| inst)
+    })
+    .await;
+
+    match restart_result {
+        Ok(Ok(started)) => {
+            let mut instances = state.instances.write().await;
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                inst.status = started.status;
+                inst.last_error = None;
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "restarted"})),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            tracing::warn!("ensure_session restart failed for {id}: {msg}");
+            let mut instances = state.instances.write().await;
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                inst.status = crate::session::Status::Error;
+                inst.last_error = Some(msg.clone());
+            }
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"error": "restart_failed", "message": "Failed to restart session"}),
+                ),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("ensure_session panicked for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 // --- Paired terminal ---
 
 pub async fn ensure_terminal(

@@ -23,6 +23,17 @@ export async function fetchSessions(): Promise<SessionResponse[] | null> {
   }
 }
 
+export async function ensureSession(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/sessions/${id}/ensure`, {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureTerminal(
   id: string,
   container = false,
