@@ -48,22 +48,6 @@ Each agent runs in its own [tmux](https://github.com/tmux/tmux/wiki) session, so
 
 The key tmux shortcut to know: **`Ctrl+b d`** detaches from a session and returns to the TUI.
 
-## Web Dashboard
-
-Same sessions, any browser. xterm.js renders the live pane over a WebSocket PTY relay, so colors, cursor position, and keystrokes behave like a real terminal. Installable as a PWA on desktop and mobile.
-
-<p align="center">
-  <img src="docs/assets/web-desktop.gif" alt="Web dashboard on desktop" width="720">
-  <br>
-  <em>Desktop: click a session, type into a live terminal.</em>
-</p>
-
-<p align="center">
-  <img src="docs/assets/web-mobile.gif" alt="Web dashboard on mobile" width="320">
-  <br>
-  <em>Mobile: same dashboard, installable as a PWA from Safari or Chrome.</em>
-</p>
-
 ## Installation
 
 **Prerequisites:** [tmux](https://github.com/tmux/tmux/wiki) (required), [Docker](https://www.docker.com/) (optional, for sandboxing)
