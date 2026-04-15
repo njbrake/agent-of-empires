@@ -2,14 +2,6 @@ interface Props {
   onClose: () => void;
 }
 
-const SHORTCUTS = [
-  { key: "n", desc: "New session" },
-  { key: "D", desc: "Toggle diff panel" },
-  { key: "s", desc: "Toggle settings" },
-  { key: "Esc", desc: "Close dialog" },
-  { key: "?", desc: "Toggle this help" },
-];
-
 const TERMINAL_SHORTCUTS = [
   { key: "All keys", desc: "Relayed directly to the agent via PTY" },
   { key: "Ctrl+C", desc: "Send interrupt to agent" },
@@ -17,7 +9,22 @@ const TERMINAL_SHORTCUTS = [
   { key: "Up/Down", desc: "Scroll terminal history" },
 ];
 
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+
 export function HelpOverlay({ onClose }: Props) {
+  const modKey = IS_MAC ? "⌘" : "Ctrl";
+
+  const shortcuts = [
+    { key: `${modKey}K`, desc: "Open command palette" },
+    { key: "n", desc: "New session" },
+    { key: "D", desc: "Toggle diff panel" },
+    { key: "s", desc: "Toggle settings" },
+    { key: "Esc", desc: "Close dialog" },
+    { key: "?", desc: "Toggle this help" },
+  ];
+
   return (
     <div
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in"
@@ -45,7 +52,7 @@ export function HelpOverlay({ onClose }: Props) {
               Dashboard
             </h3>
             <div className="space-y-1">
-              {SHORTCUTS.map((s) => (
+              {shortcuts.map((s) => (
                 <div key={s.key} className="flex items-center gap-3">
                   <kbd className="font-mono text-sm bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-brand-500 min-w-[32px] text-center">
                     {s.key}
@@ -79,7 +86,8 @@ export function HelpOverlay({ onClose }: Props) {
 
         <div className="px-5 py-3 border-t border-surface-700">
           <p className="text-sm text-text-dim">
-            Shortcuts are disabled when typing in input fields or the terminal.
+            Single-key shortcuts are disabled when typing in inputs. {modKey}K works
+            everywhere.
           </p>
         </div>
       </div>

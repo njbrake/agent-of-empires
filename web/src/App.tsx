@@ -5,9 +5,10 @@ import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDiffFiles } from "./hooks/useDiffFiles";
+import { useCommandActions } from "./hooks/useCommandActions";
 import { createSession, loginStatus, logout } from "./lib/api";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import { WorkspaceHeader } from "./components/WorkspaceHeader";
+import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
 import { RightPanel } from "./components/RightPanel";
@@ -17,6 +18,7 @@ import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
+import { CommandPalette } from "./components/command-palette/CommandPalette";
 
 export default function App() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
@@ -66,6 +68,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [creatingForProject, setCreatingForProject] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => window.innerWidth >= 768,
   );
@@ -76,15 +79,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     (s) => s.id === activeSessionId,
   );
 
-  // Fetch diff files at App level so we can share with RightPanel and viewer.
-  // Only poll when a session is selected and the right panel is visible.
   const { files: diffFiles, baseBranch, warning, loading: diffFilesLoading, revision } =
     useDiffFiles(activeSessionId, !diffCollapsed);
 
-  // Reset file selection when session changes, when the selected file
-  // disappears from the list, or when the list becomes empty (all changes
-  // reverted/committed). Guard on diffFilesLoading so we don't clear the
-  // selection during the brief gap before the first fetch completes.
   useEffect(() => {
     if (!activeSessionId) {
       setSelectedFilePath(null);
@@ -99,7 +96,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
   }, [activeSessionId, diffFiles, diffFilesLoading, selectedFilePath]);
 
-  // Reset file selection when switching sessions.
   useEffect(() => {
     setSelectedFilePath(null);
   }, [activeSessionId]);
@@ -110,7 +106,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
   };
 
-  const handleSelectSession = (sessionId: string) => {
+  const handleSelectSession = useCallback((sessionId: string) => {
     const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
     if (ws) {
       setActiveWorkspaceId(ws.id);
@@ -118,7 +114,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       focusKeyboardProxy();
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
-  };
+  }, [workspaces]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
     setActiveWorkspaceId(workspaceId);
@@ -155,7 +151,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setCreatingForProject(null);
   }, [sessions, creatingForProject]);
 
-  const toggleDiff = () => setDiffCollapsed((c) => !c);
+  const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
 
   const handleSelectFile = useCallback((path: string) => {
     setSelectedFilePath(path);
@@ -165,24 +161,67 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setSelectedFilePath(null);
   }, []);
 
+  const handleGoDashboard = useCallback(() => {
+    setActiveWorkspaceId(null);
+    setActiveSessionId(null);
+    setShowSettings(false);
+    setSelectedFilePath(null);
+  }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    setShowSettings(true);
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  }, []);
+
+  const handleOpenHelp = useCallback(() => {
+    setShowHelp(true);
+  }, []);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen((o) => !o);
+  }, []);
+
+  const handleNewSession = useCallback(() => {
+    setShowAddProject(true);
+  }, []);
+
   useKeyboardShortcuts(
     useCallback(
       () => ({
         onNew: () => setShowAddProject(true),
         onDiff: () => toggleDiff(),
         onEscape: () => {
+          if (showPalette) {
+            setShowPalette(false);
+            return;
+          }
           setShowAddProject(false);
           setShowHelp(false);
           setShowSettings(false);
-          // Also close file diff view if open
           setSelectedFilePath(null);
         },
         onHelp: () => setShowHelp((h) => !h),
         onSettings: () => setShowSettings((s) => !s),
+        onPalette: () => setShowPalette((p) => !p),
       }),
-      [],
+      [toggleDiff, showPalette],
     ),
   );
+
+  const commandActions = useCommandActions({
+    sessions,
+    activeSessionId,
+    loginRequired,
+    hasActiveSession: !!activeSession,
+    onNewSession: handleNewSession,
+    onSelectSession: handleSelectSession,
+    onToggleDiff: toggleDiff,
+    onOpenSettings: handleOpenSettings,
+    onOpenHelp: handleOpenHelp,
+    onGoDashboard: handleGoDashboard,
+    onToggleSidebar: handleToggleSidebar,
+    onLogout,
+  });
 
   const renderContent = () => {
     if (showSettings) {
@@ -200,20 +239,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <WorkspaceHeader
-          workspace={activeWorkspace}
-          activeSession={activeSession}
-          diffCollapsed={diffCollapsed}
-          diffFileCount={diffFiles.length}
-          onToggleDiff={toggleDiff}
-        />
-
         <ContentSplit
           collapsed={diffCollapsed}
           onToggleCollapse={toggleDiff}
           left={
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
-              {/* Terminal kept mounted (hidden when a file diff is shown) to preserve xterm state */}
               <div
                 className={
                   selectedFilePath
@@ -253,94 +283,22 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   return (
     <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
-      {/* Header */}
-      <header className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2">
-        <button
-          onClick={() => setSidebarOpen((o) => !o)}
-          className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors hover:bg-surface-700/50 ${
-            sidebarOpen
-              ? "text-text-secondary hover:text-text-primary"
-              : "text-text-dim hover:text-text-secondary"
-          }`}
-          title="Toggle sidebar"
-          aria-label="Toggle sidebar"
-        >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <line x1="9" y1="3" x2="9" y2="21" />
-          </svg>
-        </button>
+      <TopBar
+        activeWorkspace={activeWorkspace}
+        activeSession={activeSession ?? null}
+        onToggleSidebar={handleToggleSidebar}
+        onOpenPalette={() => setShowPalette(true)}
+        onToggleDiff={toggleDiff}
+        diffCollapsed={diffCollapsed}
+        diffFileCount={diffFiles.length}
+        onOpenSettings={handleOpenSettings}
+        onOpenHelp={handleOpenHelp}
+        onLogout={onLogout}
+        loginRequired={loginRequired}
+        isOffline={!!error}
+        onGoDashboard={handleGoDashboard}
+      />
 
-        <button
-          onClick={() => { setActiveWorkspaceId(null); setActiveSessionId(null); setShowSettings(false); setSelectedFilePath(null); }}
-          className="flex items-center gap-1.5 text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
-          aria-label="Go to dashboard"
-        >
-          <img src="/icon-192.png" alt="" width="18" height="18" className="rounded-sm" />
-          <span className="font-mono text-xs leading-none">aoe</span>
-        </button>
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-1.5">
-          {error && (
-            <span
-              className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/10 text-status-error flex items-center gap-1.5"
-              title="Disconnected from backend"
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-status-error animate-pulse" />
-              offline
-            </span>
-          )}
-          {activeWorkspace && activeSession && (
-            <button
-              onClick={toggleDiff}
-              className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors hover:bg-surface-700/50 ${
-                diffCollapsed
-                  ? "text-text-dim hover:text-text-secondary"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-              title="Toggle diff panel"
-              aria-label="Toggle diff panel"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="15" y1="3" x2="15" y2="21" />
-              </svg>
-            </button>
-          )}
-          {loginRequired && (
-            <button
-              onClick={onLogout}
-              className="px-2 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors text-text-dim hover:text-text-secondary hover:bg-surface-700/50 font-mono text-xs"
-              title="Sign out"
-              aria-label="Sign out"
-            >
-              log out
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Main: sidebar + content */}
       <div className="flex flex-1 min-h-0">
         {sidebarOpen && (
           <WorkspaceSidebar
@@ -369,6 +327,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       )}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
+
+      <CommandPalette
+        open={showPalette}
+        onClose={() => setShowPalette(false)}
+        actions={commandActions}
+      />
 
       <textarea
         ref={keyboardProxyRef}
