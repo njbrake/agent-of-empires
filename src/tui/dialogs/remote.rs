@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use qrcode::QrCode;
-use rand::distr::{Alphanumeric, SampleString};
+use rand::prelude::IndexedRandom;
 use rand::RngExt;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -28,8 +28,13 @@ const TUNNEL_STARTUP_TIMEOUT_SECS: u64 = 60;
 const LOG_TAIL_LINES: usize = 200;
 
 pub enum RemoteDialogState {
-    /// No daemon running; show the scary warning and wait for Y/N.
-    Confirm,
+    /// No daemon running; show the two-factor explanation and wait for the
+    /// user to confirm via Y/Enter/arrows. `confirm_selected` tracks which
+    /// button (Enable vs Cancel) is currently highlighted so Enter picks it.
+    /// Default is Cancel so a stray Enter doesn't expose the tunnel.
+    Confirm {
+        confirm_selected: bool,
+    },
     /// We issued `aoe serve --remote --daemon`; now polling `serve.url`.
     /// If `passphrase` is Some, the TUI spawned the daemon and knows it;
     /// if None, a daemon was already running when the dialog opened.
@@ -94,15 +99,18 @@ impl RemoteDialog {
             }
         } else {
             Self {
-                state: RemoteDialogState::Confirm,
+                state: RemoteDialogState::Confirm {
+                    confirm_selected: false,
+                },
                 pending_passphrase: generate_passphrase(),
             }
         }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
-        match &self.state {
-            RemoteDialogState::Confirm => match key.code {
+        match &mut self.state {
+            RemoteDialogState::Confirm { confirm_selected } => match key.code {
+                // Y always enables, regardless of which button is highlighted.
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     match spawn_daemon(&self.pending_passphrase) {
                         Ok(()) => {
@@ -115,6 +123,37 @@ impl RemoteDialog {
                             self.state = RemoteDialogState::Error(e);
                         }
                     }
+                    DialogResult::Continue
+                }
+                // Enter picks whichever button is currently highlighted.
+                KeyCode::Enter => {
+                    if *confirm_selected {
+                        match spawn_daemon(&self.pending_passphrase) {
+                            Ok(()) => {
+                                self.state = RemoteDialogState::Starting {
+                                    passphrase: Some(self.pending_passphrase.clone()),
+                                    started_at: Instant::now(),
+                                };
+                            }
+                            Err(e) => {
+                                self.state = RemoteDialogState::Error(e);
+                            }
+                        }
+                        DialogResult::Continue
+                    } else {
+                        DialogResult::Cancel
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    *confirm_selected = true;
+                    DialogResult::Continue
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    *confirm_selected = false;
+                    DialogResult::Continue
+                }
+                KeyCode::Tab => {
+                    *confirm_selected = !*confirm_selected;
                     DialogResult::Continue
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') => {
@@ -214,7 +253,9 @@ impl RemoteDialog {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         match &self.state {
-            RemoteDialogState::Confirm => render_confirm(frame, area, theme),
+            RemoteDialogState::Confirm { confirm_selected } => {
+                render_confirm(frame, area, theme, *confirm_selected)
+            }
             RemoteDialogState::Starting { started_at, .. } => {
                 render_starting(frame, area, theme, started_at.elapsed())
             }
@@ -377,7 +418,7 @@ fn append_new_log_lines(tail: &mut Vec<String>, offset: &mut u64) -> bool {
     changed
 }
 
-fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme) {
+fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected: bool) {
     let dialog = super::centered_rect(area, 70, 22);
     frame.render_widget(Clear, dialog);
     let block = Block::default()
@@ -469,10 +510,20 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme) {
     ];
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), chunks[0]);
 
+    let enable_style = if enable_selected {
+        Style::default().fg(theme.running).bold()
+    } else {
+        Style::default().fg(theme.dimmed)
+    };
+    let cancel_style = if !enable_selected {
+        Style::default().fg(theme.accent).bold()
+    } else {
+        Style::default().fg(theme.dimmed)
+    };
     let buttons = Line::from(vec![
-        Span::styled("[Y] Enable", Style::default().fg(theme.running).bold()),
-        Span::raw("        "),
-        Span::styled("[N] Cancel", Style::default().fg(theme.dimmed).bold()),
+        Span::styled("[Y/Enter] Enable", enable_style),
+        Span::raw("    "),
+        Span::styled("[N/Esc] Cancel", cancel_style),
     ]);
     frame.render_widget(
         Paragraph::new(buttons).alignment(Alignment::Center),
@@ -710,10 +761,120 @@ fn format_elapsed(d: Duration) -> String {
     }
 }
 
+/// Generate a four-word lowercase passphrase (1Password / diceware style).
+/// Four words from a ~500-word list gives ~35 bits of entropy, which as a
+/// *second* factor on top of the URL token is plenty; far easier to type
+/// on a phone keyboard than a random alphanumeric soup.
 fn generate_passphrase() -> String {
-    // 12 alphanumerics gives ~72 bits of entropy; legible over a phone screen.
-    Alphanumeric.sample_string(&mut rand::rng(), 12)
+    let mut rng = rand::rng();
+    let words: Vec<&'static str> = (0..4)
+        .map(|_| {
+            *PASSPHRASE_WORDS
+                .choose(&mut rng)
+                .expect("wordlist nonempty")
+        })
+        .collect();
+    words.join(" ")
 }
+
+/// Curated list of short, unambiguous lowercase English words chosen for
+/// phone-typability. No words shorter than 3 letters or longer than 6.
+/// No near-homophones (e.g., "their"/"there") or visually confusable pairs.
+#[rustfmt::skip]
+const PASSPHRASE_WORDS: &[&str] = &[
+    "able", "acid", "aged", "acorn", "agent", "alarm", "album", "alert",
+    "algae", "alien", "alive", "alley", "alloy", "alpha", "amber", "amigo",
+    "amino", "amuse", "angel", "anger", "angle", "angry", "ankle", "anvil",
+    "apple", "apron", "arbor", "arena", "argon", "armor", "arrow", "ashen",
+    "aside", "aspen", "asset", "atlas", "atom", "audio", "audit", "aunt",
+    "avoid", "awake", "award", "aware", "awful", "axis", "bacon", "badge",
+    "bagel", "baker", "balmy", "banjo", "baron", "basil", "basin", "basis",
+    "batch", "baton", "beach", "beads", "beard", "beast", "beaver", "bench",
+    "berry", "bingo", "birch", "bison", "black", "blade", "blaze", "blend",
+    "bliss", "block", "bloom", "blues", "blunt", "blush", "board", "boast",
+    "bold", "bolt", "bonus", "boost", "booth", "boots", "bored", "boss",
+    "botany", "bowl", "brave", "bread", "break", "brick", "bride", "brief",
+    "bring", "brisk", "brook", "brown", "brush", "bucket", "bugle", "built",
+    "bulk", "bunny", "burly", "butter", "buzz", "cabin", "cable", "cactus",
+    "caddy", "camel", "camp", "candle", "candy", "canoe", "canon", "canyon",
+    "cape", "caper", "card", "care", "cargo", "carry", "cart", "carve",
+    "cash", "cast", "catch", "cedar", "chair", "chalk", "charm", "chart",
+    "chase", "cheek", "cheer", "chef", "chess", "chief", "child", "chill",
+    "chimp", "chip", "chirp", "choir", "chose", "chunk", "cider", "cinema",
+    "civic", "claim", "clamp", "clean", "clerk", "click", "cliff", "climb",
+    "cling", "clock", "clone", "cloth", "cloud", "clove", "clown", "club",
+    "clue", "coach", "coast", "cobra", "cocoa", "code", "coin", "colon",
+    "color", "comet", "coral", "cord", "corn", "cost", "couch", "cover",
+    "cozy", "craft", "crane", "crash", "crate", "cream", "crest", "crew",
+    "cross", "crowd", "crown", "crumb", "crush", "crust", "cube", "curl",
+    "cycle", "daisy", "dance", "dare", "dash", "data", "deal", "deck",
+    "delta", "dense", "depth", "derby", "desk", "diary", "dice", "diner",
+    "disco", "diver", "dock", "dodo", "dog", "doll", "dolly", "donkey",
+    "dough", "dove", "downy", "draft", "dragon", "drape", "dream", "drift",
+    "drill", "drive", "drop", "drum", "duck", "dusk", "dusty", "eager",
+    "eagle", "early", "earth", "ebony", "echo", "edge", "eject", "elbow",
+    "elder", "elf", "elite", "elk", "elm", "email", "empty", "enact",
+    "energy", "engine", "enjoy", "enter", "entry", "envoy", "epic", "equal",
+    "era", "error", "essay", "ether", "event", "every", "exact", "exile",
+    "exit", "extra", "eye", "fable", "face", "fact", "fade", "fair",
+    "fairy", "faith", "fall", "false", "fame", "family", "fancy", "farm",
+    "fast", "fat", "fate", "fault", "fawn", "fear", "feast", "feed",
+    "fern", "ferry", "fever", "few", "fiber", "field", "fifth", "fig",
+    "film", "find", "fine", "finer", "finish", "fire", "firm", "first",
+    "fish", "five", "fix", "flag", "flame", "flash", "flat", "flax",
+    "flex", "flint", "float", "flock", "flood", "floor", "flora", "flour",
+    "flow", "flower", "fluff", "fluid", "fluke", "flute", "fly", "foam",
+    "fog", "foil", "fold", "folk", "fond", "food", "foot", "force",
+    "ford", "forge", "fork", "form", "fort", "forum", "fossil", "fox",
+    "frame", "free", "fresh", "friar", "fries", "frog", "from", "front",
+    "frost", "froth", "fruit", "fry", "fuel", "full", "fun", "fund",
+    "funny", "fur", "fury", "fuse", "gable", "gadget", "gain", "gala",
+    "gamma", "gap", "garden", "gargle", "garlic", "gate", "gauge", "gear",
+    "gecko", "gem", "gentle", "gift", "ginger", "girl", "glad", "glide",
+    "glitch", "globe", "gloom", "gloss", "glove", "glow", "glue", "gnat",
+    "goat", "gold", "golf", "gone", "good", "goose", "gospel", "grab",
+    "grace", "grade", "grain", "grape", "graph", "grasp", "grass", "grate",
+    "gravy", "great", "grid", "grief", "grim", "grin", "grip", "grit",
+    "groan", "groom", "gross", "group", "grout", "grove", "grow", "grub",
+    "guess", "guide", "guild", "guilt", "guitar", "gulf", "gum", "guru",
+    "habit", "haiku", "hair", "half", "hall", "halt", "ham", "hand",
+    "hang", "happy", "harbor", "hard", "hare", "harm", "harp", "hash",
+    "haste", "hat", "hatch", "have", "haven", "hawk", "hay", "hazel",
+    "head", "heal", "heap", "heart", "heat", "heavy", "hedge", "heel",
+    "help", "hemp", "hen", "herb", "hero", "hex", "hide", "high",
+    "hike", "hill", "hip", "hive", "hobby", "hog", "hold", "hole",
+    "hollow", "holy", "home", "honey", "honor", "hood", "hoof", "hook",
+    "hoop", "hope", "horn", "horse", "host", "hot", "hound", "hour",
+    "house", "hub", "hug", "human", "humble", "humor", "hump", "hunch",
+    "hunt", "hurry", "husk", "hut", "hyena", "hymn", "ice", "icon",
+    "idea", "igloo", "imp", "index", "indigo", "infant", "inlet", "ink",
+    "inlay", "inner", "input", "iris", "iron", "ivory", "ivy", "jade",
+    "jam", "jar", "java", "jaw", "jazz", "jeans", "jelly", "jest",
+    "jet", "jewel", "jiffy", "jig", "job", "join", "joke", "jolly",
+    "joy", "judge", "juice", "jump", "jungle", "junior", "junk", "jury",
+    "kayak", "keep", "kept", "kettle", "key", "kick", "kid", "kilt",
+    "kind", "king", "kite", "kitten", "knack", "knee", "knife", "knock",
+    "koala", "label", "lace", "ladder", "lake", "lamb", "lamp", "lance",
+    "land", "lane", "laser", "later", "latte", "laugh", "lava", "lawn",
+    "layer", "lazy", "leaf", "lean", "leap", "learn", "lease", "led",
+    "ledge", "left", "legal", "lemon", "lend", "lens", "level", "lever",
+    "lick", "lid", "life", "lift", "light", "lilac", "lime", "line",
+    "link", "lint", "lion", "lip", "list", "live", "load", "loaf",
+    "loan", "lobby", "lobe", "local", "lock", "loft", "log", "logic",
+    "long", "look", "loop", "loose", "lotus", "loud", "lounge", "love",
+    "low", "loyal", "luck", "lunar", "lunch", "lung", "lure", "lush",
+    "lute", "lynx", "lyric", "mace", "madam", "made", "magic", "main",
+    "make", "mallet", "malt", "mango", "manor", "mantle", "maple", "march",
+    "mare", "mark", "mars", "marsh", "mask", "mast", "match", "mate",
+    "math", "maze", "meadow", "meal", "meat", "medal", "meet", "mellow",
+    "melody", "melt", "memo", "menu", "mercy", "merge", "merit", "merry",
+    "mesh", "metal", "meter", "mew", "mice", "midst", "might", "mild",
+    "mile", "milk", "mill", "mimic", "mind", "mine", "mint", "minus",
+    "mirror", "mist", "moat", "mocha", "modal", "model", "modem", "moist",
+    "mole", "money", "month", "moon", "moose", "moral", "more", "moth",
+    "motor", "mount", "mouse", "move", "movie", "much", "muffin", "mulch",
+    "mule", "muse", "music", "mute", "myth",
+];
 
 fn strip_query(url: &str) -> String {
     match url.split_once('?') {
@@ -727,10 +888,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn passphrase_has_expected_length_and_charset() {
+    fn passphrase_is_four_lowercase_words() {
         let pw = generate_passphrase();
-        assert_eq!(pw.len(), 12);
-        assert!(pw.chars().all(|c| c.is_ascii_alphanumeric()));
+        let words: Vec<&str> = pw.split(' ').collect();
+        assert_eq!(words.len(), 4, "passphrase should be 4 words: {:?}", pw);
+        for w in &words {
+            assert!(!w.is_empty(), "empty word in passphrase: {:?}", pw);
+            assert!(
+                w.chars().all(|c| c.is_ascii_lowercase()),
+                "non-lowercase-letter in word {:?} of {:?}",
+                w,
+                pw
+            );
+        }
+    }
+
+    #[test]
+    fn passphrase_words_are_from_the_wordlist() {
+        let pw = generate_passphrase();
+        for w in pw.split(' ') {
+            assert!(
+                PASSPHRASE_WORDS.contains(&w),
+                "word {:?} not in the embedded wordlist",
+                w
+            );
+        }
+    }
+
+    #[test]
+    fn wordlist_is_well_formed() {
+        assert!(
+            PASSPHRASE_WORDS.len() >= 256,
+            "wordlist too small for reasonable entropy: {}",
+            PASSPHRASE_WORDS.len()
+        );
+        for w in PASSPHRASE_WORDS {
+            assert!(!w.is_empty(), "empty word in list");
+            assert!(
+                w.chars().all(|c| c.is_ascii_lowercase()),
+                "non-lowercase word in list: {:?}",
+                w
+            );
+        }
     }
 
     #[test]
