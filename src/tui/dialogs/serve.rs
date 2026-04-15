@@ -1241,27 +1241,42 @@ fn render_active(
     let qr_height = qr_lines.len() as u16;
     let qr_width = qr_lines.first().map(|l| l.chars().count()).unwrap_or(0) as u16;
 
-    // Show the full URL (including `?token=...`) as a single, contiguous
-    // string. The user can triple-click it in their terminal and paste it
-    // straight into a browser — anything less (URL and token on separate
-    // rows) forces them to reconstruct the query string by hand, which
-    // is a real drag on cellular from a phone or a chat app. The QR is
-    // still the fastest path; this row is for copy-paste.
+    // We want to show the full URL (including `?token=...`) on ONE line
+    // so the user can triple-click it and paste straight into a browser.
+    // That only works when the terminal is wide enough; on narrower
+    // terminals the combined string would clip off the right edge, which
+    // is worse than the split display because the token half disappears
+    // entirely. So: prefer the combined row, fall back to URL + Token on
+    // separate rows when we can't fit.
     let full_url = url.as_str();
     let url_prefix = "URL: ";
     let full_url_len = url_prefix.chars().count() + full_url.chars().count();
+    let (split_url, split_token) = split_url_and_token(full_url);
+    let split_url_line_len = url_prefix.chars().count() + split_url.chars().count();
+    let split_token_line_len = split_token.map(|t| 7 + t.chars().count()).unwrap_or(0);
 
-    // Dialog wants to fit the full URL on one line (URL + prefix + some
-    // padding). On narrow terminals we fall back to wrapping, computed
-    // below. Floor at 80 for breathing room.
+    // Dialog wants to fit the full URL on one line. Floor at 80 for
+    // breathing room; cap by terminal width.
     let want_width = (qr_width + 6).max((full_url_len + 4) as u16).max(80);
     let log_height: u16 = 6;
 
     let dialog_width = want_width.min(area.width);
-    // Inner width available for the URL row after the dialog border (1 col
-    // each side) and the layout margin (1 col each side) are subtracted.
+    // Inner width available for a content row after the dialog border
+    // (1 col each side) and the layout margin (1 col each side).
     let url_inner_width = dialog_width.saturating_sub(4).max(1) as usize;
-    let url_row_height: u16 = full_url_len.div_ceil(url_inner_width).clamp(1, 4) as u16;
+    // Combined URL fits on one line = copy-paste friendly rendering.
+    // Otherwise fall back to split so at least both halves are visible.
+    let url_fits_one_line = full_url_len <= url_inner_width;
+    let url_row_height: u16 = if url_fits_one_line {
+        1
+    } else {
+        // Fallback: base URL row + token row (if there is a token).
+        if split_token.is_some() {
+            2
+        } else {
+            1
+        }
+    };
 
     let want_height = qr_height
         + url_row_height
@@ -1306,16 +1321,20 @@ fn render_active(
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
-    // Layout: QR, optional kind label (Local mode w/ label), full URL row
-    // (wraps on narrow terminals), optional passphrase (Tunnel only),
-    // elapsed, log tail, footer.
+    // Layout: QR, optional kind label, URL row(s) (either a single full
+    // URL for copy-paste, or split URL/Token fallback), optional
+    // passphrase (Tunnel only), elapsed, log tail, footer.
     let show_passphrase = matches!(mode, ServeMode::Tunnel);
     let show_kind_label = kind_label.is_some();
+    let show_split_token = !url_fits_one_line && split_token.is_some();
     let mut constraints = vec![Constraint::Length(qr_height)];
     if show_kind_label {
         constraints.push(Constraint::Length(1)); // kind label
     }
-    constraints.push(Constraint::Length(url_row_height)); // full URL
+    constraints.push(Constraint::Length(1)); // url (full or base)
+    if show_split_token {
+        constraints.push(Constraint::Length(1)); // token (split fallback)
+    }
     if show_passphrase {
         constraints.push(Constraint::Length(1)); // passphrase
     }
@@ -1351,21 +1370,53 @@ fn render_active(
         );
         idx += 1;
     }
-    // Full URL row: left-aligned so the string starts at a predictable
-    // column edge (a user triple-clicking in iTerm / gnome-terminal /
-    // Warp selects the whole URL on the first row, or row-by-row when
-    // wrapped on narrow terminals). Wrap is on as a fallback; we sized
-    // the dialog to fit the URL on one line when the terminal allows.
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(url_prefix, Style::default().fg(theme.dimmed)),
-            Span::styled(full_url, Style::default().fg(theme.accent)),
-        ]))
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: false }),
-        chunks[idx],
-    );
-    idx += 1;
+    if url_fits_one_line {
+        // Copy-paste path: full URL on one row, left-aligned so a triple-
+        // click in iTerm / gnome-terminal / Warp selects the whole URL.
+        // No wrap — the dialog width was sized to fit the URL exactly.
+        // The leading " URL: " label lives in the same Paragraph so a
+        // whole-line select catches both the label and the URL; most
+        // users will just triple-click-then-paste, pasting "URL: ..."
+        // and editing the label off, which is still faster than typing
+        // out a 64-char token by hand.
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(url_prefix, Style::default().fg(theme.dimmed)),
+                Span::styled(full_url, Style::default().fg(theme.accent)),
+            ]))
+            .alignment(Alignment::Left),
+            chunks[idx],
+        );
+        idx += 1;
+    } else {
+        // Fallback: split URL and Token onto separate centered rows so
+        // neither half clips. User has to copy twice, but that's a
+        // strict improvement over the combined string getting truncated
+        // and the token half disappearing entirely.
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(url_prefix, Style::default().fg(theme.dimmed)),
+                Span::styled(split_url.as_str(), Style::default().fg(theme.accent)),
+            ]))
+            .alignment(Alignment::Center),
+            chunks[idx],
+        );
+        idx += 1;
+        if let Some(token) = split_token {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Token: ", Style::default().fg(theme.dimmed)),
+                    Span::styled(token, Style::default().fg(theme.accent)),
+                ]))
+                .alignment(Alignment::Center),
+                chunks[idx],
+            );
+            idx += 1;
+        }
+    }
+    // Currently unused but kept for future layout tweaks that might
+    // want to size against the split lengths.
+    let _ = (split_url_line_len, split_token_line_len);
 
     if show_passphrase {
         let (pp_label, pp_style) = match passphrase {
@@ -1430,6 +1481,30 @@ fn render_active(
         .alignment(Alignment::Center),
         chunks[idx],
     );
+}
+
+/// Split a URL of the form `https://host/?token=XYZ` into a "clean" base
+/// URL and its token so the dialog can fall back to rendering them on
+/// separate rows when the combined string would clip off the right edge
+/// of the dialog. Returns `(url, None)` when the query param is missing
+/// or empty.
+fn split_url_and_token(url: &str) -> (String, Option<&str>) {
+    // The server always emits the token as the first query param in
+    // `{url}/?token={token}`, so `?token=` is a safe anchor.
+    if let Some(q_start) = url.find("?token=") {
+        let base = url[..q_start].trim_end_matches('?').to_string();
+        let token_start = q_start + "?token=".len();
+        // Stop at the next `&` in case other query params ever appear.
+        let token_end = url[token_start..]
+            .find('&')
+            .map(|n| token_start + n)
+            .unwrap_or(url.len());
+        let token = &url[token_start..token_end];
+        if !token.is_empty() {
+            return (base, Some(token));
+        }
+    }
+    (url.to_string(), None)
 }
 
 fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
@@ -1741,6 +1816,65 @@ mod tests {
 
         forget_passphrase();
         assert_eq!(recall_passphrase(), None);
+    }
+
+    #[test]
+    fn split_url_and_token_extracts_token() {
+        let (base, token) =
+            split_url_and_token("https://foo-bar.trycloudflare.com/?token=abc123def456");
+        assert_eq!(base, "https://foo-bar.trycloudflare.com/");
+        assert_eq!(token, Some("abc123def456"));
+    }
+
+    #[test]
+    fn split_url_and_token_preserves_url_without_token() {
+        let (base, token) = split_url_and_token("https://foo-bar.trycloudflare.com/");
+        assert_eq!(base, "https://foo-bar.trycloudflare.com/");
+        assert_eq!(token, None);
+    }
+
+    #[test]
+    fn split_url_and_token_handles_additional_query_params() {
+        let (base, token) =
+            split_url_and_token("https://foo.trycloudflare.com/?token=abc123&foo=bar");
+        assert_eq!(base, "https://foo.trycloudflare.com/");
+        assert_eq!(token, Some("abc123"));
+    }
+
+    /// Exercises the fit logic that the render path uses: full URL on
+    /// one line when it fits, split when it doesn't. Copies the arithmetic
+    /// from render_active (url_inner_width = dialog_width - 4).
+    fn url_fits_one_line(url: &str, dialog_width: u16) -> bool {
+        let url_prefix = "URL: ";
+        let full_url_len = url_prefix.chars().count() + url.chars().count();
+        let url_inner_width = dialog_width.saturating_sub(4).max(1) as usize;
+        full_url_len <= url_inner_width
+    }
+
+    #[test]
+    fn url_fits_one_line_on_wide_terminal() {
+        // Typical tunnel URL: ~115 chars including "URL: " prefix.
+        let url = "https://foo-bar.trycloudflare.com/?token=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+        assert!(
+            url_fits_one_line(url, 120),
+            "120-wide should fit ~115 chars"
+        );
+        assert!(
+            url_fits_one_line(url, 115),
+            "exact-fit boundary should pass"
+        );
+    }
+
+    #[test]
+    fn url_splits_on_narrow_terminal() {
+        // 80-col terminal can't fit the combined tunnel URL; force the
+        // split fallback so the token doesn't clip off the edge.
+        let url = "https://foo-bar.trycloudflare.com/?token=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+        assert!(!url_fits_one_line(url, 80));
+        // Local URL is shorter (~70 with token) — depends on IP/port.
+        let local = "http://192.168.1.42:54321/?token=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+        assert!(!url_fits_one_line(local, 80));
+        assert!(url_fits_one_line(local, 110));
     }
 
     #[test]
