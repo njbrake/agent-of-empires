@@ -625,12 +625,13 @@ fn render_active(
     elapsed: Duration,
     log_tail: &[String],
 ) {
-    // Keep the URL a QR encodes small: strip the `?token=` query so the QR
-    // stays dense and legible on terminals below ~90 cols. The phone still
-    // lands on the login page (passphrase required) so first-factor isn't
-    // lost.
-    let qr_target = strip_query(url);
-    let qr_text = match QrCode::new(qr_target.as_bytes()) {
+    // Encode the full URL including `?token=...` — the server's auth
+    // middleware rejects requests on `/` with "invalid or missing auth
+    // token" when the query param isn't present, so the phone would hit
+    // 401 before ever seeing the passphrase login. The QR is a little
+    // larger as a result; users with narrow terminals can always type
+    // the plain URL shown beneath it.
+    let qr_text = match QrCode::new(url.as_bytes()) {
         Ok(code) => code
             .render::<char>()
             .quiet_zone(true)
@@ -928,13 +929,6 @@ const PASSPHRASE_WORDS: &[&str] = &[
     "mule", "muse", "music", "mute", "myth",
 ];
 
-fn strip_query(url: &str) -> String {
-    match url.split_once('?') {
-        Some((before, _)) => before.trim_end_matches('/').to_string(),
-        None => url.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,18 +983,6 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_secs(5)), "5s");
         assert_eq!(format_elapsed(Duration::from_secs(65)), "1m 05s");
         assert_eq!(format_elapsed(Duration::from_secs(3600 + 120)), "1h 02m");
-    }
-
-    #[test]
-    fn strip_query_removes_token() {
-        assert_eq!(
-            strip_query("https://foo.trycloudflare.com/?token=abc"),
-            "https://foo.trycloudflare.com"
-        );
-        assert_eq!(
-            strip_query("https://foo.trycloudflare.com"),
-            "https://foo.trycloudflare.com"
-        );
     }
 
     #[test]
