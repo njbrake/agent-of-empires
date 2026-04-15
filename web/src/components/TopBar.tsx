@@ -42,7 +42,7 @@ export function TopBar({
   const overflowItems = useMemo<OverflowItem[]>(() => {
     const items: OverflowItem[] = [
       { label: "Settings", onClick: onOpenSettings },
-      { label: "Keyboard shortcuts", onClick: onOpenHelp },
+      { label: "Help", onClick: onOpenHelp },
       { label: "About", onClick: onOpenAbout },
     ];
     if (loginRequired) items.push({ label: "Sign out", onClick: onLogout });

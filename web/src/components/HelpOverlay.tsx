@@ -9,6 +9,12 @@ const TERMINAL_SHORTCUTS = [
   { key: "Up/Down", desc: "Scroll terminal history" },
 ];
 
+const MOBILE_GESTURES = [
+  { key: "Two fingers", desc: "Swipe up/down to scroll the terminal (tmux copy-mode)" },
+  { key: "Tap pane", desc: "Open the soft keyboard" },
+  { key: "Long-press ↑↓", desc: "Drag horizontally to emit ← →" },
+];
+
 const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad|iPod/.test(navigator.platform);
@@ -35,9 +41,7 @@ export function HelpOverlay({ onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700">
-          <h2 className="text-sm font-semibold text-text-bright">
-            Keyboard Shortcuts
-          </h2>
+          <h2 className="text-sm font-semibold text-text-bright">Help</h2>
           <button
             onClick={onClose}
             className="text-text-muted hover:text-text-secondary cursor-pointer"
@@ -65,7 +69,7 @@ export function HelpOverlay({ onClose }: Props) {
             </div>
           </div>
 
-          <div>
+          <div className="mb-5">
             <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-2">
               Terminal
             </h3>
@@ -78,6 +82,22 @@ export function HelpOverlay({ onClose }: Props) {
                   <span className="text-sm text-text-secondary">
                     {s.desc}
                   </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-2">
+              Mobile gestures
+            </h3>
+            <div className="space-y-1">
+              {MOBILE_GESTURES.map((g) => (
+                <div key={g.key} className="flex items-center gap-3">
+                  <kbd className="font-mono text-xs bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-accent-600 text-center whitespace-nowrap">
+                    {g.key}
+                  </kbd>
+                  <span className="text-sm text-text-secondary">{g.desc}</span>
                 </div>
               ))}
             </div>

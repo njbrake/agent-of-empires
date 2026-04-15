@@ -74,9 +74,9 @@ export function useCommandActions({
 
     actions.push({
       id: "action:help",
-      title: "Show keyboard shortcuts",
+      title: "Show help",
       group: "Actions",
-      keywords: ["help", "keys", "?"],
+      keywords: ["help", "keys", "shortcuts", "gestures", "?"],
       shortcut: "?",
       perform: onOpenHelp,
     });
