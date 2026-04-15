@@ -49,6 +49,42 @@ export function TerminalSettings() {
         </div>
 
         <div>
+          <label className="block text-[13px] text-text-secondary mb-2">
+            Desktop font size
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={6}
+              max={28}
+              step={1}
+              value={settings.desktopFontSize}
+              onChange={(e) =>
+                update({ desktopFontSize: Number(e.target.value) })
+              }
+              className="flex-1 accent-brand-600 h-1.5"
+            />
+            <select
+              value={settings.desktopFontSize}
+              onChange={(e) =>
+                update({ desktopFontSize: Number(e.target.value) })
+              }
+              className="bg-surface-800 border border-surface-700 rounded-md px-2 py-1 text-sm text-text-primary font-mono w-16 text-center"
+            >
+              {FONT_SIZES.map((s) => (
+                <option key={s} value={s}>
+                  {s}px
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-[11px] text-text-muted mt-1">
+            Font size for the terminal on desktop. Hold Ctrl and scroll over the
+            terminal (or pinch on a trackpad) to zoom; the new size is saved here.
+          </p>
+        </div>
+
+        <div>
           <label className="flex items-center justify-between gap-3 cursor-pointer">
             <div>
               <div className="text-[13px] text-text-secondary">

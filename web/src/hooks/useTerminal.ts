@@ -8,6 +8,10 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY = 5000;
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 28;
+const DEFAULT_FONT_SIZE = 14;
+const MOBILE_BREAKPOINT_PX = 768;
+const WHEEL_ZOOM_SENSITIVITY = 0.05;
+const WHEEL_PERSIST_DEBOUNCE_MS = 400;
 
 export interface TerminalState {
   connected: boolean;
@@ -52,7 +56,7 @@ export function useTerminal(
     const container = containerRef.current;
     container.innerHTML = "";
 
-    const isMobileViewport = () => window.innerWidth < 768;
+    const isMobileViewport = () => window.innerWidth < MOBILE_BREAKPOINT_PX;
     const readFontSize = () =>
       isMobileViewport() ? settings.mobileFontSize : settings.desktopFontSize;
     const persistFontSize = (size: number) => {
@@ -247,7 +251,7 @@ export function useTerminal(
     // lock into either 'pinch' (zoom) or 'scroll' for the rest of the gesture.
     let gestureMode: "pinch" | "scroll" | null = null;
     let pinchStartDist = 0;
-    let pinchStartSize = 14;
+    let pinchStartSize = DEFAULT_FONT_SIZE;
     let pinchStartMidY = 0;
     const GESTURE_LOCK_PX = 12;
     const LINES_PER_WHEEL = 2; // swipe pixels-per-wheel-event = cellHeight * 2
@@ -255,7 +259,7 @@ export function useTerminal(
     const MAX_WHEELS_PER_FRAME = 6; // cap runaway bursts
     const clampV = (v: number) =>
       Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
-    const cellHeight = () => term.options.fontSize ?? 14;
+    const cellHeight = () => term.options.fontSize ?? DEFAULT_FONT_SIZE;
     const pxPerWheel = () => cellHeight() * LINES_PER_WHEEL;
     const prefersReducedMotion = () =>
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -277,6 +281,11 @@ export function useTerminal(
     const clampFont = (n: number) =>
       Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, n));
 
+    // Pinch/wheel events fire faster than the frame rate; coalesce font-size
+    // updates to at most one fitAddon.fit() per animation frame to avoid
+    // layout thrash and spamming PTY resize messages over the WebSocket.
+    let pendingFontSize: number | null = null;
+    let fontSizeRaf: number | null = null;
     const applyFontSize = (size: number) => {
       const next = clampFont(Math.round(size));
       if (next !== term.options.fontSize) {
@@ -285,6 +294,29 @@ export function useTerminal(
       }
       return next;
     };
+    const scheduleFontSize = (size: number) => {
+      pendingFontSize = clampFont(Math.round(size));
+      if (fontSizeRaf !== null) return;
+      fontSizeRaf = requestAnimationFrame(() => {
+        fontSizeRaf = null;
+        if (pendingFontSize !== null) {
+          applyFontSize(pendingFontSize);
+          pendingFontSize = null;
+        }
+      });
+    };
+    const flushFontSize = () => {
+      if (fontSizeRaf !== null) {
+        cancelAnimationFrame(fontSizeRaf);
+        fontSizeRaf = null;
+      }
+      if (pendingFontSize !== null) {
+        applyFontSize(pendingFontSize);
+        pendingFontSize = null;
+      }
+    };
+    const currentPendingOrLiveSize = () =>
+      pendingFontSize ?? term.options.fontSize ?? DEFAULT_FONT_SIZE;
 
     const cancelMomentum = () => {
       if (momentumRaf !== null) {
@@ -302,7 +334,7 @@ export function useTerminal(
       lastMoveTs = performance.now();
       gestureMode = null;
       pinchStartDist = touchDistance(e);
-      pinchStartSize = term.options.fontSize ?? 14;
+      pinchStartSize = term.options.fontSize ?? DEFAULT_FONT_SIZE;
       pinchStartMidY = touchMidY;
     };
 
@@ -327,7 +359,7 @@ export function useTerminal(
 
       if (gestureMode === "pinch") {
         if (pinchStartDist > 0) {
-          applyFontSize(pinchStartSize * (dist / pinchStartDist));
+          scheduleFontSize(pinchStartSize * (dist / pinchStartDist));
         }
         lastMoveTs = now;
         return;
@@ -357,7 +389,8 @@ export function useTerminal(
       // Fires whenever the touch count changes; only decay when all fingers lift.
       if (e.touches.length > 0) return;
       if (gestureMode === "pinch") {
-        persistFontSize(term.options.fontSize ?? 14);
+        flushFontSize();
+        persistFontSize(term.options.fontSize ?? DEFAULT_FONT_SIZE);
         gestureMode = null;
         velocity = 0;
         return;
@@ -416,19 +449,20 @@ export function useTerminal(
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      wheelAccum -= e.deltaY * 0.05;
+      wheelAccum -= e.deltaY * WHEEL_ZOOM_SENSITIVITY;
       if (Math.abs(wheelAccum) < 1) return;
       const delta = Math.trunc(wheelAccum);
       wheelAccum -= delta;
-      const current = term.options.fontSize ?? 14;
-      const next = applyFontSize(current + delta);
-      if (next !== current) {
-        if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
-        wheelPersistTimer = setTimeout(() => {
-          persistFontSize(next);
-          wheelPersistTimer = null;
-        }, 400);
-      }
+      const base = currentPendingOrLiveSize();
+      const next = clampFont(Math.round(base + delta));
+      if (next === base) return;
+      scheduleFontSize(next);
+      if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+      wheelPersistTimer = setTimeout(() => {
+        flushFontSize();
+        persistFontSize(term.options.fontSize ?? DEFAULT_FONT_SIZE);
+        wheelPersistTimer = null;
+      }, WHEEL_PERSIST_DEBOUNCE_MS);
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
 
@@ -440,6 +474,7 @@ export function useTerminal(
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
       viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+      if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
       window.removeEventListener("resize", handleResize);
       dataDisposable?.dispose();
       resizeDisposable?.dispose();
@@ -465,7 +500,7 @@ export function useTerminal(
     const fit = fitRef.current;
     if (!term) return;
     const size =
-      window.innerWidth < 768
+      window.innerWidth < MOBILE_BREAKPOINT_PX
         ? settings.mobileFontSize
         : settings.desktopFontSize;
     if (term.options.fontSize !== size) {

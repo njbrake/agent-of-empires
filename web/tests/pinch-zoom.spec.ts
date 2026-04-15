@@ -1,166 +1,59 @@
 import { test, expect, devices, type Page } from "@playwright/test";
-
-// Mobile pinch-to-zoom for the terminal font size.
-//
-// Doesn't need a real `aoe serve`: we stub the REST API and route the PTY
-// WebSocket via `page.routeWebSocket`, so the xterm.js terminal mounts and
-// the pinch gesture handlers in useTerminal.ts are exercised against the
-// real frontend bundle. We then synthesize two-finger `TouchEvent`s on the
-// `.xterm` element (Playwright's `page.touchscreen` is single-finger) and
-// assert that the font size setting in localStorage updated.
+import {
+  mockTerminalApis,
+  installTerminalSpies,
+  readFontSize,
+  seedSettings,
+  fireTouches,
+} from "./helpers/terminal-mocks";
 
 test.use({ ...devices["iPhone 13"] });
 
-test.describe("Terminal pinch zoom", () => {
-  async function mockApis(page: Page) {
-    await page.route("**/api/login/status", (r) =>
-      r.fulfill({ json: { required: false, authenticated: true } }),
-    );
-    await page.route("**/api/sessions", (r) => {
-      if (r.request().method() === "POST") return r.fulfill({ status: 400 });
-      return r.fulfill({
-        json: [
-          {
-            id: "pinch-test",
-            title: "pinch-test",
-            project_path: "/tmp/pinch-test",
-            group_path: "/tmp",
-            tool: "claude",
-            status: "Running",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-          },
-        ],
-      });
-    });
-    await page.route("**/api/sessions/*/terminal", (r) =>
-      r.fulfill({ status: 200, body: "" }),
-    );
-    await page.route("**/api/sessions/*/diff/files", (r) =>
-      r.fulfill({ json: { files: [] } }),
-    );
-    for (const path of [
-      "settings",
-      "themes",
-      "agents",
-      "profiles",
-      "groups",
-      "devices",
-      "docker/status",
-      "about",
-    ]) {
-      await page.route(`**/api/${path}`, (r) =>
-        r.fulfill({ json: path === "docker/status" ? {} : [] }),
-      );
-    }
-    // PTY WebSocket: keep open, acknowledge resize messages, ignore data.
-    await page.routeWebSocket(/\/sessions\/.*\/(ws|container-ws)$/, (ws) => {
-      ws.onMessage(() => {
-        /* absorb keystrokes / resize JSON */
-      });
-      // Minimal prompt so xterm shows something (helps visual debugging too).
-      setTimeout(() => ws.send(Buffer.from("$ ")), 50);
-    });
-  }
-
-  // Dispatches a TouchEvent with two touches relative to `.xterm`. The
-  // page.touchscreen API is single-finger only, so we build Touch objects
-  // and fire the event directly.
-  async function fireTouches(
-    page: Page,
-    type: "touchstart" | "touchmove" | "touchend",
-    points: { x: number; y: number }[],
-  ) {
-    await page.evaluate(
-      ({ type, points }) => {
-        const target = document.querySelector<HTMLElement>(".xterm");
-        if (!target) throw new Error(".xterm not mounted");
-        const rect = target.getBoundingClientRect();
-        const touches = points.map((p, i) => {
-          const clientX = rect.left + p.x;
-          const clientY = rect.top + p.y;
-          return new Touch({
-            identifier: i,
-            target,
-            clientX,
-            clientY,
-            pageX: clientX,
-            pageY: clientY,
-            screenX: clientX,
-            screenY: clientY,
-            radiusX: 2,
-            radiusY: 2,
-            rotationAngle: 0,
-            force: 1,
-          });
-        });
-        const ev = new TouchEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          touches: type === "touchend" ? [] : touches,
-          targetTouches: type === "touchend" ? [] : touches,
-          changedTouches: touches,
-        });
-        target.dispatchEvent(ev);
-      },
-      { type, points },
-    );
-  }
-
-  function readFontSize(page: Page) {
-    return page.evaluate(() => {
-      const raw = localStorage.getItem("aoe-web-settings");
-      return raw ? JSON.parse(raw).mobileFontSize : null;
-    });
-  }
-
-  async function setFontSize(page: Page, size: number) {
-    await page.evaluate((size) => {
-      localStorage.setItem(
-        "aoe-web-settings",
-        JSON.stringify({ mobileFontSize: size, desktopFontSize: 14 }),
-      );
-    }, size);
-  }
-
-  test("two-finger spread increases saved mobile font size", async ({
-    page,
-  }) => {
-    await mockApis(page);
-    await page.goto("/");
-    // Seed a known starting size so the assertion is unambiguous.
-    await setFontSize(page, 10);
-    await page.reload();
-
-    // Tap the session row (uses its title).
+test.describe("Terminal pinch zoom (mobile)", () => {
+  async function openSession(page: Page) {
     await page
       .getByRole("button", { name: /pinch-test claude/ })
       .first()
       .click();
     await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
+  }
 
-    const before = await readFontSize(page);
-    expect(before).toBe(10);
+  async function wsCount(page: Page) {
+    return page.evaluate(
+      () => (window as unknown as { __WS_COUNT__: number }).__WS_COUNT__,
+    );
+  }
 
-    // Pinch-out: start with fingers 80px apart, spread to ~240px. That's a
-    // 3x scale factor — ratio is clamped to MAX_FONT_SIZE = 28.
+  async function fontSizeWrites(page: Page) {
+    return page.evaluate(() =>
+      (window as unknown as { __LS_WRITES__: string[] }).__LS_WRITES__.filter(
+        (w) => w.includes("mobileFontSize") || w.includes("desktopFontSize"),
+      ),
+    );
+  }
+
+  test("two-finger spread zooms in and clamps at MAX_FONT_SIZE", async ({
+    page,
+  }) => {
+    await installTerminalSpies(page);
+    await mockTerminalApis(page);
+    await page.goto("/");
+    await seedSettings(page, { mobileFontSize: 10 });
+    await page.reload();
+    await openSession(page);
+
+    expect(await readFontSize(page, "mobile")).toBe(10);
+    const wsBefore = await wsCount(page);
+
+    // Start 80px apart, spread to 464px: 5.8x ratio. 10 * 5.8 = 58 → clamped to 28.
     const cx = 160;
     const cy = 200;
     await fireTouches(page, "touchstart", [
       { x: cx - 40, y: cy },
       { x: cx + 40, y: cy },
     ]);
-    // Walk the fingers outward over several frames to cross the 12px lock
-    // deadzone and then climb steadily.
     for (let step = 1; step <= 16; step++) {
-      const spread = 40 + step * 12; // 52, 64, ... 232
+      const spread = 40 + step * 12;
       await fireTouches(page, "touchmove", [
         { x: cx - spread, y: cy },
         { x: cx + spread, y: cy },
@@ -168,29 +61,25 @@ test.describe("Terminal pinch zoom", () => {
     }
     await fireTouches(page, "touchend", []);
 
-    // Persist happens on touchend; give React a beat to flush.
     await expect
-      .poll(() => readFontSize(page), { timeout: 2_000 })
-      .toBeGreaterThan(10);
+      .poll(() => readFontSize(page, "mobile"), { timeout: 2_000 })
+      .toBe(28);
+    // Same session, no reconnect.
+    expect(await wsCount(page)).toBe(wsBefore);
   });
 
-  test("two-finger pinch-in decreases saved mobile font size", async ({
-    page,
-  }) => {
-    await mockApis(page);
+  test("two-finger pinch-in clamps at MIN_FONT_SIZE", async ({ page }) => {
+    await installTerminalSpies(page);
+    await mockTerminalApis(page);
     await page.goto("/");
-    await setFontSize(page, 14);
+    await seedSettings(page, { mobileFontSize: 14 });
     await page.reload();
+    await openSession(page);
 
-    await page
-      .getByRole("button", { name: /pinch-test claude/ })
-      .first()
-      .click();
-    await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
+    expect(await readFontSize(page, "mobile")).toBe(14);
+    const wsBefore = await wsCount(page);
 
-    const before = await readFontSize(page);
-    expect(before).toBe(14);
-
+    // Start 240px apart, pinch to 48px: 0.2x ratio. 14 * 0.2 = 2.8 → clamped to 6.
     const cx = 160;
     const cy = 200;
     await fireTouches(page, "touchstart", [
@@ -198,7 +87,7 @@ test.describe("Terminal pinch zoom", () => {
       { x: cx + 120, y: cy },
     ]);
     for (let step = 1; step <= 16; step++) {
-      const spread = 120 - step * 6; // 114 ... 24
+      const spread = 120 - step * 6;
       await fireTouches(page, "touchmove", [
         { x: cx - spread, y: cy },
         { x: cx + spread, y: cy },
@@ -207,26 +96,26 @@ test.describe("Terminal pinch zoom", () => {
     await fireTouches(page, "touchend", []);
 
     await expect
-      .poll(() => readFontSize(page), { timeout: 2_000 })
-      .toBeLessThan(14);
+      .poll(() => readFontSize(page, "mobile"), { timeout: 2_000 })
+      .toBe(6);
+    expect(await wsCount(page)).toBe(wsBefore);
   });
 
-  test("two-finger vertical pan does NOT change font size (scroll mode)", async ({
+  test("two-finger vertical pan does NOT write to localStorage (scroll lock)", async ({
     page,
   }) => {
-    await mockApis(page);
+    await installTerminalSpies(page);
+    await mockTerminalApis(page);
     await page.goto("/");
-    await setFontSize(page, 10);
+    await seedSettings(page, { mobileFontSize: 10 });
     await page.reload();
+    await openSession(page);
 
-    await page
-      .getByRole("button", { name: /pinch-test claude/ })
-      .first()
-      .click();
-    await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
+    // Clear the write log from the seed/initial settings.
+    await page.evaluate(() => {
+      (window as unknown as { __LS_WRITES__: string[] }).__LS_WRITES__ = [];
+    });
 
-    // Pan: both fingers move down together, distance constant — should
-    // lock into scroll mode and leave the size untouched.
     const cx = 160;
     let cy = 100;
     await fireTouches(page, "touchstart", [
@@ -242,8 +131,39 @@ test.describe("Terminal pinch zoom", () => {
     }
     await fireTouches(page, "touchend", []);
 
-    // Give any async write a chance; size should still be exactly 10.
-    await page.waitForTimeout(300);
-    expect(await readFontSize(page)).toBe(10);
+    // No font-size write should have been issued (scroll mode, not pinch).
+    expect(await fontSizeWrites(page)).toEqual([]);
+    expect(await readFontSize(page, "mobile")).toBe(10);
+  });
+
+  test("touchcancel mid-pinch still persists the latest size", async ({
+    page,
+  }) => {
+    await installTerminalSpies(page);
+    await mockTerminalApis(page);
+    await page.goto("/");
+    await seedSettings(page, { mobileFontSize: 10 });
+    await page.reload();
+    await openSession(page);
+
+    const cx = 160;
+    const cy = 200;
+    await fireTouches(page, "touchstart", [
+      { x: cx - 40, y: cy },
+      { x: cx + 40, y: cy },
+    ]);
+    for (let step = 1; step <= 8; step++) {
+      const spread = 40 + step * 10;
+      await fireTouches(page, "touchmove", [
+        { x: cx - spread, y: cy },
+        { x: cx + spread, y: cy },
+      ]);
+    }
+    // A system gesture / incoming call cancels the touch instead of lifting it.
+    await fireTouches(page, "touchcancel", []);
+
+    await expect
+      .poll(() => readFontSize(page, "mobile"), { timeout: 2_000 })
+      .toBeGreaterThan(10);
   });
 });
