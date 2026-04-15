@@ -4,6 +4,9 @@
 //! - Cookie: `aoe_token=<token>`
 //! - Query parameter: `?token=<token>` (sets the cookie for future requests)
 //! - WebSocket protocol header: `Sec-WebSocket-Protocol: <token>`
+//! - Authorization header: `Authorization: Bearer <token>` (used by the PWA,
+//!   which persists the token in localStorage since iOS `start_url` strips
+//!   the query param on home-screen relaunch)
 //!
 //! Includes rate limiting (5 failed attempts = 15 min lockout) and device tracking.
 
@@ -104,9 +107,10 @@ async fn record_device(state: &AppState, ip: IpAddr, user_agent: &str) {
     }
 }
 
-/// Extract all token candidates from the request (cookie and query parameter).
-/// Returns them in priority order so callers can try each until one validates.
-/// A stale cookie must not prevent a valid query param from being tried.
+/// Extract all token candidates from the request (cookie, query parameter, and
+/// Authorization header). Returns them in priority order so callers can try
+/// each until one validates. A stale cookie must not prevent a valid query
+/// param or Bearer token from being tried.
 fn extract_tokens(request: &Request) -> Vec<(&str, TokenSource)> {
     let mut tokens = Vec::new();
 
@@ -127,6 +131,15 @@ fn extract_tokens(request: &Request) -> Vec<(&str, TokenSource)> {
         for param in query.split('&') {
             if let Some(value) = param.strip_prefix("token=") {
                 tokens.push((value, TokenSource::QueryParam));
+            }
+        }
+    }
+
+    // Check Authorization: Bearer header
+    if let Some(auth_header) = request.headers().get(header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(value) = auth_str.strip_prefix("Bearer ") {
+                tokens.push((value.trim(), TokenSource::Bearer));
             }
         }
     }
@@ -157,6 +170,7 @@ enum TokenSource {
     Cookie,
     QueryParam,
     WebSocketProtocol,
+    Bearer,
 }
 
 pub async fn auth_middleware(

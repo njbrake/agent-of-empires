@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { ResizeMessage } from "../lib/types";
+import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
 const MAX_RETRIES = 3;
@@ -108,9 +109,14 @@ export function useTerminal(
 
     function connect() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(
-        `${proto}//${location.host}/sessions/${sessionId}/${wsPath}`,
-      );
+      // The browser can't set custom headers on a WebSocket handshake, so we
+      // pass the auth token via `?token=` (server's auth middleware accepts
+      // it there). The PWA needs this because cookies may not be available
+      // after an iOS home-screen relaunch.
+      const token = getToken();
+      const base = `${proto}//${location.host}/sessions/${sessionId}/${wsPath}`;
+      const url = token ? `${base}?token=${encodeURIComponent(token)}` : base;
+      const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 

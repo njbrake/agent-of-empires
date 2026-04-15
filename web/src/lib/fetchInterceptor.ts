@@ -1,10 +1,16 @@
 import { reportError } from "./toastBus";
+import { getToken } from "./token";
 
 /**
- * Install a global fetch wrapper that surfaces 5xx responses and network
- * failures as user-visible toasts. 4xx is intentionally silent because many
- * endpoints treat client errors as part of normal validation (e.g. the wizard
- * filesystem browser 400s on invalid paths while typing).
+ * Install a global fetch wrapper that:
+ * 1. Injects `Authorization: Bearer <token>` when we have a stored token.
+ *    The PWA needs this because iOS `start_url` strips the `?token=` query
+ *    param on home-screen relaunch, and cookies can be lost across the
+ *    Safari→standalone context switch.
+ * 2. Surfaces 5xx responses and network failures as user-visible toasts.
+ *    4xx is intentionally silent because many endpoints treat client errors
+ *    as part of normal validation (e.g. the wizard filesystem browser 400s
+ *    on invalid paths while typing).
  *
  * Safe to call multiple times; only the first call installs the wrapper.
  */
@@ -26,8 +32,10 @@ export function installFetchErrorToasts(): void {
     const path = toPath(rawUrl);
     const isApi = path.startsWith("/api/");
 
+    const patchedInit = attachAuthHeader(input, init);
+
     try {
-      const res = await original(input, init);
+      const res = await original(input, patchedInit);
       if (isApi && res.status >= 500) {
         reportError(`Server error ${res.status} from ${path}`);
       }
@@ -48,6 +56,39 @@ export function installFetchErrorToasts(): void {
       throw err;
     }
   };
+}
+
+// Inject Authorization header without clobbering anything the caller set.
+// Skips cross-origin URLs so we never leak the token off-site.
+function attachAuthHeader(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+): RequestInit | undefined {
+  const token = getToken();
+  if (!token) return init;
+
+  const rawUrl =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+  if (!isSameOrigin(rawUrl)) return init;
+
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return { ...(init ?? {}), headers };
+}
+
+function isSameOrigin(url: string): boolean {
+  if (url.startsWith("/")) return true;
+  try {
+    return new URL(url, window.location.origin).origin === window.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 /** Normalize any fetch input to a pathname so `/api/` checks work regardless
