@@ -66,12 +66,12 @@ fn check_stale_build_cache() {
 
 #[cfg(feature = "serve")]
 fn build_frontend() {
-    use std::path::Path;
     use std::process::Command;
 
     println!("cargo:rerun-if-changed=web/src");
     println!("cargo:rerun-if-changed=web/index.html");
     println!("cargo:rerun-if-changed=web/package.json");
+    println!("cargo:rerun-if-changed=web/package-lock.json");
     println!("cargo:rerun-if-changed=web/vite.config.ts");
     println!("cargo:rerun-if-changed=web/tsconfig.json");
 
@@ -87,18 +87,7 @@ fn build_frontend() {
         "npm is required to build with --features serve. Install Node.js: https://nodejs.org/"
     );
 
-    // Run npm install when node_modules is missing or incomplete
-    if !Path::new("web/node_modules/.package-lock.json").exists() {
-        let status = Command::new("npm")
-            .args(["install"])
-            .current_dir("web")
-            .status()
-            .expect("Failed to run npm install");
-
-        if !status.success() {
-            panic!("npm install failed in web/. Run `cd web && npm install` to debug.");
-        }
-    }
+    maybe_install_web_deps();
 
     let status = Command::new("npm")
         .args(["run", "build"])
@@ -108,5 +97,74 @@ fn build_frontend() {
 
     if !status.success() {
         panic!("npm run build failed in web/. Run `cd web && npm run build` to debug.");
+    }
+}
+
+/// Install web dependencies when node_modules is missing OR stale relative to
+/// package.json / package-lock.json.
+///
+/// The previous check only looked for `web/node_modules/.package-lock.json` and
+/// skipped install when it existed. That broke a real workflow: after pulling
+/// new commits that add a dependency (e.g. `cmdk`), contributors hit cryptic
+/// TypeScript errors like "Cannot find module 'cmdk'" because the old
+/// node_modules was considered "good enough." This now compares mtimes so any
+/// lockfile change triggers a reinstall.
+#[cfg(feature = "serve")]
+fn maybe_install_web_deps() {
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::SystemTime;
+
+    let node_modules_marker = Path::new("web/node_modules/.package-lock.json");
+    let package_json = Path::new("web/package.json");
+    let package_lock = Path::new("web/package-lock.json");
+
+    let marker_mtime = node_modules_marker
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok();
+    let stale = match marker_mtime {
+        None => true, // fresh clone, no node_modules yet
+        Some(marker) => is_newer_than(package_json, marker) || is_newer_than(package_lock, marker),
+    };
+
+    if !stale {
+        return;
+    }
+
+    eprintln!("Installing web dependencies (node_modules is stale or missing)...");
+
+    // Prefer `npm ci` when a lockfile exists: it is deterministic and cleans
+    // up drift from manual edits. Fall back to `npm install` for projects
+    // without a lockfile (unusual, but keeps first-time setup working).
+    let install_cmd = if package_lock.exists() {
+        "ci"
+    } else {
+        "install"
+    };
+
+    let status = Command::new("npm")
+        .args([install_cmd])
+        .current_dir("web")
+        .status()
+        .unwrap_or_else(|e| panic!("Failed to spawn `npm {install_cmd}` in web/: {e}"));
+
+    if !status.success() {
+        panic!(
+            "`npm {install_cmd}` failed in web/. \
+             Run `cd web && npm {install_cmd}` to see the full error."
+        );
+    }
+
+    // Touch the marker so future builds see the fresh install, even if
+    // npm didn't update its mtime for some reason.
+    let _ = SystemTime::now(); // no-op: filesystem mtime is set by npm itself
+}
+
+#[cfg(feature = "serve")]
+fn is_newer_than(path: &std::path::Path, reference: std::time::SystemTime) -> bool {
+    match path.metadata().and_then(|m| m.modified()) {
+        Ok(mtime) => mtime > reference,
+        Err(_) => false, // if the file doesn't exist, it can't be newer
     }
 }
