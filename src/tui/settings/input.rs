@@ -704,6 +704,11 @@ impl SettingsView {
                     s.mode = None;
                 }
             }
+            FieldKey::SoundVolume => {
+                if let Some(ref mut s) = config.sound {
+                    s.volume = None;
+                }
+            }
             FieldKey::SoundOnStart => {
                 if let Some(ref mut s) = config.sound {
                     s.on_start = None;

@@ -30,7 +30,7 @@ pub enum SoundMode {
     Specific(String),
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SoundConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -57,6 +57,33 @@ pub struct SoundConfig {
     /// Sound to play when a session enters error state
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<String>,
+
+    /// Playback volume (0.1 = min, 1.0 = normal, 1.5 = max)
+    #[serde(default = "default_volume", skip_serializing_if = "is_default_volume")]
+    pub volume: f64,
+}
+
+impl Default for SoundConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: SoundMode::default(),
+            on_start: None,
+            on_running: None,
+            on_waiting: None,
+            on_idle: None,
+            on_error: None,
+            volume: default_volume(),
+        }
+    }
+}
+
+fn default_volume() -> f64 {
+    1.0
+}
+
+fn is_default_volume(v: &f64) -> bool {
+    (*v - 1.0).abs() < 1e-9
 }
 
 /// Profile override for sound config (all fields optional, None = inherit)
@@ -82,6 +109,9 @@ pub struct SoundConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f64>,
 }
 
 /// List of bundled sound files available for download
@@ -97,6 +127,21 @@ const BUNDLED_SOUND_FILES: &[&str] = &[
     "chain.wav",
     "gem.wav",
 ];
+
+/// Returns the 15 volume level strings "0.1", "0.2", ..., "1.5"
+pub fn volume_options() -> Vec<String> {
+    (1..=15).map(|i| format!("{:.1}", i as f64 * 0.1)).collect()
+}
+
+/// Convert an f64 volume to the nearest Select index (1..=15)
+pub fn volume_to_index(v: f64) -> usize {
+    ((v.clamp(0.1, 1.5) / 0.1).round() as usize).min(15) - 1
+}
+
+/// Parse a volume option string back to f64
+pub fn volume_from_option(s: &str) -> f64 {
+    s.parse::<f64>().unwrap_or(1.0).clamp(0.1, 1.5)
+}
 
 /// Get the directory where sound files are stored
 pub fn get_sounds_dir() -> Option<PathBuf> {
@@ -236,23 +281,31 @@ pub fn validate_sound_exists(filename: &str) -> Result<(), String> {
 }
 
 /// Get the platform-specific audio command for playing a sound file
-fn get_audio_command(path: &str) -> Result<(&'static str, Vec<&str>), std::io::Error> {
+fn get_audio_command(path: &str, volume: f64) -> Result<(String, Vec<String>), std::io::Error> {
     if cfg!(target_os = "macos") {
-        Ok(("afplay", vec![path]))
+        Ok((
+            "afplay".to_string(),
+            vec!["-v".to_string(), format!("{:.4}", volume), path.to_string()],
+        ))
     } else {
         // Linux
         let ext = std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("wav");
+        let pa_volume = ((volume * 65536.0).round() as u32).to_string();
 
         if ext.eq_ignore_ascii_case("ogg") {
             // Check if paplay is available
             if which_command("paplay").is_ok() {
-                Ok(("paplay", vec![path]))
+                Ok((
+                    "paplay".to_string(),
+                    vec![format!("--volume={}", pa_volume), path.to_string()],
+                ))
             } else if which_command("aplay").is_ok() {
                 tracing::warn!("paplay not found, using aplay (may not support .ogg files)");
-                Ok(("aplay", vec![path]))
+                warn_aplay_volume_once(volume);
+                Ok(("aplay".to_string(), vec![path.to_string()]))
             } else {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -262,9 +315,13 @@ fn get_audio_command(path: &str) -> Result<(&'static str, Vec<&str>), std::io::E
         } else {
             // WAV files
             if which_command("aplay").is_ok() {
-                Ok(("aplay", vec![path]))
+                warn_aplay_volume_once(volume);
+                Ok(("aplay".to_string(), vec![path.to_string()]))
             } else if which_command("paplay").is_ok() {
-                Ok(("paplay", vec![path]))
+                Ok((
+                    "paplay".to_string(),
+                    vec![format!("--volume={}", pa_volume), path.to_string()],
+                ))
             } else {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -272,6 +329,20 @@ fn get_audio_command(path: &str) -> Result<(&'static str, Vec<&str>), std::io::E
                 ))
             }
         }
+    }
+}
+
+/// aplay has no volume flag, so the configured volume is ignored when it's
+/// the backend. Warn the user once per process so the "slider does nothing"
+/// case isn't silent.
+fn warn_aplay_volume_once(volume: f64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !is_default_volume(&volume) && !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "aplay does not support volume control; ignoring configured volume {:.1}. Install pulseaudio-utils (paplay) to enable volume.",
+            volume
+        );
     }
 }
 
@@ -295,7 +366,7 @@ fn which_command(cmd: &str) -> Result<(), std::io::Error> {
 }
 
 /// Play a sound file by name (blocking version for testing)
-pub fn play_sound_blocking(name: &str) -> Result<(), std::io::Error> {
+pub fn play_sound_blocking(name: &str, volume: f64) -> Result<(), std::io::Error> {
     let Some(path) = find_sound_file(name) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -304,7 +375,7 @@ pub fn play_sound_blocking(name: &str) -> Result<(), std::io::Error> {
     };
 
     let path_str = path.to_string_lossy().to_string();
-    let (cmd, args) = get_audio_command(&path_str)?;
+    let (cmd, args) = get_audio_command(&path_str, volume)?;
 
     let output = std::process::Command::new(cmd)
         .args(&args)
@@ -323,7 +394,7 @@ pub fn play_sound_blocking(name: &str) -> Result<(), std::io::Error> {
 }
 
 /// Play a sound file by name (fire-and-forget, non-blocking)
-pub fn play_sound(name: &str) {
+pub fn play_sound(name: &str, volume: f64) {
     let Some(path) = find_sound_file(name) else {
         tracing::debug!("Sound file not found: {}", name);
         return;
@@ -332,7 +403,7 @@ pub fn play_sound(name: &str) {
     let path_str = path.to_string_lossy().to_string();
 
     std::thread::spawn(move || {
-        let (cmd, args) = match get_audio_command(&path_str) {
+        let (cmd, args) = match get_audio_command(&path_str, volume) {
             Ok(result) => result,
             Err(e) => {
                 tracing::warn!("Audio player not available: {}", e);
@@ -393,7 +464,7 @@ pub fn play_for_transition(old: Status, new: Status, config: &SoundConfig) {
     };
 
     if let Some(name) = resolve_sound_name(override_name, config) {
-        play_sound(&name);
+        play_sound(&name, config.volume);
     }
 }
 
@@ -420,6 +491,9 @@ pub fn apply_sound_overrides(target: &mut SoundConfig, source: &SoundConfigOverr
     if source.on_error.is_some() {
         target.on_error = source.on_error.clone();
     }
+    if let Some(volume) = source.volume {
+        target.volume = volume;
+    }
 }
 
 #[cfg(test)]
@@ -436,6 +510,9 @@ mod tests {
         assert!(config.on_waiting.is_none());
         assert!(config.on_idle.is_none());
         assert!(config.on_error.is_none());
+        // Fresh installs load `Config::default()` when no config.toml exists;
+        // a 0.0 default here would mute all playback on first run.
+        assert!((config.volume - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -566,6 +643,75 @@ mod tests {
                 "Error message: {}",
                 msg
             );
+        }
+    }
+
+    #[test]
+    fn test_volume_options_count_and_range() {
+        let options = volume_options();
+        assert_eq!(options.len(), 15);
+        assert_eq!(options[0], "0.1");
+        assert_eq!(options[14], "1.5");
+    }
+
+    #[test]
+    fn test_volume_options_step() {
+        let options = volume_options();
+        for (i, opt) in options.iter().enumerate() {
+            let expected = format!("{:.1}", (i + 1) as f64 * 0.1);
+            assert_eq!(opt, &expected);
+        }
+    }
+
+    #[test]
+    fn test_volume_to_index_normal_values() {
+        assert_eq!(volume_to_index(0.1), 0);
+        assert_eq!(volume_to_index(1.0), 9);
+        assert_eq!(volume_to_index(1.5), 14);
+    }
+
+    #[test]
+    fn test_volume_to_index_clamps_below_min() {
+        assert_eq!(volume_to_index(0.0), 0);
+        assert_eq!(volume_to_index(-1.0), 0);
+    }
+
+    #[test]
+    fn test_volume_to_index_clamps_above_max() {
+        assert_eq!(volume_to_index(2.0), 14);
+        assert_eq!(volume_to_index(99.0), 14);
+    }
+
+    #[test]
+    fn test_volume_from_option_valid() {
+        assert!((volume_from_option("0.1") - 0.1).abs() < 1e-9);
+        assert!((volume_from_option("1.0") - 1.0).abs() < 1e-9);
+        assert!((volume_from_option("1.5") - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_from_option_clamps_below_min() {
+        assert!((volume_from_option("0.0") - 0.1).abs() < 1e-9);
+        assert!((volume_from_option("-1.0") - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_from_option_clamps_above_max() {
+        assert!((volume_from_option("2.0") - 1.5).abs() < 1e-9);
+        assert!((volume_from_option("99.9") - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_from_option_invalid_falls_back_to_default() {
+        assert!((volume_from_option("") - 1.0).abs() < 1e-9);
+        assert!((volume_from_option("bad") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volume_options_roundtrip() {
+        for (i, opt) in volume_options().iter().enumerate() {
+            let v = volume_from_option(opt);
+            assert_eq!(volume_to_index(v), i);
         }
     }
 }
