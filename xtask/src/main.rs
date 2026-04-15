@@ -70,14 +70,14 @@ fn check_skill() {
     // The skill's published version is managed by clawhub via _meta.json and
     // the release workflow's `--version` flag. A static `version:` in the
     // frontmatter goes stale on every release, so disallow it.
-    if let Some(frontmatter) = content
+    if let Some((frontmatter, _)) = content
         .strip_prefix("---\n")
         .and_then(|s| s.split_once("\n---"))
     {
-        for line in frontmatter.0.lines() {
-            if line.trim_start().starts_with("version:") {
+        for line in frontmatter.lines() {
+            if line.starts_with("version:") {
                 eprintln!(
-                    "ERROR: SKILL.md frontmatter must not contain a `version:` field; \
+                    "ERROR: SKILL.md frontmatter must not contain a top-level `version:` field; \
                      clawhub's _meta.json is the source of truth"
                 );
                 has_error = true;
