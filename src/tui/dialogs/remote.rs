@@ -13,6 +13,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crossterm::event::{KeyCode, KeyEvent};
+use qrcode::render::unicode::Dense1x2;
+use qrcode::QrCode;
+use rand::prelude::IndexedRandom;
+use rand::RngExt;
+use ratatui::prelude::*;
+use ratatui::widgets::*;
+
+use super::DialogResult;
+use crate::tui::styles::Theme;
+
 /// Passphrase cache for daemons this TUI process spawned, so reopening
 /// the Remote Access dialog after closing it can re-display the same
 /// passphrase instead of the "set at startup" placeholder. Cleared when
@@ -36,17 +47,6 @@ fn forget_passphrase() {
         *guard = None;
     }
 }
-
-use crossterm::event::{KeyCode, KeyEvent};
-use qrcode::render::unicode::Dense1x2;
-use qrcode::QrCode;
-use rand::prelude::IndexedRandom;
-use rand::RngExt;
-use ratatui::prelude::*;
-use ratatui::widgets::*;
-
-use super::DialogResult;
-use crate::tui::styles::Theme;
 
 /// How long we wait for `serve.url` to appear after spawning the daemon.
 const TUNNEL_STARTUP_TIMEOUT_SECS: u64 = 60;
@@ -678,9 +678,24 @@ fn render_active(
     let qr_height = qr_lines.len() as u16;
     let qr_width = qr_lines.first().map(|l| l.chars().count()).unwrap_or(0) as u16;
 
-    let want_width = (qr_width + 6).max(60);
+    // Pull the token out of the URL so we can display URL and token on
+    // separate lines. Without this the combined string is ~115 chars and
+    // the token half gets clipped off the right edge of the dialog, which
+    // matters because the phone needs the token to reach the login page.
+    let (display_url, display_token) = split_url_and_token(url);
+
+    // Dialog needs to fit the longer of URL / token; tokens are 64 hex
+    // chars plus the "Token: " label (71) so floor at 80 for breathing
+    // room around borders and margins.
+    let longest = display_url
+        .chars()
+        .count()
+        .max(display_token.map(|t| t.chars().count() + 7).unwrap_or(0))
+        + 10;
+    let want_width = (qr_width + 6).max(longest as u16).max(80);
     let log_height: u16 = 6;
-    let want_height = qr_height + 4 /* url/passphrase/elapsed */ + log_height + 3 /* borders */;
+    let token_lines: u16 = if display_token.is_some() { 1 } else { 0 };
+    let want_height = qr_height + 4 + token_lines /* url/token/passphrase/elapsed */ + log_height + 3 /* borders */;
 
     let dialog_width = want_width.min(area.width);
     let dialog_height = want_height.min(area.height);
@@ -713,17 +728,23 @@ fn render_active(
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
+    let mut constraints = vec![
+        Constraint::Length(qr_height),
+        Constraint::Length(1), // url
+    ];
+    if display_token.is_some() {
+        constraints.push(Constraint::Length(1)); // token
+    }
+    constraints.extend_from_slice(&[
+        Constraint::Length(1), // passphrase
+        Constraint::Length(1), // elapsed
+        Constraint::Min(1),    // log tail
+        Constraint::Length(1), // footer
+    ]);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([
-            Constraint::Length(qr_height),
-            Constraint::Length(1), // url
-            Constraint::Length(1), // passphrase
-            Constraint::Length(1), // elapsed
-            Constraint::Min(1),    // log tail
-            Constraint::Length(1), // footer
-        ])
+        .constraints(constraints)
         .split(inner);
 
     let qr_widget: Vec<Line> = qr_lines
@@ -735,14 +756,28 @@ fn render_active(
         chunks[0],
     );
 
+    let mut idx = 1;
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("URL: ", Style::default().fg(theme.dimmed)),
-            Span::styled(url, Style::default().fg(theme.accent)),
+            Span::styled(display_url.as_str(), Style::default().fg(theme.accent)),
         ]))
         .alignment(Alignment::Center),
-        chunks[1],
+        chunks[idx],
     );
+    idx += 1;
+
+    if let Some(token) = display_token {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Token: ", Style::default().fg(theme.dimmed)),
+                Span::styled(token, Style::default().fg(theme.accent)),
+            ]))
+            .alignment(Alignment::Center),
+            chunks[idx],
+        );
+        idx += 1;
+    }
 
     let (pp_label, pp_style) = match passphrase {
         Some(pp) => (pp.to_string(), Style::default().fg(theme.accent).bold()),
@@ -758,8 +793,9 @@ fn render_active(
             Span::styled(pp_label, pp_style),
         ]))
         .alignment(Alignment::Center),
-        chunks[2],
+        chunks[idx],
     );
+    idx += 1;
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -770,13 +806,15 @@ fn render_active(
             Style::default().fg(theme.dimmed),
         )))
         .alignment(Alignment::Center),
-        chunks[3],
+        chunks[idx],
     );
+    idx += 1;
 
+    let log_chunk = chunks[idx];
     let log_lines: Vec<Line> = log_tail
         .iter()
         .rev()
-        .take(chunks[4].height.max(1) as usize)
+        .take(log_chunk.height.max(1) as usize)
         .rev()
         .map(|l| Line::from(Span::styled(l.as_str(), Style::default().fg(theme.dimmed))))
         .collect();
@@ -784,9 +822,10 @@ fn render_active(
         .borders(Borders::TOP)
         .border_style(Style::default().fg(theme.border))
         .title(Line::styled(" Log ", Style::default().fg(theme.dimmed)));
-    let log_inner = log_block.inner(chunks[4]);
-    frame.render_widget(log_block, chunks[4]);
+    let log_inner = log_block.inner(log_chunk);
+    frame.render_widget(log_block, log_chunk);
     frame.render_widget(Paragraph::new(log_lines), log_inner);
+    idx += 1;
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -794,8 +833,32 @@ fn render_active(
             Style::default().fg(theme.dimmed),
         )))
         .alignment(Alignment::Center),
-        chunks[5],
+        chunks[idx],
     );
+}
+
+/// Split a tunnel URL of the form `https://host/?token=XYZ` into a
+/// "clean" base URL and its token so the dialog can render them on
+/// separate lines. Falls back to returning the whole URL if the query
+/// param is missing or malformed.
+fn split_url_and_token(url: &str) -> (String, Option<&str>) {
+    // Look for the query prefix `?token=` — the server is the one
+    // writing this file, and it always emits the token as the first
+    // query param in `{url}/?token={token}`.
+    if let Some(q_start) = url.find("?token=") {
+        let base = url[..q_start].trim_end_matches('?').to_string();
+        let token_start = q_start + "?token=".len();
+        // Stop at the next `&` in case other query params ever appear.
+        let token_end = url[token_start..]
+            .find('&')
+            .map(|n| token_start + n)
+            .unwrap_or(url.len());
+        let token = &url[token_start..token_end];
+        if !token.is_empty() {
+            return (base, Some(token));
+        }
+    }
+    (url.to_string(), None)
 }
 
 fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
@@ -1083,5 +1146,52 @@ mod tests {
             tail.last().unwrap(),
             &format!("line {}", LOG_TAIL_LINES + 49)
         );
+    }
+
+    // These tests share the module-global LAST_SPAWNED_PASSPHRASE, so they
+    // are combined into one #[test] to avoid cross-test interference when
+    // cargo runs them in parallel.
+    #[test]
+    fn passphrase_cache_roundtrip() {
+        forget_passphrase();
+        assert_eq!(recall_passphrase(), None);
+
+        remember_passphrase("four word diceware phrase");
+        assert_eq!(
+            recall_passphrase().as_deref(),
+            Some("four word diceware phrase")
+        );
+
+        remember_passphrase("a different phrase later");
+        assert_eq!(
+            recall_passphrase().as_deref(),
+            Some("a different phrase later")
+        );
+
+        forget_passphrase();
+        assert_eq!(recall_passphrase(), None);
+    }
+
+    #[test]
+    fn split_url_and_token_extracts_token() {
+        let (base, token) =
+            split_url_and_token("https://foo-bar.trycloudflare.com/?token=abc123def456");
+        assert_eq!(base, "https://foo-bar.trycloudflare.com/");
+        assert_eq!(token, Some("abc123def456"));
+    }
+
+    #[test]
+    fn split_url_and_token_preserves_url_without_token() {
+        let (base, token) = split_url_and_token("https://foo-bar.trycloudflare.com/");
+        assert_eq!(base, "https://foo-bar.trycloudflare.com/");
+        assert_eq!(token, None);
+    }
+
+    #[test]
+    fn split_url_and_token_handles_additional_query_params() {
+        let (base, token) =
+            split_url_and_token("https://foo.trycloudflare.com/?token=abc123&foo=bar");
+        assert_eq!(base, "https://foo.trycloudflare.com/");
+        assert_eq!(token, Some("abc123"));
     }
 }
