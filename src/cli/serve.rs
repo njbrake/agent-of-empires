@@ -53,17 +53,66 @@ pub fn pid_file_path() -> Result<PathBuf> {
     Ok(dir.join("serve.pid"))
 }
 
+/// Cross-platform check that `pid` belongs to an aoe / agent-of-empires
+/// process. PIDs get recycled, so `kill(pid, 0) == Ok` is not enough on
+/// its own — we also want to know it's actually *our* daemon.
+///
+/// Returns `true` if the process looks like ours, `false` otherwise.
+/// If we can't determine either way (platform lacks the lookup, ps
+/// missing), we return `true` so behavior matches the legacy Linux path
+/// of trusting the PID file rather than falsely flagging a real daemon
+/// as foreign.
+fn verify_pid_is_aoe(pid: i32) -> bool {
+    // Linux fast path: read /proc directly, no subprocess.
+    let proc_path = format!("/proc/{}/cmdline", pid);
+    if std::path::Path::new(&proc_path).exists() {
+        if let Ok(cmdline) = std::fs::read_to_string(&proc_path) {
+            return cmdline.contains("aoe") || cmdline.contains("agent-of-empires");
+        }
+    }
+
+    // macOS / other: shell out to `ps`. `-o command=` prints the full
+    // command (path + args) with no header.
+    match std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout);
+            s.contains("aoe") || s.contains("agent-of-empires")
+        }
+        // ps failed or unavailable — we can't verify, so trust the PID
+        // file rather than ghosting a real daemon.
+        _ => true,
+    }
+}
+
 /// Returns Some(pid) if the daemon's PID file exists AND the process is
-/// still alive (via kill(pid, 0)). Cleans up stale PID files it finds.
-/// The TUI uses this to decide whether to jump straight to the Active
-/// state when the Remote Access dialog is opened.
+/// still alive AND it looks like one of our aoe processes. Cleans up
+/// stale PID files it finds. The TUI uses this both to jump straight to
+/// the Active state when the Remote Access dialog opens and to render
+/// the "● Remote on" status-bar indicator.
 pub fn daemon_pid() -> Option<u32> {
     let path = pid_file_path().ok()?;
     let pid_str = std::fs::read_to_string(&path).ok()?;
     let pid: i32 = pid_str.trim().parse().ok()?;
 
     match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
-        Ok(()) => Some(pid as u32),
+        Ok(()) => {
+            if verify_pid_is_aoe(pid) {
+                Some(pid as u32)
+            } else {
+                // PID was recycled by an unrelated process — our daemon
+                // is dead. Clean up the stale file so subsequent callers
+                // don't keep false-positive-ing.
+                let _ = std::fs::remove_file(&path);
+                if let Ok(dir) = crate::session::get_app_dir() {
+                    let _ = std::fs::remove_file(dir.join("serve.url"));
+                    let _ = std::fs::remove_file(dir.join("serve.log"));
+                }
+                None
+            }
+        }
         Err(_) => {
             // Stale PID file; the ESRCH case is handled the same as any
             // other error — the process is not reachable.
@@ -294,18 +343,13 @@ fn stop_daemon() -> Result<()> {
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid PID in {}: {}", path.display(), pid_str.trim()))?;
 
-    // Verify PID belongs to an aoe process
-    let proc_path = format!("/proc/{}/cmdline", pid);
-    if std::path::Path::new(&proc_path).exists() {
-        if let Ok(cmdline) = std::fs::read_to_string(&proc_path) {
-            if !cmdline.contains("aoe") && !cmdline.contains("agent-of-empires") {
-                std::fs::remove_file(&path)?;
-                bail!(
-                    "PID {} belongs to a different process (stale PID file). Cleaned up.",
-                    pid
-                );
-            }
-        }
+    // Verify PID belongs to an aoe process on all platforms
+    if !verify_pid_is_aoe(pid) {
+        std::fs::remove_file(&path)?;
+        bail!(
+            "PID {} belongs to a different process (stale PID file). Cleaned up.",
+            pid
+        );
     }
 
     // Send SIGTERM

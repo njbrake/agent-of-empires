@@ -188,6 +188,13 @@ impl RemoteDialog {
                 _ => DialogResult::Continue,
             },
             RemoteDialogState::Error(_) => match key.code {
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    // Best-effort stop for a daemon that may still be
+                    // lingering. Ignore the result — if there's no daemon
+                    // to stop, that's the desired state anyway.
+                    let _ = stop_daemon();
+                    DialogResult::Cancel
+                }
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('q') => {
                     DialogResult::Cancel
                 }
@@ -231,12 +238,32 @@ impl RemoteDialog {
                     return true;
                 }
                 if started_at.elapsed() > Duration::from_secs(TUNNEL_STARTUP_TIMEOUT_SECS) {
-                    // Timeout: let the daemon keep running (user can use CLI),
-                    // but stop waiting on it in the dialog.
+                    // Timeout: the daemon is alive but never produced a
+                    // tunnel URL (cloudflared rate-limited, captive portal,
+                    // etc.). Stop it now so we don't leave a zombie that
+                    // can never serve phones but keeps tripping "● Remote
+                    // on" in the status bar. Fall through to a log-tail
+                    // error view the user can act on.
+                    let stop_note = match stop_daemon() {
+                        Ok(()) => "Stuck daemon stopped.".to_string(),
+                        Err(e) => format!(
+                            "Daemon may still be running \
+                             (tried to stop: {}). Stop manually with `aoe serve --stop`.",
+                            e
+                        ),
+                    };
+                    let tail = initial_log_tail();
+                    let tail_detail = if tail.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n\nLast log lines:\n{}", tail.join("\n"))
+                    };
                     self.state = RemoteDialogState::Error(format!(
                         "Cloudflare tunnel did not announce a URL within {}s. \
-                         The daemon may still come up; check with `aoe serve --stop` or wait and reopen.",
-                        TUNNEL_STARTUP_TIMEOUT_SECS
+                         {}\n\n\
+                         Most likely cause: `cloudflared` rate-limited, \
+                         captive portal, or no internet.{}",
+                        TUNNEL_STARTUP_TIMEOUT_SECS, stop_note, tail_detail
                     ));
                     return true;
                 }
@@ -284,6 +311,13 @@ fn spawn_daemon(passphrase: &str) -> Result<(), String> {
 
     let exe =
         std::env::current_exe().map_err(|e| format!("Could not resolve aoe binary path: {}", e))?;
+
+    // Delete any stale serve.url from a previous hard-killed daemon
+    // before launching. Without this, Starting-state polling could latch
+    // onto the old URL before the new daemon writes the new one.
+    if let Ok(dir) = crate::session::get_app_dir() {
+        let _ = std::fs::remove_file(dir.join("serve.url"));
+    }
 
     // Use a high ephemeral port so we don't collide with a user's own
     // `aoe serve` on 8080.
@@ -376,12 +410,22 @@ fn initial_log_tail() -> Vec<String> {
 /// resulting lines into `tail`, clamped to LOG_TAIL_LINES. Returns true if
 /// new content arrived.
 fn append_new_log_lines(tail: &mut Vec<String>, offset: &mut u64) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
-
     let Some(path) = log_file_path() else {
         return false;
     };
-    let Ok(mut file) = std::fs::File::open(&path) else {
+    append_new_log_lines_from(&path, tail, offset)
+}
+
+/// Path-explicit inner helper so tests can exercise the real logic
+/// against a tempfile.
+fn append_new_log_lines_from(
+    path: &std::path::Path,
+    tail: &mut Vec<String>,
+    offset: &mut u64,
+) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };
     let Ok(size) = file.metadata().map(|m| m.len()) else {
@@ -520,10 +564,18 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected:
     } else {
         Style::default().fg(theme.dimmed)
     };
+    // Enter activates whichever button is highlighted, so only show the
+    // hint on that one to avoid the "[Enter] Enable" lie when Cancel is
+    // selected.
+    let (enable_label, cancel_label) = if enable_selected {
+        ("[Enter/Y] Enable", "[Esc/N] Cancel")
+    } else {
+        ("[Y] Enable", "[Enter/Esc] Cancel")
+    };
     let buttons = Line::from(vec![
-        Span::styled("[Y/Enter] Enable", enable_style),
+        Span::styled(enable_label, enable_style),
         Span::raw("    "),
-        Span::styled("[N/Esc] Cancel", cancel_style),
+        Span::styled(cancel_label, cancel_style),
     ]);
     frame.render_widget(
         Paragraph::new(buttons).alignment(Alignment::Center),
@@ -739,7 +791,7 @@ fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "[Enter] Close",
+            "[S] Force-stop daemon    [Enter] Close",
             Style::default().fg(theme.dimmed),
         )))
         .alignment(Alignment::Center),
@@ -952,43 +1004,68 @@ mod tests {
     }
 
     #[test]
-    fn append_new_log_lines_detects_growth() {
+    fn append_new_log_lines_initial_read() {
         let tmp = tempfile::tempdir().unwrap();
-        // Shim: write into a controlled path and verify our helper shape
-        // by reading a simulated log file.
-        let path = tmp.path().join("fake.log");
+        let path = tmp.path().join("serve.log");
         std::fs::write(&path, "first line\nsecond line\n").unwrap();
 
-        // The real helper reads from $APP_DIR/serve.log; we test the
-        // parsing branch directly by calling with a known file.
         let mut tail: Vec<String> = Vec::new();
         let mut offset: u64 = 0;
-        // Emulate the helper body against a custom path.
-        use std::io::{Read, Seek, SeekFrom};
-        let mut f = std::fs::File::open(&path).unwrap();
-        let size = f.metadata().unwrap().len();
-        assert!(size > offset);
-        f.seek(SeekFrom::Start(offset)).unwrap();
-        let mut buf = String::new();
-        f.read_to_string(&mut buf).unwrap();
-        offset = size;
-        for l in buf.lines() {
-            tail.push(l.to_string());
-        }
+        let grew = append_new_log_lines_from(&path, &mut tail, &mut offset);
+        assert!(grew);
         assert_eq!(tail, vec!["first line", "second line"]);
+        assert_eq!(offset, std::fs::metadata(&path).unwrap().len());
+    }
 
-        // Second append.
-        std::fs::write(&path, "first line\nsecond line\nthird\n").unwrap();
-        let size = std::fs::metadata(&path).unwrap().len();
-        let mut f = std::fs::File::open(&path).unwrap();
-        f.seek(SeekFrom::Start(offset)).unwrap();
-        let mut buf = String::new();
-        f.read_to_string(&mut buf).unwrap();
-        let prior = tail.len();
-        for l in buf.lines() {
-            tail.push(l.to_string());
+    #[test]
+    fn append_new_log_lines_detects_growth_and_truncation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("serve.log");
+
+        // Seed.
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let mut tail: Vec<String> = Vec::new();
+        let mut offset: u64 = 0;
+        assert!(append_new_log_lines_from(&path, &mut tail, &mut offset));
+        assert_eq!(tail, vec!["one", "two"]);
+        let after_seed_offset = offset;
+
+        // Append only.
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        assert!(append_new_log_lines_from(&path, &mut tail, &mut offset));
+        assert_eq!(tail, vec!["one", "two", "three"]);
+        assert!(offset > after_seed_offset);
+
+        // No growth → no change.
+        let before = offset;
+        assert!(!append_new_log_lines_from(&path, &mut tail, &mut offset));
+        assert_eq!(offset, before);
+
+        // Truncation (daemon restart): file shrank, tail resets.
+        std::fs::write(&path, "fresh\n").unwrap();
+        assert!(append_new_log_lines_from(&path, &mut tail, &mut offset));
+        assert_eq!(tail, vec!["fresh"]);
+    }
+
+    #[test]
+    fn append_new_log_lines_clamps_to_max_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("serve.log");
+
+        // Write well over LOG_TAIL_LINES.
+        let mut big = String::new();
+        for i in 0..(LOG_TAIL_LINES + 50) {
+            big.push_str(&format!("line {}\n", i));
         }
-        assert_eq!(tail.len(), prior + 1);
-        assert!(size >= offset);
+        std::fs::write(&path, big).unwrap();
+
+        let mut tail: Vec<String> = Vec::new();
+        let mut offset: u64 = 0;
+        assert!(append_new_log_lines_from(&path, &mut tail, &mut offset));
+        assert_eq!(tail.len(), LOG_TAIL_LINES);
+        assert_eq!(
+            tail.last().unwrap(),
+            &format!("line {}", LOG_TAIL_LINES + 49)
+        );
     }
 }
