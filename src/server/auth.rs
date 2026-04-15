@@ -448,6 +448,53 @@ mod tests {
         assert!(!cookie.contains("Secure"));
     }
 
+    fn build_request_with_headers(headers: Vec<(&'static str, &'static str)>) -> Request {
+        let mut builder = Request::builder().uri("/api/sessions");
+        for (name, value) in headers {
+            builder = builder.header(name, value);
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[test]
+    fn extract_tokens_reads_bearer_header() {
+        let req = build_request_with_headers(vec![("authorization", "Bearer abc123")]);
+        let tokens = extract_tokens(&req);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].0, "abc123");
+        assert_eq!(tokens[0].1, TokenSource::Bearer);
+    }
+
+    #[test]
+    fn extract_tokens_cookie_wins_over_bearer() {
+        let req = build_request_with_headers(vec![
+            ("cookie", "aoe_token=cookie_tok"),
+            ("authorization", "Bearer bearer_tok"),
+        ]);
+        let tokens = extract_tokens(&req);
+        // Priority order: cookie first, then Bearer. Both are attempted until
+        // one validates, so order matters for skipping bad cookies.
+        assert_eq!(tokens[0].0, "cookie_tok");
+        assert_eq!(tokens[0].1, TokenSource::Cookie);
+        assert_eq!(tokens[1].0, "bearer_tok");
+        assert_eq!(tokens[1].1, TokenSource::Bearer);
+    }
+
+    #[test]
+    fn extract_tokens_ignores_non_bearer_authorization() {
+        let req = build_request_with_headers(vec![("authorization", "Basic dXNlcjpwYXNz")]);
+        let tokens = extract_tokens(&req);
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn extract_tokens_trims_bearer_value() {
+        let req = build_request_with_headers(vec![("authorization", "Bearer   padded  ")]);
+        let tokens = extract_tokens(&req);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].0, "padded");
+    }
+
     #[test]
     fn build_cookie_with_secure() {
         let cookie = build_cookie("mytoken", true, 14400);

@@ -5,6 +5,12 @@
 // Home Screen". Cookies may also be lost across the Safari→standalone
 // context switch. localStorage survives both, so we stash the token there
 // and send it via `Authorization: Bearer` on every request.
+//
+// Trade-off: localStorage is readable by any JS running on this origin,
+// which widens XSS blast radius versus HttpOnly cookies. Accepted because
+// the dashboard is a small self-hosted app with a minimal dependency surface
+// and the PWA flow otherwise doesn't work at all on iOS. If we ever add a
+// rich plugin system or user-generated content to the dashboard, revisit.
 
 const STORAGE_KEY = "aoe_auth_token";
 

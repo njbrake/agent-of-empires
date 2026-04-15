@@ -19,6 +19,14 @@ const MAX_TRACKED_IPS: usize = 10_000;
 // Failures within this window of the last recorded failure collapse into one.
 // Prevents a single page load's parallel API calls from burning the whole budget
 // while still blocking serial brute-force attempts.
+//
+// Chosen for 500ms because:
+// - A browser's parallel fetches on mount land within ~10-50ms, so 500ms is
+//   well above the burst window.
+// - A scripted serial attacker still hits lockout in 5 * 500ms = 2.5s, which
+//   is fast enough that brute-force remains impractical.
+// - A human mistyping a passphrase in the login flow waits >500ms between
+//   attempts, so each of their failures counts.
 const COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 struct FailureRecord {
