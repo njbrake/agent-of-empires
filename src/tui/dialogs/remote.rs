@@ -10,7 +10,32 @@
 #![cfg(feature = "serve")]
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// Passphrase cache for daemons this TUI process spawned, so reopening
+/// the Remote Access dialog after closing it can re-display the same
+/// passphrase instead of the "set at startup" placeholder. Cleared when
+/// the daemon is stopped from this process. A daemon spawned by a
+/// separate `aoe serve` invocation (outside this TUI) leaves this None,
+/// so we correctly fall back to the placeholder for those.
+static LAST_SPAWNED_PASSPHRASE: Mutex<Option<String>> = Mutex::new(None);
+
+fn remember_passphrase(pp: &str) {
+    if let Ok(mut guard) = LAST_SPAWNED_PASSPHRASE.lock() {
+        *guard = Some(pp.to_string());
+    }
+}
+
+fn recall_passphrase() -> Option<String> {
+    LAST_SPAWNED_PASSPHRASE.lock().ok()?.clone()
+}
+
+fn forget_passphrase() {
+    if let Ok(mut guard) = LAST_SPAWNED_PASSPHRASE.lock() {
+        *guard = None;
+    }
+}
 
 use crossterm::event::{KeyCode, KeyEvent};
 use qrcode::render::unicode::Dense1x2;
@@ -76,14 +101,16 @@ impl RemoteDialog {
     /// the URL and stop it; otherwise show Confirm.
     pub fn new() -> Self {
         if crate::cli::serve::daemon_pid().is_some() {
-            // There's already a daemon running. We don't know its passphrase
-            // (it may have been started from the CLI). Try to read serve.url
-            // immediately; if it's there, go Active. If not, wait.
+            // There's already a daemon running. If this TUI process spawned
+            // it earlier, recall its passphrase so reopening the dialog
+            // shows it again. A daemon started outside this TUI (via CLI)
+            // leaves this None and renders the placeholder.
+            let remembered = recall_passphrase();
             match read_serve_url() {
                 Some(url) => Self {
                     state: RemoteDialogState::Active {
                         url,
-                        passphrase: None,
+                        passphrase: remembered,
                         opened_at: Instant::now(),
                         log_tail: initial_log_tail(),
                         log_offset: log_file_size(),
@@ -92,7 +119,7 @@ impl RemoteDialog {
                 },
                 None => Self {
                     state: RemoteDialogState::Starting {
-                        passphrase: None,
+                        passphrase: remembered,
                         started_at: Instant::now(),
                     },
                     pending_passphrase: generate_passphrase(),
@@ -352,6 +379,7 @@ fn spawn_daemon(passphrase: &str) -> Result<(), String> {
             port
         ));
     }
+    remember_passphrase(passphrase);
     Ok(())
 }
 
@@ -370,6 +398,7 @@ fn stop_daemon() -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(stderr.trim().to_string());
     }
+    forget_passphrase();
     Ok(())
 }
 
