@@ -17,17 +17,19 @@ export function installFetchErrorToasts(): void {
   const original = window.fetch.bind(window);
 
   window.fetch = async (input, init) => {
-    const url =
+    const rawUrl =
       typeof input === "string"
         ? input
         : input instanceof URL
           ? input.toString()
           : input.url;
+    const path = toPath(rawUrl);
+    const isApi = path.startsWith("/api/");
 
     try {
       const res = await original(input, init);
-      if (res.status >= 500 && url.startsWith("/api/")) {
-        reportError(describeServerError(url, res.status));
+      if (isApi && res.status >= 500) {
+        reportError(`Server error ${res.status} from ${path}`);
       }
       return res;
     } catch (err) {
@@ -38,9 +40,9 @@ export function installFetchErrorToasts(): void {
       ) {
         throw err;
       }
-      if (url.startsWith("/api/")) {
+      if (isApi) {
         reportError(
-          `Network error contacting ${shortPath(url)}. Check your connection.`,
+          `Network error contacting ${path}. Check your connection.`,
         );
       }
       throw err;
@@ -48,15 +50,13 @@ export function installFetchErrorToasts(): void {
   };
 }
 
-function shortPath(url: string): string {
+/** Normalize any fetch input to a pathname so `/api/` checks work regardless
+ *  of whether the caller passed a string, URL, or Request. */
+function toPath(url: string): string {
+  if (url.startsWith("/")) return url;
   try {
-    const u = new URL(url, window.location.origin);
-    return u.pathname;
+    return new URL(url, window.location.origin).pathname;
   } catch {
     return url;
   }
-}
-
-function describeServerError(url: string, status: number): string {
-  return `Server error ${status} from ${shortPath(url)}`;
 }

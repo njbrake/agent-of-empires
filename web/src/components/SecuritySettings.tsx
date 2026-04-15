@@ -82,7 +82,7 @@ export function SecuritySettings() {
             about === null ? (
               <span className="text-text-muted">…</span>
             ) : about.read_only ? (
-              <Badge tone="warn">on (terminal input blocked)</Badge>
+              <Badge tone="ok">on (terminal input blocked)</Badge>
             ) : (
               <Badge tone="muted">off</Badge>
             )
@@ -115,7 +115,7 @@ export function SecuritySettings() {
       <p className="mt-3 text-[11px] text-text-dim">
         Security settings are configured at launch via <code className="font-mono text-text-muted">aoe serve</code> flags. See the {" "}
         <a
-          href="https://agent-of-empires.com/guides/web-dashboard"
+          href="https://agent-of-empires.com/guides/web-dashboard/"
           target="_blank"
           rel="noopener noreferrer"
           className="text-brand-500 hover:text-brand-400 underline decoration-brand-500/30"
