@@ -21,6 +21,8 @@ use crate::tmux::AvailableTools;
 
 use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
+#[cfg(feature = "serve")]
+use super::dialogs::RemoteDialog;
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, HooksInstallDialog,
     InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerDialog, RenameDialog,
@@ -162,6 +164,8 @@ pub struct HomeView {
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
+    #[cfg(feature = "serve")]
+    pub(super) remote_dialog: Option<RemoteDialog>,
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
@@ -323,6 +327,8 @@ impl HomeView {
             changelog_dialog: None,
             info_dialog: None,
             profile_picker_dialog: None,
+            #[cfg(feature = "serve")]
+            remote_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
             pending_attach_after_warning: None,
@@ -831,6 +837,14 @@ impl HomeView {
             }
         }
 
+        // Poll remote-access dialog for subprocess startup events.
+        #[cfg(feature = "serve")]
+        if let Some(dialog) = &mut self.remote_dialog {
+            if dialog.tick() {
+                changed = true;
+            }
+        }
+
         // Drain hook progress into the creating buffer when no dialog is open
         if self.new_dialog.is_none() {
             if let Some(ref stub_id) = self.creating_stub_id {
@@ -859,6 +873,11 @@ impl HomeView {
     }
 
     pub fn has_dialog(&self) -> bool {
+        #[cfg(feature = "serve")]
+        let remote_open = self.remote_dialog.is_some();
+        #[cfg(not(feature = "serve"))]
+        let remote_open = false;
+
         self.show_help
             || self.search_active
             || self.new_dialog.is_some()
@@ -873,6 +892,7 @@ impl HomeView {
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
             || self.send_message_dialog.is_some()
+            || remote_open
             || self.settings_view.is_some()
             || self.diff_view.is_some()
     }

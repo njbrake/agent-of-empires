@@ -163,6 +163,11 @@ impl HomeView {
         if let Some(dialog) = &self.send_message_dialog {
             dialog.render(frame, area, theme);
         }
+
+        #[cfg(feature = "serve")]
+        if let Some(dialog) = &self.remote_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {

@@ -10,6 +10,8 @@ mod hooks_install;
 mod info;
 mod new_session;
 mod profile_picker;
+#[cfg(feature = "serve")]
+mod remote;
 mod rename;
 mod send_message;
 mod welcome;
@@ -24,6 +26,8 @@ pub use hooks_install::HooksInstallDialog;
 pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
 pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};
+#[cfg(feature = "serve")]
+pub use remote::RemoteDialog;
 pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
 pub use welcome::WelcomeDialog;

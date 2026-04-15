@@ -48,9 +48,29 @@ pub struct ServeArgs {
     pub passphrase: Option<String>,
 }
 
-fn pid_file_path() -> Result<PathBuf> {
+pub fn pid_file_path() -> Result<PathBuf> {
     let dir = crate::session::get_app_dir()?;
     Ok(dir.join("serve.pid"))
+}
+
+/// Returns Some(pid) if the daemon's PID file exists AND the process is
+/// still alive (via kill(pid, 0)). Cleans up stale PID files it finds.
+/// The TUI uses this to decide whether to jump straight to the Active
+/// state when the Remote Access dialog is opened.
+pub fn daemon_pid() -> Option<u32> {
+    let path = pid_file_path().ok()?;
+    let pid_str = std::fs::read_to_string(&path).ok()?;
+    let pid: i32 = pid_str.trim().parse().ok()?;
+
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+        Ok(()) => Some(pid as u32),
+        Err(_) => {
+            // Stale PID file; the ESRCH case is handled the same as any
+            // other error — the process is not reachable.
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
 }
 
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
@@ -181,6 +201,14 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     result
 }
 
+/// Path to the daemon's combined stdout/stderr log.
+/// Kept alongside the PID file so the TUI can tail it while the
+/// server runs without attaching to the process directly.
+pub fn daemon_log_path() -> Result<PathBuf> {
+    let dir = crate::session::get_app_dir()?;
+    Ok(dir.join("serve.log"))
+}
+
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     use std::process::{Command, Stdio};
 
@@ -217,9 +245,25 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
         cmd.args(["--profile", profile]);
     }
 
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.stdin(Stdio::null());
+
+    // Redirect stdout/stderr to a log file so controllers like the TUI can
+    // tail the daemon's output. Truncate on each start so stale content from
+    // a prior run doesn't confuse the UI.
+    let log_path = daemon_log_path().ok();
+    match log_path
+        .as_ref()
+        .and_then(|p| std::fs::File::create(p).ok().map(|f| (p.clone(), f)))
+    {
+        Some((_, log_file)) => {
+            let stdout = log_file.try_clone()?;
+            let stderr = log_file;
+            cmd.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
+        }
+        None => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
 
     let child = cmd.spawn()?;
     let pid = child.id();
@@ -273,6 +317,7 @@ fn stop_daemon() -> Result<()> {
             std::fs::remove_file(&path)?;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
+                let _ = std::fs::remove_file(dir.join("serve.log"));
             }
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
@@ -281,6 +326,7 @@ fn stop_daemon() -> Result<()> {
             std::fs::remove_file(&path)?;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
+                let _ = std::fs::remove_file(dir.join("serve.log"));
             }
             println!("Daemon was not running (stale PID file cleaned up)");
         }
