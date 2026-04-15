@@ -17,6 +17,14 @@ use super::instance::SandboxInfo;
 /// Subdirectory name inside each agent's config dir for the shared sandbox config.
 const SANDBOX_SUBDIR: &str = "sandbox";
 
+/// Content seeded into the Claude sandbox `.sandbox-gitconfig`. Scoped to github.com;
+/// the helper emits credentials only on `get` and only when GH_TOKEN is non-empty, so
+/// other remotes and sessions without a forwarded token fall through to normal git
+/// behavior.
+const SANDBOX_GITCONFIG_SEED: &str = r#"[credential "https://github.com"]
+	helper = "!f() { test \"$1\" = get || exit 0; test -n \"$GH_TOKEN\" || exit 0; echo username=x-access-token; echo \"password=$GH_TOKEN\"; }; f"
+"#;
+
 /// Declarative definition of an agent CLI's config directory for sandbox mounting.
 struct AgentConfigMount {
     /// Canonical agent name from the agent registry (e.g. "claude", "opencode").
@@ -66,10 +74,15 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
         // Claude Code sets GIT_CONFIG_GLOBAL=/root/.sandbox-gitconfig when IS_SANDBOX=1;
-        // the file must exist or all git commands fail.
+        // the file must exist or all git commands fail. The seeded credential helper
+        // lets `git push` to github.com authenticate automatically when GH_TOKEN is
+        // forwarded via `sandbox.environment` (e.g. "GH_TOKEN=$GH_TOKEN"). Without a
+        // helper, git ignores GH_TOKEN and prompts for a username; `gh auth setup-git`
+        // can't fix it in-container because the gitconfig is a single-file bind mount
+        // that can't be rewritten via atomic rename.
         home_seed_files: &[
             (".claude.json", r#"{"hasCompletedOnboarding":true}"#),
-            (".sandbox-gitconfig", ""),
+            (".sandbox-gitconfig", SANDBOX_GITCONFIG_SEED),
         ],
         preserve_files: &[".credentials.json", "history.jsonl"],
         clean_files: &[],
@@ -1638,6 +1651,38 @@ mod tests {
                 mount.tool_name
             );
         }
+    }
+
+    #[test]
+    fn test_sandbox_gitconfig_seed_is_valid_gitconfig() {
+        let dir = TempDir::new().unwrap();
+        let gitconfig = dir.path().join("gitconfig");
+        fs::write(&gitconfig, SANDBOX_GITCONFIG_SEED).unwrap();
+
+        let out = std::process::Command::new("git")
+            .args([
+                "config",
+                "--file",
+                gitconfig.to_str().unwrap(),
+                "--get",
+                "credential.https://github.com.helper",
+            ])
+            .output();
+        let Ok(out) = out else {
+            eprintln!("skipping: git not available");
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "git failed to parse seeded gitconfig: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let helper = String::from_utf8_lossy(&out.stdout);
+        assert!(helper.starts_with('!'), "helper must be a shell snippet");
+        assert!(
+            helper.contains("$GH_TOKEN"),
+            "helper must read GH_TOKEN at runtime"
+        );
     }
 
     #[test]

@@ -163,6 +163,11 @@ impl HomeView {
         if let Some(dialog) = &self.send_message_dialog {
             dialog.render(frame, area, theme);
         }
+
+        #[cfg(feature = "serve")]
+        if let Some(dialog) = &self.remote_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -765,18 +770,27 @@ impl HomeView {
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
 
-        let (mode_indicator, mode_color) = match self.view_mode {
-            ViewMode::Agent => ("[Agent]", theme.waiting),
-            ViewMode::Terminal => ("[Term]", theme.terminal_border),
-        };
-        let mode_style = Style::default().fg(mode_color).bold();
+        let mut spans: Vec<Span> = Vec::new();
 
-        let mut spans = vec![
-            Span::styled(format!(" {} ", mode_indicator), mode_style),
-            Span::styled("│", sep_style),
+        // Remote-access indicator: shown only when the `aoe serve --remote`
+        // daemon is live. The TUI does not own the daemon, so we probe the
+        // PID file each render. Feature-gated alongside the rest of the
+        // serve-specific code.
+        #[cfg(feature = "serve")]
+        if crate::cli::serve::daemon_pid().is_some() {
+            spans.extend([
+                Span::styled(
+                    " \u{25CF} Remote on ",
+                    Style::default().fg(theme.running).bold(),
+                ),
+                Span::styled("│", sep_style),
+            ]);
+        }
+
+        spans.extend([
             Span::styled(" j/k", key_style),
             Span::styled(" Nav ", desc_style),
-        ];
+        ]);
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
             Some(Item::Group {
                 collapsed: true, ..

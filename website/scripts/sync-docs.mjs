@@ -55,6 +55,13 @@ const PAGES = [
       "Remote access to AI coding agent sessions from any browser with Agent of Empires.",
   },
   {
+    source: "docs/guides/remote-phone-access.md",
+    dest: "guides/remote-phone-access.md",
+    title: "Remote Access from Your Phone",
+    description:
+      "Access your Agent of Empires sessions from your phone via a one-keystroke Cloudflare Tunnel with QR pairing.",
+  },
+  {
     source: "docs/guides/worktrees.md",
     dest: "guides/worktrees.md",
     title: "Worktrees Reference",
@@ -129,6 +136,7 @@ const URL_MAP = {
   "docs/guides/sandbox.md": "/guides/sandbox/",
   "docs/guides/tmux-status-bar.md": "/guides/tmux-status-bar/",
   "docs/guides/web-dashboard.md": "/guides/web-dashboard/",
+  "docs/guides/remote-phone-access.md": "/guides/remote-phone-access/",
   "docs/guides/worktrees.md": "/guides/worktrees/",
 };
 

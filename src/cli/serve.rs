@@ -48,9 +48,78 @@ pub struct ServeArgs {
     pub passphrase: Option<String>,
 }
 
-fn pid_file_path() -> Result<PathBuf> {
+pub fn pid_file_path() -> Result<PathBuf> {
     let dir = crate::session::get_app_dir()?;
     Ok(dir.join("serve.pid"))
+}
+
+/// Cross-platform check that `pid` belongs to an aoe / agent-of-empires
+/// process. PIDs get recycled, so `kill(pid, 0) == Ok` is not enough on
+/// its own — we also want to know it's actually *our* daemon.
+///
+/// Returns `true` if the process looks like ours, `false` otherwise.
+/// If we can't determine either way (platform lacks the lookup, ps
+/// missing), we return `true` so behavior matches the legacy Linux path
+/// of trusting the PID file rather than falsely flagging a real daemon
+/// as foreign.
+fn verify_pid_is_aoe(pid: i32) -> bool {
+    // Linux fast path: read /proc directly, no subprocess.
+    let proc_path = format!("/proc/{}/cmdline", pid);
+    if std::path::Path::new(&proc_path).exists() {
+        if let Ok(cmdline) = std::fs::read_to_string(&proc_path) {
+            return cmdline.contains("aoe") || cmdline.contains("agent-of-empires");
+        }
+    }
+
+    // macOS / other: shell out to `ps`. `-o command=` prints the full
+    // command (path + args) with no header.
+    match std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout);
+            s.contains("aoe") || s.contains("agent-of-empires")
+        }
+        // ps failed or unavailable — we can't verify, so trust the PID
+        // file rather than ghosting a real daemon.
+        _ => true,
+    }
+}
+
+/// Returns Some(pid) if the daemon's PID file exists AND the process is
+/// still alive AND it looks like one of our aoe processes. Cleans up
+/// stale PID files it finds. The TUI uses this both to jump straight to
+/// the Active state when the Remote Access dialog opens and to render
+/// the "● Remote on" status-bar indicator.
+pub fn daemon_pid() -> Option<u32> {
+    let path = pid_file_path().ok()?;
+    let pid_str = std::fs::read_to_string(&path).ok()?;
+    let pid: i32 = pid_str.trim().parse().ok()?;
+
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+        Ok(()) => {
+            if verify_pid_is_aoe(pid) {
+                Some(pid as u32)
+            } else {
+                // PID was recycled by an unrelated process — our daemon
+                // is dead. Clean up the stale file so subsequent callers
+                // don't keep false-positive-ing.
+                let _ = std::fs::remove_file(&path);
+                if let Ok(dir) = crate::session::get_app_dir() {
+                    let _ = std::fs::remove_file(dir.join("serve.url"));
+                    let _ = std::fs::remove_file(dir.join("serve.log"));
+                }
+                None
+            }
+        }
+        Err(_) => {
+            // Stale PID file; the ESRCH case is handled the same as any
+            // other error — the process is not reachable.
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
 }
 
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
@@ -181,6 +250,14 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     result
 }
 
+/// Path to the daemon's combined stdout/stderr log.
+/// Kept alongside the PID file so the TUI can tail it while the
+/// server runs without attaching to the process directly.
+pub fn daemon_log_path() -> Result<PathBuf> {
+    let dir = crate::session::get_app_dir()?;
+    Ok(dir.join("serve.log"))
+}
+
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     use std::process::{Command, Stdio};
 
@@ -217,9 +294,25 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
         cmd.args(["--profile", profile]);
     }
 
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.stdin(Stdio::null());
+
+    // Redirect stdout/stderr to a log file so controllers like the TUI can
+    // tail the daemon's output. Truncate on each start so stale content from
+    // a prior run doesn't confuse the UI.
+    let log_path = daemon_log_path().ok();
+    match log_path
+        .as_ref()
+        .and_then(|p| std::fs::File::create(p).ok().map(|f| (p.clone(), f)))
+    {
+        Some((_, log_file)) => {
+            let stdout = log_file.try_clone()?;
+            let stderr = log_file;
+            cmd.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
+        }
+        None => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
 
     let child = cmd.spawn()?;
     let pid = child.id();
@@ -250,18 +343,13 @@ fn stop_daemon() -> Result<()> {
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid PID in {}: {}", path.display(), pid_str.trim()))?;
 
-    // Verify PID belongs to an aoe process
-    let proc_path = format!("/proc/{}/cmdline", pid);
-    if std::path::Path::new(&proc_path).exists() {
-        if let Ok(cmdline) = std::fs::read_to_string(&proc_path) {
-            if !cmdline.contains("aoe") && !cmdline.contains("agent-of-empires") {
-                std::fs::remove_file(&path)?;
-                bail!(
-                    "PID {} belongs to a different process (stale PID file). Cleaned up.",
-                    pid
-                );
-            }
-        }
+    // Verify PID belongs to an aoe process on all platforms
+    if !verify_pid_is_aoe(pid) {
+        std::fs::remove_file(&path)?;
+        bail!(
+            "PID {} belongs to a different process (stale PID file). Cleaned up.",
+            pid
+        );
     }
 
     // Send SIGTERM
@@ -273,6 +361,7 @@ fn stop_daemon() -> Result<()> {
             std::fs::remove_file(&path)?;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
+                let _ = std::fs::remove_file(dir.join("serve.log"));
             }
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
@@ -281,6 +370,7 @@ fn stop_daemon() -> Result<()> {
             std::fs::remove_file(&path)?;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
+                let _ = std::fs::remove_file(dir.join("serve.log"));
             }
             println!("Daemon was not running (stale PID file cleaned up)");
         }

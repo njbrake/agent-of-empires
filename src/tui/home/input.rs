@@ -425,6 +425,19 @@ impl HomeView {
             return None;
         }
 
+        // Remote-access dialog (serve feature only)
+        #[cfg(feature = "serve")]
+        if let Some(dialog) = &mut self.remote_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel | DialogResult::Submit(_) => {
+                    // Dropping the dialog kills the subprocess via kill_on_drop.
+                    self.remote_dialog = None;
+                }
+            }
+            return None;
+        }
+
         // Send message dialog
         if let Some(dialog) = &mut self.send_message_dialog {
             match dialog.handle_key(key) {
@@ -499,6 +512,25 @@ impl HomeView {
             }
             KeyCode::Char('P') => {
                 self.show_profile_picker();
+            }
+            #[cfg(feature = "serve")]
+            KeyCode::Char('R') => {
+                self.remote_dialog = Some(crate::tui::dialogs::RemoteDialog::new());
+            }
+            #[cfg(not(feature = "serve"))]
+            KeyCode::Char('R') => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Remote access unavailable",
+                    "This `aoe` binary was built without the `serve` feature, \
+                     so the web dashboard and Cloudflare Tunnel integration \
+                     are not included.\n\n\
+                     To use remote access from your phone:\n\
+                       \u{2022} Install a release build from GitHub Releases, or\n\
+                       \u{2022} Build from source with:\n\
+                         cargo build --release --features serve\n\n\
+                     Once you have a `serve`-enabled binary, press R again to \
+                     open the remote access dialog.",
+                ));
             }
             KeyCode::Char('t') => {
                 self.view_mode = match self.view_mode {
