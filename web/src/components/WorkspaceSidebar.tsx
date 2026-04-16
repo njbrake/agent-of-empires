@@ -68,6 +68,12 @@ const SessionRow = memo(function SessionRow({
   const longPressFired = useRef(false);
 
   useEffect(() => {
+    return () => {
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
     if (renaming) renameRef.current?.select();
   }, [renaming]);
 
@@ -95,7 +101,9 @@ const SessionRow = memo(function SessionRow({
   };
 
   const handleTouchStart = () => {
+    clearLongPress();
     longPressFired.current = false;
+    if (!sessionId) return;
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true;
       startRename();
@@ -110,6 +118,7 @@ const SessionRow = memo(function SessionRow({
   };
 
   const startRename = () => {
+    if (renaming) return;
     setContextMenu(null);
     setRenameValue(label);
     setRenaming(true);
@@ -144,7 +153,7 @@ const SessionRow = memo(function SessionRow({
   return (
     <>
       <button
-        onClick={onClick}
+        onClick={() => { if (!longPressFired.current) onClick(); }}
         onContextMenu={handleContextMenu}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}

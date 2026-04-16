@@ -196,7 +196,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     let tracking = false;
 
     const onTouchStart = (e: TouchEvent) => {
-      if (window.innerWidth >= 768) return;
+      if (window.innerWidth >= 768 || e.touches.length !== 1) return;
       const t = e.touches[0];
       if (!t || t.clientX > EDGE_PX) return;
       tracking = true;
