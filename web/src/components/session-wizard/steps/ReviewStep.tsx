@@ -1,6 +1,6 @@
 import type { StepDef, StepId } from "../StepIndicator";
 
-interface WizardData { path: string; title: string; group: string; tool: string; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
+interface WizardData { path: string; title: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
 interface Props { data: WizardData; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
 
 function Row({ label, value, stepId, onJumpTo, accent }: { label: string; value: string; stepId?: StepId; onJumpTo?: (id: StepId) => void; accent?: boolean }) {
@@ -32,6 +32,9 @@ export function ReviewStep({ data, isSubmitting, error, onSubmit, onJumpTo, step
           <Row label="Branch" value={data.title} stepId="agent" onJumpTo={onJumpTo} accent />
         )}
         <Row label="Agent" value={data.tool || "(not set)"} stepId="agent" onJumpTo={onJumpTo} />
+        {data.profile && (
+          <Row label="Profile" value={data.profileDirty ? `${data.profile} (Custom)` : data.profile} stepId="agent" onJumpTo={onJumpTo} accent />
+        )}
         {data.sandboxEnabled && (
           <Row label="Container" value={data.sandboxImage || "default"} stepId={hasStep("container") ? "container" : undefined} onJumpTo={onJumpTo} />
         )}
