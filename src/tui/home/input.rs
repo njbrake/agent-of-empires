@@ -557,7 +557,6 @@ impl HomeView {
                 }
             }
             KeyCode::Char('c') if self.view_mode == ViewMode::Terminal => {
-                // Toggle container/host terminal mode (only for sandboxed sessions)
                 if let Some(id) = &self.selected_session {
                     if let Some(inst) = self.get_instance(id) {
                         if inst.is_sandboxed() {
@@ -1136,7 +1135,7 @@ impl HomeView {
             }
         }
 
-        scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
+        scored.sort_by_key(|a| std::cmp::Reverse(a.1));
         self.search_matches = scored.into_iter().map(|(idx, _)| idx).collect();
         // Clamp match_index in case matches shrank
         if self.search_matches.is_empty() {
@@ -1190,7 +1189,7 @@ impl HomeView {
             }
         }
 
-        scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
+        scored.sort_by_key(|a| std::cmp::Reverse(a.1));
         self.search_matches = scored.into_iter().map(|(idx, _)| idx).collect();
 
         if let Some(&best) = self.search_matches.first() {

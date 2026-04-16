@@ -442,9 +442,36 @@ impl HomeView {
             .iter()
             .map(|i| (i.id.clone(), i.clone()))
             .collect();
+        // Remember what the cursor was pointing at so we can follow it
+        let prev_selected_session = self.selected_session.clone();
+        let prev_selected_group = self.selected_group.clone();
+
         self.flat_items = self.build_flat_items();
 
-        if self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
+        // Try to restore cursor to the same session/group after rebuild
+        let mut restored = false;
+        if let Some(ref sid) = prev_selected_session {
+            for (idx, item) in self.flat_items.iter().enumerate() {
+                if let Item::Session { id, .. } = item {
+                    if id == sid {
+                        self.cursor = idx;
+                        restored = true;
+                        break;
+                    }
+                }
+            }
+        } else if let Some(ref gpath) = prev_selected_group {
+            for (idx, item) in self.flat_items.iter().enumerate() {
+                if let Item::Group { path, .. } = item {
+                    if path == gpath {
+                        self.cursor = idx;
+                        restored = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !restored && self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
             self.cursor = self.flat_items.len() - 1;
         }
 

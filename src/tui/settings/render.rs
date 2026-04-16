@@ -332,10 +332,7 @@ impl SettingsView {
                 // label + description + header + items + add prompt
                 1 + 1 + 1 + items.len() as u16 + 1
             }
-            FieldValue::List(_) => {
-                1 + 1 + 1 // Label + description + summary
-            }
-            _ => 1 + 1 + 1, // Label + description + value
+            _ => 1 + 1 + 1, // Label + description + value/summary
         }
     }
 
