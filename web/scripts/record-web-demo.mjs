@@ -44,6 +44,17 @@ const sizeOpts = isMobile
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
+  // Pre-start all sessions so the dashboard shows them as Idle, not Error.
+  // The background status poller needs a few seconds to pick up the new state.
+  const sessions = await fetch(`${baseUrl}/api/sessions`).then((r) => r.json());
+  await Promise.all(
+    sessions.map((s) =>
+      fetch(`${baseUrl}/api/sessions/${s.id}/ensure`, { method: "POST" }),
+    ),
+  );
+  // Wait for opencode to boot and the poller to update status to Idle.
+  await sleep(5000);
+
   const browser = await chromium.launch({ args: ["--no-sandbox"] });
   const context = await browser.newContext({
     ...sizeOpts,
