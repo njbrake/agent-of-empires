@@ -79,8 +79,11 @@ fn build_frontend() {
     // AOE_WEB_DIST allows Nix (and other reproducible build systems) to supply
     // a pre-built frontend directory, bypassing the npm build entirely. When
     // set, the directory is copied to web/dist/ and npm is not invoked.
+    //
+    // Registered unconditionally so Cargo re-runs build.rs when the var is
+    // added or removed, not only when it is already set.
+    println!("cargo:rerun-if-env-changed=AOE_WEB_DIST");
     if let Ok(dist_src) = std::env::var("AOE_WEB_DIST") {
-        println!("cargo:rerun-if-env-changed=AOE_WEB_DIST");
         eprintln!("Using pre-built web frontend from AOE_WEB_DIST={dist_src}");
         let src = Path::new(&dist_src);
         let dst = Path::new("web/dist");

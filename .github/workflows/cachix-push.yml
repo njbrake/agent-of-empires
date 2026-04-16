@@ -4,16 +4,13 @@ name: Push to Cachix
 # and pushes the results to the Cachix binary cache so users can install
 # without compiling. Runs a matrix so both systems build in parallel.
 #
-# Requires two repository secrets set in the fork's Settings > Secrets:
+# Requires two repository secrets:
 #   CACHIX_AUTH_TOKEN  - from cachix.org (Settings > Auth Tokens)
-#   CACHIX_CACHE_NAME  - your cache name (e.g. "gdw2vs")
-#
-# NOTE: feature/nix-web-build is listed until that PR merges into main.
-# Remove it once aoe-with-web lands in main.
+#   CACHIX_CACHE_NAME  - your cache name (e.g. "agent-of-empires")
 
 on:
   push:
-    branches: [main, feature/nix-web-build]
+    branches: [main]
     paths:
       - 'flake.nix'
       - 'flake.lock'
