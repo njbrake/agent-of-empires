@@ -503,9 +503,9 @@ pub async fn ensure_terminal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut instances = state.instances.write().await;
-    let inst = match instances.iter_mut().find(|i| i.id == id) {
-        Some(i) => i,
+    let instances = state.instances.read().await;
+    let inst = match instances.iter().find(|i| i.id == id) {
+        Some(i) => i.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -514,17 +514,29 @@ pub async fn ensure_terminal(
                 .into_response();
         }
     };
+    drop(instances);
 
-    if inst.has_terminal() {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "exists"})),
-        )
-            .into_response();
+    // Serialize concurrent terminal-ensure calls for the same session so two
+    // parallel requests don't both try to create the same tmux session
+    // (the second would fail with "duplicate session").
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
+
+    // Re-check after acquiring the lock; the first caller may have created it.
+    {
+        let instances = state.instances.read().await;
+        if let Some(i) = instances.iter().find(|i| i.id == id) {
+            if i.has_terminal() {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"status": "exists"})),
+                )
+                    .into_response();
+            }
+        }
     }
 
-    let mut inst_clone = inst.clone();
-    drop(instances);
+    let mut inst_clone = inst;
 
     let result = tokio::task::spawn_blocking(move || inst_clone.start_terminal()).await;
 
@@ -567,9 +579,9 @@ pub async fn ensure_container_terminal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut instances = state.instances.write().await;
-    let inst = match instances.iter_mut().find(|i| i.id == id) {
-        Some(i) => i,
+    let instances = state.instances.read().await;
+    let inst = match instances.iter().find(|i| i.id == id) {
+        Some(i) => i.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -578,17 +590,25 @@ pub async fn ensure_container_terminal(
                 .into_response();
         }
     };
+    drop(instances);
 
-    if inst.has_container_terminal() {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "exists"})),
-        )
-            .into_response();
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
+
+    {
+        let instances = state.instances.read().await;
+        if let Some(i) = instances.iter().find(|i| i.id == id) {
+            if i.has_container_terminal() {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"status": "exists"})),
+                )
+                    .into_response();
+            }
+        }
     }
 
-    let mut inst_clone = inst.clone();
-    drop(instances);
+    let mut inst_clone = inst;
 
     let result =
         tokio::task::spawn_blocking(move || inst_clone.start_container_terminal_with_size(None))
