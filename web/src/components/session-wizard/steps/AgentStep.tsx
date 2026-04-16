@@ -67,9 +67,9 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
 
     if (!profileName) return;
 
-    // Load profile defaults from settings API
+    // Load profile-resolved settings (global + profile overrides merged)
     try {
-      const settings = await getSettings();
+      const settings = await getSettings(profileName);
       if (settings) {
         const session = settings.session as Record<string, unknown> | undefined;
         const sandbox = settings.sandbox as Record<string, unknown> | undefined;

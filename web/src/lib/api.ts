@@ -109,9 +109,10 @@ export async function getSessionFileDiff(
 
 // --- Settings ---
 
-export async function getSettings(): Promise<Record<string, unknown> | null> {
+export async function getSettings(profile?: string): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fetch("/api/settings");
+    const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+    const res = await fetch(`/api/settings${params}`);
     if (!res.ok) return null;
     return await res.json();
   } catch {

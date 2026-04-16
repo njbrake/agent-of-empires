@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
@@ -67,7 +67,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     () => window.innerWidth < 768,
   );
   const [showAddProject, setShowAddProject] = useState(false);
-  const creatingForProject: string | null = null; // Now opens wizard instead of auto-creating
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
@@ -152,9 +151,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setShowAddProject(true);
   }, [sessions]);
 
-  const lastSession = sessions.length > 0
-    ? [...sessions].sort((a, b) => (b.last_accessed_at ?? b.created_at ?? "").localeCompare(a.last_accessed_at ?? a.created_at ?? ""))[0]
-    : null;
+  const lastSession = useMemo(() =>
+    sessions.length > 0
+      ? [...sessions].sort((a, b) => (b.last_accessed_at ?? b.created_at ?? "").localeCompare(a.last_accessed_at ?? a.created_at ?? ""))[0]
+      : null,
+    [sessions],
+  );
 
   const handleRepeatLast = useCallback(() => {
     if (!lastSession) return;
@@ -375,7 +377,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         <WorkspaceSidebar
           groups={groups}
           activeId={activeWorkspaceId}
-          creatingForProject={creatingForProject}
+          creatingForProject={null}
           open={sidebarOpen}
           onToggle={() => setSidebarOpen(false)}
           onSelect={handleSelectWorkspace}

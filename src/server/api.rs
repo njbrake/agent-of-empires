@@ -1028,8 +1028,21 @@ pub async fn list_agents() -> Json<Vec<AgentInfo>> {
 
 // --- Settings ---
 
-pub async fn get_settings() -> impl IntoResponse {
-    match crate::session::Config::load() {
+#[derive(Deserialize)]
+pub struct SettingsQuery {
+    pub profile: Option<String>,
+}
+
+pub async fn get_settings(
+    axum::extract::Query(query): axum::extract::Query<SettingsQuery>,
+) -> impl IntoResponse {
+    let config_result = if let Some(ref profile_name) = query.profile {
+        crate::session::resolve_config(profile_name)
+    } else {
+        crate::session::Config::load().map_err(|e| e.into())
+    };
+
+    match config_result {
         Ok(config) => match serde_json::to_value(&config) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => {
