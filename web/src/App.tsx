@@ -1,52 +1,122 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { isSessionActive } from "./lib/session";
+import { useDiffFiles } from "./hooks/useDiffFiles";
+import { useCommandActions } from "./hooks/useCommandActions";
+import { createSession, loginStatus, logout } from "./lib/api";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import { WorkspaceHeader } from "./components/WorkspaceHeader";
+import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
 import { RightPanel } from "./components/RightPanel";
+import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
+import { SessionWizard } from "./components/session-wizard/SessionWizard";
+import { Dashboard } from "./components/Dashboard";
+import { LoginPage } from "./components/LoginPage";
+import { AboutModal } from "./components/AboutModal";
+import { CommandPalette } from "./components/command-palette/CommandPalette";
 
 export default function App() {
+  const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
+  const [loginAuthenticated, setLoginAuthenticated] = useState(true);
+
+  useEffect(() => {
+    loginStatus().then(({ required, authenticated }) => {
+      setLoginRequired(required);
+      setLoginAuthenticated(authenticated);
+    });
+  }, []);
+
+  const handleLoginSuccess = () => {
+    setLoginAuthenticated(true);
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setLoginAuthenticated(false);
+  };
+
+  if (loginRequired && !loginAuthenticated) {
+    return <LoginPage onSuccess={handleLoginSuccess} />;
+  }
+
+  if (loginRequired === null) {
+    return <div className="h-dvh bg-surface-900" />;
+  }
+
+  return <AppContent loginRequired={loginRequired} onLogout={handleLogout} />;
+}
+
+function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
   const { sessions, error } = useSessions();
   const workspaces = useWorkspaces(sessions);
-  const { groups, standalone, toggleRepoCollapsed } =
-    useRepoGroups(workspaces);
+  const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     null,
   );
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [diffCollapsed, setDiffCollapsed] = useState(
     () => window.innerWidth < 768,
   );
-  const [diffFileCount, setDiffFileCount] = useState(0);
-  const [showCreate, setShowCreate] = useState(false);
+  const [showAddProject, setShowAddProject] = useState(false);
+  const [creatingForProject, setCreatingForProject] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => window.innerWidth >= 768,
   );
+  const keyboardProxyRef = useRef<HTMLTextAreaElement>(null);
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const activeSession = activeWorkspace?.sessions.find(
     (s) => s.id === activeSessionId,
   );
 
-  const alertCounts = useMemo(() => {
-    let errors = 0;
-    let waiting = 0;
-    for (const s of sessions) {
-      if (s.status === "Error") errors++;
-      if (s.status === "Waiting") waiting++;
+  const { files: diffFiles, baseBranch, warning, loading: diffFilesLoading, revision } =
+    useDiffFiles(activeSessionId, !diffCollapsed);
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSelectedFilePath(null);
+      return;
     }
-    return { errors, waiting };
-  }, [sessions]);
+    if (
+      selectedFilePath &&
+      !diffFilesLoading &&
+      !diffFiles.some((f) => f.path === selectedFilePath)
+    ) {
+      setSelectedFilePath(null);
+    }
+  }, [activeSessionId, diffFiles, diffFilesLoading, selectedFilePath]);
+
+  useEffect(() => {
+    setSelectedFilePath(null);
+  }, [activeSessionId]);
+
+  const focusKeyboardProxy = () => {
+    if (window.innerWidth < 768 && navigator.maxTouchPoints > 0) {
+      keyboardProxyRef.current?.focus();
+    }
+  };
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+    const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
+    if (ws) {
+      setActiveWorkspaceId(ws.id);
+      setActiveSessionId(sessionId);
+      focusKeyboardProxy();
+      if (window.innerWidth < 768) setSidebarOpen(false);
+    }
+  }, [workspaces]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
     setActiveWorkspaceId(workspaceId);
@@ -55,29 +125,156 @@ export default function App() {
       const running = ws.sessions.find((s) => isSessionActive(s.status));
       setActiveSessionId(running?.id ?? ws.sessions[0]?.id ?? null);
     }
+    focusKeyboardProxy();
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
   };
 
-  const toggleDiff = () => setDiffCollapsed((c) => !c);
+  const handleCreateSession = useCallback(async (repoPath: string) => {
+    if (creatingForProject) return;
+    setCreatingForProject(repoPath);
+
+    const projectSessions = sessions
+      .filter((s) => (s.main_repo_path || s.project_path) === repoPath)
+      .sort((a, b) => (b.last_accessed_at ?? "").localeCompare(a.last_accessed_at ?? ""));
+    const latest = projectSessions[0];
+
+    await createSession({
+      path: repoPath,
+      tool: latest?.tool ?? "claude",
+      group: latest?.group_path || undefined,
+      yolo_mode: latest?.yolo_mode ?? false,
+      worktree_branch: "",
+      create_new_branch: true,
+      sandbox: latest?.is_sandboxed ?? false,
+    });
+
+    setCreatingForProject(null);
+  }, [sessions, creatingForProject]);
+
+  const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
+
+  const handleSelectFile = useCallback((path: string) => {
+    setSelectedFilePath(path);
+  }, []);
+
+  const handleCloseFile = useCallback(() => {
+    setSelectedFilePath(null);
+  }, []);
+
+  const handleGoDashboard = useCallback(() => {
+    setActiveWorkspaceId(null);
+    setActiveSessionId(null);
+    setShowSettings(false);
+    setSelectedFilePath(null);
+  }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    setShowSettings(true);
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  }, []);
+
+  const handleOpenHelp = useCallback(() => {
+    setShowHelp(true);
+  }, []);
+
+  const handleOpenAbout = useCallback(() => {
+    setShowAbout(true);
+  }, []);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen((o) => !o);
+  }, []);
+
+  useEffect(() => {
+    if (sidebarOpen) return;
+    const EDGE_PX = 24;
+    const THRESHOLD_PX = 60;
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (window.innerWidth >= 768 || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (!t || t.clientX > EDGE_PX) return;
+      tracking = true;
+      startX = t.clientX;
+      startY = t.clientY;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!tracking) return;
+      const t = e.touches[0];
+      if (!t) return;
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (dx > THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+        tracking = false;
+        setSidebarOpen(true);
+      } else if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) {
+        tracking = false;
+      }
+    };
+    const onTouchEnd = () => {
+      tracking = false;
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [sidebarOpen]);
+
+  const handleNewSession = useCallback(() => {
+    setShowAddProject(true);
+  }, []);
 
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onNew: () => setShowCreate(true),
+        onNew: () => setShowAddProject(true),
         onDiff: () => toggleDiff(),
         onEscape: () => {
-          setShowCreate(false);
+          if (showPalette) {
+            setShowPalette(false);
+            return;
+          }
+          setShowAddProject(false);
           setShowHelp(false);
           setShowSettings(false);
+          setShowAbout(false);
+          setSelectedFilePath(null);
         },
         onHelp: () => setShowHelp((h) => !h),
         onSettings: () => setShowSettings((s) => !s),
+        onPalette: () => setShowPalette((p) => !p),
       }),
-      [],
+      [toggleDiff, showPalette],
     ),
   );
+
+  const commandActions = useCommandActions({
+    sessions,
+    activeSessionId,
+    loginRequired,
+    hasActiveSession: !!activeSession,
+    onNewSession: handleNewSession,
+    onSelectSession: handleSelectSession,
+    onToggleDiff: toggleDiff,
+    onOpenSettings: handleOpenSettings,
+    onOpenHelp: handleOpenHelp,
+    onOpenAbout: handleOpenAbout,
+    onGoDashboard: handleGoDashboard,
+    onToggleSidebar: handleToggleSidebar,
+    onLogout,
+  });
 
   const renderContent = () => {
     if (showSettings) {
@@ -86,66 +283,51 @@ export default function App() {
 
     if (!activeWorkspace || !activeSession) {
       return (
-        <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
-          <svg
-            width="48"
-            height="48"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-text-dim/40 mb-4"
-            aria-hidden="true"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <line x1="3" y1="8" x2="21" y2="8" />
-            <circle cx="6" cy="5.5" r="0.5" fill="currentColor" />
-            <circle cx="8.5" cy="5.5" r="0.5" fill="currentColor" />
-            <circle cx="11" cy="5.5" r="0.5" fill="currentColor" />
-          </svg>
-          {workspaces.length === 0 ? (
-            <>
-              <p className="text-sm text-text-muted mb-1">No sessions yet</p>
-              <p className="text-xs text-text-dim">
-                Create one: <code className="font-mono text-text-muted">aoe add /path/to/project</code>
-              </p>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-text-muted mb-1">Select a session</p>
-              <p className="text-xs text-text-dim">
-                Click any session in the sidebar to connect
-              </p>
-            </>
-          )}
-        </div>
+        <Dashboard
+          sessions={sessions}
+          onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
+        />
       );
     }
 
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <WorkspaceHeader
-          workspace={activeWorkspace}
-          activeSession={activeSession}
-          diffCollapsed={diffCollapsed}
-          diffFileCount={diffFileCount}
-          onToggleDiff={toggleDiff}
-        />
-
         <ContentSplit
           collapsed={diffCollapsed}
           onToggleCollapse={toggleDiff}
           left={
-            <TerminalView key={activeSessionId} session={activeSession} />
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+              <div
+                className={
+                  selectedFilePath
+                    ? "hidden"
+                    : "flex-1 flex flex-col min-h-0 overflow-hidden"
+                }
+              >
+                <TerminalView key={activeSessionId} session={activeSession} />
+              </div>
+
+              {selectedFilePath && activeSessionId && (
+                <DiffFileViewer
+                  sessionId={activeSessionId}
+                  filePath={selectedFilePath}
+                  revision={revision}
+                  onClose={handleCloseFile}
+                />
+              )}
+            </div>
           }
           right={
             <RightPanel
               session={activeSession ?? null}
               sessionId={activeSessionId}
-              expanded={!diffCollapsed}
-              onFileCountChange={setDiffFileCount}
+              files={diffFiles}
+              baseBranch={baseBranch}
+              warning={warning}
+              filesLoading={diffFilesLoading}
+              selectedFilePath={selectedFilePath}
+              onSelectFile={handleSelectFile}
             />
           }
         />
@@ -155,144 +337,66 @@ export default function App() {
 
   return (
     <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
+      <TopBar
+        activeWorkspace={activeWorkspace}
+        activeSession={activeSession ?? null}
+        onToggleSidebar={handleToggleSidebar}
+        onOpenPalette={() => setShowPalette(true)}
+        onToggleDiff={toggleDiff}
+        diffCollapsed={diffCollapsed}
+        diffFileCount={diffFiles.length}
+        onOpenSettings={handleOpenSettings}
+        onOpenHelp={handleOpenHelp}
+        onOpenAbout={handleOpenAbout}
+        onLogout={onLogout}
+        loginRequired={loginRequired}
+        isOffline={!!error}
+        onGoDashboard={handleGoDashboard}
+      />
 
-      {/* Header */}
-      <header className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2">
-        <button
-          onClick={() => setSidebarOpen((o) => !o)}
-          className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors hover:bg-surface-700/50 ${
-            sidebarOpen
-              ? "text-text-secondary hover:text-text-primary"
-              : "text-text-dim hover:text-text-secondary"
-          }`}
-          title="Toggle sidebar"
-          aria-label="Toggle sidebar"
-        >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <line x1="9" y1="3" x2="9" y2="21" />
-          </svg>
-        </button>
-
-        <a
-          href="https://agent-of-empires.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 text-text-muted hover:text-text-secondary transition-colors"
-          aria-label="Agent of Empires website (opens in new tab)"
-        >
-          <img src="/icon-192.png" alt="" width="18" height="18" className="rounded-sm" />
-          <span className="font-mono text-xs">aoe</span>
-        </a>
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-1.5">
-          {sessions.length > 0 && (
-            <span className="font-mono text-[11px] text-text-dim">
-              {sessions.length} session{sessions.length !== 1 ? "s" : ""}
-            </span>
-          )}
-          {alertCounts.errors > 0 && (
-            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/10 text-status-error">
-              {alertCounts.errors} error{alertCounts.errors !== 1 ? "s" : ""}
-            </span>
-          )}
-          {alertCounts.waiting > 0 && (
-            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-waiting/10 text-status-waiting">
-              {alertCounts.waiting} waiting
-            </span>
-          )}
-          {error && (
-            <span className="font-mono text-xs text-status-error">
-              offline
-            </span>
-          )}
-          {activeWorkspace && activeSession && (
-            <button
-              onClick={toggleDiff}
-              className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors hover:bg-surface-700/50 ${
-                diffCollapsed
-                  ? "text-text-dim hover:text-text-secondary"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-              title="Toggle diff panel"
-              aria-label="Toggle diff panel"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="15" y1="3" x2="15" y2="21" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Main: sidebar + content */}
       <div className="flex flex-1 min-h-0">
-        {sidebarOpen && (
-          <WorkspaceSidebar
-            groups={groups}
-            standalone={standalone}
-            activeId={activeWorkspaceId}
-            onToggle={() => setSidebarOpen(false)}
-            onSelect={handleSelectWorkspace}
-            onToggleRepo={toggleRepoCollapsed}
-            onNew={() => setShowCreate(true)}
-            onSettings={() => setShowSettings((s) => !s)}
-          />
-        )}
+        <WorkspaceSidebar
+          groups={groups}
+          activeId={activeWorkspaceId}
+          creatingForProject={creatingForProject}
+          open={sidebarOpen}
+          onToggle={() => setSidebarOpen(false)}
+          onSelect={handleSelectWorkspace}
+          onToggleRepo={toggleRepoCollapsed}
+          onNew={() => setShowAddProject(true)}
+          onCreateSession={handleCreateSession}
+          onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
+        />
 
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
           {renderContent()}
         </div>
       </div>
 
-      {/* Not supported dialog */}
-      {showCreate && (
-        <div
-          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in"
-          onClick={() => setShowCreate(false)}
-        >
-          <div
-            className="bg-surface-800 border border-surface-700/30 rounded-lg px-6 py-5 max-w-sm text-center"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <p className="text-sm text-text-primary mb-1">
-              Not supported yet
-            </p>
-            <p className="text-xs text-text-dim mb-4">
-              Create sessions from the terminal with the aoe CLI.
-            </p>
-            <button
-              onClick={() => setShowCreate(false)}
-              className="text-xs text-text-muted hover:text-text-secondary cursor-pointer"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+      {showAddProject && (
+        <SessionWizard
+          onClose={() => setShowAddProject(false)}
+          onCreated={() => setShowAddProject(false)}
+        />
       )}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
+
+      {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
+
+      <CommandPalette
+        open={showPalette}
+        onClose={() => setShowPalette(false)}
+        actions={commandActions}
+      />
+
+      <textarea
+        ref={keyboardProxyRef}
+        aria-hidden="true"
+        tabIndex={-1}
+        className="fixed opacity-0 w-0 h-0 pointer-events-none"
+        style={{ top: -9999, left: -9999 }}
+      />
     </div>
   );
 }

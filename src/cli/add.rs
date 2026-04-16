@@ -185,7 +185,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         None
     };
 
-    // Generate title
+    // Generate title: use provided title, or branch name for worktree sessions, or random civ
     let final_title = if let Some(title) = &args.title {
         let trimmed_title = title.trim();
         if is_duplicate_session(&instances, trimmed_title, path.to_str().unwrap_or("")) {
@@ -196,6 +196,16 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             return Ok(());
         }
         trimmed_title.to_string()
+    } else if let Some(ref branch) = args.worktree_branch {
+        let branch_title = branch.trim().to_string();
+        if is_duplicate_session(&instances, &branch_title, path.to_str().unwrap_or("")) {
+            println!(
+                "Session already exists with same title and path: {}",
+                branch_title
+            );
+            return Ok(());
+        }
+        branch_title
     } else {
         let existing_titles: Vec<&str> = instances.iter().map(|i| i.title.as_str()).collect();
         civilizations::generate_random_title(&existing_titles)
@@ -221,17 +231,34 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             instance.command = cmd.clone();
         }
     } else {
-        // Use default_tool from resolved config, then first available tool, then "claude"
+        // Use default_tool from resolved config, then first available tool, then "claude".
+        // Check custom_agents first (exact match) before resolve_tool_name (substring match),
+        // so names like "lenovo-claude" resolve as the custom agent, not built-in "claude".
         let available_tools = crate::tmux::AvailableTools::detect();
+        let tools_list = available_tools.available_list();
         instance.tool = config
             .session
             .default_tool
             .as_deref()
-            .and_then(crate::agents::resolve_tool_name)
-            .or_else(|| available_tools.available_list().first().copied())
+            .and_then(|name| {
+                if config.session.custom_agents.contains_key(name) {
+                    Some(name)
+                } else {
+                    crate::agents::resolve_tool_name(name)
+                }
+            })
+            .or_else(|| tools_list.first().map(|s| s.as_str()))
             .unwrap_or("claude")
             .to_string();
     }
+
+    // Set detect_as for status detection (resolved once, avoids config load in poll loop)
+    instance.detect_as = config
+        .session
+        .agent_detect_as
+        .get(&instance.tool)
+        .cloned()
+        .unwrap_or_default();
 
     // Apply set_default_command for agents that need it (e.g., opencode, codex)
     if instance.command.is_empty() {
@@ -262,9 +289,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(ref cmd) = args.cmd_override {
         instance.command = cmd.clone();
-    } else if let Some(cmd_override) = config.session.agent_command_override.get(&instance.tool) {
-        if !cmd_override.is_empty() {
-            instance.command = cmd_override.clone();
+    } else {
+        let resolved = config.session.resolve_tool_command(&instance.tool);
+        if !resolved.is_empty() {
+            instance.command = resolved;
         }
     }
 

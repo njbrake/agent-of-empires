@@ -4,7 +4,9 @@ use crate::session::{
     validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
     TmuxMouseMode, TmuxStatusBarMode,
 };
-use crate::sound::{validate_sound_exists, SoundMode};
+use crate::sound::{
+    validate_sound_exists, volume_from_option, volume_options, volume_to_index, SoundMode,
+};
 use crate::tui::styles::available_themes;
 
 use super::SettingsScope;
@@ -75,9 +77,12 @@ pub enum FieldKey {
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
+    CustomAgents,
+    AgentDetectAs,
     // Sound
     SoundEnabled,
     SoundMode,
+    SoundVolume,
     SoundOnStart,
     SoundOnRunning,
     SoundOnWaiting,
@@ -869,6 +874,56 @@ fn build_session_fields(
         items
     };
 
+    // Custom agents: HashMap -> Vec<String> of "name=command" items
+    let (custom_agents_map, custom_agents_override) = resolve_value(
+        scope,
+        global.session.custom_agents.clone(),
+        session.and_then(|s| s.custom_agents.clone()),
+    );
+    let custom_agents_list: Vec<String> = {
+        let mut items: Vec<_> = custom_agents_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_custom_agents_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .custom_agents
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    // Agent detect_as: HashMap -> Vec<String> of "name=builtin" items
+    let (detect_as_map, detect_as_override) = resolve_value(
+        scope,
+        global.session.agent_detect_as.clone(),
+        session.and_then(|s| s.agent_detect_as.clone()),
+    );
+    let detect_as_list: Vec<String> = {
+        let mut items: Vec<_> = detect_as_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_detect_as_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_detect_as
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
     vec![
         SettingField {
             key: FieldKey::DefaultTool,
@@ -923,6 +978,31 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 cmd_override_override,
                 FieldValue::List(global_cmd_override_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::CustomAgents,
+            label: "Custom Agents",
+            description:
+                "User-defined agents: name=command (e.g. lenovo-claude=ssh -t lenovo claude)",
+            value: FieldValue::List(custom_agents_list),
+            category: SettingsCategory::Session,
+            has_override: custom_agents_override,
+            inherited_display: inherited_if(
+                custom_agents_override,
+                FieldValue::List(global_custom_agents_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentDetectAs,
+            label: "Agent Detect As",
+            description: "Status detection mapping: agent=builtin (e.g. lenovo-claude=claude)",
+            value: FieldValue::List(detect_as_list),
+            category: SettingsCategory::Session,
+            has_override: detect_as_override,
+            inherited_display: inherited_if(
+                detect_as_override,
+                FieldValue::List(global_detect_as_list),
             ),
         },
         SettingField {
@@ -997,6 +1077,10 @@ fn build_sound_fields(
     };
     let sound_mode_options = vec!["Random".into(), "Specific".into()];
 
+    let (volume, o_vol) = resolve_value(scope, global.sound.volume, snd.and_then(|s| s.volume));
+    let vol_opts = volume_options();
+    let vol_idx = volume_to_index(volume);
+
     vec![
         SettingField {
             key: FieldKey::SoundEnabled,
@@ -1022,6 +1106,24 @@ fn build_sound_fields(
                 FieldValue::Select {
                     selected: global_mode_selected,
                     options: sound_mode_options,
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::SoundVolume,
+            label: "Volume",
+            description: "Playback volume (0.1 = min, 1.0 = normal, 1.5 = max), step 0.1. Ignored when aplay is the Linux backend.",
+            value: FieldValue::Select {
+                selected: vol_idx,
+                options: vol_opts.clone(),
+            },
+            category: SettingsCategory::Sound,
+            has_override: o_vol,
+            inherited_display: inherited_if(
+                o_vol,
+                FieldValue::Select {
+                    selected: volume_to_index(global.sound.volume),
+                    options: vol_opts,
                 },
             ),
         },
@@ -1253,6 +1355,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::AgentCommandOverride, FieldValue::List(v)) => {
             config.session.agent_command_override = parse_key_value_list(v);
         }
+        (FieldKey::CustomAgents, FieldValue::List(v)) => {
+            config.session.custom_agents = parse_key_value_list(v);
+        }
+        (FieldKey::AgentDetectAs, FieldValue::List(v)) => {
+            config.session.agent_detect_as = parse_key_value_list(v);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
         (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
@@ -1260,6 +1368,11 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 1 => SoundMode::Specific(String::new()),
                 _ => SoundMode::Random,
             };
+        }
+        (FieldKey::SoundVolume, FieldValue::Select { selected, options }) => {
+            if let Some(s) = options.get(*selected) {
+                config.sound.volume = volume_from_option(s);
+            }
         }
         (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
             config.sound.on_start = v.clone();
@@ -1455,6 +1568,22 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .get_or_insert_with(SessionConfigOverride::default);
             s.agent_command_override = Some(map);
         }
+        (FieldKey::CustomAgents, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            use crate::session::SessionConfigOverride;
+            let s = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            s.custom_agents = Some(map);
+        }
+        (FieldKey::AgentDetectAs, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            use crate::session::SessionConfigOverride;
+            let s = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            s.agent_detect_as = Some(map);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.sound, |s, val| s.enabled = val);
@@ -1465,6 +1594,12 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 _ => SoundMode::Random,
             };
             set_profile_override(mode, &mut config.sound, |s, val| s.mode = val);
+        }
+        (FieldKey::SoundVolume, FieldValue::Select { selected, options }) => {
+            if let Some(s) = options.get(*selected) {
+                let vol = volume_from_option(s);
+                set_profile_override(vol, &mut config.sound, |s, val| s.volume = val);
+            }
         }
         (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
             let s = config

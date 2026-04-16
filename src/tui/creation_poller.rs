@@ -259,6 +259,17 @@ impl CreationPoller {
         }
     }
 
+    /// Blocking receive with timeout, used during shutdown cleanup.
+    pub fn recv_result_timeout(&mut self, timeout: std::time::Duration) -> Option<CreationResult> {
+        match self.result_rx.recv_timeout(timeout) {
+            Ok(result) => {
+                self.pending = false;
+                Some(result)
+            }
+            Err(_) => None,
+        }
+    }
+
     pub fn try_recv_progress(&self) -> Option<HookProgress> {
         self.progress_rx.try_recv().ok()
     }

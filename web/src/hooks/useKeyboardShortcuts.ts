@@ -6,22 +6,33 @@ interface ShortcutActions {
   onEscape: () => void;
   onHelp: () => void;
   onSettings: () => void;
+  onPalette: () => void;
 }
 
 /**
  * Global keyboard shortcuts for the dashboard.
- * Only fires when no input/textarea/terminal is focused.
+ * Single-key shortcuts fire only when no input/textarea/terminal is focused.
+ * Cmd/Ctrl+K (palette) and Escape fire regardless of focus.
  */
 export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
+      const target = e.target as HTMLElement | null;
       const isInput =
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable;
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
 
       const actions = getActions();
+
+      // Palette: Cmd+K / Ctrl+K, works everywhere.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        e.stopPropagation();
+        actions.onPalette();
+        return;
+      }
 
       if (e.key === "Escape") {
         actions.onEscape();
@@ -29,18 +40,23 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
       }
 
       if (isInput) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       switch (e.key) {
         case "n":
+          e.preventDefault();
           actions.onNew();
           break;
         case "D":
+          e.preventDefault();
           actions.onDiff();
           break;
         case "?":
+          e.preventDefault();
           actions.onHelp();
           break;
         case "s":
+          e.preventDefault();
           actions.onSettings();
           break;
       }

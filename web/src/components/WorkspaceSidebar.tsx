@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
+import { renameSession } from "../lib/api";
+import { StatusGlyph } from "./StatusGlyph";
 
 const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
 const DEFAULT_WIDTH = 280;
@@ -9,21 +11,24 @@ const MAX_WIDTH = 480;
 
 interface Props {
   groups: RepoGroup[];
-  standalone: Workspace[];
   activeId: string | null;
+  creatingForProject: string | null;
+  open: boolean;
   onToggle: () => void;
   onSelect: (workspaceId: string) => void;
   onToggleRepo: (repoId: string) => void;
   onNew: () => void;
+  onCreateSession: (repoPath: string) => void;
   onSettings: () => void;
 }
 
-function bestSessionStatus(ws: Workspace): SessionStatus {
+function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string | null } {
   const running = ws.sessions.find((s) => isSessionActive(s.status));
-  if (running) return running.status;
+  if (running) return { status: running.status, createdAt: running.created_at };
   const error = ws.sessions.find((s) => s.status === "Error");
-  if (error) return "Error";
-  return ws.sessions[0]?.status ?? "Unknown";
+  if (error) return { status: "Error", createdAt: error.created_at };
+  const first = ws.sessions[0];
+  return { status: first?.status ?? "Unknown", createdAt: first?.created_at ?? null };
 }
 
 function loadSavedWidth(): number {
@@ -39,51 +44,6 @@ function loadSavedWidth(): number {
   return DEFAULT_WIDTH;
 }
 
-/** Animated spinner frames from rattles (https://github.com/vyfor/rattles) */
-const RATTLES: Record<string, { frames: string[]; interval: number }> = {
-  dots:         { frames: ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"], interval: 220 },
-  orbit:        { frames: ["⠃","⠉","⠘","⠰","⢠","⣀","⡄","⠆"], interval: 400 },
-  breathe:      { frames: ["⠀","⠂","⠌","⡑","⢕","⢝","⣫","⣟","⣿","⣟","⣫","⢝","⢕","⡑","⠌","⠂","⠀"], interval: 180 },
-};
-
-/** Which statuses get animated spinners vs static glyphs */
-const STATUS_RATTLE: Partial<Record<SessionStatus, keyof typeof RATTLES>> = {
-  Running: "dots",
-  Waiting: "orbit",
-  Starting: "breathe",
-};
-
-/** Static glyphs for non-animated statuses (braille family) */
-const STATIC_GLYPH: Record<SessionStatus, string> = {
-  Running: "⠋",
-  Waiting: "⠃",
-  Idle: "⠒",
-  Error: "✕",
-  Starting: "⠀",
-  Stopped: "⠒",
-  Unknown: "⠤",
-  Deleting: "✕",
-};
-
-/** Animated status glyph that cycles through rattles frames */
-function StatusGlyph({ status }: { status: SessionStatus }) {
-  const rattleKey = STATUS_RATTLE[status];
-  const rattle = rattleKey ? RATTLES[rattleKey] : undefined;
-  const [frame, setFrame] = useState(0);
-
-  useEffect(() => {
-    if (!rattle) return;
-    const r = rattle;
-    const id = setInterval(() => {
-      setFrame((f) => (f + 1) % r.frames.length);
-    }, r.interval);
-    return () => clearInterval(id);
-  }, [rattle]);
-
-  if (!rattle) return <>{STATIC_GLYPH[status]}</>;
-  return <>{rattle.frames[frame % rattle.frames.length]}</>;
-}
-
 const SessionRow = memo(function SessionRow({
   workspace,
   isActive,
@@ -95,47 +55,159 @@ const SessionRow = memo(function SessionRow({
   onClick: () => void;
   indented?: boolean;
 }) {
-  const sessionStatus = bestSessionStatus(workspace);
+  const { status: sessionStatus, createdAt } = bestSession(workspace);
   const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
+  const sessionId = workspace.sessions[0]?.id;
+
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(label);
+  const renameRef = useRef<HTMLInputElement>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (renaming) renameRef.current?.select();
+  }, [renaming]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    document.addEventListener("click", close);
+    document.addEventListener("contextmenu", close);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("contextmenu", close);
+    };
+  }, [contextMenu]);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const clearLongPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const handleTouchStart = () => {
+    clearLongPress();
+    longPressFired.current = false;
+    if (!sessionId) return;
+    longPressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      startRename();
+    }, 500);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    clearLongPress();
+    if (longPressFired.current) {
+      e.preventDefault();
+    }
+  };
+
+  const startRename = () => {
+    if (renaming) return;
+    setContextMenu(null);
+    setRenameValue(label);
+    setRenaming(true);
+  };
+
+  const commitRename = async () => {
+    setRenaming(false);
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === label || !sessionId) return;
+    await renameSession(sessionId, trimmed);
+  };
+
+  if (renaming) {
+    return (
+      <div className={`py-1 ${indented ? "pl-6 pr-3" : "px-3"}`}>
+        <input
+          ref={renameRef}
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitRename();
+            if (e.key === "Escape") setRenaming(false);
+          }}
+          className="w-full bg-surface-900 border border-brand-600 rounded px-2 py-1 text-[13px] md:text-[14px] font-mono text-text-primary focus:outline-none"
+        />
+      </div>
+    );
+  }
 
   return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
-        indented ? "pl-6 pr-3" : "px-3"
-      } ${
-        isActive
-          ? "bg-surface-850 border-l-2 border-brand-600"
-          : "border-l-2 border-transparent hover:bg-surface-800/50"
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        <span
-          className={`text-[10px] shrink-0 leading-none font-mono ${textClass}`}
+    <>
+      <button
+        onClick={() => { if (!longPressFired.current) onClick(); }}
+        onContextMenu={handleContextMenu}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onTouchMove={clearLongPress}
+        onTouchCancel={clearLongPress}
+        className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
+          indented ? "pl-6 pr-3" : "px-3"
+        } ${
+          isActive
+            ? "bg-surface-850 border-l-2 border-brand-600"
+            : "border-l-2 border-transparent hover:bg-surface-800/50"
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-sm shrink-0 leading-none font-mono ${textClass}`}
+          >
+            <StatusGlyph status={sessionStatus} createdAt={createdAt} />
+          </span>
+          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive(sessionStatus) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+            {label}
+          </span>
+        </div>
+      </button>
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <StatusGlyph status={sessionStatus} />
-        </span>
-        <span className={`text-[13px] truncate flex-1 ${isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
-          {label}
-        </span>
-        <span className="font-mono text-[11px] text-text-dim shrink-0">
-          {workspace.primaryAgent}
-        </span>
-      </div>
-    </button>
+          <button
+            onClick={startRename}
+            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+          >
+            Rename
+          </button>
+        </div>
+      )}
+    </>
   );
 });
 
 const RepoGroupHeader = memo(function RepoGroupHeader({
   group,
   hasActiveChild,
+  creating,
   onClick,
+  onNewSession,
 }: {
   group: RepoGroup;
   hasActiveChild: boolean;
+  creating: boolean;
   onClick: () => void;
+  onNewSession: () => void;
 }) {
   const dotClass =
     STATUS_DOT_CLASS[
@@ -143,33 +215,70 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
     ] ?? "bg-status-idle";
 
   return (
-    <button
-      onClick={onClick}
-      aria-expanded={!group.collapsed}
-      className={`w-full text-left flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors duration-75 text-text-secondary hover:bg-surface-800/50 ${
+    <div
+      className={`flex items-center gap-2 px-3 py-2 transition-colors duration-75 text-text-secondary hover:bg-surface-800/50 ${
         hasActiveChild ? "border-l-2 border-brand-600" : ""
       }`}
     >
-      <svg
-        width="10"
-        height="10"
-        viewBox="0 0 10 10"
-        fill="currentColor"
-        className={`shrink-0 text-text-dim transition-transform duration-75 ${
-          group.collapsed ? "-rotate-90" : ""
-        }`}
+      <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
+      <button
+        onClick={onClick}
+        aria-expanded={!group.collapsed}
+        className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
       >
-        <path d="M2 3 L5 6.5 L8 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      <span className="text-[13px] font-medium truncate flex-1" title={group.repoPath}>
-        {group.displayName}
-      </span>
-      <span
-        className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`}
-      />
-    </button>
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          fill="currentColor"
+          className={`shrink-0 text-text-dim transition-transform duration-75 ${
+            group.collapsed ? "-rotate-90" : ""
+          }`}
+        >
+          <path d="M2 3 L5 6.5 L8 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span className="text-[13px] md:text-[14px] font-medium truncate flex-1" title={group.repoPath}>
+          {group.displayName}
+        </span>
+      </button>
+      <Tooltip text={creating ? "Creating..." : "New session"}>
+        <button
+          onClick={onNewSession}
+          disabled={creating}
+          className={`w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors ${
+            creating
+              ? "text-text-dim cursor-not-allowed"
+              : "text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
+          }`}
+          aria-label={`New session in ${group.displayName}`}
+        >
+          {creating ? (
+            <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          )}
+        </button>
+      </Tooltip>
+    </div>
   );
 });
+
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="relative group/tip inline-flex">
+      {children}
+      <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-1.5 px-2 py-1 rounded bg-surface-950 border border-surface-700 text-[11px] text-text-secondary whitespace-nowrap opacity-0 scale-95 transition-all duration-100 group-hover/tip:opacity-100 group-hover/tip:scale-100 z-50">
+        {text}
+      </span>
+    </span>
+  );
+}
 
 function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
   return (
@@ -182,12 +291,14 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 
 export function WorkspaceSidebar({
   groups,
-  standalone,
   activeId,
+  creatingForProject,
+  open,
   onToggle,
   onSelect,
   onToggleRepo,
   onNew,
+  onCreateSession,
   onSettings,
 }: Props) {
   const [width, setWidth] = useState(loadSavedWidth);
@@ -210,11 +321,7 @@ export function WorkspaceSidebar({
         .filter((g) => g.workspaces.length > 0)
     : groups;
 
-  const filteredStandalone = q
-    ? standalone.filter((ws) => workspaceMatchesFilter(ws, q))
-    : standalone;
-
-  const hasResults = filteredGroups.length > 0 || filteredStandalone.length > 0;
+  const hasResults = filteredGroups.length > 0;
 
   const toggleFilter = () => {
     setFilterOpen((o) => {
@@ -263,59 +370,67 @@ export function WorkspaceSidebar({
   return (
     <>
       <div
-        className="fixed inset-0 bg-black/50 z-30 md:hidden"
+        className={`fixed inset-0 z-30 md:hidden transition-opacity duration-300 ${
+          open ? "bg-black/50" : "opacity-0 pointer-events-none"
+        }`}
         onClick={onToggle}
       />
       <div
         style={{ width }}
-        className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0"
+        className={`fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none ${
+          open ? "translate-x-0" : "-translate-x-full md:hidden"
+        }`}
       >
         <div className="px-3 pt-3 pb-1 flex items-center">
           <span className="text-sm text-text-muted flex-1">
-            Sessions
+            Projects
           </span>
-          <button
-            onClick={toggleFilter}
-            className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
-              filterOpen
-                ? "text-text-secondary"
-                : "text-text-dim hover:text-text-secondary"
-            }`}
-            title="Filter sessions"
-            aria-label="Filter sessions"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          <Tooltip text="Filter">
+            <button
+              onClick={toggleFilter}
+              className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
+                filterOpen
+                  ? "text-text-secondary"
+                  : "text-text-dim hover:text-text-secondary"
+              }`}
+              aria-label="Filter sessions"
             >
-              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-            </svg>
-          </button>
-          <button
-            onClick={onNew}
-            className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
-            title="New session"
-            aria-label="New session"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+              </svg>
+            </button>
+          </Tooltip>
+          <Tooltip text="Add project">
+            <button
+              onClick={onNew}
+              className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
+              aria-label="Add project"
             >
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </button>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                <line x1="12" y1="11" x2="12" y2="17" />
+                <line x1="9" y1="14" x2="15" y2="14" />
+              </svg>
+            </button>
+          </Tooltip>
           <button
             onClick={onToggle}
             className="md:hidden w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-800 ml-1"
@@ -351,7 +466,9 @@ export function WorkspaceSidebar({
                 <RepoGroupHeader
                   group={{ ...group, collapsed: !showExpanded }}
                   hasActiveChild={!showExpanded && hasActiveChild}
+                  creating={creatingForProject === group.repoPath}
                   onClick={() => !q && onToggleRepo(group.id)}
+                  onNewSession={() => onCreateSession(group.repoPath)}
                 />
                 {showExpanded &&
                   group.workspaces.map((ws) => (
@@ -366,15 +483,6 @@ export function WorkspaceSidebar({
               </div>
             );
           })}
-
-          {filteredStandalone.map((ws) => (
-            <SessionRow
-              key={ws.id}
-              workspace={ws}
-              isActive={ws.id === activeId}
-              onClick={() => onSelect(ws.id)}
-            />
-          ))}
 
           {!hasResults && filterQuery && (
             <div className="px-4 py-8 text-center">

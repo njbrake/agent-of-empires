@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::DiffView;
 use crate::tui::dialogs::DialogResult;
@@ -153,40 +153,17 @@ impl DiffView {
                     self.select_branch(branch);
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if state.selected > 0 {
-                    state.selected -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if state.selected > 0 => {
+                state.selected -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if state.selected < state.branches.len().saturating_sub(1) {
-                    state.selected += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j')
+                if state.selected < state.branches.len().saturating_sub(1) =>
+            {
+                state.selected += 1;
             }
             _ => {}
         }
         DiffAction::Continue
-    }
-
-    /// Handle a mouse event
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> DiffAction {
-        // Don't handle mouse in help overlay or branch select dialog
-        if self.show_help || self.branch_select.is_some() {
-            return DiffAction::Continue;
-        }
-
-        // Mouse scroll always scrolls the diff content
-        match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                self.scroll_up(3);
-                DiffAction::Continue
-            }
-            MouseEventKind::ScrollDown => {
-                self.scroll_down(3);
-                DiffAction::Continue
-            }
-            _ => DiffAction::Continue,
-        }
     }
 }
 

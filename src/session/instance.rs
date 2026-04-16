@@ -33,6 +33,7 @@ pub enum Status {
     Error,
     Starting,
     Deleting,
+    Creating,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +101,10 @@ pub struct Instance {
     pub extra_args: String,
     #[serde(default)]
     pub tool: String,
+    /// Built-in agent name used for status detection, resolved at build time from
+    /// config's agent_detect_as map. Avoids loading config during the polling hot path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detect_as: String,
     #[serde(default)]
     pub yolo_mode: bool,
     #[serde(default)]
@@ -148,6 +153,7 @@ impl Instance {
             command: String::new(),
             extra_args: String::new(),
             tool: "claude".to_string(),
+            detect_as: String::new(),
             yolo_mode: false,
             status: Status::Idle,
             created_at: Utc::now(),
@@ -278,11 +284,11 @@ impl Instance {
         let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
-        let env_part = if env_args.is_empty() {
+        let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+        let env_part = if env_info.docker_args.is_empty() {
             String::new()
         } else {
-            format!("{} ", env_args)
+            format!("{} ", env_info.docker_args)
         };
 
         // Get workspace path inside container (handles bare repo worktrees correctly)
@@ -293,10 +299,20 @@ impl Instance {
             "/bin/bash",
         );
 
+        // If there are secret env vars, prepend shell exports and use `exec`
+        // so the outer shell (whose argv briefly contains the export values)
+        // is replaced immediately, keeping secrets out of long-lived process argv.
+        let session_cmd = if env_info.exports.is_empty() {
+            cmd
+        } else {
+            let exports = env_info.exports.join("; ");
+            format!("{}; exec {}", exports, cmd)
+        };
+
         let session = self.container_terminal_tmux_session()?;
         let is_new = !session.exists();
         if is_new {
-            session.create_with_size(&self.project_path, Some(&cmd), size)?;
+            session.create_with_size(&self.project_path, Some(&session_cmd), size)?;
             self.apply_container_terminal_tmux_options();
         }
 
@@ -467,14 +483,24 @@ impl Instance {
                 }
             }
 
-            let mut env_args =
-                build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
-            // Pass AOE_INSTANCE_ID into the container
-            env_args = format!("{} -e AOE_INSTANCE_ID={}", env_args, self.id);
-            let env_part = format!("{} ", env_args);
-            Some(wrap_command_ignore_suspend(
-                &container.exec_command(Some(&env_part), &tool_cmd),
-            ))
+            let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+            // AOE_INSTANCE_ID is not secret, goes directly in docker args
+            let docker_args = format!("{} -e AOE_INSTANCE_ID={}", env_info.docker_args, self.id);
+            let env_part = format!("{} ", docker_args);
+            let wrapped =
+                wrap_command_ignore_suspend(&container.exec_command(Some(&env_part), &tool_cmd));
+            if env_info.exports.is_empty() {
+                Some(wrapped)
+            } else {
+                // Prepend shell exports for secret env vars. The outer shell
+                // runs the exports (builtins), then `exec` replaces it with
+                // the wrapped command. This keeps secret values out of all
+                // long-lived process argv: the outer shell's argv (which
+                // contains the export values) disappears in milliseconds
+                // when exec replaces the process image.
+                let exports = env_info.exports.join("; ");
+                Some(format!("{}; exec {}", exports, wrapped))
+            }
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
             if let Some(ref hook_cmds) = on_launch_hooks {
@@ -541,7 +567,13 @@ impl Instance {
             }
         };
 
-        tracing::debug!("container cmd: {}", cmd.as_ref().map_or("none", |v| v));
+        tracing::debug!(
+            "container cmd: {}",
+            cmd.as_ref().map_or("none".to_string(), |v| {
+                super::environment::redact_env_values(v)
+            })
+        );
+
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
@@ -662,7 +694,10 @@ impl Instance {
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
-        if matches!(self.status, Status::Stopped | Status::Deleting) {
+        if matches!(
+            self.status,
+            Status::Stopped | Status::Deleting | Status::Creating
+        ) {
             return;
         }
 
@@ -689,6 +724,11 @@ impl Instance {
                     self.title
                 );
                 self.status = Status::Error;
+                if self.last_error.is_none() {
+                    self.last_error = Some(
+                        "Could not reach tmux. Is tmux still running on the host?".to_string(),
+                    );
+                }
                 self.last_error_check = Some(std::time::Instant::now());
                 return;
             }
@@ -701,6 +741,12 @@ impl Instance {
                 tmux::Session::generate_name(&self.id, &self.title)
             );
             self.status = Status::Error;
+            if self.last_error.is_none() {
+                self.last_error = Some(
+                    "tmux session is gone. The agent process may have exited or been killed."
+                        .to_string(),
+                );
+            }
             self.last_error_check = Some(std::time::Instant::now());
             return;
         }
@@ -732,13 +778,26 @@ impl Instance {
                 hook_status,
                 is_dead
             );
-            self.status = if is_dead { Status::Error } else { hook_status };
-            self.last_error = None;
+            if is_dead {
+                self.status = Status::Error;
+                if self.last_error.is_none() {
+                    let pane_content = session.capture_pane(20).unwrap_or_default();
+                    self.last_error = Some(summarize_error_from_pane(&pane_content));
+                }
+            } else {
+                self.status = hook_status;
+                self.last_error = None;
+            }
             return;
         }
 
         let pane_content = session.capture_pane(50).unwrap_or_default();
-        let detected = tmux::detect_status_from_content(&pane_content, &self.tool);
+        let detection_tool = if self.detect_as.is_empty() {
+            &self.tool
+        } else {
+            &self.detect_as
+        };
+        let detected = tmux::detect_status_from_content(&pane_content, detection_tool);
         tracing::trace!(
             "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",
             self.title,
@@ -800,7 +859,13 @@ impl Instance {
 
         tracing::trace!("status '{}': final={:?}", self.title, self.status);
 
-        self.last_error = None;
+        if self.status == Status::Error {
+            if self.last_error.is_none() {
+                self.last_error = Some(summarize_error_from_pane(&pane_content));
+            }
+        } else {
+            self.last_error = None;
+        }
     }
 
     pub fn update_status(&mut self) {
@@ -820,6 +885,66 @@ impl Instance {
 
 fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
+}
+
+/// Build a short human-readable hint for why a session transitioned to Error.
+///
+/// Called when we set Status::Error but don't already have a `last_error`
+/// populated (e.g. an agent process exited on its own). We grab the last few
+/// non-empty lines of the pane and pick something that looks like an error
+/// message; otherwise fall back to a generic "stopped responding" string so
+/// the UI never renders an Error state without any explanation.
+fn summarize_error_from_pane(pane_content: &str) -> String {
+    let cleaned = crate::tmux::utils::strip_ansi(pane_content);
+    let tail: Vec<&str> = cleaned
+        .lines()
+        .rev()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .take(12)
+        .collect();
+
+    for line in &tail {
+        let lower = line.to_lowercase();
+        if lower.contains("error")
+            || lower.contains("command not found")
+            || lower.contains("permission denied")
+            || lower.contains("cannot")
+            || lower.contains("failed")
+            || lower.contains("no such file")
+            || lower.contains("traceback")
+            || lower.contains("panic")
+        {
+            return truncate_error_line(line);
+        }
+    }
+
+    if let Some(last) = tail.first() {
+        return format!(
+            "Agent stopped responding. Last line: {}",
+            truncate_error_line(last)
+        );
+    }
+
+    "Agent stopped responding and the pane is empty.".to_string()
+}
+
+fn truncate_error_line(line: &str) -> String {
+    const MAX: usize = 200;
+    let trimmed = line.trim();
+    if trimmed.len() <= MAX {
+        trimmed.to_string()
+    } else {
+        let mut out = String::with_capacity(MAX + 1);
+        for (i, ch) in trimmed.char_indices() {
+            if i >= MAX {
+                break;
+            }
+            out.push(ch);
+        }
+        out.push('…');
+        out
+    }
 }
 
 /// Format an environment variable assignment as a shell-safe command prefix.
@@ -1072,6 +1197,7 @@ mod tests {
             Status::Error,
             Status::Starting,
             Status::Deleting,
+            Status::Creating,
         ];
 
         for status in statuses {

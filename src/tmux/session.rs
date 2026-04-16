@@ -6,8 +6,8 @@ use std::process::Command;
 use super::{
     refresh_session_cache, session_exists_from_cache,
     utils::{
-        append_pane_base_index_args, append_remain_on_exit_args, is_pane_dead,
-        is_pane_running_shell,
+        append_mouse_on_args, append_pane_base_index_args, append_remain_on_exit_args,
+        is_pane_dead, is_pane_running_shell,
     },
     SESSION_PREFIX,
 };
@@ -67,12 +67,18 @@ impl Session {
         let mut args = build_create_args(&self.name, working_dir, command, size);
         append_remain_on_exit_args(&mut args, &self.name);
         append_pane_base_index_args(&mut args, &self.name);
+        append_mouse_on_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 
         // Note: With -d flag, tmux new-session returns 0 even if the shell command fails.
         // Log args at debug level for troubleshooting.
-        tracing::debug!("tmux new-session args: {:?}", args);
+        tracing::debug!(
+            "tmux new-session args: {:?}",
+            args.iter()
+                .map(|a| crate::session::environment::redact_env_values(a))
+                .collect::<Vec<_>>()
+        );
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -160,7 +166,13 @@ impl Session {
                     .status()?;
 
                 if !status.success() {
-                    bail!("Failed to attach to tmux session");
+                    let diag = self.diagnose_attach_failure();
+                    bail!(
+                        "Failed to attach to tmux session '{}' (exit {}): {}",
+                        self.name,
+                        status.code().unwrap_or(-1),
+                        diag
+                    );
                 }
             }
         } else {
@@ -169,11 +181,47 @@ impl Session {
                 .status()?;
 
             if !status.success() {
-                bail!("Failed to attach to tmux session");
+                let diag = self.diagnose_attach_failure();
+                bail!(
+                    "Failed to attach to tmux session '{}' (exit {}): {}",
+                    self.name,
+                    status.code().unwrap_or(-1),
+                    diag
+                );
             }
         }
 
         Ok(())
+    }
+
+    /// Collect diagnostic info after a failed attach attempt.
+    fn diagnose_attach_failure(&self) -> String {
+        let mut info = Vec::new();
+        info.push(format!("exists={}", self.exists()));
+        info.push(format!("pane_dead={}", self.is_pane_dead()));
+
+        if let Ok(output) = Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &self.name,
+                "-p",
+                "#{session_attached} #{pane_pid} #{pane_dead}",
+            ])
+            .output()
+        {
+            let msg = String::from_utf8_lossy(&output.stdout);
+            info.push(format!("tmux_info={}", msg.trim()));
+        }
+
+        if let Ok(pane) = self.capture_pane(5) {
+            let trimmed = pane.trim();
+            if !trimmed.is_empty() {
+                info.push(format!("pane_content={}", trimmed));
+            }
+        }
+
+        info.join(", ")
     }
 
     pub fn capture_pane(&self, lines: usize) -> Result<String> {

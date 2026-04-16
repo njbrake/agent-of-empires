@@ -27,46 +27,36 @@
 
 ## Build, Test, and Development Commands
 
-- `cargo build` / `cargo build --release`: compile TUI-only (release binary at `target/release/aoe`).
-- `cargo build --profile dev-release`: faster optimized builds for local development. Skips LTO for quicker compile times while still producing an optimized binary. Use `--release` for final/CI builds.
-- `cargo build --features serve`: compile with web dashboard support (requires Node.js + npm).
-- `cargo run --release`: run from source; requires `tmux` installed.
-- `cargo check`: fast type-checking during development.
-- `cargo test`: run unit + integration tests (some tests skip if `tmux` is unavailable).
-- `cargo fmt`: format with rustfmt (run before pushing).
-- `cargo clippy`: lint (fix warnings unless there’s a strong reason not to).
-- Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes to `debug.log` in app data dir).
+- `cargo build` / `cargo build --release`: TUI-only (release binary at `target/release/aoe`).
+- `cargo build --profile dev-release`: optimized local builds without LTO; faster compile. Use `--release` for CI.
+- `cargo build --features serve`: web dashboard support (needs Node.js + npm).
+- `cargo test`: unit + integration tests (some skip if `tmux` unavailable).
+- `cargo fmt` + `cargo clippy`: run before pushing; fix clippy warnings unless there's a strong reason not to.
+- Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes `debug.log` in app data dir).
+- Running from source needs `tmux` installed.
 
 ### Web Dashboard (experimental)
 
-The web dashboard (`aoe serve`) is behind the `serve` Cargo feature flag. It is experimental and subject to major changes.
+Behind the `serve` feature flag; experimental, subject to change.
 
-- **Build**: `cargo build --features serve` (build.rs auto-runs `npm install && npm run build` in `web/` if needed).
-- **Run**: `aoe serve --host 0.0.0.0` starts the embedded web server with token-based auth.
-- **Frontend dev**: `cd web && npm run dev` for Vite HMR during development. The Rust server must also be running for API/WebSocket requests.
-- **Stack**: React 19, TypeScript, Vite, Tailwind CSS v4, xterm.js v6 for terminal rendering.
-- **PWA**: The dashboard is installable as a Progressive Web App. In Chrome: three-dot menu > "Install Agent of Empires". On iOS: Share > "Add to Home Screen". This creates a standalone window with no browser chrome.
-- **No npm for TUI-only builds**: `cargo build` (without `--features serve`) requires zero JavaScript tooling.
+- Stack: React 19, TypeScript, Vite, Tailwind v4, xterm.js v6. Installable as a PWA ("Install Agent of Empires" in Chrome; "Add to Home Screen" on iOS).
+- Build: `cargo build --features serve` (build.rs runs `npm install && npm run build` in `web/` when inputs change).
+- Run: `aoe serve --host 0.0.0.0` (token-based auth by default).
+- Frontend dev: `cd web && npm run dev` for Vite HMR; the Rust server must also be running for API/WebSocket requests.
+- TUI-only `cargo build` (without `--features serve`) needs no JS tooling.
 
 ## Settings & Configuration
 
-- **Every configurable field must be editable in the settings TUI.** When adding a new config field to `SandboxConfig`, `WorktreeConfig`, etc., you must also:
-  1. Add a `FieldKey` variant in `src/tui/settings/fields.rs`
-  2. Add a `SettingField` entry in the corresponding `build_*_fields()` function
-  3. Wire up `apply_field_to_global()` and `apply_field_to_profile()`
-  4. Add a `clear_profile_override()` case in `src/tui/settings/input.rs`
-- Profile overrides (`*ConfigOverride` structs in `profile_config.rs`) must also include the new field with merge logic in `merge_configs()`.
+Every configurable field must be editable in the settings TUI. When adding one to `SandboxConfig`, `WorktreeConfig`, etc., also: add a `FieldKey` in `src/tui/settings/fields.rs`; add a `SettingField` entry in the matching `build_*_fields()`; wire `apply_field_to_global()` + `apply_field_to_profile()`; add a `clear_profile_override()` case in `src/tui/settings/input.rs`; include the field in the `*ConfigOverride` struct in `profile_config.rs` with merge logic in `merge_configs()`.
 
 ## Coding Style & Naming Conventions
 
-- Prefer "let the tools decide": keep code `cargo fmt`-clean and `cargo clippy`-clean.
-- **Never use emdashes (—) or double-dashes (--)** as separators in documentation or comments. Use commas, semicolons, or rephrase instead.
-- Rust naming: `snake_case` for modules/functions, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
-- Keep OS-specific logic in `src/process/{macos,linux}.rs` rather than sprinkling `cfg` checks.
-- Do not be concerned about maintaining backwards compatibility. You should not assume that it needs to be backwards compatible, but you should mention when you make a change that breaks backwards compatibility.
-- Add comments where they aid understanding, but remove obvious ones before finishing:
-  - **Keep**: comments explaining non-obvious formulas, layout structure documentation, or "why" something is done
-  - **Remove**: section headers that just name what the next line does (e.g., `// Render buttons` before `render_buttons()`), or comments restating the code
+- Let `cargo fmt` + `cargo clippy` decide; fix warnings.
+- **No emdashes or `--`** as separators in docs/comments; use commas, semicolons, or rephrase.
+- Rust naming: `snake_case` modules/functions, `CamelCase` types, `SCREAMING_SNAKE_CASE` constants.
+- Keep OS-specific logic in `src/process/{macos,linux}.rs`, not sprinkled `cfg` checks.
+- Don't preserve backwards compatibility by default; call it out when a change is breaking.
+- Comments: explain non-obvious "why"; skip section headers and comments that restate the code.
 
 ## Testing Guidelines
 
@@ -77,28 +67,26 @@ The web dashboard (`aoe serve`) is behind the `serve` Cargo feature flag. It is 
 
 ### E2E Tests
 
-Full-binary end-to-end tests live in `tests/e2e/`. They exercise `aoe` through tmux (for TUI tests) and as a subprocess (for CLI tests). Run them with:
+Full-binary e2e tests live in `tests/e2e/`, exercising `aoe` through tmux (TUI) and as a subprocess (CLI). Run with `cargo test --test e2e` (add `-- --nocapture` for screen dumps on failure).
 
-```sh
-cargo test --test e2e              # all e2e tests
-cargo test --test e2e -- --nocapture  # with screen dumps on failure
-```
+The harness (`tests/e2e/harness.rs`) exposes `TuiTestHarness` with `spawn_tui()`/`spawn(args)`, `send_keys(keys)`/`type_text(text)`, `wait_for(text)` (10s timeout), `capture_screen()`/`assert_screen_contains(text)`, and `run_cli(args)`. TUI tests auto-skip without tmux; Docker tests use `#[ignore]`; all use `#[serial]` for tmux isolation.
 
-The test harness (`tests/e2e/harness.rs`) provides `TuiTestHarness` with:
-- `spawn_tui()` / `spawn(args)`: launch `aoe` in a detached tmux session with isolated `$HOME`
-- `send_keys(keys)` / `type_text(text)`: send keystrokes or literal text
-- `wait_for(text)`: poll the screen until text appears (10s timeout, panics with screen dump)
-- `capture_screen()` / `assert_screen_contains(text)`: one-shot screen assertions
-- `run_cli(args)`: run `aoe` as a subprocess with the same env isolation
+Recording (for PR reviews): `RECORD_E2E=1 cargo test --test e2e -- --nocapture` locally (needs `asciinema` + `agg`, outputs to `target/e2e-recordings/`), or add the `needs-recording` label in CI.
 
-TUI tests auto-skip if tmux is not installed. Docker-dependent tests use `#[ignore]` and require a running daemon. All tests use `#[serial]` for tmux isolation.
+### Web Dashboard Playwright Tests
 
-#### Recording E2E Tests
+Baseline Playwright tests live in `web/tests/` (run with `cd web && npx playwright test`). For any change to touch events, xterm.js integration, mobile-viewport behavior, WebSocket message shape, or the soft keyboard, write a real-session e2e against a running `aoe serve` rather than relying on the user to verify on their phone.
 
-E2E tests can produce asciinema recordings (`.cast`) and GIF files automatically. This is useful for PR reviews and documenting TUI behavior.
+Recipe:
+1. Shim a fake tool on `$PATH` (a script named `claude` that execs `bash -i`) so `aoe add --cmd claude` creates a live tmux session.
+2. `cargo build --features serve`, then start `aoe serve --no-auth --port N` in the background with isolated `HOME=/tmp/aoehome`.
+3. In a Node script using `@playwright/test` (already a devDep), emulate mobile with `devices['iPhone 13']` so `pointer: coarse` matches.
+4. Spy on PTY bytes by patching `WebSocket.prototype.send` in an `addInitScript` and pushing into `window.__WS_SENT__`.
+5. Synthesize multi-touch via `page.evaluate` dispatching raw `new TouchEvent(...)` on `.xterm` — Playwright's `page.touchscreen` is single-finger only.
 
-- **Local**: `RECORD_E2E=1 cargo test --test e2e -- --nocapture` (requires `asciinema` and `agg` on `$PATH`). Outputs go to `target/e2e-recordings/`.
-- **CI**: Add the `needs-recording` label to a PR. The `E2E Recordings` workflow will run the tests with recording enabled and upload GIF artifacts.
+Keep the script ephemeral unless promoted to `web/tests/` with a mobile Playwright project (`hasTouch: true`, `isMobile: true`). Install browser deps with `npx playwright install-deps` if missing.
+
+**Gotcha:** synthetic touchmove events fire back-to-back with Δt≈1ms, which blows up any `Δpx / Δtime` velocity calculation. Cap velocity and per-frame emit counts, or a real device will look sane while the e2e produces runaway momentum (or vice-versa).
 
 ## Commit & Pull Request Guidelines
 
@@ -120,49 +108,31 @@ E2E tests can produce asciinema recordings (`.cast`) and GIF files automatically
 
 ## Data Migrations
 
-When making breaking changes to stored data (file locations, config schema, etc.), use the migration system in `src/migrations/` instead of adding fallback/compatibility logic to the main code.
+Breaking changes to stored data (file locations, config schema) go through `src/migrations/`, not inline fallback/compat shims. A `.schema_version` file tracks state; `migrations::run_migrations()` runs pending ones in order on startup and bumps the version.
 
-**Why**: Keeps the main codebase clean. Legacy transition logic is isolated and clearly marked as such.
+To add one:
+1. Create `src/migrations/vNNN_description.rs` with a `pub fn run() -> anyhow::Result<()>`.
+2. In `src/migrations/mod.rs`: add `mod vNNN_description;`, bump `CURRENT_VERSION`, append a `Migration { version: NNN, name: "description", run: vNNN_description::run }` entry.
 
-**How it works**:
-1. A `.schema_version` file in the app directory tracks the current version
-2. On startup, `migrations::run_migrations()` runs any pending migrations in order
-3. Each migration bumps the version after completion
+Migrations must be idempotent, use `tracing::info!`, gate platform-specific ones with `#[cfg(target_os = "...")]`, and be tested by hand-crafting the old state.
 
-**Adding a new migration**:
+`docs/cli/reference.md` is auto-generated by `cargo xtask gen-docs`; edit the clap help in `src/cli/` and re-run instead. CI enforces it.
 
-1. Create `src/migrations/vNNN_description.rs`:
-   ```rust
-   use anyhow::Result;
+## Website & Documentation
 
-   pub fn run() -> Result<()> {
-       // Migration logic here
-       Ok(())
-   }
-   ```
+The public website (agent-of-empires.com) is an Astro static site in `website/`.
 
-2. Update `src/migrations/mod.rs`:
-   ```rust
-   mod vNNN_description;
+- **`docs/`** is the canonical source for all documentation and guide content. Edit docs here, never on the website side.
+- Astro component pages (`*.astro`) like `website/src/pages/guides/index.astro` are not generated; edit them directly.
 
-   const CURRENT_VERSION: u32 = NNN;  // bump this
+**Adding a new page to the website:**
+1. Create the page in `docs/` (with a `# Title` as the first line).
+2. Add an entry to the `PAGES` array in `website/scripts/sync-docs.mjs` with `source`, `dest`, `title`, and `description`.
+3. Add the page's source path → website URL mapping to `URL_MAP` in the same script.
+4. Add a nav entry in `website/src/data/docsNav.ts`.
 
-   const MIGRATIONS: &[Migration] = &[
-       // ... existing migrations ...
-       Migration { version: NNN, name: "description", run: vNNN_description::run },
-   ];
-   ```
-
-**Guidelines**:
-- Migrations must be idempotent (safe to run multiple times)
-- Use `tracing::info!` to log what's happening
-- Platform-specific migrations should use `#[cfg(target_os = "...")]`
-- Test migrations by creating the old state manually and verifying the transition
-- Before finishing any feature request, make sure that you have run cargo fmt, clippy, and tests.
-- `docs/cli/reference.md` is auto-generated by `cargo xtask gen-docs`. Do not edit it by hand; update the clap help text in `src/cli/` instead and re-run the generator. CI checks that this file is in sync.
+The CI workflow (`.github/workflows/docs.yml`) triggers on changes to `docs/**`, `website/**`, and other relevant paths.
 
 ## Design System
-Always read `DESIGN.md` before making any visual or UI decisions.
-All font choices, colors, spacing, and aesthetic direction are defined there.
-Do not deviate without explicit user approval.
-In QA mode, flag any code that doesn't match DESIGN.md.
+
+Read `DESIGN.md` before any visual/UI change — fonts, colors, spacing, and aesthetic direction are defined there. Don't deviate without explicit approval; in QA mode, flag code that doesn't match.

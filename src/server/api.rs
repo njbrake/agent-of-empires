@@ -55,6 +55,7 @@ pub struct SessionResponse {
     pub main_repo_path: Option<String>,
     pub is_sandboxed: bool,
     pub has_terminal: bool,
+    pub profile: String,
 }
 
 impl From<&Instance> for SessionResponse {
@@ -77,6 +78,7 @@ impl From<&Instance> for SessionResponse {
                 .map(|w| w.main_repo_path.clone()),
             is_sandboxed: inst.is_sandboxed(),
             has_terminal: inst.terminal_info.is_some(),
+            profile: inst.source_profile.clone(),
         }
     }
 }
@@ -85,6 +87,59 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
     let instances = state.instances.read().await;
     let sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
     Json(sessions)
+}
+
+// --- Rename session ---
+
+#[derive(Deserialize)]
+pub struct RenameSessionBody {
+    pub title: String,
+}
+
+pub async fn rename_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<RenameSessionBody>,
+) -> impl IntoResponse {
+    let title = body.title.trim().to_string();
+    if title.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": "Title cannot be empty" })),
+        );
+    }
+    if let Err(msg) = validate_no_shell_injection(&title, "title") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": msg })),
+        );
+    }
+
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        );
+    };
+
+    inst.title = title.clone();
+    // Also update the worktree branch name in metadata (cosmetic only;
+    // the actual git branch is not renamed on disk).
+    if let Some(ref mut wt) = inst.worktree_info {
+        wt.branch = title;
+    }
+
+    let response = SessionResponse::from(&*inst);
+
+    let profile = state.profile.clone();
+    if let Ok(storage) = Storage::new(&profile) {
+        if let Err(e) = storage.save(&instances) {
+            tracing::error!("Failed to save after rename: {e}");
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!(response)))
 }
 
 // --- Create session ---
@@ -105,6 +160,16 @@ pub struct CreateSessionBody {
     pub sandbox: bool,
     #[serde(default)]
     pub extra_args: String,
+    #[serde(default)]
+    pub sandbox_image: Option<String>,
+    #[serde(default)]
+    pub extra_env: Vec<String>,
+    #[serde(default)]
+    pub extra_repo_paths: Vec<String>,
+    #[serde(default)]
+    pub command_override: String,
+    #[serde(default)]
+    pub custom_instruction: Option<String>,
 }
 
 pub async fn create_session(
@@ -165,31 +230,63 @@ pub async fn create_session(
         use crate::session::Config;
 
         let config = Config::load().unwrap_or_default();
-        let sandbox_image = if config.sandbox.default_image.is_empty() {
-            "ubuntu:latest".to_string()
-        } else {
-            config.sandbox.default_image.clone()
-        };
+        let sandbox_image = body.sandbox_image.unwrap_or_else(|| {
+            if config.sandbox.default_image.is_empty() {
+                "ubuntu:latest".to_string()
+            } else {
+                config.sandbox.default_image.clone()
+            }
+        });
 
         let title_refs: Vec<&str> = existing_titles.iter().map(|s| s.as_str()).collect();
+        let extra_repo_paths: Vec<String> = body
+            .extra_repo_paths
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        // When worktree_branch is empty string, generate a name from civilizations.
+        // The generated name is used as both title and branch.
+        let title = body.title.unwrap_or_default();
+        let worktree_branch = match body.worktree_branch {
+            Some(b) if b.is_empty() => {
+                let generated = crate::session::civilizations::generate_random_title(&title_refs);
+                Some(generated)
+            }
+            other => other,
+        };
+        // If title is empty and we generated a branch name, use it as the title too
+        let title = if title.is_empty() {
+            worktree_branch.clone().unwrap_or_default()
+        } else {
+            title
+        };
+
         let params = InstanceParams {
-            title: body.title.unwrap_or_default(),
+            title,
             path: body.path,
             group: body.group,
             tool: body.tool,
-            worktree_branch: body.worktree_branch,
+            worktree_branch,
             create_new_branch: body.create_new_branch,
             sandbox: body.sandbox,
             sandbox_image,
             yolo_mode: body.yolo_mode,
-            extra_env: vec![],
+            extra_env: body.extra_env,
             extra_args: body.extra_args,
-            command_override: String::new(),
-            extra_repo_paths: vec![],
+            command_override: body.command_override,
+            extra_repo_paths,
         };
 
         let build_result = builder::build_instance(params, &title_refs, &profile)?;
         let mut instance = build_result.instance;
+
+        // Apply per-session sandbox overrides from the request body.
+        if let Some(ref mut sandbox) = instance.sandbox_info {
+            if body.custom_instruction.is_some() {
+                sandbox.custom_instruction = body.custom_instruction;
+            }
+        }
 
         // Save to disk
         let storage = Storage::new(&profile)?;
@@ -234,15 +331,181 @@ pub async fn create_session(
     }
 }
 
+// --- Ensure agent session ---
+
+/// Ensure the main agent tmux session is alive, restarting it if dead.
+///
+/// Mirrors the TUI's `attach_session` restart logic: checks the actual tmux
+/// state (exists / pane dead / running unexpected shell) and restarts the
+/// instance when needed. Returns the resulting status so the frontend can
+/// decide whether to proceed with the WebSocket attach.
+///
+/// Concurrency: a per-instance `tokio::sync::Mutex` serializes ensure calls
+/// for the same session so two rapid POSTs don't both decide "dead" and race
+/// on `tmux new-session`.
+///
+/// Read-only: in read-only mode, the endpoint may report `alive` but will
+/// refuse to kill+restart a session. Returns 403 when a restart is needed.
+pub async fn ensure_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let instances = state.instances.read().await;
+    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response();
+    };
+    drop(instances);
+
+    // Serialize concurrent ensure calls for the same session. The decision
+    // phase reads tmux state and the restart phase mutates it; any other
+    // ensure for this id must wait so both see a consistent view.
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
+
+    // Inspect tmux + make the restart decision on a blocking thread. Refresh
+    // the cache first so rapid re-calls see the true current state (the
+    // background status poller only refreshes every 2s).
+    let decision_instance = instance.clone();
+    let id_for_log = id.clone();
+    let decision = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        crate::tmux::refresh_session_cache();
+        let tmux_session = decision_instance.tmux_session()?;
+        let exists = tmux_session.exists();
+        let pane_dead = exists && tmux_session.is_pane_dead();
+        let needs_restart = if !exists || pane_dead {
+            true
+        } else if crate::hooks::read_hook_status(&decision_instance.id).is_some() {
+            // Hook status tracks this session; shell detection is unreliable.
+            false
+        } else if decision_instance.has_command_override() {
+            // Custom command overrides run agents through wrapper scripts that
+            // look like shells to tmux. Don't restart based on shell detection.
+            false
+        } else {
+            !decision_instance.expects_shell() && tmux_session.is_pane_running_shell()
+        };
+        tracing::debug!(
+            session_id = id_for_log,
+            exists,
+            pane_dead,
+            needs_restart,
+            "ensure_session: restart decision"
+        );
+        Ok(needs_restart)
+    })
+    .await;
+
+    let needs_restart = match decision {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::error!("ensure_session: failed to inspect tmux for {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("ensure_session inspect panicked for {id}: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response();
+        }
+    };
+
+    if !needs_restart {
+        return (StatusCode::OK, Json(serde_json::json!({"status": "alive"}))).into_response();
+    }
+
+    if state.read_only {
+        // Read-only viewers must not kill + respawn a dead session. Signal
+        // the frontend so it can show "session is stopped; ask an owner to
+        // reattach" instead of silently replacing the agent process.
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Session is stopped or errored. Restart requires write access.",
+            })),
+        )
+            .into_response();
+    }
+
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            inst.status = crate::session::Status::Starting;
+            inst.last_error = None;
+        }
+    }
+
+    let restart_result = tokio::task::spawn_blocking(move || -> anyhow::Result<Instance> {
+        let tmux_session = instance.tmux_session()?;
+        if tmux_session.exists() {
+            let _ = tmux_session.kill();
+        }
+        let mut inst = instance;
+        inst.start_with_size_opts(None, false)?;
+        Ok(inst)
+    })
+    .await;
+
+    match restart_result {
+        Ok(Ok(started)) => {
+            let mut instances = state.instances.write().await;
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                inst.status = started.status;
+                inst.last_error = None;
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "restarted"})),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            tracing::warn!("ensure_session restart failed for {id}: {msg}");
+            let mut instances = state.instances.write().await;
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                inst.status = crate::session::Status::Error;
+                inst.last_error = Some(msg.clone());
+            }
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "restart_failed",
+                    "message": msg,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("ensure_session panicked for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 // --- Paired terminal ---
 
 pub async fn ensure_terminal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut instances = state.instances.write().await;
-    let inst = match instances.iter_mut().find(|i| i.id == id) {
-        Some(i) => i,
+    let instances = state.instances.read().await;
+    let inst = match instances.iter().find(|i| i.id == id) {
+        Some(i) => i.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -251,17 +514,29 @@ pub async fn ensure_terminal(
                 .into_response();
         }
     };
+    drop(instances);
 
-    if inst.has_terminal() {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "exists"})),
-        )
-            .into_response();
+    // Serialize concurrent terminal-ensure calls for the same session so two
+    // parallel requests don't both try to create the same tmux session
+    // (the second would fail with "duplicate session").
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
+
+    // Re-check after acquiring the lock; the first caller may have created it.
+    {
+        let instances = state.instances.read().await;
+        if let Some(i) = instances.iter().find(|i| i.id == id) {
+            if i.has_terminal() {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"status": "exists"})),
+                )
+                    .into_response();
+            }
+        }
     }
 
-    let mut inst_clone = inst.clone();
-    drop(instances);
+    let mut inst_clone = inst;
 
     let result = tokio::task::spawn_blocking(move || inst_clone.start_terminal()).await;
 
@@ -304,9 +579,9 @@ pub async fn ensure_container_terminal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut instances = state.instances.write().await;
-    let inst = match instances.iter_mut().find(|i| i.id == id) {
-        Some(i) => i,
+    let instances = state.instances.read().await;
+    let inst = match instances.iter().find(|i| i.id == id) {
+        Some(i) => i.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -315,17 +590,25 @@ pub async fn ensure_container_terminal(
                 .into_response();
         }
     };
+    drop(instances);
 
-    if inst.has_container_terminal() {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "exists"})),
-        )
-            .into_response();
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
+
+    {
+        let instances = state.instances.read().await;
+        if let Some(i) = instances.iter().find(|i| i.id == id) {
+            if i.has_container_terminal() {
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"status": "exists"})),
+                )
+                    .into_response();
+            }
+        }
     }
 
-    let mut inst_clone = inst.clone();
-    drop(instances);
+    let mut inst_clone = inst;
 
     let result =
         tokio::task::spawn_blocking(move || inst_clone.start_container_terminal_with_size(None))
@@ -356,83 +639,328 @@ pub async fn ensure_container_terminal(
     }
 }
 
-// --- Diff ---
+// --- Rich Diff (per-file, merge-base aware) ---
 
 #[derive(Serialize)]
-pub struct DiffResponse {
-    pub files: Vec<DiffFileInfo>,
-    pub raw: String,
-}
-
-#[derive(Serialize)]
-pub struct DiffFileInfo {
+pub struct RichDiffFileInfo {
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
     pub status: String,
+    pub additions: usize,
+    pub deletions: usize,
 }
 
-pub async fn session_diff(
+#[derive(Serialize)]
+pub struct RichDiffFilesResponse {
+    pub files: Vec<RichDiffFileInfo>,
+    pub base_branch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RichDiffLine {
+    #[serde(rename = "type")]
+    pub change_type: String,
+    pub old_line_num: Option<usize>,
+    pub new_line_num: Option<usize>,
+    pub content: String,
+}
+
+#[derive(Serialize)]
+pub struct RichDiffHunk {
+    pub old_start: usize,
+    pub old_lines: usize,
+    pub new_start: usize,
+    pub new_lines: usize,
+    pub lines: Vec<RichDiffLine>,
+}
+
+#[derive(Serialize)]
+pub struct RichFileDiffResponse {
+    pub file: RichDiffFileInfo,
+    pub hunks: Vec<RichDiffHunk>,
+    pub is_binary: bool,
+    /// True if the file was too large to diff and hunks were omitted.
+    pub truncated: bool,
+}
+
+/// Max combined bytes of old+new content before we bail on diffing.
+const MAX_DIFF_BYTES: usize = 2_000_000;
+/// Max combined line count of old+new before we bail on diffing.
+const MAX_DIFF_LINES: usize = 40_000;
+
+/// Validate a user-supplied relative file path against a workdir.
+///
+/// Returns the canonicalized absolute path if the requested path is safe to
+/// read (no absolute, no `..`, no symlink-escape out of the workdir) and
+/// appears in `changed_files` (so only actually-diffed files are exposed).
+/// Returns `Err(status, message)` otherwise.
+fn validate_diff_path(
+    workdir: &std::path::Path,
+    requested: &std::path::Path,
+    changed_files: &[crate::git::diff::DiffFile],
+) -> Result<std::path::PathBuf, (StatusCode, &'static str)> {
+    use std::path::Component;
+
+    if requested.as_os_str().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "empty path"));
+    }
+    if requested.is_absolute() {
+        return Err((StatusCode::BAD_REQUEST, "absolute path not allowed"));
+    }
+    for comp in requested.components() {
+        match comp {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err((StatusCode::BAD_REQUEST, "path escapes workdir"));
+            }
+            _ => {}
+        }
+    }
+
+    // Cross-check: path must be one of the currently-changed files.
+    // This is the narrowest trust boundary: only files the user actually
+    // modified on this branch are diffable, not arbitrary files in the worktree.
+    let matches_changed = changed_files.iter().any(|f| f.path == requested);
+    if !matches_changed {
+        return Err((StatusCode::NOT_FOUND, "file not in changed set"));
+    }
+
+    // Canonicalize both sides and verify containment as defense in depth
+    // against symlinks that might point outside the workdir.
+    let canonical_workdir = workdir.canonicalize().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "workdir canonicalize failed",
+        )
+    })?;
+    let full = canonical_workdir.join(requested);
+    // The file may not exist on disk (e.g., deleted in the working tree), in
+    // which case canonicalize fails; fall back to the non-canonical path and
+    // just verify textual containment.
+    let final_path = match full.canonicalize() {
+        Ok(c) => {
+            if !c.starts_with(&canonical_workdir) {
+                return Err((StatusCode::BAD_REQUEST, "path escapes workdir"));
+            }
+            c
+        }
+        Err(_) => full,
+    };
+    Ok(final_path)
+}
+
+/// Helper: look up a session's project_path by ID.
+async fn resolve_session_path(
+    state: &AppState,
+    id: &str,
+) -> Result<String, axum::response::Response> {
+    let instances = state.instances.read().await;
+    match instances.iter().find(|i| i.id == id) {
+        Some(i) => Ok(i.project_path.clone()),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found", "message": "Session not found"})),
+        )
+            .into_response()),
+    }
+}
+
+pub async fn session_diff_files(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let instances = state.instances.read().await;
-    let project_path = match instances.iter().find(|i| i.id == id) {
-        Some(i) => i.project_path.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found", "message": "Session not found"})),
-            )
-                .into_response();
-        }
+    let project_path = match resolve_session_path(&state, &id).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
     };
-    drop(instances);
 
     let result = tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new("git")
-            .args(["diff", "HEAD"])
-            .current_dir(&project_path)
-            .output()?;
-        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+        use crate::git::diff;
+        let path = std::path::Path::new(&project_path);
 
-        let status_output = std::process::Command::new("git")
-            .args(["diff", "HEAD", "--name-status"])
-            .current_dir(&project_path)
-            .output()?;
-        let files: Vec<DiffFileInfo> = String::from_utf8_lossy(&status_output.stdout)
-            .lines()
-            .filter_map(|line| {
-                let parts: Vec<&str> = line.splitn(2, '\t').collect();
-                if parts.len() == 2 {
-                    Some(DiffFileInfo {
-                        status: parts[0].to_string(),
-                        path: parts[1].to_string(),
-                    })
-                } else {
-                    None
-                }
+        let base_branch = diff::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
+        let warning = diff::check_merge_base_status(path, &base_branch);
+        let changed = diff::compute_changed_files(path, &base_branch).unwrap_or_default();
+
+        let files: Vec<RichDiffFileInfo> = changed
+            .into_iter()
+            .map(|f| RichDiffFileInfo {
+                path: f.path.to_string_lossy().to_string(),
+                old_path: f.old_path.map(|p| p.to_string_lossy().to_string()),
+                status: f.status.label().to_string(),
+                additions: f.additions,
+                deletions: f.deletions,
             })
             .collect();
 
-        Ok::<_, anyhow::Error>(DiffResponse { files, raw })
+        RichDiffFilesResponse {
+            files,
+            base_branch,
+            warning,
+        }
     })
     .await;
 
     match result {
-        Ok(Ok(diff)) => (
+        Ok(resp) => (
             StatusCode::OK,
-            Json(serde_json::to_value(diff).expect("DiffResponse is always serializable")),
+            Json(serde_json::to_value(resp).expect("RichDiffFilesResponse is always serializable")),
         )
             .into_response(),
-        Ok(Err(e)) => {
-            tracing::error!("Diff failed: {}", e);
+        Err(e) => {
+            tracing::error!("Diff files panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "diff_failed", "message": "Failed to compute diff"})),
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FileDiffQuery {
+    pub path: String,
+}
+
+/// Response for a rejected diff request (bad path, file not changed, etc.).
+enum DiffFileError {
+    BadRequest(&'static str),
+    NotFound(&'static str),
+    Internal(anyhow::Error),
+}
+
+pub async fn session_diff_file(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<FileDiffQuery>,
+) -> impl IntoResponse {
+    let project_path = match resolve_session_path(&state, &id).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<RichFileDiffResponse, DiffFileError> {
+            use crate::git::diff;
+            use similar::ChangeTag;
+
+            let repo_path = std::path::Path::new(&project_path);
+            let file_path = std::path::Path::new(&query.path);
+
+            let base_branch =
+                diff::get_default_branch(repo_path).unwrap_or_else(|_| "main".to_string());
+
+            // Validate the requested path against the set of actually-changed files.
+            // This is the primary security boundary: only files modified on this
+            // branch are diffable, preventing arbitrary file reads via ?path=...
+            let changed_files = diff::compute_changed_files(repo_path, &base_branch)
+                .map_err(|e| DiffFileError::Internal(e.into()))?;
+            match validate_diff_path(repo_path, file_path, &changed_files) {
+                Ok(_) => {}
+                Err((status, msg)) => {
+                    return Err(if status == StatusCode::NOT_FOUND {
+                        DiffFileError::NotFound(msg)
+                    } else {
+                        DiffFileError::BadRequest(msg)
+                    });
+                }
+            }
+
+            let file_diff = diff::compute_file_diff(repo_path, file_path, &base_branch, 3)
+                .map_err(|e| DiffFileError::Internal(e.into()))?;
+
+            let file = RichDiffFileInfo {
+                path: file_diff.file.path.to_string_lossy().to_string(),
+                old_path: file_diff
+                    .file
+                    .old_path
+                    .map(|p| p.to_string_lossy().to_string()),
+                status: file_diff.file.status.label().to_string(),
+                additions: file_diff.file.additions,
+                deletions: file_diff.file.deletions,
+            };
+
+            // Size cap: avoid OOM'ing the browser on huge files (minified bundles,
+            // generated code, data blobs that slipped past .gitignore).
+            let total_line_count: usize = file_diff.hunks.iter().map(|h| h.lines.len()).sum();
+            let total_bytes: usize = file_diff
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .map(|l| l.content.len())
+                .sum();
+            if total_line_count > MAX_DIFF_LINES || total_bytes > MAX_DIFF_BYTES {
+                return Ok(RichFileDiffResponse {
+                    file,
+                    hunks: Vec::new(),
+                    is_binary: file_diff.is_binary,
+                    truncated: true,
+                });
+            }
+
+            let hunks: Vec<RichDiffHunk> = file_diff
+                .hunks
+                .into_iter()
+                .map(|h| RichDiffHunk {
+                    old_start: h.old_start,
+                    old_lines: h.old_lines,
+                    new_start: h.new_start,
+                    new_lines: h.new_lines,
+                    lines: h
+                        .lines
+                        .into_iter()
+                        .map(|l| RichDiffLine {
+                            change_type: match l.tag {
+                                ChangeTag::Insert => "add".to_string(),
+                                ChangeTag::Delete => "delete".to_string(),
+                                ChangeTag::Equal => "equal".to_string(),
+                            },
+                            old_line_num: l.old_line_num,
+                            new_line_num: l.new_line_num,
+                            content: l.content,
+                        })
+                        .collect(),
+                })
+                .collect();
+
+            Ok(RichFileDiffResponse {
+                file,
+                hunks,
+                is_binary: file_diff.is_binary,
+                truncated: false,
+            })
+        })
+        .await;
+
+    match result {
+        Ok(Ok(resp)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(resp).expect("RichFileDiffResponse is always serializable")),
+        )
+            .into_response(),
+        Ok(Err(DiffFileError::BadRequest(msg))) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "bad_request", "message": msg})),
+        )
+            .into_response(),
+        Ok(Err(DiffFileError::NotFound(msg))) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found", "message": msg})),
+        )
+            .into_response(),
+        Ok(Err(DiffFileError::Internal(e))) => {
+            tracing::error!("File diff failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "diff_failed", "message": "Failed to compute file diff"})),
             )
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Diff panicked: {}", e);
+            tracing::error!("File diff panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
@@ -448,17 +976,27 @@ pub async fn session_diff(
 pub struct AgentInfo {
     pub name: String,
     pub binary: String,
+    pub host_only: bool,
+    pub installed: bool,
 }
 
 pub async fn list_agents() -> Json<Vec<AgentInfo>> {
-    let agents: Vec<AgentInfo> = crate::agents::AGENTS
-        .iter()
-        .map(|a| AgentInfo {
-            name: a.name.to_string(),
-            binary: a.binary.to_string(),
-        })
-        .collect();
-    Json(agents)
+    let result = tokio::task::spawn_blocking(|| {
+        let tools = crate::tmux::AvailableTools::detect();
+        let available = tools.available_list();
+        crate::agents::AGENTS
+            .iter()
+            .map(|a| AgentInfo {
+                name: a.name.to_string(),
+                binary: a.binary.to_string(),
+                host_only: a.host_only,
+                installed: available.iter().any(|s| s == a.name),
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    Json(result)
 }
 
 // --- Settings ---
@@ -576,6 +1114,258 @@ pub async fn list_themes() -> Json<Vec<String>> {
     )
 }
 
+// --- Wizard support ---
+
+#[derive(Serialize)]
+pub struct ProfileInfo {
+    pub name: String,
+    pub is_default: bool,
+}
+
+pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<ProfileInfo>> {
+    let profiles = crate::session::list_profiles().unwrap_or_default();
+    let active = &state.profile;
+    let mut result: Vec<ProfileInfo> = profiles
+        .into_iter()
+        .map(|name| {
+            let is_default = name == *active;
+            ProfileInfo { name, is_default }
+        })
+        .collect();
+    // Ensure the active profile appears even if list_profiles missed it
+    if !result.iter().any(|p| p.name == *active) {
+        result.insert(
+            0,
+            ProfileInfo {
+                name: active.clone(),
+                is_default: true,
+            },
+        );
+    }
+    Json(result)
+}
+
+#[derive(Deserialize)]
+pub struct BrowseQuery {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub is_git_repo: bool,
+}
+
+pub async fn browse_filesystem(
+    axum::extract::Query(query): axum::extract::Query<BrowseQuery>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        let path = std::path::Path::new(&query.path);
+        let canonical = path.canonicalize().map_err(|_| "Path does not exist")?;
+
+        if !canonical.is_dir() {
+            return Err("Path is not a directory");
+        }
+
+        // Security: restrict browsing to the user's home directory
+        if let Some(home) = dirs::home_dir() {
+            if !canonical.starts_with(&home) {
+                return Err("Path is outside the home directory");
+            }
+        }
+
+        let mut entries: Vec<DirEntry> = Vec::new();
+        let read_dir = std::fs::read_dir(&canonical).map_err(|_| "Cannot read directory")?;
+
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let entry_path = entry.path();
+            let is_dir = entry_path.is_dir();
+            if !is_dir {
+                continue;
+            }
+            let is_git_repo = entry_path.join(".git").exists();
+            entries.push(DirEntry {
+                name,
+                path: entry_path.to_string_lossy().to_string(),
+                is_dir,
+                is_git_repo,
+            });
+        }
+        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(entries)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(entries)) => {
+            (StatusCode::OK, Json(serde_json::to_value(entries).unwrap())).into_response()
+        }
+        Ok(Err(msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "browse_failed", "message": msg})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct BranchesQuery {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+}
+
+pub async fn list_branches(
+    axum::extract::Query(query): axum::extract::Query<BranchesQuery>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        let path = std::path::Path::new(&query.path);
+        if !crate::git::GitWorktree::is_git_repo(path) {
+            return Err("Path is not a git repository".to_string());
+        }
+
+        let branches = crate::git::diff::list_branches(path).map_err(|e| e.to_string())?;
+
+        let current = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(path)
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        let mut result: Vec<BranchInfo> = branches
+            .into_iter()
+            .take(200)
+            .map(|name| {
+                let is_current = name == current;
+                BranchInfo { name, is_current }
+            })
+            .collect();
+
+        result.sort_by(|a, b| b.is_current.cmp(&a.is_current));
+
+        Ok(result)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(branches)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(branches).unwrap()),
+        )
+            .into_response(),
+        Ok(Err(msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "not_a_repo", "message": msg})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct GroupInfo {
+    pub path: String,
+    pub session_count: usize,
+}
+
+pub async fn list_groups(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let instances = state.instances.read().await;
+    let mut group_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for inst in instances.iter() {
+        if !inst.group_path.is_empty() {
+            *group_counts.entry(inst.group_path.clone()).or_default() += 1;
+        }
+    }
+    let groups: Vec<GroupInfo> = group_counts
+        .into_iter()
+        .map(|(path, session_count)| GroupInfo {
+            path,
+            session_count,
+        })
+        .collect();
+    Json(groups)
+}
+
+#[derive(Serialize)]
+pub struct DockerStatus {
+    pub available: bool,
+    pub runtime: Option<String>,
+}
+
+pub async fn docker_status() -> Json<DockerStatus> {
+    let result = tokio::task::spawn_blocking(|| {
+        use crate::containers::ContainerRuntimeInterface;
+        let runtime = crate::containers::get_container_runtime();
+        let available = runtime.is_available() && runtime.is_daemon_running();
+        let runtime_name = if available {
+            let config = crate::session::Config::load().unwrap_or_default();
+            Some(
+                serde_json::to_value(config.sandbox.container_runtime)
+                    .ok()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| "docker".to_string()),
+            )
+        } else {
+            None
+        };
+        DockerStatus {
+            available,
+            runtime: runtime_name,
+        }
+    })
+    .await
+    .unwrap_or(DockerStatus {
+        available: false,
+        runtime: None,
+    });
+    Json(result)
+}
+
+#[derive(Serialize)]
+pub struct ServerAbout {
+    pub version: String,
+    pub auth_required: bool,
+    pub passphrase_enabled: bool,
+    pub read_only: bool,
+    pub behind_tunnel: bool,
+    pub profile: String,
+}
+
+pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
+    let auth_required = !state.token_manager.is_no_auth().await;
+    Json(ServerAbout {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        auth_required,
+        passphrase_enabled: state.login_manager.is_enabled(),
+        read_only: state.read_only,
+        behind_tunnel: state.behind_tunnel,
+        profile: state.profile.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +1436,115 @@ mod tests {
         assert_eq!(json["tool"], "claude");
         assert_eq!(json["status"], "Running");
         assert_eq!(json["is_sandboxed"], false);
+    }
+
+    // ── validate_diff_path: security regression tests ──────────────────────────
+    //
+    // Regression for a path-traversal vulnerability in the first cut of the
+    // `/api/sessions/{id}/diff/file?path=...` endpoint. Any authenticated user
+    // could pass `?path=/etc/passwd` or `?path=../../etc/shadow` and have the
+    // server dump the file contents in a diff response. The validator must
+    // reject absolute paths, parent-dir traversal, and any path that isn't in
+    // the set of actually-changed files.
+
+    use crate::git::diff::{DiffFile, FileStatus};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn changed(paths: &[&str]) -> Vec<DiffFile> {
+        paths
+            .iter()
+            .map(|p| DiffFile {
+                path: PathBuf::from(p),
+                old_path: None,
+                status: FileStatus::Modified,
+                additions: 0,
+                deletions: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_absolute() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("/etc/passwd"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_parent_dir() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("../../etc/passwd"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_parent_dir_in_middle() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("src/../../etc/passwd"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_empty() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_diff_path(dir.path(), std::path::Path::new(""), &[]).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_diff_path_rejects_unchanged_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("existing.txt"), "hello").unwrap();
+        // File exists inside workdir but is not in the changed set.
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("existing.txt"),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn validate_diff_path_accepts_changed_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("changed.txt"), "hello").unwrap();
+        let ok = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("changed.txt"),
+            &changed(&["changed.txt"]),
+        );
+        assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
+    }
+
+    #[test]
+    fn validate_diff_path_accepts_deleted_file() {
+        // A file that has been deleted on disk but is in the changed set
+        // (status: Deleted) should still be diffable so the user can see
+        // what was removed. canonicalize() on the joined path will fail,
+        // so the validator must fall back to the non-canonical path.
+        let dir = TempDir::new().unwrap();
+        let ok = validate_diff_path(
+            dir.path(),
+            std::path::Path::new("deleted.txt"),
+            &changed(&["deleted.txt"]),
+        );
+        assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
     }
 }

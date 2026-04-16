@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod login;
 pub mod rate_limit;
 pub mod tunnel;
 pub mod ws;
@@ -151,9 +152,34 @@ pub struct AppState {
     pub read_only: bool,
     pub instances: RwLock<Vec<Instance>>,
     pub token_manager: Arc<TokenManager>,
+    pub login_manager: Arc<login::LoginManager>,
     pub rate_limiter: Arc<RateLimiter>,
     pub devices: RwLock<Vec<DeviceInfo>>,
     pub behind_tunnel: bool,
+    /// Per-instance mutex guarding mutations that must not interleave
+    /// (e.g. `ensure_session` decide-and-restart). Entries are created on
+    /// first use and live for the lifetime of the process — there are only
+    /// as many as the user has sessions.
+    pub instance_locks: RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl AppState {
+    /// Get or create the per-instance serialization mutex. The outer
+    /// `RwLock` is only held long enough to insert/lookup the `Arc<Mutex>`;
+    /// the caller awaits the inner mutex without holding the map lock.
+    pub async fn instance_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        {
+            let guard = self.instance_locks.read().await;
+            if let Some(lock) = guard.get(id) {
+                return lock.clone();
+            }
+        }
+        let mut guard = self.instance_locks.write().await;
+        guard
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
 }
 
 // ── Server ──────────────────────────────────────────────────────────────────
@@ -168,6 +194,7 @@ pub struct ServerConfig<'a> {
     pub tunnel_name: Option<&'a str>,
     pub tunnel_url: Option<&'a str>,
     pub is_daemon: bool,
+    pub passphrase: Option<&'a str>,
 }
 
 pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
@@ -181,6 +208,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         tunnel_name,
         tunnel_url,
         is_daemon,
+        passphrase,
     } = config;
     let instances = load_all_instances()?;
 
@@ -202,16 +230,23 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     };
 
     let token_manager = Arc::new(TokenManager::new(auth_token.clone(), token_lifetime));
+    let login_manager = Arc::new(login::LoginManager::new(passphrase));
     let rate_limiter = Arc::new(RateLimiter::new());
+
+    if login_manager.is_enabled() {
+        info!("Passphrase login enabled (second-factor authentication)");
+    }
 
     let state = Arc::new(AppState {
         profile: profile.to_string(),
         read_only,
         instances: RwLock::new(instances),
         token_manager: Arc::clone(&token_manager),
+        login_manager: Arc::clone(&login_manager),
         rate_limiter: Arc::clone(&rate_limiter),
         devices: RwLock::new(Vec::new()),
         behind_tunnel: remote,
+        instance_locks: RwLock::new(std::collections::HashMap::new()),
     });
 
     let app = build_router(state.clone());
@@ -238,9 +273,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             tunnel::print_qr_code(&tunnel_url_with_token);
         }
 
-        // Write tunnel URL for daemon discovery
+        // Write tunnel URL for daemon discovery. Single-line content:
+        // backward-compatible with any consumer that does `head -1 serve.url`,
+        // and the TUI parses both single- and multi-URL formats.
         if let Ok(app_dir) = crate::session::get_app_dir() {
             write_secret_file(&app_dir.join("serve.url"), &tunnel_url_with_token);
+            // serve.mode lets the TUI reattach to a running daemon and
+            // know whether to render "Serving (tunnel)" vs "(local)".
+            let _ = std::fs::write(app_dir.join("serve.mode"), "tunnel\n");
         }
 
         // Start health monitor (uses CancellationToken internally)
@@ -248,7 +288,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 
         Some(handle)
     } else {
-        // Local mode: print URLs as before
+        // Local mode: print URLs as before.
         let make_url = |h: &str| {
             if let Some(ref token) = auth_token {
                 format!("http://{}:{}/?token={}", h, port, token)
@@ -257,14 +297,23 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             }
         };
 
-        println!("aoe web dashboard running at:");
-        if host == "0.0.0.0" {
-            println!("  {}", make_url("localhost"));
-            for addr in discover_local_ips() {
-                println!("  {}", make_url(&addr));
-            }
+        // Collect labeled URLs in preference order (Tailscale > LAN > localhost).
+        // When bound to 0.0.0.0 we're reachable on all three; on a specific
+        // host we just surface that one.
+        let labeled_urls: Vec<(IpKind, String)> = if host == "0.0.0.0" {
+            let mut urls: Vec<(IpKind, String)> = discover_tagged_ips()
+                .into_iter()
+                .map(|(kind, ip)| (kind, make_url(&ip.to_string())))
+                .collect();
+            urls.push((IpKind::Loopback, make_url("localhost")));
+            urls
         } else {
-            println!("  {}", make_url(host));
+            vec![(IpKind::Loopback, make_url(host))]
+        };
+
+        println!("aoe web dashboard running at:");
+        for (_, u) in &labeled_urls {
+            println!("  {}", u);
         }
         if auth_token.is_some() {
             println!();
@@ -273,9 +322,24 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             );
         }
 
-        let url = make_url(if host == "0.0.0.0" { "localhost" } else { host });
+        // serve.url: primary URL on line 1 (unlabeled, backward-compatible
+        // with any `head -1 serve.url` consumer). Alternates below as
+        // `kind\turl` so the TUI can cycle them. Always owner-only perms
+        // since the URL embeds the auth token.
         if let Ok(app_dir) = crate::session::get_app_dir() {
-            write_secret_file(&app_dir.join("serve.url"), &url);
+            let mut contents = String::new();
+            if let Some((_, primary)) = labeled_urls.first() {
+                contents.push_str(primary);
+                contents.push('\n');
+            }
+            for (kind, url) in labeled_urls.iter().skip(1) {
+                contents.push_str(kind.label());
+                contents.push('\t');
+                contents.push_str(url);
+                contents.push('\n');
+            }
+            write_secret_file(&app_dir.join("serve.url"), &contents);
+            let _ = std::fs::write(app_dir.join("serve.mode"), "local\n");
         }
 
         None
@@ -288,6 +352,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     });
 
     rate_limiter.spawn_cleanup_task();
+    login_manager.spawn_cleanup_task();
 
     if remote {
         token_manager.spawn_rotation_task();
@@ -315,7 +380,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    use axum::routing::{get, post};
+    use axum::routing::{get, patch, post};
 
     Router::new()
         // Sessions
@@ -323,7 +388,13 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
         )
-        .route("/api/sessions/{id}/diff", get(api::session_diff))
+        .route("/api/sessions/{id}", patch(api::rename_session))
+        .route(
+            "/api/sessions/{id}/diff/files",
+            get(api::session_diff_files),
+        )
+        .route("/api/sessions/{id}/diff/file", get(api::session_diff_file))
+        .route("/api/sessions/{id}/ensure", post(api::ensure_session))
         .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
         .route(
             "/api/sessions/{id}/container-terminal",
@@ -331,14 +402,26 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         // Agents
         .route("/api/agents", get(api::list_agents))
+        // Wizard support
+        .route("/api/profiles", get(api::list_profiles))
+        .route("/api/filesystem/browse", get(api::browse_filesystem))
+        .route("/api/git/branches", get(api::list_branches))
+        .route("/api/groups", get(api::list_groups))
+        .route("/api/docker/status", get(api::docker_status))
         // Settings + themes
         .route(
             "/api/settings",
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
+        // Login (second-factor auth)
+        .route("/api/login", post(login::login_handler))
+        .route("/api/logout", post(login::logout_handler))
+        .route("/api/login/status", get(login::login_status_handler))
         // Devices
         .route("/api/devices", get(api::list_devices))
+        // About (version, auth status, read-only state)
+        .route("/api/about", get(api::get_about))
         // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))
@@ -376,7 +459,21 @@ async fn security_headers(
     response
 }
 
-async fn serve_index() -> impl axum::response::IntoResponse {
+async fn serve_index(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
+    use axum::response::IntoResponse;
+
+    let path = uri.path().trim_start_matches('/');
+    if !path.is_empty() && path != "index.html" && path.contains('.') {
+        if let Some(file) = StaticAssets::get(path) {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            return (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, mime.as_ref().to_string())],
+                file.data.to_vec(),
+            )
+                .into_response();
+        }
+    }
     serve_embedded_file("index.html")
 }
 
@@ -410,25 +507,66 @@ fn serve_embedded_file(path: &str) -> axum::response::Response {
     }
 }
 
-/// Discover non-loopback IPv4 addresses on all network interfaces.
-fn discover_local_ips() -> Vec<String> {
-    let mut ips = Vec::new();
+/// Kind tag for a local IPv4 address. Ordering in this enum is also the
+/// preference order for picking the "primary" URL to show in a QR: when
+/// the user serves on a Tailnet, that's almost always the one they want
+/// a phone (on cellular) to scan, not the LAN IP behind their NAT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IpKind {
+    Tailscale,
+    Lan,
+    Loopback,
+}
+
+impl IpKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            IpKind::Tailscale => "tailscale",
+            IpKind::Lan => "lan",
+            IpKind::Loopback => "localhost",
+        }
+    }
+}
+
+/// Classify a v4 address into Tailscale (CGNAT 100.64.0.0/10, which is
+/// what Tailscale hands out), regular LAN (RFC1918), or loopback.
+/// Public non-RFC1918 / non-CGNAT addresses are rare on an `aoe serve`
+/// host (would mean serving directly on the open internet) and fall
+/// through to `Lan` so we still surface them.
+pub fn classify_ip(ip: std::net::Ipv4Addr) -> IpKind {
+    let octets = ip.octets();
+    if ip.is_loopback() {
+        return IpKind::Loopback;
+    }
+    // CGNAT 100.64.0.0/10 (RFC 6598). Second octet is 64..=127.
+    if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+        return IpKind::Tailscale;
+    }
+    IpKind::Lan
+}
+
+/// Discover non-loopback IPv4 addresses on all network interfaces,
+/// tagged by kind and sorted so the preferred URL (Tailscale > LAN)
+/// is first. Caller decides whether to include loopback.
+pub fn discover_tagged_ips() -> Vec<(IpKind, std::net::Ipv4Addr)> {
+    let mut out: Vec<(IpKind, std::net::Ipv4Addr)> = Vec::new();
     if let Ok(addrs) = nix::ifaddrs::getifaddrs() {
         for ifaddr in addrs {
             if let Some(addr) = ifaddr.address {
                 if let Some(sockaddr) = addr.as_sockaddr_in() {
                     let ip = sockaddr.ip();
-                    if !ip.is_loopback() {
-                        let s = ip.to_string();
-                        if !ips.contains(&s) {
-                            ips.push(s);
-                        }
+                    if ip.is_loopback() {
+                        continue;
+                    }
+                    if !out.iter().any(|(_, existing)| *existing == ip) {
+                        out.push((classify_ip(ip), ip));
                     }
                 }
             }
         }
     }
-    ips
+    out.sort_by_key(|(k, _)| *k);
+    out
 }
 
 /// Write a file with owner-only permissions (0600) to protect secrets.
@@ -504,7 +642,10 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     let mut all = Vec::new();
     for profile in &profiles {
         if let Ok(storage) = Storage::new(profile) {
-            if let Ok(instances) = storage.load() {
+            if let Ok(mut instances) = storage.load() {
+                for inst in &mut instances {
+                    inst.source_profile = profile.clone();
+                }
                 all.extend(instances);
             }
         }
@@ -512,7 +653,10 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     // Also load from the default profile if it wasn't in the list
     if !profiles.iter().any(|p| p == "default") {
         if let Ok(storage) = Storage::new("default") {
-            if let Ok(instances) = storage.load() {
+            if let Ok(mut instances) = storage.load() {
+                for inst in &mut instances {
+                    inst.source_profile = "default".to_string();
+                }
                 all.extend(instances);
             }
         }
@@ -576,6 +720,52 @@ mod tests {
         assert!(!is_valid_token_format("short"));
         assert!(!is_valid_token_format(""));
         assert!(!is_valid_token_format("ZZZZ0000111122223333444455556666"));
+    }
+
+    #[test]
+    fn classify_ip_recognizes_tailscale_cgnat() {
+        use std::net::Ipv4Addr;
+        // CGNAT range 100.64.0.0/10 = second octet 64..=127.
+        assert_eq!(classify_ip(Ipv4Addr::new(100, 64, 0, 1)), IpKind::Tailscale);
+        assert_eq!(
+            classify_ip(Ipv4Addr::new(100, 100, 50, 50)),
+            IpKind::Tailscale
+        );
+        assert_eq!(
+            classify_ip(Ipv4Addr::new(100, 127, 255, 254)),
+            IpKind::Tailscale
+        );
+        // Boundary: 100.63.x.x is NOT CGNAT, it's just regular public
+        // space — classify as LAN so we still surface it (rare but
+        // possible on a weird home network).
+        assert_eq!(classify_ip(Ipv4Addr::new(100, 63, 0, 1)), IpKind::Lan);
+        // Boundary: 100.128.x.x is also not CGNAT.
+        assert_eq!(classify_ip(Ipv4Addr::new(100, 128, 0, 1)), IpKind::Lan);
+    }
+
+    #[test]
+    fn classify_ip_recognizes_rfc1918_lan() {
+        use std::net::Ipv4Addr;
+        assert_eq!(classify_ip(Ipv4Addr::new(192, 168, 1, 42)), IpKind::Lan);
+        assert_eq!(classify_ip(Ipv4Addr::new(10, 0, 0, 1)), IpKind::Lan);
+        assert_eq!(classify_ip(Ipv4Addr::new(172, 16, 5, 10)), IpKind::Lan);
+    }
+
+    #[test]
+    fn classify_ip_recognizes_loopback() {
+        use std::net::Ipv4Addr;
+        assert_eq!(classify_ip(Ipv4Addr::new(127, 0, 0, 1)), IpKind::Loopback);
+        assert_eq!(classify_ip(Ipv4Addr::new(127, 1, 2, 3)), IpKind::Loopback);
+    }
+
+    #[test]
+    fn ip_kind_ordering_prefers_tailscale() {
+        // This is the "Tailscale first in QR" contract. If the sort order
+        // ever flips, the user's phone would scan a LAN IP from cellular
+        // and hit a timeout — regression test locks it in.
+        let mut v = [IpKind::Loopback, IpKind::Lan, IpKind::Tailscale];
+        v.sort();
+        assert_eq!(v, [IpKind::Tailscale, IpKind::Lan, IpKind::Loopback]);
     }
 
     #[tokio::test]

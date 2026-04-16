@@ -87,6 +87,31 @@ impl SortOrder {
     }
 }
 
+/// Session list grouping mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupByMode {
+    #[default]
+    Manual,
+    Project,
+}
+
+impl GroupByMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            GroupByMode::Manual => GroupByMode::Project,
+            GroupByMode::Project => GroupByMode::Manual,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GroupByMode::Manual => "Manual",
+            GroupByMode::Project => "Project",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppStateConfig {
     #[serde(default)]
@@ -109,6 +134,9 @@ pub struct AppStateConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<SortOrder>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<GroupByMode>,
 }
 
 /// Session-related configuration defaults
@@ -136,6 +164,71 @@ pub struct SessionConfig {
     /// to tmux pane content parsing, which is less reliable.
     #[serde(default = "default_true")]
     pub agent_status_hooks: bool,
+
+    /// User-defined custom agents: name -> launch command
+    /// (e.g., "lenovo-claude" = "ssh -t lenovo claude").
+    /// Custom agent names appear in the TUI agent picker alongside built-in agents.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub custom_agents: HashMap<String, String>,
+
+    /// Status detection mapping: agent name -> built-in agent name
+    /// (e.g., "lenovo-claude" = "claude").
+    /// Maps a custom (or built-in) agent to another agent's status detection heuristics.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_detect_as: HashMap<String, String>,
+}
+
+impl SessionConfig {
+    /// Resolve the command override for a tool, checking agent_command_override first,
+    /// then falling back to custom_agents. Returns empty string if no override found.
+    pub fn resolve_tool_command(&self, tool: &str) -> String {
+        self.agent_command_override
+            .get(tool)
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.custom_agents.get(tool))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Log warnings for misconfigured custom agent entries.
+    /// Called after config load to surface TOML editing mistakes.
+    pub fn warn_custom_agent_issues(&self) {
+        for (name, command) in &self.custom_agents {
+            if name.is_empty() {
+                tracing::warn!("custom_agents: entry with empty name will be ignored");
+            }
+            if command.is_empty() {
+                tracing::warn!(
+                    "custom_agents: '{}' has an empty command, session will launch with no command",
+                    name
+                );
+            }
+            if crate::agents::get_agent(name).is_some() {
+                tracing::warn!(
+                    "custom_agents: '{}' shadows a built-in agent; use agent_command_override instead",
+                    name
+                );
+            }
+        }
+        for (name, target) in &self.agent_detect_as {
+            if name.is_empty() {
+                tracing::warn!("agent_detect_as: entry with empty agent name will be ignored");
+            }
+            if target.is_empty() {
+                tracing::warn!(
+                    "agent_detect_as: '{}' maps to an empty target, status detection will default to Idle",
+                    name
+                );
+            } else if crate::agents::get_agent(target).is_none() {
+                tracing::warn!(
+                    "agent_detect_as: '{}' maps to unknown agent '{}', status detection will default to Idle. Known agents: {}",
+                    name,
+                    target,
+                    crate::agents::agent_names().join(", ")
+                );
+            }
+        }
+    }
 }
 
 /// Diff view configuration
@@ -988,6 +1081,72 @@ mod tests {
             deserialized.session.agent_extra_args.get("opencode"),
             Some(&"--port 8080".to_string()),
             "agent_extra_args should survive roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_command_prefers_command_override() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_command_override
+            .insert("my-agent".to_string(), "override-cmd".to_string());
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "custom-cmd".to_string());
+        assert_eq!(config.resolve_tool_command("my-agent"), "override-cmd");
+    }
+
+    #[test]
+    fn test_resolve_tool_command_falls_back_to_custom_agents() {
+        let mut config = SessionConfig::default();
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "ssh -t host claude".to_string());
+        assert_eq!(
+            config.resolve_tool_command("my-agent"),
+            "ssh -t host claude"
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_command_skips_empty_override() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_command_override
+            .insert("my-agent".to_string(), String::new());
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "custom-cmd".to_string());
+        assert_eq!(config.resolve_tool_command("my-agent"), "custom-cmd");
+    }
+
+    #[test]
+    fn test_resolve_tool_command_returns_empty_for_unknown() {
+        let config = SessionConfig::default();
+        assert_eq!(config.resolve_tool_command("nonexistent"), "");
+    }
+
+    #[test]
+    fn test_custom_agents_roundtrip() {
+        let mut config = Config::default();
+        config.session.custom_agents.insert(
+            "lenovo-claude".to_string(),
+            "ssh -t lenovo claude".to_string(),
+        );
+        config
+            .session
+            .agent_detect_as
+            .insert("lenovo-claude".to_string(), "claude".to_string());
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.session.custom_agents.get("lenovo-claude"),
+            Some(&"ssh -t lenovo claude".to_string()),
+        );
+        assert_eq!(
+            deserialized.session.agent_detect_as.get("lenovo-claude"),
+            Some(&"claude".to_string()),
         );
     }
 }

@@ -14,6 +14,7 @@ export interface SessionResponse {
   main_repo_path: string | null;
   is_sandboxed: boolean;
   has_terminal: boolean;
+  profile: string;
 }
 
 export type SessionStatus =
@@ -24,7 +25,8 @@ export type SessionStatus =
   | "Starting"
   | "Stopped"
   | "Unknown"
-  | "Deleting";
+  | "Deleting"
+  | "Creating";
 
 /** WebSocket control messages sent from browser to server */
 export interface ResizeMessage {
@@ -33,15 +35,46 @@ export interface ResizeMessage {
   rows: number;
 }
 
-/** Diff response */
-export interface DiffResponse {
-  files: DiffFileInfo[];
-  raw: string;
+/** Rich diff file info with addition/deletion stats */
+export interface RichDiffFile {
+  path: string;
+  old_path: string | null;
+  status: "added" | "modified" | "deleted" | "renamed" | "copied" | "untracked";
+  additions: number;
+  deletions: number;
 }
 
-export interface DiffFileInfo {
-  path: string;
-  status: string;
+/** Response from /api/sessions/{id}/diff/files */
+export interface RichDiffFilesResponse {
+  files: RichDiffFile[];
+  base_branch: string;
+  warning: string | null;
+}
+
+/** A single line in a structured diff */
+export interface RichDiffLine {
+  type: "add" | "delete" | "equal";
+  old_line_num: number | null;
+  new_line_num: number | null;
+  content: string;
+}
+
+/** A hunk in a structured diff */
+export interface RichDiffHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  lines: RichDiffLine[];
+}
+
+/** Response from /api/sessions/{id}/diff/file?path=... */
+export interface RichFileDiffResponse {
+  file: RichDiffFile;
+  hunks: RichDiffHunk[];
+  is_binary: boolean;
+  /** True if the file was too large to diff inline. */
+  truncated: boolean;
 }
 
 /** Workspace status derived from session states */
@@ -67,5 +100,62 @@ export interface Workspace {
   primaryAgent: string;
   status: WorkspaceStatus;
   sessions: SessionResponse[];
-  diff?: DiffResponse;
+}
+
+/** Agent info returned by /api/agents */
+export interface AgentInfo {
+  name: string;
+  binary: string;
+  host_only: boolean;
+  installed: boolean;
+}
+
+/** Profile info returned by /api/profiles */
+export interface ProfileInfo {
+  name: string;
+  is_default: boolean;
+}
+
+/** Directory entry returned by /api/filesystem/browse */
+export interface DirEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_git_repo: boolean;
+}
+
+/** Branch info returned by /api/git/branches */
+export interface BranchInfo {
+  name: string;
+  is_current: boolean;
+}
+
+/** Group info returned by /api/groups */
+export interface GroupInfo {
+  path: string;
+  session_count: number;
+}
+
+/** Docker status returned by /api/docker/status */
+export interface DockerStatusResponse {
+  available: boolean;
+  runtime: string | null;
+}
+
+/** Request body for POST /api/sessions */
+export interface CreateSessionRequest {
+  title?: string;
+  path: string;
+  tool: string;
+  group?: string;
+  yolo_mode?: boolean;
+  worktree_branch?: string;
+  create_new_branch?: boolean;
+  sandbox?: boolean;
+  extra_args?: string;
+  sandbox_image?: string;
+  extra_env?: string[];
+  extra_repo_paths?: string[];
+  command_override?: string;
+  custom_instruction?: string;
 }

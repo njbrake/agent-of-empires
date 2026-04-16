@@ -12,6 +12,8 @@ mod new_session;
 mod profile_picker;
 mod rename;
 mod send_message;
+#[cfg(feature = "serve")]
+mod serve;
 mod welcome;
 
 pub use changelog::ChangelogDialog;
@@ -26,6 +28,8 @@ pub use new_session::{NewSessionData, NewSessionDialog};
 pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};
 pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
+#[cfg(feature = "serve")]
+pub use serve::ServeDialog;
 pub use welcome::WelcomeDialog;
 
 pub enum DialogResult<T> {

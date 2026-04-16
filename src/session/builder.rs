@@ -332,15 +332,17 @@ pub fn build_instance(
         bail!("Project path is not a directory: {}", final_path);
     }
 
-    let final_title = if params.title.is_empty() {
-        civilizations::generate_random_title(existing_titles)
-    } else {
-        params.title.clone()
-    };
+    let final_title = resolve_title(&params.title, &params.worktree_branch, existing_titles);
 
     let mut instance = Instance::new(&final_title, &final_path);
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
+    instance.detect_as = config
+        .session
+        .agent_detect_as
+        .get(&params.tool)
+        .cloned()
+        .unwrap_or_default();
     instance.command = crate::agents::get_agent(&params.tool)
         .filter(|a| a.set_default_command)
         .map(|a| a.binary.to_string())
@@ -349,13 +351,14 @@ pub fn build_instance(
     instance.workspace_info = workspace_info;
     instance.yolo_mode = params.yolo_mode;
 
-    // Apply agent_command_override and agent_extra_args from resolved config.
-    // Per-session values from params take priority over config.
+    // Apply command overrides and custom agent commands from resolved config.
+    // Priority: per-session params > agent_command_override > custom_agents > AgentDef default.
     if !params.command_override.is_empty() {
         instance.command = params.command_override;
-    } else if let Some(cmd_override) = config.session.agent_command_override.get(&params.tool) {
-        if !cmd_override.is_empty() {
-            instance.command = cmd_override.clone();
+    } else {
+        let resolved = config.session.resolve_tool_command(&params.tool);
+        if !resolved.is_empty() {
+            instance.command = resolved;
         }
     }
     if !params.extra_args.is_empty() {
@@ -433,4 +436,55 @@ pub fn cleanup_instance(
     }
 
     let _ = instance.kill();
+}
+
+/// Resolve the session title: use the provided title, or the worktree branch name,
+/// or fall back to a random civilization name.
+fn resolve_title(
+    title: &str,
+    worktree_branch: &Option<String>,
+    existing_titles: &[&str],
+) -> String {
+    if title.is_empty() {
+        if let Some(ref branch) = worktree_branch {
+            branch.clone()
+        } else {
+            civilizations::generate_random_title(existing_titles)
+        }
+    } else {
+        title.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_title_with_worktree_uses_branch_name() {
+        let title = resolve_title("", &Some("feature-auth".to_string()), &[]);
+        assert_eq!(title, "feature-auth");
+    }
+
+    #[test]
+    fn test_empty_title_without_worktree_uses_civilization() {
+        let title = resolve_title("", &None, &[]);
+        assert!(
+            civilizations::CIVILIZATIONS.contains(&title.as_str()),
+            "Expected a civilization name, got: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_provided_title_with_worktree_keeps_title() {
+        let title = resolve_title("My Session", &Some("feature-auth".to_string()), &[]);
+        assert_eq!(title, "My Session");
+    }
+
+    #[test]
+    fn test_provided_title_without_worktree_keeps_title() {
+        let title = resolve_title("Custom Name", &None, &[]);
+        assert_eq!(title, "Custom Name");
+    }
 }

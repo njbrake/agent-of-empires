@@ -10,6 +10,7 @@ export const STATUS_DOT_CLASS: Record<SessionStatus, string> = {
   Stopped: "bg-status-stopped",
   Unknown: "bg-status-idle",
   Deleting: "bg-status-error",
+  Creating: "bg-status-starting",
 };
 
 /** Tailwind class for status text color by session status */
@@ -22,6 +23,7 @@ export const STATUS_TEXT_CLASS: Record<SessionStatus, string> = {
   Stopped: "text-status-stopped",
   Unknown: "text-status-idle",
   Deleting: "text-status-error",
+  Creating: "text-status-starting",
 };
 
 /** Whether a session status means the agent is actively doing something */
