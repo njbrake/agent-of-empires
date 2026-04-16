@@ -6,7 +6,7 @@ import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
-import { createSession, loginStatus, logout } from "./lib/api";
+import { loginStatus, logout } from "./lib/api";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
@@ -16,6 +16,7 @@ import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
+import type { WizardPrefill } from "./components/session-wizard/SessionWizard";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
 import { AboutModal } from "./components/AboutModal";
@@ -66,7 +67,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     () => window.innerWidth < 768,
   );
   const [showAddProject, setShowAddProject] = useState(false);
-  const [creatingForProject, setCreatingForProject] = useState<string | null>(null);
+  const creatingForProject: string | null = null; // Now opens wizard instead of auto-creating
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
@@ -131,27 +132,43 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
   };
 
-  const handleCreateSession = useCallback(async (repoPath: string) => {
-    if (creatingForProject) return;
-    setCreatingForProject(repoPath);
+  const [wizardPrefill, setWizardPrefill] = useState<WizardPrefill | undefined>(undefined);
 
+  const handleCreateSession = useCallback((repoPath: string) => {
     const projectSessions = sessions
       .filter((s) => (s.main_repo_path || s.project_path) === repoPath)
       .sort((a, b) => (b.last_accessed_at ?? "").localeCompare(a.last_accessed_at ?? ""));
     const latest = projectSessions[0];
 
-    await createSession({
+    setWizardPrefill({
       path: repoPath,
       tool: latest?.tool ?? "claude",
+      yoloMode: latest?.yolo_mode ?? false,
+      sandboxEnabled: latest?.is_sandboxed ?? false,
+      profile: latest?.profile || undefined,
       group: latest?.group_path || undefined,
-      yolo_mode: latest?.yolo_mode ?? false,
-      worktree_branch: "",
-      create_new_branch: true,
-      sandbox: latest?.is_sandboxed ?? false,
+      skipToReview: true,
     });
+    setShowAddProject(true);
+  }, [sessions]);
 
-    setCreatingForProject(null);
-  }, [sessions, creatingForProject]);
+  const lastSession = sessions.length > 0
+    ? [...sessions].sort((a, b) => (b.last_accessed_at ?? b.created_at ?? "").localeCompare(a.last_accessed_at ?? a.created_at ?? ""))[0]
+    : null;
+
+  const handleRepeatLast = useCallback(() => {
+    if (!lastSession) return;
+    setWizardPrefill({
+      path: lastSession.main_repo_path || lastSession.project_path,
+      tool: lastSession.tool,
+      yoloMode: lastSession.yolo_mode,
+      sandboxEnabled: lastSession.is_sandboxed ?? false,
+      profile: lastSession.profile || undefined,
+      group: lastSession.group_path || undefined,
+      skipToReview: true,
+    });
+    setShowAddProject(true);
+  }, [lastSession]);
 
   const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
 
@@ -363,9 +380,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           onToggle={() => setSidebarOpen(false)}
           onSelect={handleSelectWorkspace}
           onToggleRepo={toggleRepoCollapsed}
-          onNew={() => setShowAddProject(true)}
+          onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
           onCreateSession={handleCreateSession}
           onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
+          onRepeatLast={handleRepeatLast}
+          hasLastSession={!!lastSession}
         />
 
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
@@ -375,8 +394,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
       {showAddProject && (
         <SessionWizard
-          onClose={() => setShowAddProject(false)}
-          onCreated={() => setShowAddProject(false)}
+          onClose={() => { setShowAddProject(false); setWizardPrefill(undefined); }}
+          onCreated={() => { setShowAddProject(false); setWizardPrefill(undefined); }}
+          prefill={wizardPrefill}
         />
       )}
 
