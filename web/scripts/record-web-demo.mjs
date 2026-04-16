@@ -52,8 +52,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       fetch(`${baseUrl}/api/sessions/${s.id}/ensure`, { method: "POST" }),
     ),
   );
-  // Wait for opencode to boot and the poller to update status to Idle.
-  await sleep(5000);
+  // Wait for opencode to fully boot and the status poller to see Idle.
+  // opencode takes ~8s to render its TUI; the poller runs every 2s.
+  await sleep(12000);
 
   const browser = await chromium.launch({ args: ["--no-sandbox"] });
   const context = await browser.newContext({
