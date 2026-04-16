@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { RefObject } from "react";
 import { useLongPressDrag, type DragAxis } from "../hooks/useLongPressDrag";
@@ -7,6 +7,8 @@ interface Props {
   sendData: (data: string) => void;
   termRef: RefObject<Terminal | null>;
   keyboardHeight: number;
+  ctrlActive: boolean;
+  onCtrlToggle: () => void;
 }
 
 const ARROW_UP = "\x1b[A";
@@ -18,22 +20,15 @@ export function MobileTerminalToolbar({
   sendData,
   termRef,
   keyboardHeight,
+  ctrlActive,
+  onCtrlToggle,
 }: Props) {
-  const [ctrlActive, setCtrlActive] = useState(false);
   const [upAxis, setUpAxis] = useState<DragAxis>("vertical");
   const [downAxis, setDownAxis] = useState<DragAxis>("vertical");
 
   const haptic = useCallback(() => {
     navigator.vibrate?.(10);
   }, []);
-
-  // Reset ctrl flag once the terminal consumes a keystroke after it was armed.
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term || !ctrlActive) return;
-    const disposable = term.onData(() => setCtrlActive(false));
-    return () => disposable.dispose();
-  }, [ctrlActive, termRef]);
 
   const refocusTerminal = useCallback(() => {
     termRef.current?.focus();
@@ -65,12 +60,10 @@ export function MobileTerminalToolbar({
   const strip =
     "shrink-0 flex items-center gap-1 px-2 py-1.5 bg-surface-850 border-t border-surface-700/20 safe-area-bottom";
 
-  // Pin the strip above the soft keyboard when it's open; otherwise sit on
-  // the pane bottom. env(keyboard-inset-height) covers iPadOS floating
-  // keyboards where visualViewport doesn't shrink.
-  const translateY = keyboardHeight > 0 ? -keyboardHeight : 0;
+  // Parent (TerminalView) reserves paddingBottom for the keyboard, so the
+  // strip naturally sits above it. env(keyboard-inset-height) covers iPadOS
+  // floating keyboards where visualViewport doesn't shrink.
   const stripStyle = {
-    transform: `translateY(${translateY}px)`,
     paddingBottom: keyboardHeight > 0 ? undefined : "env(keyboard-inset-height, 0px)",
   };
 
@@ -85,7 +78,14 @@ export function MobileTerminalToolbar({
     ) : null;
 
   return (
-    <div className={strip} style={stripStyle}>
+    <div
+      className={strip}
+      style={stripStyle}
+      // Prevent toolbar taps from stealing focus away from the proxy input.
+      // Without this, every button tap blurs the proxy and iOS closes the
+      // soft keyboard. onClick handlers still fire normally.
+      onMouseDown={(e) => e.preventDefault()}
+    >
       <button type="button" aria-label="Arrow up" className={btnBase} {...upHandlers}>
         <span className="font-mono text-sm">{"\u2191"}</span>
         {arrowHint(upAxis)}
@@ -111,12 +111,12 @@ export function MobileTerminalToolbar({
             ? `${btnBase.replace("text-text-secondary", "text-brand-400")} bg-brand-600/20`
             : btnBase
         }
-        onClick={() => { haptic(); setCtrlActive((v) => !v); refocusTerminal(); }}
+        onClick={() => { haptic(); onCtrlToggle(); }}
       >
         <span className="font-mono text-xs">Ctrl</span>
       </button>
       <button type="button" aria-label="Ctrl+C interrupt" className={btnBase}
-        onClick={() => { send("\x03"); setCtrlActive(false); }}>
+        onClick={() => { send("\x03"); if (ctrlActive) onCtrlToggle(); }}>
         <span className="font-mono text-xs">^C</span>
       </button>
     </div>
