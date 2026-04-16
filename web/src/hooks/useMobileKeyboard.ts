@@ -101,9 +101,11 @@ export function useMobileKeyboard() {
     };
 
     // Orientation changes reset the full height baseline.
+    let orientTimer: ReturnType<typeof setTimeout> | null = null;
     const handleOrientationChange = () => {
       fullHeightRef.current = 0;
-      setTimeout(() => {
+      if (orientTimer) clearTimeout(orientTimer);
+      orientTimer = setTimeout(() => {
         fullHeightRef.current = Math.max(window.innerHeight, vv.height);
         measure();
       }, 500);
@@ -116,6 +118,7 @@ export function useMobileKeyboard() {
     window.addEventListener("orientationchange", handleOrientationChange);
     return () => {
       cancelAnimationFrame(rafRef.current);
+      if (orientTimer) clearTimeout(orientTimer);
       vv.removeEventListener("resize", handleViewportChange);
       vv.removeEventListener("scroll", handleViewportChange);
       document.removeEventListener("focusin", handleFocusIn);

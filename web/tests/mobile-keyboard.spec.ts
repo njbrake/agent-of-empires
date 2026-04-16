@@ -4,8 +4,6 @@ import { mockTerminalApis, seedSettings } from "./helpers/terminal-mocks";
 // Use iPhone 13 profile: pointer:coarse, hasTouch, correct viewport, WebKit UA.
 test.use({ ...devices["iPhone 13"] });
 
-const FULL_HEIGHT = 844; // iPhone 13 logical height
-
 // Simulate iOS soft keyboard opening by overriding visualViewport dimensions.
 // In real iOS Safari, visualViewport.height shrinks while window.innerHeight
 // may or may not (browser tab vs PWA). We test both scenarios.
