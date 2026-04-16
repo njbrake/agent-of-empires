@@ -405,6 +405,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Wizard support
         .route("/api/profiles", get(api::list_profiles))
         .route("/api/filesystem/browse", get(api::browse_filesystem))
+        .route("/api/filesystem/home", get(api::filesystem_home))
         .route("/api/git/branches", get(api::list_branches))
         .route("/api/groups", get(api::list_groups))
         .route("/api/docker/status", get(api::docker_status))

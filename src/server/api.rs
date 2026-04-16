@@ -32,7 +32,9 @@ fn validate_no_shell_injection(value: &str, field_name: &str) -> Result<(), Stri
     Ok(())
 }
 
-const ALLOWED_SETTINGS_SECTIONS: &[&str] = &["theme", "session", "tmux", "updates", "sound"];
+const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
+    "theme", "session", "tmux", "updates", "sound", "sandbox", "worktree",
+];
 
 const SESSION_BLOCKED_FIELDS: &[&str] =
     &["agent_command_override", "agent_extra_args", "extra_env"];
@@ -170,6 +172,7 @@ pub struct CreateSessionBody {
     pub command_override: String,
     #[serde(default)]
     pub custom_instruction: Option<String>,
+    pub profile: Option<String>,
 }
 
 pub async fn create_session(
@@ -219,8 +222,31 @@ pub async fn create_session(
                 .into_response();
         }
     }
+    if let Some(ref profile_name) = body.profile {
+        if let Err(msg) = validate_no_shell_injection(profile_name, "profile") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
+            )
+                .into_response();
+        }
+        // Verify the profile exists ("default" is always valid even without a dir)
+        if profile_name != "default" {
+            let known = crate::session::list_profiles().unwrap_or_default();
+            if !known.contains(profile_name) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "profile_not_found",
+                        "message": format!("Profile '{}' does not exist", profile_name)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
 
-    let profile = state.profile.clone();
+    let profile = body.profile.unwrap_or_else(|| state.profile.clone());
     let instances = state.instances.read().await;
     let existing_titles: Vec<String> = instances.iter().map(|i| i.title.clone()).collect();
     drop(instances);
@@ -280,6 +306,7 @@ pub async fn create_session(
 
         let build_result = builder::build_instance(params, &title_refs, &profile)?;
         let mut instance = build_result.instance;
+        instance.source_profile = profile.clone();
 
         // Apply per-session sandbox overrides from the request body.
         if let Some(ref mut sandbox) = instance.sandbox_info {
@@ -1148,6 +1175,7 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<Profi
 #[derive(Deserialize)]
 pub struct BrowseQuery {
     pub path: String,
+    pub limit: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -1158,10 +1186,32 @@ pub struct DirEntry {
     pub is_git_repo: bool,
 }
 
+#[derive(Serialize)]
+struct BrowseResponse {
+    entries: Vec<DirEntry>,
+    has_more: bool,
+}
+
+pub async fn filesystem_home() -> impl IntoResponse {
+    match dirs::home_dir() {
+        Some(home) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"path": home.to_string_lossy()})),
+        )
+            .into_response(),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "Could not determine home directory"})),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn browse_filesystem(
     axum::extract::Query(query): axum::extract::Query<BrowseQuery>,
 ) -> impl IntoResponse {
     let result = tokio::task::spawn_blocking(move || {
+        let limit = query.limit.unwrap_or(100);
         let path = std::path::Path::new(&query.path);
         let canonical = path.canonicalize().map_err(|_| "Path does not exist")?;
 
@@ -1198,14 +1248,14 @@ pub async fn browse_filesystem(
             });
         }
         entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        Ok(entries)
+        let has_more = entries.len() > limit;
+        entries.truncate(limit);
+        Ok(BrowseResponse { entries, has_more })
     })
     .await;
 
     match result {
-        Ok(Ok(entries)) => {
-            (StatusCode::OK, Json(serde_json::to_value(entries).unwrap())).into_response()
-        }
+        Ok(Ok(resp)) => (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response(),
         Ok(Err(msg)) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "browse_failed", "message": msg})),
