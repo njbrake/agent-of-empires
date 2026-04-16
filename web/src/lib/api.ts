@@ -4,7 +4,7 @@ import type {
   RichFileDiffResponse,
   AgentInfo,
   ProfileInfo,
-  DirEntry,
+  BrowseResponse,
   BranchInfo,
   GroupInfo,
   DockerStatusResponse,
@@ -209,15 +209,30 @@ export async function fetchProfiles(): Promise<ProfileInfo[]> {
   }
 }
 
-export async function browseFilesystem(path: string): Promise<DirEntry[]> {
+export async function getHomePath(): Promise<string | null> {
   try {
-    const res = await fetch(
-      `/api/filesystem/browse?path=${encodeURIComponent(path)}`,
-    );
-    if (!res.ok) return [];
-    return await res.json();
+    const res = await fetch("/api/filesystem/home");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.path ?? null;
   } catch {
-    return [];
+    return null;
+  }
+}
+
+export async function browseFilesystem(
+  path: string,
+  limit?: number,
+): Promise<BrowseResponse & { ok: boolean }> {
+  try {
+    const params = new URLSearchParams({ path });
+    if (limit != null) params.set("limit", String(limit));
+    const res = await fetch(`/api/filesystem/browse?${params}`);
+    if (!res.ok) return { entries: [], has_more: false, ok: false };
+    const data = await res.json();
+    return { ...data, ok: true };
+  } catch {
+    return { entries: [], has_more: false, ok: false };
   }
 }
 

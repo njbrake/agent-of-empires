@@ -124,6 +124,12 @@ export interface DirEntry {
   is_git_repo: boolean;
 }
 
+/** Browse response returned by /api/filesystem/browse */
+export interface BrowseResponse {
+  entries: DirEntry[];
+  has_more: boolean;
+}
+
 /** Branch info returned by /api/git/branches */
 export interface BranchInfo {
   name: string;
@@ -158,4 +164,5 @@ export interface CreateSessionRequest {
   extra_repo_paths?: string[];
   command_override?: string;
   custom_instruction?: string;
+  profile?: string;
 }
