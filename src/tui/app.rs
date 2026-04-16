@@ -409,15 +409,13 @@ impl App {
                 self.should_quit = true;
                 return Ok(());
             }
-            (KeyCode::Char('q'), _) => {
-                if !self.home.has_dialog() {
-                    if self.home.is_creation_pending() {
-                        self.home.show_quit_during_creation_confirm();
-                        return Ok(());
-                    }
-                    self.should_quit = true;
+            (KeyCode::Char('q'), _) if !self.home.has_dialog() => {
+                if self.home.is_creation_pending() {
+                    self.home.show_quit_during_creation_confirm();
                     return Ok(());
                 }
+                self.should_quit = true;
+                return Ok(());
             }
             _ => {}
         }
