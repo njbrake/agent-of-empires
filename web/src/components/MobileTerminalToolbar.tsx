@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { RefObject } from "react";
 import { useLongPressDrag, type DragAxis } from "../hooks/useLongPressDrag";
@@ -7,6 +7,8 @@ interface Props {
   sendData: (data: string) => void;
   termRef: RefObject<Terminal | null>;
   keyboardHeight: number;
+  ctrlActive: boolean;
+  onCtrlToggle: () => void;
 }
 
 const ARROW_UP = "\x1b[A";
@@ -18,22 +20,15 @@ export function MobileTerminalToolbar({
   sendData,
   termRef,
   keyboardHeight,
+  ctrlActive,
+  onCtrlToggle,
 }: Props) {
-  const [ctrlActive, setCtrlActive] = useState(false);
   const [upAxis, setUpAxis] = useState<DragAxis>("vertical");
   const [downAxis, setDownAxis] = useState<DragAxis>("vertical");
 
   const haptic = useCallback(() => {
     navigator.vibrate?.(10);
   }, []);
-
-  // Reset ctrl flag once the terminal consumes a keystroke after it was armed.
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term || !ctrlActive) return;
-    const disposable = term.onData(() => setCtrlActive(false));
-    return () => disposable.dispose();
-  }, [ctrlActive, termRef]);
 
   const refocusTerminal = useCallback(() => {
     termRef.current?.focus();
@@ -116,12 +111,12 @@ export function MobileTerminalToolbar({
             ? `${btnBase.replace("text-text-secondary", "text-brand-400")} bg-brand-600/20`
             : btnBase
         }
-        onClick={() => { haptic(); setCtrlActive((v) => !v); refocusTerminal(); }}
+        onClick={() => { haptic(); onCtrlToggle(); }}
       >
         <span className="font-mono text-xs">Ctrl</span>
       </button>
       <button type="button" aria-label="Ctrl+C interrupt" className={btnBase}
-        onClick={() => { send("\x03"); setCtrlActive(false); }}>
+        onClick={() => { send("\x03"); if (ctrlActive) onCtrlToggle(); }}>
         <span className="font-mono text-xs">^C</span>
       </button>
     </div>

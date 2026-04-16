@@ -26,6 +26,7 @@ export function TerminalView({ session }: Props) {
   const { settings } = useWebSettings();
   const proxyRef = useRef<HTMLInputElement>(null);
   const [proxyFocused, setProxyFocused] = useState(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -115,10 +116,23 @@ export function TerminalView({ session }: Props) {
   const onProxyInput = useCallback(
     (e: FormEvent<HTMLInputElement>) => {
       const value = e.currentTarget.value;
-      if (value) sendData(value);
+      if (!value) return;
+      if (ctrlActive) {
+        // Transform each character to its Ctrl equivalent.
+        // Ctrl+A = \x01, Ctrl+Z = \x1a, etc.
+        for (const ch of value) {
+          const code = ch.toUpperCase().charCodeAt(0);
+          if (code >= 65 && code <= 90) {
+            sendData(String.fromCharCode(code - 64));
+          }
+        }
+        setCtrlActive(false);
+      } else {
+        sendData(value);
+      }
       e.currentTarget.value = "";
     },
-    [sendData],
+    [sendData, ctrlActive],
   );
 
   // iOS soft keyboards don't fire 'input' for Enter/Backspace/Tab/Arrows — they
@@ -128,6 +142,18 @@ export function TerminalView({ session }: Props) {
   // keys stay on the 'input' path so composition/autocorrect still works.
   const onProxyKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLInputElement>) => {
+      // Single printable character with Ctrl armed: transform to control char.
+      if (ctrlActive && e.key.length === 1) {
+        const code = e.key.toUpperCase().charCodeAt(0);
+        if (code >= 65 && code <= 90) {
+          e.preventDefault();
+          sendData(String.fromCharCode(code - 64));
+          setCtrlActive(false);
+          if (proxyRef.current) proxyRef.current.value = "";
+          return;
+        }
+      }
+
       const seq = (() => {
         switch (e.key) {
           case "Enter":
@@ -153,11 +179,10 @@ export function TerminalView({ session }: Props) {
       if (seq === null) return;
       e.preventDefault();
       sendData(seq);
-      // Clear any partial composition sitting in the input; if we don't,
-      // iOS can re-deliver it on the next input event.
+      if (ctrlActive) setCtrlActive(false);
       if (proxyRef.current) proxyRef.current.value = "";
     },
-    [sendData],
+    [sendData, ctrlActive],
   );
 
   // Tap the terminal pane to reopen the keyboard. Skip when text is
@@ -328,6 +353,8 @@ export function TerminalView({ session }: Props) {
           sendData={sendData}
           termRef={termRef}
           keyboardHeight={keyboardHeight}
+          ctrlActive={ctrlActive}
+          onCtrlToggle={() => setCtrlActive((v) => !v)}
         />
       )}
     </div>
