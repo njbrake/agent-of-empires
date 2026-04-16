@@ -2562,3 +2562,31 @@ fn test_project_group_name_handles_trailing_slash() {
     let inst = Instance::new("test", "/home/user/my-project/");
     assert_eq!(project_group_name(&inst), "my-project");
 }
+
+#[test]
+#[serial]
+fn test_cursor_follows_session_after_deletion() {
+    let mut env = create_test_env_with_sessions(4);
+
+    // Cursor starts at 0; move it to index 2 (session2)
+    env.view.cursor = 2;
+    env.view.update_selected();
+    let tracked_id = env.view.selected_session.clone().unwrap();
+
+    // Delete item at index 1 (a session above the cursor)
+    let victim_id = match &env.view.flat_items[1] {
+        Item::Session { id, .. } => id.clone(),
+        _ => panic!("expected session at index 1"),
+    };
+    env.view.remove_instance(&victim_id);
+    env.view.rebuild_group_trees();
+    let _ = env.view.save();
+    env.view.reload().unwrap();
+
+    // Cursor should have followed the tracked session to its new position
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(tracked_id.as_str())
+    );
+    assert_eq!(env.view.cursor, 1);
+}
