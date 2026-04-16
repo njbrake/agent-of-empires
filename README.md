@@ -42,7 +42,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 - **Diff view**: review git changes and edit files without leaving the TUI
 - **Profiles**: separate workspaces for different projects or clients
 
-## Web Dashboard
+## Web Dashboard (Beta)
 
 Access your agents from any browser. The real agent terminal renders in the page; switch sessions, type into the terminal, and review diffs without leaving the tab. Press `R` in the TUI to start the server, or see the [web dashboard guide](docs/guides/web-dashboard.md) for details.
 
