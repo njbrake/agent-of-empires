@@ -68,6 +68,12 @@ impl TerminalSession {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            // "duplicate session" means a concurrent caller won the race;
+            // the session exists now, which is what we wanted.
+            if stderr.contains("duplicate session") {
+                refresh_session_cache();
+                return Ok(());
+            }
             bail!("Failed to create terminal session: {}", stderr);
         }
 
@@ -222,6 +228,10 @@ impl ContainerTerminalSession {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("duplicate session") {
+                refresh_session_cache();
+                return Ok(());
+            }
             bail!("Failed to create container terminal session: {}", stderr);
         }
 

@@ -42,6 +42,14 @@ Running one AI agent is easy. Running five of them across different branches, ke
 - **Diff view**: review git changes and edit files without leaving the TUI
 - **Profiles**: separate workspaces for different projects or clients
 
+## Web Dashboard (Beta)
+
+Access your agents from any browser. The real agent terminal renders in the page; switch sessions, type into the terminal, and review diffs without leaving the tab. Press `R` in the TUI to start the server, or see the [web dashboard guide](docs/guides/web-dashboard.md) for details.
+
+<p align="center">
+  <img src="docs/assets/web-desktop.gif" alt="Web dashboard" width="800">
+</p>
+
 ## How It Works
 
 Each agent runs in its own [tmux](https://github.com/tmux/tmux/wiki) session, so your agents keep running when you close the TUI, disconnect SSH, or your terminal crashes. Reopen `aoe` and everything is exactly where you left it.
