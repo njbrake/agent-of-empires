@@ -65,12 +65,10 @@ export function MobileTerminalToolbar({
   const strip =
     "shrink-0 flex items-center gap-1 px-2 py-1.5 bg-surface-850 border-t border-surface-700/20 safe-area-bottom";
 
-  // Pin the strip above the soft keyboard when it's open; otherwise sit on
-  // the pane bottom. env(keyboard-inset-height) covers iPadOS floating
-  // keyboards where visualViewport doesn't shrink.
-  const translateY = keyboardHeight > 0 ? -keyboardHeight : 0;
+  // Parent (TerminalView) reserves paddingBottom for the keyboard, so the
+  // strip naturally sits above it. env(keyboard-inset-height) covers iPadOS
+  // floating keyboards where visualViewport doesn't shrink.
   const stripStyle = {
-    transform: `translateY(${translateY}px)`,
     paddingBottom: keyboardHeight > 0 ? undefined : "env(keyboard-inset-height, 0px)",
   };
 
