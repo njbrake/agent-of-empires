@@ -42,11 +42,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Set a fake hash, build the npm deps derivation, capture the real
-          # hash from the mismatch error. This is the standard nixpkgs pattern.
-          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          # Capture the current hash before touching anything so we can
+          # compare later and set changed=true/false accurately.
+          CURRENT=$(grep 'npmDepsHash' flake.nix \
+            | sed 's/.*npmDepsHash = "\(.*\)";/\1/' \
+            | tr -d '[:space:]')
 
-          # Patch flake.nix with the fake hash so Nix re-fetches
+          # We must use a fake hash to force Nix to re-fetch and report the
+          # real hash via a mismatch error. Using the current hash would cause
+          # Nix to succeed silently and give us nothing to parse.
+          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
           sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"$FAKE\"|" flake.nix
 
           # Build the npm deps derivation; it will fail with the real hash
@@ -56,15 +61,25 @@ jobs:
             | sed 's/.*got:[[:space:]]*//' \
             | tr -d '[:space:]') || true
 
+          # Restore flake.nix regardless — the patch step will set the final value
+          git checkout -- flake.nix
+
           if [ -z "$REAL" ]; then
-            echo "Could not extract hash from build output — hash may already be correct."
-            # Restore original hash from git
-            git checkout -- flake.nix
+            echo "Could not extract hash from build output."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "New hash: $REAL"
+          echo "Computed hash: $REAL"
+          echo "Current hash:  $CURRENT"
+
+          if [ "$REAL" = "$CURRENT" ]; then
+            echo "Hash unchanged, nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Hash changed: $CURRENT -> $REAL"
           echo "hash=$REAL" >> "$GITHUB_OUTPUT"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
