@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { useWebSettings } from "../hooks/useWebSettings";
@@ -26,6 +26,7 @@ export function TerminalView({ session }: Props) {
   const { settings } = useWebSettings();
   const proxyRef = useRef<HTMLInputElement>(null);
   const [proxyFocused, setProxyFocused] = useState(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -78,12 +79,35 @@ export function TerminalView({ session }: Props) {
   // fire; proxy focus flips instantly.
   const keyboardVisible = keyboardOpen || proxyFocused;
 
+  // When the soft keyboard opens, the terminal height shrinks and xterm's
+  // Re-fit xterm and scroll to the cursor whenever keyboardHeight changes.
+  // useLayoutEffect runs synchronously after React has committed the new
+  // paddingBottom to the DOM, so fitAddon.fit() measures the correct
+  // container size. A rAF then scrolls to bottom after xterm has reflowed.
+  useLayoutEffect(() => {
+    window.dispatchEvent(new Event("resize"));
+    if (!keyboardOpen) return;
+    const id = requestAnimationFrame(() => {
+      termRef.current?.scrollToBottom();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [keyboardOpen, keyboardHeight, termRef]);
+
   // Auto-open soft keyboard when a session is selected, if the user wants it.
+  // iOS can delay or skip showing the keyboard when focus() is called from a
+  // timeout (broken user-gesture chain). Retry a few times with increasing
+  // delay to cover the WS-connect + terminal-mount + keyboard-animation window.
   useEffect(() => {
     if (!isMobile || !state.connected) return;
     if (!settings.autoOpenKeyboard) return;
-    const id = setTimeout(() => proxyRef.current?.focus(), 50);
-    return () => clearTimeout(id);
+    const delays = [50, 200, 500];
+    const timers = delays.map((ms) =>
+      setTimeout(() => {
+        if (!proxyRef.current) return;
+        proxyRef.current.focus();
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
   }, [isMobile, state.connected, session.id, settings.autoOpenKeyboard]);
 
   // The proxy input is the keyboard bridge: soft keyboard types into it,
@@ -92,10 +116,73 @@ export function TerminalView({ session }: Props) {
   const onProxyInput = useCallback(
     (e: FormEvent<HTMLInputElement>) => {
       const value = e.currentTarget.value;
-      if (value) sendData(value);
+      if (!value) return;
+      if (ctrlActive) {
+        // Transform each character to its Ctrl equivalent.
+        // Ctrl+A = \x01, Ctrl+Z = \x1a, etc.
+        for (const ch of value) {
+          const code = ch.toUpperCase().charCodeAt(0);
+          if (code >= 65 && code <= 90) {
+            sendData(String.fromCharCode(code - 64));
+          }
+        }
+        setCtrlActive(false);
+      } else {
+        sendData(value);
+      }
       e.currentTarget.value = "";
     },
-    [sendData],
+    [sendData, ctrlActive],
+  );
+
+  // iOS soft keyboards don't fire 'input' for Enter/Backspace/Tab/Arrows — they
+  // only fire keydown. Without this handler, hitting Return on iOS silently
+  // dropped the keystroke (Enter never reached the PTY). Translate the common
+  // non-printing keys into the byte sequences the shell expects. Printable
+  // keys stay on the 'input' path so composition/autocorrect still works.
+  const onProxyKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLInputElement>) => {
+      // Single printable character with Ctrl armed: transform to control char.
+      if (ctrlActive && e.key.length === 1) {
+        const code = e.key.toUpperCase().charCodeAt(0);
+        if (code >= 65 && code <= 90) {
+          e.preventDefault();
+          sendData(String.fromCharCode(code - 64));
+          setCtrlActive(false);
+          if (proxyRef.current) proxyRef.current.value = "";
+          return;
+        }
+      }
+
+      const seq = (() => {
+        switch (e.key) {
+          case "Enter":
+            return "\r";
+          case "Backspace":
+            return "\x7f";
+          case "Tab":
+            return "\t";
+          case "Escape":
+            return "\x1b";
+          case "ArrowUp":
+            return "\x1b[A";
+          case "ArrowDown":
+            return "\x1b[B";
+          case "ArrowRight":
+            return "\x1b[C";
+          case "ArrowLeft":
+            return "\x1b[D";
+          default:
+            return null;
+        }
+      })();
+      if (seq === null) return;
+      e.preventDefault();
+      sendData(seq);
+      if (ctrlActive) setCtrlActive(false);
+      if (proxyRef.current) proxyRef.current.value = "";
+    },
+    [sendData, ctrlActive],
   );
 
   // Tap the terminal pane to reopen the keyboard. Skip when text is
@@ -156,8 +243,15 @@ export function TerminalView({ session }: Props) {
     );
   }
 
+  const rootStyle = {
+    paddingBottom: keyboardHeight > 0 ? keyboardHeight : undefined,
+  } as const;
+
   return (
-    <div className="flex-1 flex flex-col overflow-hidden relative">
+    <div
+      className="flex-1 flex flex-col overflow-hidden relative"
+      style={rootStyle}
+    >
       {!state.connected && state.reconnecting && (
         <div className="bg-status-waiting/15 border-b border-status-waiting/30 px-4 py-1.5 flex items-center gap-2 shrink-0">
           <span className="text-xs text-status-waiting">
@@ -196,6 +290,7 @@ export function TerminalView({ session }: Props) {
               autoCapitalize="none"
               spellCheck={false}
               onInput={onProxyInput}
+              onKeyDown={onProxyKeyDown}
               onFocus={() => setProxyFocused(true)}
               onBlur={() => setProxyFocused(false)}
               aria-hidden="true"
@@ -258,6 +353,8 @@ export function TerminalView({ session }: Props) {
           sendData={sendData}
           termRef={termRef}
           keyboardHeight={keyboardHeight}
+          ctrlActive={ctrlActive}
+          onCtrlToggle={() => setCtrlActive((v) => !v)}
         />
       )}
     </div>
