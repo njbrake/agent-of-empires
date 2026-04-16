@@ -44,13 +44,11 @@ Running one AI agent is easy. Running five of them across different branches, ke
 
 ## Web Dashboard
 
-Run the same sessions from any browser via `aoe serve`. The real agent terminal renders inside the page; switch sessions, type into the terminal, and review diffs without leaving the tab.
+Access your agents from any browser. The real agent terminal renders in the page; switch sessions, type into the terminal, and review diffs without leaving the tab. Press `R` in the TUI to start the server, or see the [web dashboard guide](docs/guides/web-dashboard.md) for details.
 
 <p align="center">
   <img src="docs/assets/web-desktop.gif" alt="Web dashboard" width="800">
 </p>
-
-See the [web dashboard guide](docs/guides/web-dashboard.md) for setup; pair with [remote phone access](docs/guides/remote-phone-access.md) to reach it from your phone.
 
 ## How It Works
 
