@@ -326,15 +326,13 @@ impl SettingsView {
 
     pub(super) fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
         match &field.value {
-            FieldValue::List(items) => {
-                if self.list_edit_state.is_some() && index == self.selected_field {
-                    // label + description + header + items + add prompt
-                    1 + 1 + 1 + items.len() as u16 + 1
-                } else {
-                    1 + 1 + 1 // Label + description + summary
-                }
+            FieldValue::List(items)
+                if self.list_edit_state.is_some() && index == self.selected_field =>
+            {
+                // label + description + header + items + add prompt
+                1 + 1 + 1 + items.len() as u16 + 1
             }
-            _ => 1 + 1 + 1, // Label + description + value
+            _ => 1 + 1 + 1, // Label + description + value/summary
         }
     }
 

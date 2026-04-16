@@ -390,10 +390,8 @@ impl SettingsView {
             KeyCode::Esc => {
                 self.list_edit_state = None;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if state.selected_index > 0 {
-                    state.selected_index -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if state.selected_index > 0 => {
+                state.selected_index -= 1;
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if let FieldValue::List(items) = &self.fields[self.selected_field].value {

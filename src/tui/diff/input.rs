@@ -153,15 +153,13 @@ impl DiffView {
                     self.select_branch(branch);
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if state.selected > 0 {
-                    state.selected -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if state.selected > 0 => {
+                state.selected -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if state.selected < state.branches.len().saturating_sub(1) {
-                    state.selected += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j')
+                if state.selected < state.branches.len().saturating_sub(1) =>
+            {
+                state.selected += 1;
             }
             _ => {}
         }
