@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionResponse, SessionStatus } from "../lib/types";
 import { STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
 import { StatusGlyph } from "./StatusGlyph";
+import { renameSession } from "../lib/api";
 
 interface Props {
   sessions: SessionResponse[];
@@ -239,9 +240,79 @@ function SessionRow({
   const active = isSessionActive(session.status);
   const label = session.branch ?? session.title ?? "default";
 
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(label);
+  const renameRef = useRef<HTMLInputElement>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (renaming) renameRef.current?.select();
+  }, [renaming]);
+
+  const clearLongPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const handleTouchStart = () => {
+    clearLongPress();
+    longPressFired.current = false;
+    longPressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      setRenameValue(label);
+      setRenaming(true);
+    }, 500);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    clearLongPress();
+    if (longPressFired.current) {
+      e.preventDefault();
+    }
+  };
+
+  const commitRename = async () => {
+    setRenaming(false);
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === label) return;
+    await renameSession(session.id, trimmed);
+  };
+
+  if (renaming) {
+    return (
+      <div className="px-3 py-1.5">
+        <input
+          ref={renameRef}
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitRename();
+            if (e.key === "Escape") setRenaming(false);
+          }}
+          className="w-full bg-surface-950 border border-brand-600 rounded px-2 py-1 text-[13px] font-mono text-text-primary focus:outline-none"
+        />
+      </div>
+    );
+  }
+
   return (
     <button
-      onClick={onClick}
+      onClick={() => { if (!longPressFired.current) onClick(); }}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onTouchMove={clearLongPress}
+      onTouchCancel={clearLongPress}
       className={`w-full text-left px-3 py-1.5 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-600 ${
         session.status === "Error"
           ? "hover:bg-status-error/5"

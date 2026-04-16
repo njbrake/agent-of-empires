@@ -355,19 +355,18 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       />
 
       <div className="flex flex-1 min-h-0">
-        {sidebarOpen && (
-          <WorkspaceSidebar
-            groups={groups}
-            activeId={activeWorkspaceId}
-            creatingForProject={creatingForProject}
-            onToggle={() => setSidebarOpen(false)}
-            onSelect={handleSelectWorkspace}
-            onToggleRepo={toggleRepoCollapsed}
-            onNew={() => setShowAddProject(true)}
-            onCreateSession={handleCreateSession}
-            onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
-          />
-        )}
+        <WorkspaceSidebar
+          groups={groups}
+          activeId={activeWorkspaceId}
+          creatingForProject={creatingForProject}
+          open={sidebarOpen}
+          onToggle={() => setSidebarOpen(false)}
+          onSelect={handleSelectWorkspace}
+          onToggleRepo={toggleRepoCollapsed}
+          onNew={() => setShowAddProject(true)}
+          onCreateSession={handleCreateSession}
+          onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
+        />
 
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
           {renderContent()}

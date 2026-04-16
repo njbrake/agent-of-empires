@@ -13,6 +13,7 @@ interface Props {
   groups: RepoGroup[];
   activeId: string | null;
   creatingForProject: string | null;
+  open: boolean;
   onToggle: () => void;
   onSelect: (workspaceId: string) => void;
   onToggleRepo: (repoId: string) => void;
@@ -292,6 +293,7 @@ export function WorkspaceSidebar({
   groups,
   activeId,
   creatingForProject,
+  open,
   onToggle,
   onSelect,
   onToggleRepo,
@@ -368,12 +370,16 @@ export function WorkspaceSidebar({
   return (
     <>
       <div
-        className="fixed inset-0 bg-black/50 z-30 md:hidden"
+        className={`fixed inset-0 z-30 md:hidden transition-opacity duration-300 ${
+          open ? "bg-black/50" : "opacity-0 pointer-events-none"
+        }`}
         onClick={onToggle}
       />
       <div
         style={{ width }}
-        className="fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0"
+        className={`fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none ${
+          open ? "translate-x-0" : "-translate-x-full md:hidden"
+        }`}
       >
         <div className="px-3 pt-3 pb-1 flex items-center">
           <span className="text-sm text-text-muted flex-1">
