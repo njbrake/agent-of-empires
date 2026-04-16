@@ -47,15 +47,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 Run the same sessions from any browser via `aoe serve`. Real opencode (or any supported agent) renders inside the page; switch sessions, type into the terminal, and review diffs without leaving the tab.
 
 <p align="center">
-  <img src="docs/assets/web-desktop.gif" alt="Web dashboard on desktop" width="800">
-  <br>
-  <em>Desktop: switching between two live opencode sessions.</em>
-</p>
-
-<p align="center">
-  <img src="docs/assets/web-mobile.gif" alt="Web dashboard on mobile" width="320">
-  <br>
-  <em>Mobile: same dashboard, soft keyboard and gesture toolbar.</em>
+  <img src="docs/assets/web-desktop.gif" alt="Web dashboard" width="800">
 </p>
 
 See the [web dashboard guide](docs/guides/web-dashboard.md) for setup; pair with [remote phone access](docs/guides/remote-phone-access.md) to reach it from your phone.
