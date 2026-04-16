@@ -187,6 +187,51 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setSidebarOpen((o) => !o);
   }, []);
 
+  useEffect(() => {
+    if (sidebarOpen) return;
+    const EDGE_PX = 24;
+    const THRESHOLD_PX = 60;
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (window.innerWidth >= 768) return;
+      const t = e.touches[0];
+      if (!t || t.clientX > EDGE_PX) return;
+      tracking = true;
+      startX = t.clientX;
+      startY = t.clientY;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!tracking) return;
+      const t = e.touches[0];
+      if (!t) return;
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (dx > THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+        tracking = false;
+        setSidebarOpen(true);
+      } else if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) {
+        tracking = false;
+      }
+    };
+    const onTouchEnd = () => {
+      tracking = false;
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [sidebarOpen]);
+
   const handleNewSession = useCallback(() => {
     setShowAddProject(true);
   }, []);

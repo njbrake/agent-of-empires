@@ -64,6 +64,8 @@ const SessionRow = memo(function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(label);
   const renameRef = useRef<HTMLInputElement>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired = useRef(false);
 
   useEffect(() => {
     if (renaming) renameRef.current?.select();
@@ -83,6 +85,28 @@ const SessionRow = memo(function SessionRow({
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const clearLongPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const handleTouchStart = () => {
+    longPressFired.current = false;
+    longPressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      startRename();
+    }, 500);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    clearLongPress();
+    if (longPressFired.current) {
+      e.preventDefault();
+    }
   };
 
   const startRename = () => {
@@ -122,6 +146,10 @@ const SessionRow = memo(function SessionRow({
       <button
         onClick={onClick}
         onContextMenu={handleContextMenu}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onTouchMove={clearLongPress}
+        onTouchCancel={clearLongPress}
         className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
           indented ? "pl-6 pr-3" : "px-3"
         } ${
