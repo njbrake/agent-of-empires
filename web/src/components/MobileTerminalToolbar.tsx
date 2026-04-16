@@ -83,7 +83,14 @@ export function MobileTerminalToolbar({
     ) : null;
 
   return (
-    <div className={strip} style={stripStyle}>
+    <div
+      className={strip}
+      style={stripStyle}
+      // Prevent toolbar taps from stealing focus away from the proxy input.
+      // Without this, every button tap blurs the proxy and iOS closes the
+      // soft keyboard. onClick handlers still fire normally.
+      onMouseDown={(e) => e.preventDefault()}
+    >
       <button type="button" aria-label="Arrow up" className={btnBase} {...upHandlers}>
         <span className="font-mono text-sm">{"\u2191"}</span>
         {arrowHint(upAxis)}
