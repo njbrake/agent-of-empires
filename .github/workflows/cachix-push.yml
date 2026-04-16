@@ -1,7 +1,8 @@
 name: Push to Cachix
 
-# Builds aoe-with-web (--features serve, web UI embedded) and pushes the
-# result to the Cachix binary cache so users can install without compiling.
+# Builds aoe-with-web (--features serve, web UI embedded) for Linux and macOS
+# and pushes the results to the Cachix binary cache so users can install
+# without compiling. Runs a matrix so both systems build in parallel.
 #
 # Requires two repository secrets set in the fork's Settings > Secrets:
 #   CACHIX_AUTH_TOKEN  - from cachix.org (Settings > Auth Tokens)
@@ -25,8 +26,12 @@ on:
 
 jobs:
   cachix:
-    name: Build and push to Cachix
-    runs-on: ubuntu-latest
+    name: Build and push (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
