@@ -135,21 +135,33 @@ export function useTerminal(
           retryCountdown: 0,
         });
         term.focus();
-        const dims = fitAddon.proposeDimensions();
-        if (
-          dims &&
-          Number.isFinite(dims.cols) &&
-          Number.isFinite(dims.rows) &&
-          dims.cols > 0 &&
-          dims.rows > 0
-        ) {
-          const msg: ResizeMessage = {
-            type: "resize",
-            cols: Math.round(dims.cols),
-            rows: Math.round(dims.rows),
-          };
-          ws.send(JSON.stringify(msg));
-        }
+        const sendDims = () => {
+          const dims = fitAddon.proposeDimensions();
+          if (
+            dims &&
+            Number.isFinite(dims.cols) &&
+            Number.isFinite(dims.rows) &&
+            dims.cols > 0 &&
+            dims.rows > 0
+          ) {
+            const msg: ResizeMessage = {
+              type: "resize",
+              cols: Math.round(dims.cols),
+              rows: Math.round(dims.rows),
+            };
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify(msg));
+            }
+          }
+        };
+        sendDims();
+        // Re-fit after the layout has settled. On first session entry the
+        // flex layout may still be adjusting after the pending → ready
+        // transition; a single frame isn't always enough.
+        requestAnimationFrame(() => {
+          fitAddon.fit();
+          sendDims();
+        });
       };
 
       ws.onmessage = (event: MessageEvent) => {
