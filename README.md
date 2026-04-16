@@ -44,7 +44,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 
 ## Web Dashboard
 
-Run the same sessions from any browser via `aoe serve`. Real opencode (or any supported agent) renders inside the page; switch sessions, type into the terminal, and review diffs without leaving the tab.
+Run the same sessions from any browser via `aoe serve`. The real agent terminal renders inside the page; switch sessions, type into the terminal, and review diffs without leaving the tab.
 
 <p align="center">
   <img src="docs/assets/web-desktop.gif" alt="Web dashboard" width="800">
