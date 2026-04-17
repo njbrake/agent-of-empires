@@ -300,7 +300,10 @@ pub async fn auth_middleware(
 
                         // Set token cookie/header on the redirect so the browser
                         // has the current token when it follows the redirect.
-                        if source == TokenSource::QueryParam || needs_upgrade {
+                        if source == TokenSource::QueryParam
+                            || source == TokenSource::Bearer
+                            || needs_upgrade
+                        {
                             attach_token_headers(&mut response, &state).await;
                         }
 
@@ -312,8 +315,12 @@ pub async fn auth_middleware(
                 let session_id = session_id.expect("valid session implies session_id exists");
                 let mut response = next.run(request).await;
 
-                // Set token cookie/header if needed
-                if source == TokenSource::QueryParam || needs_upgrade {
+                // Set token cookie/header if needed (including Bearer to
+                // rehydrate cookie from localStorage)
+                if source == TokenSource::QueryParam
+                    || source == TokenSource::Bearer
+                    || needs_upgrade
+                {
                     attach_token_headers(&mut response, &state).await;
                 }
 
@@ -331,10 +338,16 @@ pub async fn auth_middleware(
 
         let mut response = next.run(request).await;
 
-        // Set cookie/X-Aoe-Token if authenticated via query param or if token
-        // needs upgrade. The X-Aoe-Token header lets the PWA update its
-        // localStorage-cached token without a full page reload.
-        let should_refresh = source == TokenSource::QueryParam || needs_upgrade;
+        // Refresh the auth cookie when the token was provided via query param,
+        // Bearer header, or when the token needs upgrade (grace period).
+        // Including Bearer here is important: when the cookie expires but the
+        // SPA still has the token in localStorage, API calls authenticate via
+        // Bearer header. Setting the cookie on those responses "rehydrates" it
+        // so the next browser navigation (HTML page load) works without
+        // re-pasting the ?token= URL.
+        let should_refresh = source == TokenSource::QueryParam
+            || source == TokenSource::Bearer
+            || needs_upgrade;
 
         if should_refresh {
             attach_token_headers(&mut response, &state).await;
@@ -343,9 +356,19 @@ pub async fn auth_middleware(
         return response;
     }
 
-    // Auth failed: record failure
+    // Auth failed. For API and WebSocket routes, return 401. For everything
+    // else (the SPA shell, static assets), serve the page anyway so the
+    // frontend can attempt auth via localStorage + Bearer header. Without
+    // this, an expired cookie means the SPA never loads and localStorage
+    // never gets a chance to re-authenticate.
+    let path = request.uri().path();
+    let is_api_or_ws = path.starts_with("/api/") || path.contains("/ws");
+
+    if !is_api_or_ws {
+        return next.run(request).await;
+    }
+
     let locked = state.rate_limiter.record_failure(client_ip).await;
-    let path = request.uri().path().to_string();
     tracing::warn!(
         ip = %client_ip,
         path = %path,

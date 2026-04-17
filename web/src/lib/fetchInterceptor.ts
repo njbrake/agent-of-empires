@@ -46,8 +46,12 @@ export function installFetchErrorToasts(): void {
         const rotated = res.headers.get("x-aoe-token");
         if (rotated) saveToken(rotated);
       }
-      if (res.status === 401 && isApi && getToken()) {
-        handleTokenRejected();
+      if (res.status === 401 && isApi) {
+        if (getToken()) {
+          handleTokenRejected();
+        } else {
+          handleNoToken();
+        }
       }
       if (isApi && res.status >= 500) {
         reportError(`Server error ${res.status} from ${path}`);
@@ -81,6 +85,17 @@ function handleTokenRejected(): void {
   tokenRejectedReported = true;
   reportError(
     "Session expired. Open the current dashboard URL from `aoe serve` to reconnect.",
+  );
+}
+
+// On 401 with no token at all (cookie expired AND localStorage cleared).
+// Show a one-time toast so the user isn't staring at an empty dashboard.
+let noTokenReported = false;
+function handleNoToken(): void {
+  if (noTokenReported) return;
+  noTokenReported = true;
+  reportError(
+    "Not authenticated. Paste the dashboard URL from `aoe serve` to connect.",
   );
 }
 
