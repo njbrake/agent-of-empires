@@ -123,26 +123,27 @@ export function useTerminal(
 
     termRef.current = term;
 
-    // On mobile, restyle wterm's hidden textarea so it covers the terminal
-    // area. This lets iOS show the paste popup on long-press and gives the
-    // soft keyboard a real element to attach to. The textarea is still
-    // visually hidden (opacity 0) but touchable.
+    // Two iOS patches for wterm's textarea:
+    // 1. Move from -9999px to 0,0 so iOS shows the soft keyboard on focus.
+    // 2. Fix backspace repeat: wterm calls preventDefault() on all keydown
+    //    events, which prevents iOS from entering its key-repeat loop.
+    //    We intercept Backspace in capture phase, skip wterm's handler,
+    //    and let the native deletion happen. iOS repeat fires "input"
+    //    events with inputType "deleteContentBackward" (not keydown),
+    //    so we detect those and send \x7f for each one.
+    //    A ZWS seed keeps the textarea non-empty so iOS always has
+    //    something to delete on each repeat tick.
+    // Paste: wterm's textarea has pointerEvents:none and is 1x1px, so
+    // iOS can't show a paste popup on it. Use the toolbar Paste button.
     const BACKSPACE_SEED = "\u200B";
     let wtermTextarea: HTMLTextAreaElement | null = null;
     const setupMobileTextarea = () => {
       if (!isMobileViewport()) return;
       wtermTextarea = termEl.querySelector("textarea");
       if (!wtermTextarea) return;
-      // Move the textarea into the viewport (from -9999px) so iOS shows
-      // the keyboard when it's focused. Keep it tiny and non-interactive
-      // so it doesn't block touches on the terminal content (text
-      // selection, long-press, etc.). Paste uses the toolbar button.
-      const ts = wtermTextarea.style;
-      ts.left = "0";
-      ts.top = "0";
+      wtermTextarea.style.left = "0";
+      wtermTextarea.style.top = "0";
 
-      // Seed the textarea so iOS has something to delete when backspace
-      // is held. Without this, iOS never enters its key-repeat loop.
       const seedTextarea = () => {
         if (wtermTextarea && !wtermTextarea.value) {
           wtermTextarea.value = BACKSPACE_SEED;
@@ -151,12 +152,12 @@ export function useTerminal(
       };
       wtermTextarea.addEventListener("focus", seedTextarea);
 
-      // Intercept Backspace before wterm's handler (which calls
-      // preventDefault and kills iOS repeat). We let the deletion happen
-      // natively, then re-seed in a microtask.
+      // Capture-phase: intercept Backspace before wterm's preventDefault.
+      // Send \x7f ourselves and let the native deletion happen (no
+      // preventDefault) so iOS enters its key-repeat loop.
       wtermTextarea.addEventListener("keydown", (e: KeyboardEvent) => {
         if (e.key !== "Backspace") return;
-        e.stopImmediatePropagation(); // skip wterm's preventDefault
+        e.stopImmediatePropagation();
         const ws = wsRef.current;
         if (ws?.readyState === WebSocket.OPEN) {
           ws.send(new TextEncoder().encode("\x7f"));
@@ -164,8 +165,17 @@ export function useTerminal(
         queueMicrotask(seedTextarea);
       }, true);
 
-      // After wterm clears the textarea on regular input, re-seed.
-      wtermTextarea.addEventListener("input", () => {
+      // iOS key-repeat fires "input" events with deleteContentBackward,
+      // not repeated keydown. Send \x7f for each one and re-seed.
+      const ta = wtermTextarea;
+      ta.addEventListener("input", (e: Event) => {
+        const ie = e as InputEvent;
+        if (ie.inputType === "deleteContentBackward") {
+          const ws = wsRef.current;
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(new TextEncoder().encode("\x7f"));
+          }
+        }
         queueMicrotask(seedTextarea);
       });
     };
