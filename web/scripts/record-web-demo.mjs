@@ -119,38 +119,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 });
 
 async function runDesktop(page) {
-  // Land on dashboard with sidebar visible. Two pre-created opencode
-  // sessions are listed under their project groups.
-  await sleep(1500);
-
-  // Open the first session. The session list buttons are nested inside
-  // the sidebar's project groups; filter by visible label and grab the
-  // first match (the project header for "api-server" is lowercase, so
-  // "API Server" only matches the session row).
-  await sidebarSession(page, "API Server").click();
-  await page.waitForSelector(".xterm", { timeout: 15_000 });
-  // opencode TUI takes a beat to draw its first frame.
-  await sleep(5000);
-
-  await page.locator(".xterm-helper-textarea").first().focus();
-  await page.keyboard.type("write a haiku about parallel agents", {
-    delay: 40,
-  });
-  await sleep(400);
-  await page.keyboard.press("Enter");
-  // Wait for the response to stream in.
-  await sleep(9000);
-
-  // Switch to the second session to show parallelism.
-  await sidebarSession(page, "Web App").click();
+  // Land on dashboard with sidebar visible. Two pre-created sessions
+  // are listed under their project groups.
   await sleep(2500);
-  await page.locator(".xterm-helper-textarea").first().focus();
-  await page.keyboard.type("list 3 ways to use git worktrees", {
-    delay: 40,
-  });
-  await sleep(400);
-  await page.keyboard.press("Enter");
-  await sleep(8000);
+
+  // Open the first session.
+  await sidebarSession(page, "API Server").click();
+  await page.waitForSelector(".wterm", { timeout: 15_000 });
+  // Let the terminal render fully.
+  await sleep(4000);
+
+  // Switch to the second session to show multi-session workflow.
+  await sidebarSession(page, "Web App").click();
+  await page.waitForSelector(".wterm", { timeout: 15_000 });
+  await sleep(4000);
 
   // Brief help overlay so viewers see keyboard shortcuts exist.
   await page.evaluate(() => {
@@ -158,9 +140,9 @@ async function runDesktop(page) {
       new KeyboardEvent("keydown", { key: "?", bubbles: true }),
     );
   });
-  await sleep(2500);
+  await sleep(3000);
   await page.keyboard.press("Escape");
-  await sleep(800);
+  await sleep(1000);
 }
 
 function sidebarSession(page, label) {
@@ -178,20 +160,20 @@ async function runMobile(page) {
     .click();
   await sleep(900);
   await sidebarSession(page, "API Server").click();
-  await page.waitForSelector(".xterm", { timeout: 15_000 });
+  await page.waitForSelector(".wterm", { timeout: 15_000 });
   await sleep(5500);
 
   // Mobile types via the floating keyboard FAB; tap it then use the soft
-  // keyboard area. Falls back to focusing xterm-helper-textarea if the
+  // keyboard area. Falls back to focusing the wterm textarea if the
   // FAB selector ever changes.
-  await page.locator(".xterm-helper-textarea").first().focus();
+  await page.locator(".wterm textarea").first().focus();
   await page.keyboard.type("haiku about phones and agents", { delay: 50 });
   await sleep(500);
   await page.keyboard.press("Enter");
   await sleep(8000);
 
   // Show that scrolling works on mobile.
-  await page.locator(".xterm-viewport").first().evaluate((el) => {
+  await page.locator(".wterm").first().evaluate((el) => {
     el.scrollBy({ top: 200, behavior: "smooth" });
   });
   await sleep(1500);
