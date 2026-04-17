@@ -57,6 +57,7 @@ pub struct SessionResponse {
     pub has_terminal: bool,
     pub profile: String,
     pub cleanup_defaults: CleanupDefaults,
+    pub remote_owner: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -96,6 +97,7 @@ impl From<&Instance> for SessionResponse {
                 delete_branch: false,
                 delete_sandbox: true,
             },
+            remote_owner: None,
         }
     }
 }
@@ -138,9 +140,54 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
         fresh
     };
 
-    for session in &mut sessions {
-        if let Some(defaults) = defaults_map.get(&session.profile) {
-            session.cleanup_defaults = defaults.clone();
+    // Resolve remote owners with a permanent cache on AppState
+    {
+        let cache = state.remote_owner_cache.read().await;
+        for session in &mut sessions {
+            if let Some(defaults) = defaults_map.get(&session.profile) {
+                session.cleanup_defaults = defaults.clone();
+            }
+            let repo_path = session
+                .main_repo_path
+                .as_deref()
+                .unwrap_or(&session.project_path);
+            if let Some(owner) = cache.get(repo_path) {
+                session.remote_owner = owner.clone();
+            }
+        }
+    }
+
+    // Fill any uncached repo paths
+    let uncached: Vec<String> = sessions
+        .iter()
+        .filter(|s| s.remote_owner.is_none())
+        .map(|s| {
+            s.main_repo_path
+                .clone()
+                .unwrap_or_else(|| s.project_path.clone())
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if !uncached.is_empty() {
+        let mut cache = state.remote_owner_cache.write().await;
+        for path in &uncached {
+            if !cache.contains_key(path.as_str()) {
+                let owner = crate::git::get_remote_owner(std::path::Path::new(path));
+                cache.insert(path.clone(), owner);
+            }
+        }
+        for session in &mut sessions {
+            let repo_path = session
+                .main_repo_path
+                .as_deref()
+                .unwrap_or(&session.project_path);
+            if session.remote_owner.is_none() {
+                if let Some(owner) = cache.get(repo_path) {
+                    session.remote_owner = owner.clone();
+                }
+            }
         }
     }
 

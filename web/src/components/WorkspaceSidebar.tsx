@@ -4,6 +4,7 @@ import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
 import { renameSession } from "../lib/api";
 import { StatusGlyph } from "./StatusGlyph";
+import { OwnerAvatar } from "./OwnerAvatar";
 
 const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
 const DEFAULT_WIDTH = 280;
@@ -273,6 +274,7 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
         >
           <path d="M2 3 L5 6.5 L8 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
+        <OwnerAvatar owner={group.remoteOwner} size={16} />
         <span className="text-[13px] md:text-[14px] font-medium truncate flex-1" title={group.repoPath}>
           {group.displayName}
         </span>
