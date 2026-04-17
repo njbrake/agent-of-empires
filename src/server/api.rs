@@ -619,7 +619,11 @@ fn repo_name_from_url(url: &str) -> Option<String> {
         url.rsplit_once('/')?.1
     };
     let name = last_segment.trim_end_matches(".git");
-    if name.is_empty() { None } else { Some(name.to_string()) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 pub async fn clone_repo(
@@ -640,7 +644,9 @@ pub async fn clone_repo(
     if url.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": "URL cannot be empty"})),
+            Json(
+                serde_json::json!({"error": "validation_failed", "message": "URL cannot be empty"}),
+            ),
         )
             .into_response();
     }
@@ -729,11 +735,9 @@ pub async fn clone_repo(
     .await;
 
     match result {
-        Ok(Ok(path)) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({"path": path})),
-        )
-            .into_response(),
+        Ok(Ok(path)) => {
+            (StatusCode::CREATED, Json(serde_json::json!({"path": path}))).into_response()
+        }
         Ok(Err(e)) => {
             let msg = e.to_string();
             tracing::warn!("Clone failed for {dest_display}: {msg}");
