@@ -25,9 +25,10 @@ pub(crate) fn open_repo_at(path: &Path) -> std::result::Result<git2::Repository,
 
 /// Clone a git repository from a URL into the given destination directory.
 ///
-/// The destination must not already exist. The URL must use a recognized
-/// scheme (https://, git://, ssh://, or scp-style git@host:path).
-pub fn clone_repo(url: &str, destination: &Path) -> Result<()> {
+/// The destination must not already exist. If `shallow` is true, only the
+/// latest commit is fetched (`--depth 1`). The clone is killed after 5
+/// minutes to prevent indefinite hangs (unresponsive remotes, SSH prompts).
+pub fn clone_repo(url: &str, destination: &Path, shallow: bool) -> Result<()> {
     if destination.exists() {
         return Err(GitError::CloneFailed(format!(
             "Destination already exists: {}",
@@ -39,17 +40,64 @@ pub fn clone_repo(url: &str, destination: &Path) -> Result<()> {
         .to_str()
         .ok_or_else(|| GitError::CloneFailed("Invalid destination path".to_string()))?;
 
-    let output = std::process::Command::new("git")
-        .args(["clone", url, dest_str])
-        .output()
+    let mut args = vec!["clone"];
+    if shallow {
+        args.extend(["--depth", "1"]);
+    }
+    args.extend([url, dest_str]);
+
+    // Pipe stdin to /dev/null so SSH passphrase prompts fail immediately
+    // instead of hanging the blocking thread.
+    let mut child = std::process::Command::new("git")
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| GitError::CloneFailed(format!("Failed to run git clone: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(GitError::CloneFailed(stderr));
-    }
+    // Poll with a 5-minute timeout to avoid blocking the thread pool forever.
+    let timeout = std::time::Duration::from_secs(300);
+    let poll_interval = std::time::Duration::from_millis(200);
+    let start = std::time::Instant::now();
 
-    Ok(())
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                let stderr = child
+                    .stderr
+                    .take()
+                    .and_then(|mut s| {
+                        let mut buf = String::new();
+                        std::io::Read::read_to_string(&mut s, &mut buf).ok()?;
+                        Some(buf)
+                    })
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                return Err(GitError::CloneFailed(stderr));
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if destination.exists() {
+                        let _ = std::fs::remove_dir_all(destination);
+                    }
+                    return Err(GitError::CloneFailed(
+                        "Clone timed out after 5 minutes".to_string(),
+                    ));
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(e) => {
+                return Err(GitError::CloneFailed(format!(
+                    "Failed waiting for git clone: {e}"
+                )));
+            }
+        }
+    }
 }
 
 pub struct WorktreeEntry {

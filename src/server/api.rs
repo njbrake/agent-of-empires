@@ -549,35 +549,30 @@ pub async fn create_session(
 pub struct CloneRepoBody {
     pub url: String,
     pub destination: Option<String>,
+    #[serde(default)]
+    pub shallow: bool,
 }
 
 /// Extract a repository name from a git URL.
 ///
 /// Handles HTTPS, SSH, and scp-style URLs:
-///   https://github.com/user/repo.git  -> repo
-///   git@github.com:user/repo.git      -> repo
-///   ssh://git@host/user/repo          -> repo
+///   https://github.com/user/repo.git       -> repo
+///   git@github.com:user/repo.git           -> repo
+///   ssh://git@host/user/repo               -> repo
+///   ssh://git@host:2222/user/repo.git      -> repo
 fn repo_name_from_url(url: &str) -> Option<String> {
-    let path_part = if let Some((_host, path)) = url.rsplit_once(':') {
+    // For scheme-based URLs (https://, ssh://, git://), take the last path segment.
+    // For scp-style (git@host:path), split on ':' and take the last segment of the path.
+    let last_segment = if url.contains("://") {
+        url.rsplit_once('/')?.1
+    } else if let Some((_host, path)) = url.split_once(':') {
         // scp-style: git@github.com:user/repo.git
-        if !url.contains("://") {
-            path
-        } else {
-            url.rsplit_once('/')?.1
-        }
+        path.rsplit('/').next().unwrap_or(path)
     } else {
         url.rsplit_once('/')?.1
     };
-    let name = path_part
-        .rsplit('/')
-        .next()
-        .unwrap_or(path_part)
-        .trim_end_matches(".git");
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
+    let name = last_segment.trim_end_matches(".git");
+    if name.is_empty() { None } else { Some(name.to_string()) }
 }
 
 pub async fn clone_repo(
@@ -662,8 +657,26 @@ pub async fn clone_repo(
 
     let dest_display = destination.display().to_string();
 
+    // Return an actionable error if the destination already exists, before
+    // spawning the blocking task, so the user knows to pick a different name.
+    if destination.exists() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "destination_exists",
+                "message": format!(
+                    "Directory '{}' already exists. Choose a different destination or delete it first.",
+                    destination.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                "path": dest_display,
+            })),
+        )
+            .into_response();
+    }
+
+    let shallow = body.shallow;
     let result = tokio::task::spawn_blocking(move || {
-        crate::git::clone_repo(&url, &destination)?;
+        crate::git::clone_repo(&url, &destination, shallow)?;
         Ok::<String, crate::git::error::GitError>(destination.display().to_string())
     })
     .await;
@@ -1977,6 +1990,14 @@ mod tests {
     fn repo_name_from_ssh_url() {
         assert_eq!(
             repo_name_from_url("ssh://git@github.com/user/my-repo.git"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_ssh_url_with_port() {
+        assert_eq!(
+            repo_name_from_url("ssh://git@host:2222/user/my-repo.git"),
             Some("my-repo".to_string())
         );
     }

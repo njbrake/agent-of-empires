@@ -70,8 +70,11 @@ export function ProjectStep({ data, onChange }: Props) {
 
   // Clone state
   const [cloneUrl, setCloneUrl] = useState("");
+  const [cloneDestination, setCloneDestination] = useState("");
+  const [shallowClone, setShallowClone] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [cloneError, setCloneError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     fetchSessions().then((s) => {
@@ -82,10 +85,11 @@ export function ProjectStep({ data, onChange }: Props) {
 
   // Default to browse tab when no recent projects exist
   useEffect(() => {
-    if (!loading && recent.length === 0 && activeTab === "recent") {
+    if (!loading && recent.length === 0) {
       setActiveTab("browse");
     }
-  }, [loading, recent.length, activeTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, recent.length]);
 
   const filteredRecent = useMemo(() => {
     if (!data.path) return recent;
@@ -107,11 +111,13 @@ export function ProjectStep({ data, onChange }: Props) {
     if (!url) return;
     setCloning(true);
     setCloneError(null);
-    const result = await cloneRepo(url);
+    const dest = cloneDestination.trim() || undefined;
+    const result = await cloneRepo(url, { destination: dest, shallow: shallowClone });
     setCloning(false);
     if (result.ok && result.path) {
       onChange("path", result.path);
       setCloneUrl("");
+      setCloneDestination("");
       setActiveTab("recent");
     } else {
       setCloneError(result.error || "Clone failed");
@@ -216,6 +222,48 @@ export function ProjectStep({ data, onChange }: Props) {
               autoFocus
             />
           </div>
+
+          {/* Advanced options (collapsed by default) */}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="text-[12px] text-text-dim hover:text-text-secondary cursor-pointer flex items-center gap-1 transition-colors"
+          >
+            <svg className={`w-3 h-3 transition-transform ${showAdvanced ? "rotate-90" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+            Advanced
+          </button>
+
+          {showAdvanced && (
+            <div className="space-y-3 pl-1 border-l-2 border-surface-700/30 ml-1">
+              <div>
+                <label htmlFor="clone-dest" className="block text-[12px] text-text-dim mb-1">
+                  Destination path (optional)
+                </label>
+                <input
+                  id="clone-dest"
+                  type="text"
+                  value={cloneDestination}
+                  onChange={(e) => { setCloneDestination(e.target.value); setCloneError(null); }}
+                  placeholder="~/my-repo"
+                  className="w-full px-3 py-2 text-sm bg-surface-900 border border-surface-700/40 rounded-md text-text-primary placeholder:text-text-dim focus:outline-none focus:border-brand-600 font-mono"
+                  disabled={cloning}
+                />
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={shallowClone}
+                  onChange={(e) => setShallowClone(e.target.checked)}
+                  className="accent-brand-600"
+                  disabled={cloning}
+                />
+                <span className="text-sm text-text-secondary">Shallow clone (--depth 1)</span>
+                <span className="text-[10px] text-text-dim">faster for large repos</span>
+              </label>
+            </div>
+          )}
 
           {cloneError && (
             <div className="px-3 py-2 bg-red-900/20 border border-red-700/30 rounded-md">

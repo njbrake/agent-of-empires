@@ -307,11 +307,12 @@ export async function createSession(
 
 export async function cloneRepo(
   url: string,
-  destination?: string,
+  opts?: { destination?: string; shallow?: boolean },
 ): Promise<{ ok: boolean; path?: string; error?: string }> {
   try {
-    const body: Record<string, string> = { url };
-    if (destination) body.destination = destination;
+    const body: Record<string, unknown> = { url };
+    if (opts?.destination) body.destination = opts.destination;
+    if (opts?.shallow) body.shallow = true;
     const res = await fetch("/api/git/clone", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
