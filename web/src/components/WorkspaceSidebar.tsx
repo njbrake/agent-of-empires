@@ -107,10 +107,14 @@ const SessionRow = memo(function SessionRow({
 
   const handleMoreClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     if (isDeleting) return;
     const rect = moreRef.current?.getBoundingClientRect();
     if (rect) {
-      setContextMenu({ x: rect.right, y: rect.bottom + 4, fromButton: true });
+      const x = rect.right;
+      const y = rect.bottom + 4;
+      // Defer so the document click listener (which closes menus) fires first
+      setTimeout(() => setContextMenu({ x, y, fromButton: true }), 0);
     }
   };
 
@@ -185,7 +189,7 @@ const SessionRow = memo(function SessionRow({
       <div
         onContextMenu={handleContextMenu}
         className={`group/row flex items-center transition-colors duration-75 ${
-          indented ? "pl-6 pr-1" : "pl-3 pr-1"
+          indented ? "pl-6 pr-1 md:pr-3" : "pl-3 pr-1 md:pr-3"
         } ${
           isActive
             ? "bg-surface-850 border-l-2 border-brand-600"
@@ -215,7 +219,7 @@ const SessionRow = memo(function SessionRow({
           <button
             ref={moreRef}
             onClick={handleMoreClick}
-            className="w-6 h-6 flex items-center justify-center shrink-0 rounded text-text-dim hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+            className="w-6 h-6 flex items-center justify-center shrink-0 rounded text-text-dim hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors md:hidden"
             aria-label="Session actions"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
