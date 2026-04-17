@@ -284,11 +284,13 @@ export function useTerminal(
     let pinchStartSize = DEFAULT_FONT_SIZE;
     let pinchStartMidY = 0;
     let singleStartY = 0;
+    let singleStartTs = 0;
     let singleY = 0;
     let singleAccum = 0;
     let singleLastTs = 0;
     let suppressNextClick = false;
     const GESTURE_LOCK_PX = 12;
+    const LONG_PRESS_MS = 300;
     const LINES_PER_WHEEL = 2;
     const MAX_VELOCITY = 2.0;
     const MAX_WHEELS_PER_FRAME = 6;
@@ -373,9 +375,10 @@ export function useTerminal(
       if (e.touches.length === 1) {
         const t = e.touches[0]!;
         singleStartY = t.clientY;
+        singleStartTs = performance.now();
         singleY = t.clientY;
         singleAccum = 0;
-        singleLastTs = performance.now();
+        singleLastTs = singleStartTs;
         velocity = 0;
         gestureMode = null;
         return;
@@ -405,6 +408,8 @@ export function useTerminal(
             singleLastTs = now;
             return;
           }
+          // Long-press then drag is text selection, not scroll.
+          if (now - singleStartTs > LONG_PRESS_MS) return;
           gestureMode = "single-scroll";
           singleY = y;
         }

@@ -309,8 +309,6 @@ export function TerminalView({ session }: Props) {
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="none"
-              inputMode="none"
-              enterKeyHint="send"
               spellCheck={false}
               onInput={onProxyInput}
               onKeyDown={onProxyKeyDown}
