@@ -11,15 +11,12 @@ test.describe("Dashboard layout", () => {
     await expect(page.getByText("Agent of Empires")).toBeVisible();
   });
 
-  test("shows empty state when no sessions exist", async ({ page }) => {
+  test("shows branded home screen with action panes", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("No sessions yet")).toBeVisible();
-  });
-
-  test("shows create session CTA in empty state", async ({ page }) => {
-    await page.goto("/");
-    const cta = page.getByRole("button", { name: "Create session" });
-    await expect(cta).toBeVisible();
+    await expect(page.getByText("empires", { exact: false })).toBeVisible();
+    await expect(page.getByText("Open project")).toBeVisible();
+    await expect(page.getByText("Clone URL")).toBeVisible();
+    await expect(page.getByText("Docs")).toBeVisible();
   });
 
   test("shows offline indicator when API unreachable", async ({ page }) => {
@@ -55,18 +52,19 @@ test.describe("Sidebar", () => {
   });
 });
 
-test.describe("Create session modal", () => {
-  test("opens from empty state CTA", async ({ page }) => {
+test.describe("Create session from home screen", () => {
+  test("'Open project' pane opens session wizard", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
+    await page.getByText("Open project").click();
     await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
   });
 
-  test("opens from sidebar button", async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 720 });
+  test("'Clone URL' pane opens wizard on Clone tab", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "+ New Session" }).click();
+    await page.getByText("Clone URL").click();
     await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
+    // Should be on the Clone tab, showing the URL input
+    await expect(page.getByPlaceholder("https://github.com/user/repo.git")).toBeVisible();
   });
 
   test("opens with keyboard shortcut n", async ({ page }) => {
@@ -78,68 +76,25 @@ test.describe("Create session modal", () => {
     await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
   });
 
-  test("has project path field", async ({ page }) => {
+  test("wizard closes on cancel", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByPlaceholder("/path/to/your/project")).toBeVisible();
-  });
-
-  test("has branch field", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByPlaceholder("feat/my-feature")).toBeVisible();
-  });
-
-  test("has agent section", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    // The modal has an "AGENT" label
-    await expect(page.locator("text=Agent").first()).toBeVisible();
-  });
-
-  test("submit disabled without path", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    // The submit button inside the modal (not the CTA)
-    const submit = page.locator("form button[type='submit']");
-    await expect(submit).toBeDisabled();
-  });
-
-  test("submit enables with path", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await page.getByPlaceholder("/path/to/your/project").fill("/tmp/test");
-    const submit = page.locator("form button[type='submit']");
-    await expect(submit).toBeEnabled();
-  });
-
-  test("advanced options toggle", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByPlaceholder("Auto-generated if empty")).not.toBeVisible();
-    await page.getByText("Show advanced options").click();
-    await expect(page.getByPlaceholder("Auto-generated if empty")).toBeVisible();
-  });
-
-  test("closes on cancel", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
+    await page.getByText("Open project").click();
     await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByRole("heading", { name: "New Session" })).not.toBeVisible();
   });
 
-  test("closes on escape", async ({ page }) => {
+  test("wizard closes on escape", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
+    await page.getByText("Open project").click();
     await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("heading", { name: "New Session" })).not.toBeVisible();
   });
 
-  test("closes on backdrop click", async ({ page }) => {
+  test("wizard closes on backdrop click", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
+    await page.getByText("Open project").click();
     await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
     // Click the backdrop (top-left corner, outside the modal)
     await page.mouse.click(10, 10);
@@ -175,7 +130,7 @@ test.describe("Keyboard shortcuts", () => {
     await page.goto("/");
     // Should not crash even with no session selected
     await page.keyboard.press("Shift+d");
-    await expect(page.getByText("No sessions yet")).toBeVisible();
+    await expect(page.getByText("empires", { exact: false })).toBeVisible();
   });
 
   test("? opens help overlay", async ({ page }) => {
@@ -208,8 +163,15 @@ test.describe("Mobile responsive", () => {
     await page.goto("/");
     // Sidebar button should not be visible (sidebar closed)
     await expect(page.getByRole("button", { name: "+ New Session" })).not.toBeVisible();
-    // Main content visible
-    await expect(page.getByText("No sessions yet")).toBeVisible();
+    // Home screen content visible
+    await expect(page.getByText("empires", { exact: false })).toBeVisible();
+  });
+
+  test("mobile home screen shows sidebar toggle between title and panes", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto("/");
+    await expect(page.getByText("Show sessions")).toBeVisible();
+    await expect(page.getByText("Open project")).toBeVisible();
   });
 
   test("hamburger opens sidebar overlay on mobile", async ({ page }) => {
@@ -223,7 +185,7 @@ test.describe("Mobile responsive", () => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    const closeBtn = page.getByRole("button", { name: "×" });
+    const closeBtn = page.getByRole("button", { name: "\u00d7" });
     await expect(closeBtn).toBeVisible();
     await closeBtn.click();
     await expect(page.getByRole("button", { name: "+ New Session" })).not.toBeVisible();
@@ -238,9 +200,8 @@ test.describe("Mobile responsive", () => {
   test("create modal works on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
+    await page.getByText("Open project").click();
     await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
-    await expect(page.getByPlaceholder("/path/to/your/project")).toBeVisible();
   });
 });
 

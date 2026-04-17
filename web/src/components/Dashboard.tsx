@@ -1,367 +1,289 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionResponse, SessionStatus } from "../lib/types";
-import { STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
-import { StatusGlyph } from "./StatusGlyph";
-import { renameSession } from "../lib/api";
-import { OwnerAvatar } from "./OwnerAvatar";
+import { useMemo } from "react";
+import type { SessionResponse } from "../lib/types";
+import { isSessionActive } from "../lib/session";
 
 interface Props {
   sessions: SessionResponse[];
   onSelectSession: (sessionId: string) => void;
   onNewSession: () => void;
-  onCreateSession: (repoPath: string) => void;
+  onCloneFromUrl: () => void;
+  onToggleSidebar: () => void;
+  readOnly?: boolean;
 }
 
-interface ProjectGroup {
-  repoPath: string;
-  displayName: string;
-  remoteOwner: string | null;
-  sessions: SessionResponse[];
-  hasActive: boolean;
-  activeCount: number;
-  errorCount: number;
-  lastAccessedAt: string | null;
-}
-
-function statusPriority(status: SessionStatus): number {
-  switch (status) {
-    case "Error": return 0;
-    case "Waiting": return 1;
-    case "Running": return 2;
-    case "Starting": return 3;
-    default: return 4;
-  }
-}
-
-function timeAgo(iso: string | null): string {
-  if (!iso) return "";
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `${days}d`;
-}
-
-export function Dashboard({ sessions, onSelectSession, onNewSession, onCreateSession }: Props) {
-  const groups = useMemo<ProjectGroup[]>(() => {
-    const map = new Map<string, ProjectGroup>();
+export function Dashboard({
+  sessions,
+  onNewSession,
+  onCloneFromUrl,
+  onToggleSidebar,
+  readOnly,
+}: Props) {
+  const stats = useMemo(() => {
+    const projects = new Set<string>();
+    let active = 0;
+    let waiting = 0;
+    let errors = 0;
     for (const s of sessions) {
-      const key = s.main_repo_path || s.project_path;
-      const existing = map.get(key);
-      const active = isSessionActive(s.status);
-      const errored = s.status === "Error";
-      if (existing) {
-        existing.sessions.push(s);
-        if (active) existing.hasActive = true;
-        if (active) existing.activeCount += 1;
-        if (errored) existing.errorCount += 1;
-        if ((s.last_accessed_at ?? "") > (existing.lastAccessedAt ?? "")) {
-          existing.lastAccessedAt = s.last_accessed_at;
-        }
-      } else {
-        map.set(key, {
-          repoPath: key,
-          displayName: key.split("/").filter(Boolean).pop() || key,
-          remoteOwner: s.remote_owner,
-          sessions: [s],
-          hasActive: active,
-          activeCount: active ? 1 : 0,
-          errorCount: errored ? 1 : 0,
-          lastAccessedAt: s.last_accessed_at,
-        });
-      }
+      projects.add(s.main_repo_path || s.project_path);
+      if (isSessionActive(s.status)) active++;
+      if (s.status === "Waiting") waiting++;
+      if (s.status === "Error") errors++;
     }
-
-    for (const group of map.values()) {
-      group.sessions.sort((a, b) => {
-        const pa = statusPriority(a.status);
-        const pb = statusPriority(b.status);
-        if (pa !== pb) return pa - pb;
-        return (b.last_accessed_at ?? "").localeCompare(a.last_accessed_at ?? "");
-      });
-    }
-
-    return Array.from(map.values()).sort((a, b) => {
-      if (a.hasActive !== b.hasActive) return a.hasActive ? -1 : 1;
-      if (a.errorCount !== b.errorCount) return b.errorCount - a.errorCount;
-      return a.displayName.localeCompare(b.displayName);
-    });
+    return { active, waiting, errors, projects: projects.size };
   }, [sessions]);
 
-  if (sessions.length === 0) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
-        <svg
-          width="48"
-          height="48"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="text-text-dim/40 mb-4"
-          aria-hidden="true"
-        >
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-        </svg>
-        <p className="text-sm text-text-muted mb-1">No sessions yet</p>
-        <p className="text-xs text-text-dim mb-5">
-          Point aoe at a project folder and pick an agent.
-        </p>
-        <button
-          onClick={onNewSession}
-          className="px-5 py-2.5 rounded-lg bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-surface-900 text-sm font-semibold cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
-        >
-          New session
-        </button>
-        <p className="mt-4 text-[11px] font-mono text-text-dim hidden md:block">
-          press <kbd className="px-1 py-0.5 rounded bg-surface-800 border border-surface-700/40">n</kbd> anywhere
-        </p>
-      </div>
-    );
-  }
-
-  const totalActive = sessions.filter((s) => isSessionActive(s.status)).length;
-  const totalError = sessions.filter((s) => s.status === "Error").length;
-  const totalWaiting = sessions.filter((s) => s.status === "Waiting").length;
-
   return (
-    <div className="flex-1 overflow-y-auto bg-surface-950">
-      <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Summary */}
-        <div className="flex items-baseline flex-wrap gap-3 mb-6">
-          <h2 className="text-base font-semibold text-text-primary">
-            {groups.length} project{groups.length !== 1 ? "s" : ""}
-          </h2>
-          <div className="flex items-center gap-3 text-xs">
-            {totalActive > 0 && (
-              <span className="text-status-running">
-                {totalActive} active
-              </span>
-            )}
-            {totalWaiting > 0 && (
-              <span className="text-status-waiting">
-                {totalWaiting} waiting
-              </span>
-            )}
-            {totalError > 0 && (
-              <span className="text-status-error">
-                {totalError} error{totalError !== 1 ? "s" : ""}
-              </span>
-            )}
-          </div>
-          <button
-            onClick={onNewSession}
-            className="ml-auto md:hidden px-3 py-1.5 rounded-md bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-surface-900 text-xs font-semibold cursor-pointer transition-colors"
-          >
-            + New
-          </button>
-        </div>
-
-        <p className="text-xs text-text-dim mb-4 md:hidden">
-          Tap a project to jump in. Use the top-left icon to reveal the sidebar.
+    <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
+      {/* Logo + Title */}
+      <svg
+        viewBox="0 0 128 128"
+        className="w-12 h-12 md:w-16 md:h-16 mb-3"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="home-win-back" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#78350f" />
+            <stop offset="100%" stopColor="#451a03" />
+          </linearGradient>
+          <linearGradient id="home-win-mid" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#92400e" />
+            <stop offset="100%" stopColor="#78350f" />
+          </linearGradient>
+          <linearGradient id="home-win-front" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#f59e0b" />
+            <stop offset="100%" stopColor="#d97706" />
+          </linearGradient>
+          <linearGradient id="home-titlebar" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#fbbf24" />
+            <stop offset="100%" stopColor="#f59e0b" />
+          </linearGradient>
+        </defs>
+        <rect x="10" y="38" width="76" height="60" rx="6" fill="url(#home-win-back)" opacity="0.6" />
+        <rect x="20" y="28" width="76" height="60" rx="6" fill="url(#home-win-mid)" opacity="0.7" />
+        <g>
+          <rect x="32" y="18" width="82" height="66" rx="6" fill="url(#home-win-front)" />
+          <rect x="32" y="18" width="82" height="18" rx="6" fill="url(#home-titlebar)" />
+          <rect x="32" y="30" width="82" height="6" fill="url(#home-titlebar)" />
+          <circle cx="46" cy="28" r="2.8" fill="#b45309" opacity="0.55" />
+          <circle cx="55" cy="28" r="2.8" fill="#b45309" opacity="0.55" />
+          <circle cx="64" cy="28" r="2.8" fill="#b45309" opacity="0.55" />
+          <rect x="36" y="39" width="74" height="41" rx="3" fill="#b45309" opacity="0.22" />
+          <text x="45" y="65" fontFamily="'Courier New', monospace" fontSize="20" fontWeight="bold" fill="#fef3c7" opacity="0.85">$</text>
+          <rect x="64" y="51" width="9" height="17" rx="2" fill="#fef3c7" opacity="0.75" />
+        </g>
+      </svg>
+      <div className="mb-1 text-center">
+        <p className="text-[11px] md:text-xs font-mono text-text-muted uppercase tracking-[0.2em]">
+          agent of
         </p>
-
-        {/* Grid of project cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {groups.map((group) => (
-            <ProjectCard
-              key={group.repoPath}
-              group={group}
-              onSelectSession={onSelectSession}
-              onCreateSession={() => onCreateSession(group.repoPath)}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ProjectCard({
-  group,
-  onSelectSession,
-  onCreateSession,
-}: {
-  group: ProjectGroup;
-  onSelectSession: (id: string) => void;
-  onCreateSession: () => void;
-}) {
-  const ago = timeAgo(group.lastAccessedAt);
-
-  return (
-    <div
-      className={`rounded-lg border bg-surface-900 overflow-hidden transition-colors ${
-        group.errorCount > 0
-          ? "border-status-error/20"
-          : group.hasActive
-            ? "border-surface-700"
-            : "border-surface-800"
-      }`}
-    >
-      {/* Card header */}
-      <div className="px-3 py-2 border-b border-surface-800 flex items-center gap-2">
-        <OwnerAvatar owner={group.remoteOwner} size={18} />
-        <span className="text-sm font-medium text-text-primary truncate flex-1" title={group.repoPath}>
-          {group.displayName}
-        </span>
-        <span className="font-mono text-[11px] text-text-dim shrink-0">
-          {group.sessions.length}
-        </span>
-        <button
-          onClick={onCreateSession}
-          className="w-6 h-6 flex items-center justify-center shrink-0 rounded transition-colors text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
-          aria-label={`New session in ${group.displayName}`}
-          title="New session"
+        <h1
+          className="text-3xl md:text-5xl font-mono font-semibold text-brand-500 uppercase tracking-tight"
+          style={{
+            textShadow:
+              "0 0 20px rgba(245,158,11,0.3), 0 0 40px rgba(245,158,11,0.1)",
+          }}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </button>
+          empires
+        </h1>
       </div>
 
-      {/* Session rows */}
-      <div className="py-1">
-        {group.sessions.map((s) => (
-          <SessionRow
-            key={s.id}
-            session={s}
-            onClick={() => onSelectSession(s.id)}
-          />
-        ))}
-      </div>
-
-      {/* Footer: last active */}
-      {ago && (
-        <div className="px-3 py-1.5 border-t border-surface-800 flex items-center gap-2">
-          <span className="text-[11px] text-text-dim">
-            {group.hasActive ? "active" : "last touched"} · {ago} ago
+      {/* Session summary for returning users */}
+      {sessions.length > 0 && (
+        <div className="flex items-center gap-2 text-xs font-mono text-text-muted mb-6">
+          {stats.active > 0 && (
+            <span className="text-status-running">{stats.active} running</span>
+          )}
+          {stats.waiting > 0 && (
+            <span className="text-status-waiting">{stats.waiting} waiting</span>
+          )}
+          {stats.errors > 0 && (
+            <span className="text-status-error">
+              {stats.errors} error{stats.errors !== 1 ? "s" : ""}
+            </span>
+          )}
+          <span>
+            {sessions.length} session{sessions.length !== 1 ? "s" : ""} across{" "}
+            {stats.projects} project{stats.projects !== 1 ? "s" : ""}
           </span>
         </div>
       )}
+
+      {/* Mobile sidebar toggle */}
+      <button
+        onClick={onToggleSidebar}
+        className="md:hidden mb-4 w-full max-w-md px-4 py-2.5 rounded-lg bg-surface-900 border border-surface-700/40 text-text-secondary text-sm flex items-center justify-center gap-2 cursor-pointer hover:bg-surface-850 active:bg-surface-800 transition-colors"
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <line x1="9" y1="3" x2="9" y2="21" />
+        </svg>
+        Show sessions
+      </button>
+
+      {/* Action panes */}
+      {readOnly ? (
+        <div className="max-w-sm w-full">
+          <p className="text-xs text-text-dim text-center mb-3">
+            This dashboard is in read-only mode.
+          </p>
+          <ActionPane
+            title="Docs"
+            subtitle="Guides and reference"
+            href="https://www.agent-of-empires.com/docs"
+            icon="book"
+          />
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-2xl w-full">
+          <ActionPane
+            title="Open project"
+            subtitle="Browse, pick recent, or start a new session"
+            onClick={onNewSession}
+            icon="folder"
+            featured
+          />
+          <ActionPane
+            title="Clone URL"
+            subtitle="Clone a repo from a URL"
+            onClick={onCloneFromUrl}
+            icon="git"
+          />
+          <ActionPane
+            title="Docs"
+            subtitle="Guides and reference"
+            href="https://www.agent-of-empires.com/docs"
+            icon="book"
+          />
+        </div>
+      )}
+
+      {/* Keyboard hint (desktop only) */}
+      {!readOnly && (
+        <p className="mt-4 text-[11px] font-mono text-text-dim hidden md:block">
+          press{" "}
+          <kbd className="px-1 py-0.5 rounded bg-surface-800 border border-surface-700/40">
+            n
+          </kbd>{" "}
+          to create a session
+        </p>
+      )}
     </div>
   );
 }
 
-function SessionRow({
-  session,
+function ActionPane({
+  title,
+  subtitle,
   onClick,
+  href,
+  icon,
+  featured,
 }: {
-  session: SessionResponse;
-  onClick: () => void;
+  title: string;
+  subtitle: string;
+  onClick?: () => void;
+  href?: string;
+  icon: "folder" | "git" | "book";
+  featured?: boolean;
 }) {
-  const textClass = STATUS_TEXT_CLASS[session.status] ?? "text-status-idle";
-  const active = isSessionActive(session.status);
-  const label = session.branch ?? session.title ?? "default";
-
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(label);
-  const renameRef = useRef<HTMLInputElement>(null);
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressFired = useRef(false);
-
-  useEffect(() => {
-    return () => {
-      if (longPressTimer.current) clearTimeout(longPressTimer.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (renaming) renameRef.current?.select();
-  }, [renaming]);
-
-  const clearLongPress = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
+  const iconSvg = {
+    folder: (
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="text-brand-500"
+        aria-hidden="true"
+      >
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+      </svg>
+    ),
+    git: (
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="text-brand-500"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="18" r="3" />
+        <circle cx="6" cy="6" r="3" />
+        <circle cx="18" cy="6" r="3" />
+        <path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9" />
+        <line x1="12" y1="12" x2="12" y2="15" />
+      </svg>
+    ),
+    book: (
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="text-brand-500"
+        aria-hidden="true"
+      >
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+      </svg>
+    ),
   };
 
-  const handleTouchStart = () => {
-    clearLongPress();
-    longPressFired.current = false;
-    longPressTimer.current = setTimeout(() => {
-      longPressFired.current = true;
-      setRenameValue(label);
-      setRenaming(true);
-    }, 500);
-  };
+  const classes = `flex flex-col items-start gap-2 px-4 rounded-lg bg-surface-900 border border-surface-700/40 transition-colors cursor-pointer hover:border-brand-600/40 hover:bg-surface-850 active:bg-surface-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
+    featured ? "md:col-span-2 md:row-span-2 py-6" : "py-4"
+  }`;
 
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    clearLongPress();
-    if (longPressFired.current) {
-      e.preventDefault();
-    }
-  };
-
-  const commitRename = async () => {
-    setRenaming(false);
-    const trimmed = renameValue.trim();
-    if (!trimmed || trimmed === label) return;
-    await renameSession(session.id, trimmed);
-  };
-
-  if (renaming) {
+  if (href) {
     return (
-      <div className="px-3 py-1.5">
-        <input
-          ref={renameRef}
-          type="text"
-          value={renameValue}
-          onChange={(e) => setRenameValue(e.target.value)}
-          onBlur={commitRename}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commitRename();
-            if (e.key === "Escape") setRenaming(false);
-          }}
-          className="w-full bg-surface-950 border border-brand-600 rounded px-2 py-1 text-[13px] font-mono text-text-primary focus:outline-none"
-        />
-      </div>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={classes}
+      >
+        {iconSvg[icon]}
+        <div>
+          <p className={`font-medium text-text-primary ${featured ? "text-base" : "text-sm"}`}>
+            {title}
+          </p>
+          <p className="text-xs text-text-muted mt-0.5">{subtitle}</p>
+        </div>
+      </a>
     );
   }
 
   return (
-    <button
-      onClick={() => { if (!longPressFired.current) onClick(); }}
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      onTouchMove={clearLongPress}
-      onTouchCancel={clearLongPress}
-      className={`w-full text-left px-3 py-1.5 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-600 ${
-        session.status === "Error"
-          ? "hover:bg-status-error/5"
-          : "hover:bg-surface-800/60"
-      }`}
-    >
-      <div className="flex items-center gap-2.5">
-        <span
-          className={`shrink-0 font-mono text-sm leading-none w-3 text-center ${textClass}`}
-          aria-hidden="true"
-        >
-          <StatusGlyph status={session.status} createdAt={session.created_at} />
-        </span>
-        <span
-          className={`text-[13px] truncate flex-1 font-mono ${
-            active ? textClass : "text-text-secondary"
-          }`}
-          title={label}
-        >
-          {label}
-        </span>
-        <span className="text-[10px] text-text-dim font-mono shrink-0 uppercase tracking-wider">
-          {session.tool}
-        </span>
-      </div>
-      {session.status === "Error" && session.last_error && (
-        <p className="text-[11px] text-status-error mt-0.5 pl-[22px] truncate">
-          {session.last_error}
+    <button onClick={onClick} className={`text-left ${classes}`}>
+      {iconSvg[icon]}
+      <div>
+        <p className={`font-medium text-text-primary ${featured ? "text-base" : "text-sm"}`}>
+          {title}
         </p>
-      )}
+        <p className="text-xs text-text-muted mt-0.5">{subtitle}</p>
+      </div>
     </button>
   );
 }
