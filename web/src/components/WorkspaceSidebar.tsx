@@ -184,7 +184,7 @@ const SessionRow = memo(function SessionRow({
         onTouchEnd={handleTouchEnd}
         onTouchMove={clearLongPress}
         onTouchCancel={clearLongPress}
-        className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
+        className={`w-full text-left py-2 cursor-pointer select-none transition-colors duration-75 ${
           indented ? "pl-6 pr-3" : "px-3"
         } ${
           isActive
