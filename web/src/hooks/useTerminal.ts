@@ -139,6 +139,7 @@ export function useTerminal(
       ts.width = "100%";
       ts.height = "100%";
       ts.pointerEvents = "auto";
+      ts.touchAction = "auto";
 
       // Seed the textarea so iOS has something to delete when backspace
       // is held. Without this, iOS never enters its key-repeat loop.
@@ -571,8 +572,11 @@ export function useTerminal(
 
     // Attach touch handlers to the .wterm element. wterm adds this class to
     // the container automatically during construction.
+    // NOTE: we intentionally do NOT set touch-action: none. Our non-passive
+    // capture-phase handlers call preventDefault() when scrolling, which is
+    // sufficient. Leaving touch-action unset lets iOS show the paste popup
+    // on long-press of the terminal's textarea.
     const viewport = term.element;
-    viewport.style.touchAction = "none";
     const touchOpts = { passive: false, capture: true } as const;
     viewport.addEventListener("touchstart", onTouchStart, touchOpts);
     viewport.addEventListener("touchmove", onTouchMove, touchOpts);
