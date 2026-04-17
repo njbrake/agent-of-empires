@@ -1,11 +1,11 @@
 import { useCallback, useState } from "react";
-import type { Terminal } from "@xterm/xterm";
+import type { WTerm } from "@wterm/dom";
 import type { RefObject } from "react";
 import { useLongPressDrag, type DragAxis } from "../hooks/useLongPressDrag";
 
 interface Props {
   sendData: (data: string) => void;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<WTerm | null>;
   keyboardHeight: number;
   ctrlActive: boolean;
   onCtrlToggle: () => void;

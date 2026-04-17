@@ -15,7 +15,7 @@ test.describe("Terminal pinch zoom (mobile)", () => {
       .getByRole("button", { name: /pinch-test claude/ })
       .first()
       .click();
-    await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
+    await page.locator(".wterm").waitFor({ state: "visible", timeout: 10_000 });
   }
 
   async function wsCount(page: Page) {

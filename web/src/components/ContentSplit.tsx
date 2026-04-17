@@ -67,7 +67,7 @@ export function ContentSplit({
         localStorage.setItem(SPLIT_STORAGE_KEY, String(w));
         return w;
       });
-      // Trigger resize for xterm fit
+      // Trigger resize for terminal fit
       window.dispatchEvent(new Event("resize"));
     };
 

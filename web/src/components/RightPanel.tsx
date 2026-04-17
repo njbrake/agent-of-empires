@@ -3,7 +3,7 @@ import { DiffFileList } from "./diff/DiffFileList";
 import { useTerminal } from "../hooks/useTerminal";
 import { ensureTerminal } from "../lib/api";
 import type { RichDiffFile, SessionResponse } from "../lib/types";
-import "@xterm/xterm/css/xterm.css";
+import "@wterm/dom/css";
 
 const VSPLIT_STORAGE_KEY = "aoe-right-vsplit";
 const DEFAULT_TOP_RATIO = 0.5;
