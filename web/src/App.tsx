@@ -299,6 +299,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   }, [sidebarOpen]);
 
   const handleNewSession = useCallback(() => {
+    setWizardPrefill(undefined);
+    setShowAddProject(true);
+  }, []);
+
+  const handleCloneFromUrl = useCallback(() => {
+    setWizardPrefill({ initialTab: "clone" });
     setShowAddProject(true);
   }, []);
 
@@ -359,7 +365,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           sessions={sessions}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
-          onCreateSession={handleCreateSession}
+          onCloneFromUrl={handleCloneFromUrl}
+          onToggleSidebar={handleToggleSidebar}
+          readOnly={serverAbout?.read_only}
         />
       );
     }

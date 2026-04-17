@@ -8,9 +8,12 @@ interface WizardData {
   [key: string]: unknown;
 }
 
+type Tab = "recent" | "browse" | "clone";
+
 interface Props {
   data: WizardData;
   onChange: (field: string, value: unknown) => void;
+  initialTab?: Tab;
 }
 
 interface RecentProject {
@@ -61,12 +64,10 @@ function timeAgo(ts: string | null): string {
   return `${days}d ago`;
 }
 
-type Tab = "recent" | "browse" | "clone";
-
-export function ProjectStep({ data, onChange }: Props) {
+export function ProjectStep({ data, onChange, initialTab }: Props) {
   const [recent, setRecent] = useState<RecentProject[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>("recent");
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? "recent");
 
   // Clone state
   const [cloneUrl, setCloneUrl] = useState("");
@@ -83,9 +84,9 @@ export function ProjectStep({ data, onChange }: Props) {
     });
   }, []);
 
-  // Default to browse tab when no recent projects exist
+  // Default to browse tab when no recent projects exist (unless an explicit tab was requested)
   useEffect(() => {
-    if (!loading && recent.length === 0) {
+    if (!loading && recent.length === 0 && !initialTab) {
       setActiveTab("browse");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

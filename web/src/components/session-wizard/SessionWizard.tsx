@@ -116,6 +116,8 @@ export interface WizardPrefill {
   group?: string;
   /** If true, skip to the review step (all fields pre-filled) */
   skipToReview?: boolean;
+  /** Which tab to show initially on the project step */
+  initialTab?: "recent" | "browse" | "clone";
 }
 
 interface Props {
@@ -205,7 +207,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
   const renderStep = () => {
     switch (currentStepDef?.id) {
       case "project":
-        return <ProjectStep data={state.data} onChange={handleChange} />;
+        return <ProjectStep data={state.data} onChange={handleChange} initialTab={prefill?.initialTab} />;
       case "agent":
         return (
           <AgentStep
