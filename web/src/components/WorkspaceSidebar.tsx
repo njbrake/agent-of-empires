@@ -70,13 +70,12 @@ const SessionRow = memo(function SessionRow({
   const sessionId = workspace.sessions[0]?.id;
   const isDeleting = sessionStatus === "Deleting";
 
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; fromButton?: boolean } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(label);
   const renameRef = useRef<HTMLInputElement>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
-  const moreRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     return () => {
@@ -103,19 +102,6 @@ const SessionRow = memo(function SessionRow({
     if (isDeleting) return;
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY });
-  };
-
-  const handleMoreClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    if (isDeleting) return;
-    const rect = moreRef.current?.getBoundingClientRect();
-    if (rect) {
-      const x = rect.right;
-      const y = rect.bottom + 4;
-      // Defer so the document click listener (which closes menus) fires first
-      setTimeout(() => setContextMenu({ x, y, fromButton: true }), 0);
-    }
   };
 
   const clearLongPress = () => {
@@ -186,57 +172,36 @@ const SessionRow = memo(function SessionRow({
 
   return (
     <>
-      <div
+      <button
+        onClick={() => { if (!longPressFired.current) onClick(); }}
         onContextMenu={handleContextMenu}
-        className={`group/row flex items-center transition-colors duration-75 ${
-          indented ? "pl-6 pr-1 md:pr-3" : "pl-3 pr-1 md:pr-3"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onTouchMove={clearLongPress}
+        onTouchCancel={clearLongPress}
+        className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
+          indented ? "pl-6 pr-3" : "px-3"
         } ${
           isActive
             ? "bg-surface-850 border-l-2 border-brand-600"
             : "border-l-2 border-transparent hover:bg-surface-800/50"
         } ${isDeleting ? "opacity-50" : ""}`}
       >
-        <button
-          onClick={() => { if (!longPressFired.current) onClick(); }}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          onTouchMove={clearLongPress}
-          onTouchCancel={clearLongPress}
-          className="flex-1 min-w-0 text-left py-2 cursor-pointer"
-        >
-          <div className="flex items-center gap-2">
-            <span
-              className={`text-sm shrink-0 leading-none font-mono ${textClass}`}
-            >
-              <StatusGlyph status={sessionStatus} createdAt={createdAt} />
-            </span>
-            <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive(sessionStatus) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
-              {label}
-            </span>
-          </div>
-        </button>
-        {!isDeleting && (
-          <button
-            ref={moreRef}
-            onClick={handleMoreClick}
-            className="w-6 h-6 flex items-center justify-center shrink-0 rounded text-text-dim hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors md:hidden"
-            aria-label="Session actions"
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-sm shrink-0 leading-none font-mono ${textClass}`}
           >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-              <circle cx="2" cy="6" r="1.2" />
-              <circle cx="6" cy="6" r="1.2" />
-              <circle cx="10" cy="6" r="1.2" />
-            </svg>
-          </button>
-        )}
-      </div>
+            <StatusGlyph status={sessionStatus} createdAt={createdAt} />
+          </span>
+          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive(sessionStatus) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+            {label}
+          </span>
+        </div>
+      </button>
       {contextMenu && (
         <div
           className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
-          style={contextMenu.fromButton
-            ? { right: window.innerWidth - contextMenu.x, top: contextMenu.y }
-            : { left: contextMenu.x, top: contextMenu.y }
-          }
+          style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
             onClick={startRename}
