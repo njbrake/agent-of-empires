@@ -8,6 +8,7 @@ interface Props {
   sessions: SessionResponse[];
   onSelectSession: (sessionId: string) => void;
   onNewSession: () => void;
+  onCreateSession: (repoPath: string) => void;
 }
 
 interface ProjectGroup {
@@ -42,7 +43,7 @@ function timeAgo(iso: string | null): string {
   return `${days}d`;
 }
 
-export function Dashboard({ sessions, onSelectSession, onNewSession }: Props) {
+export function Dashboard({ sessions, onSelectSession, onNewSession, onCreateSession }: Props) {
   const groups = useMemo<ProjectGroup[]>(() => {
     const map = new Map<string, ProjectGroup>();
     for (const s of sessions) {
@@ -169,6 +170,7 @@ export function Dashboard({ sessions, onSelectSession, onNewSession }: Props) {
               key={group.repoPath}
               group={group}
               onSelectSession={onSelectSession}
+              onCreateSession={() => onCreateSession(group.repoPath)}
             />
           ))}
         </div>
@@ -180,9 +182,11 @@ export function Dashboard({ sessions, onSelectSession, onNewSession }: Props) {
 function ProjectCard({
   group,
   onSelectSession,
+  onCreateSession,
 }: {
   group: ProjectGroup;
   onSelectSession: (id: string) => void;
+  onCreateSession: () => void;
 }) {
   const ago = timeAgo(group.lastAccessedAt);
 
@@ -204,6 +208,17 @@ function ProjectCard({
         <span className="font-mono text-[11px] text-text-dim shrink-0">
           {group.sessions.length}
         </span>
+        <button
+          onClick={onCreateSession}
+          className="w-6 h-6 flex items-center justify-center shrink-0 rounded transition-colors text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
+          aria-label={`New session in ${group.displayName}`}
+          title="New session"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
       </div>
 
       {/* Session rows */}
