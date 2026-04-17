@@ -345,9 +345,8 @@ pub async fn auth_middleware(
         // Bearer header. Setting the cookie on those responses "rehydrates" it
         // so the next browser navigation (HTML page load) works without
         // re-pasting the ?token= URL.
-        let should_refresh = source == TokenSource::QueryParam
-            || source == TokenSource::Bearer
-            || needs_upgrade;
+        let should_refresh =
+            source == TokenSource::QueryParam || source == TokenSource::Bearer || needs_upgrade;
 
         if should_refresh {
             attach_token_headers(&mut response, &state).await;
