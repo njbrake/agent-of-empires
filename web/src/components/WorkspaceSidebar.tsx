@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
 import { renameSession } from "../lib/api";
@@ -202,7 +203,7 @@ const SessionRow = memo(function SessionRow({
           </span>
         </div>
       </button>
-      {contextMenu && (
+      {contextMenu && createPortal(
         <div
           className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -224,7 +225,8 @@ const SessionRow = memo(function SessionRow({
               </button>
             </>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
