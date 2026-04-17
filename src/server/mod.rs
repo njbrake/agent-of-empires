@@ -372,10 +372,32 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         token_manager.spawn_rotation_task();
     }
 
-    // Graceful shutdown with tunnel cleanup
+    // Graceful shutdown: SIGINT (Ctrl-C), SIGTERM (`aoe serve --stop`),
+    // and SIGHUP (parent session died). Without these, the default handler
+    // kills the process immediately, skipping PID/URL file cleanup.
     let shutdown_signal = async {
-        let _ = tokio::signal::ctrl_c().await;
-        info!("Shutting down...");
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate()).ok();
+            let mut sighup = signal(SignalKind::hangup()).ok();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received SIGINT, shutting down...");
+                }
+                _ = async { match sigterm { Some(ref mut s) => { s.recv().await; } None => std::future::pending().await } } => {
+                    info!("Received SIGTERM, shutting down...");
+                }
+                _ = async { match sighup { Some(ref mut s) => { s.recv().await; } None => std::future::pending().await } } => {
+                    info!("Received SIGHUP, shutting down...");
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            info!("Shutting down...");
+        }
     };
 
     axum::serve(
