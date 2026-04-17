@@ -6,7 +6,7 @@ import { useWebSettings } from "../hooks/useWebSettings";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { ensureSession } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
-import "@xterm/xterm/css/xterm.css";
+import "@wterm/dom/css";
 
 interface Props {
   session: SessionResponse;
@@ -20,13 +20,17 @@ export function TerminalView({ session }: Props) {
     "pending",
   );
   const [ensureError, setEnsureError] = useState<string | null>(null);
-  const { containerRef, termRef, state, manualReconnect, sendData } =
+  const { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef } =
     useTerminal(ensureState === "ready" ? session.id : null);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const { settings } = useWebSettings();
   const proxyRef = useRef<HTMLInputElement>(null);
   const [proxyFocused, setProxyFocused] = useState(false);
   const [ctrlActive, setCtrlActive] = useState(false);
+
+  // Keep the shared ref in sync so wterm's onData callback can read it.
+  ctrlActiveRef.current = ctrlActive;
+  clearCtrlRef.current = () => setCtrlActive(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -79,16 +83,18 @@ export function TerminalView({ session }: Props) {
   // fire; proxy focus flips instantly.
   const keyboardVisible = keyboardOpen || proxyFocused;
 
-  // When the soft keyboard opens, the terminal height shrinks and xterm's
-  // Re-fit xterm and scroll to the cursor whenever keyboardHeight changes.
-  // useLayoutEffect runs synchronously after React has committed the new
-  // paddingBottom to the DOM, so fitAddon.fit() measures the correct
-  // container size. A rAF then scrolls to bottom after xterm has reflowed.
+  // Re-layout the terminal and scroll to the cursor whenever keyboardHeight
+  // changes. useLayoutEffect runs synchronously after React has committed
+  // the new paddingBottom to the DOM, so wterm's ResizeObserver picks up
+  // the correct container size. A rAF then scrolls to bottom after reflow.
   useLayoutEffect(() => {
     window.dispatchEvent(new Event("resize"));
     if (!keyboardOpen) return;
     const id = requestAnimationFrame(() => {
-      termRef.current?.scrollToBottom();
+      if (termRef.current) {
+        const el = termRef.current.element;
+        el.scrollTop = el.scrollHeight;
+      }
     });
     return () => cancelAnimationFrame(id);
   }, [keyboardOpen, keyboardHeight, termRef]);
@@ -112,7 +118,7 @@ export function TerminalView({ session }: Props) {
 
   // The proxy input is the keyboard bridge: soft keyboard types into it,
   // we relay each input to the PTY and clear. Mobile browsers don't
-  // reliably expose xterm's own helper textarea for the soft keyboard.
+  // reliably expose the terminal's own helper textarea for the soft keyboard.
   const onProxyInput = useCallback(
     (e: FormEvent<HTMLInputElement>) => {
       const value = e.currentTarget.value;

@@ -13,8 +13,16 @@ export interface SessionResponse {
   branch: string | null;
   main_repo_path: string | null;
   is_sandboxed: boolean;
+  has_managed_worktree: boolean;
   has_terminal: boolean;
   profile: string;
+  cleanup_defaults: CleanupDefaults;
+}
+
+export interface CleanupDefaults {
+  delete_worktree: boolean;
+  delete_branch: boolean;
+  delete_sandbox: boolean;
 }
 
 export type SessionStatus =

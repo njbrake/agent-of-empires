@@ -152,6 +152,19 @@ select:focus-visible,
   outline-offset: 2px;
 }
 
+/* wterm overrides: strip default chrome for embedded use. */
+.wterm {
+  padding: 4px 8px;
+  border-radius: 0;
+  box-shadow: none;
+  overflow-y: auto;
+  --term-row-height: calc(var(--term-font-size) * var(--term-line-height));
+}
+
+.wterm ::selection {
+  background: rgba(161, 161, 170, 0.2);
+}
+
 @media (max-width: 768px) {
   .safe-area-bottom {
     padding-bottom: env(safe-area-inset-bottom);

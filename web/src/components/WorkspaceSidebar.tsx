@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
 import { renameSession } from "../lib/api";
@@ -22,6 +23,8 @@ interface Props {
   onSettings: () => void;
   onRepeatLast?: () => void;
   hasLastSession?: boolean;
+  onDeleteSession?: (workspaceId: string) => void;
+  readOnly?: boolean;
 }
 
 function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string | null } {
@@ -50,11 +53,15 @@ const SessionRow = memo(function SessionRow({
   workspace,
   isActive,
   onClick,
+  onDelete,
+  readOnly,
   indented,
 }: {
   workspace: Workspace;
   isActive: boolean;
   onClick: () => void;
+  onDelete?: (workspaceId: string) => void;
+  readOnly?: boolean;
   indented?: boolean;
 }) {
   const { status: sessionStatus, createdAt } = bestSession(workspace);
@@ -62,6 +69,7 @@ const SessionRow = memo(function SessionRow({
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
   const sessionId = workspace.sessions[0]?.id;
+  const isDeleting = sessionStatus === "Deleting";
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -83,15 +91,20 @@ const SessionRow = memo(function SessionRow({
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
-    document.addEventListener("click", close);
-    document.addEventListener("contextmenu", close);
+    // Defer so the event that opened the menu finishes bubbling first
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("click", close);
+      document.addEventListener("contextmenu", close);
+    });
     return () => {
+      cancelAnimationFrame(id);
       document.removeEventListener("click", close);
       document.removeEventListener("contextmenu", close);
     };
   }, [contextMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
+    if (isDeleting) return;
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
@@ -103,13 +116,17 @@ const SessionRow = memo(function SessionRow({
     }
   };
 
-  const handleTouchStart = () => {
+  const handleTouchStart = (e: React.TouchEvent) => {
     clearLongPress();
     longPressFired.current = false;
-    if (!sessionId) return;
+    if (!sessionId || isDeleting) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const tx = touch.clientX;
+    const ty = touch.clientY;
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true;
-      startRename();
+      setContextMenu({ x: tx, y: ty });
     }, 500);
   };
 
@@ -132,6 +149,11 @@ const SessionRow = memo(function SessionRow({
     const trimmed = renameValue.trim();
     if (!trimmed || trimmed === label || !sessionId) return;
     await renameSession(sessionId, trimmed);
+  };
+
+  const handleDelete = () => {
+    setContextMenu(null);
+    onDelete?.(workspace.id);
   };
 
   if (renaming) {
@@ -162,13 +184,13 @@ const SessionRow = memo(function SessionRow({
         onTouchEnd={handleTouchEnd}
         onTouchMove={clearLongPress}
         onTouchCancel={clearLongPress}
-        className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
+        className={`w-full text-left py-2 cursor-pointer select-none transition-colors duration-75 ${
           indented ? "pl-6 pr-3" : "px-3"
         } ${
           isActive
             ? "bg-surface-850 border-l-2 border-brand-600"
-            : "border-l-2 border-transparent hover:bg-surface-800/50"
-        }`}
+            : "border-l-2 border-transparent hover:bg-surface-700/40"
+        } ${isDeleting ? "opacity-50 pointer-events-none" : ""}`}
       >
         <div className="flex items-center gap-2">
           <span
@@ -181,18 +203,30 @@ const SessionRow = memo(function SessionRow({
           </span>
         </div>
       </button>
-      {contextMenu && (
+      {contextMenu && createPortal(
         <div
           className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
             onClick={startRename}
-            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+            className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
           >
             Rename
           </button>
-        </div>
+          {!readOnly && (
+            <>
+              <div className="border-t border-surface-700/20 my-1" />
+              <button
+                onClick={handleDelete}
+                className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-status-error hover:bg-status-error/10 cursor-pointer transition-colors"
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>,
+        document.body,
       )}
     </>
   );
@@ -304,6 +338,8 @@ export function WorkspaceSidebar({
   onSettings,
   onRepeatLast,
   hasLastSession,
+  onDeleteSession,
+  readOnly,
 }: Props) {
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -459,7 +495,7 @@ export function WorkspaceSidebar({
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
           {hasLastSession && onRepeatLast && !filterQuery && (
             <button
               onClick={onRepeatLast}
@@ -493,6 +529,8 @@ export function WorkspaceSidebar({
                       workspace={ws}
                       isActive={ws.id === activeId}
                       onClick={() => onSelect(ws.id)}
+                      onDelete={onDeleteSession}
+                      readOnly={readOnly}
                       indented
                     />
                   ))}

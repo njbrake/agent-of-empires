@@ -23,8 +23,12 @@ const IS_MAC =
 export function HelpOverlay({ onClose }: Props) {
   const modKey = IS_MAC ? "⌘" : "Ctrl";
 
+  const optKey = IS_MAC ? "⌥" : "Alt";
+
   const shortcuts = [
     { key: `${modKey}K`, desc: "Open command palette" },
+    { key: `${modKey}B`, desc: "Toggle left sidebar" },
+    { key: `${modKey}${optKey}B`, desc: "Toggle right panel" },
     { key: "n", desc: "New session" },
     { key: "D", desc: "Toggle diff panel" },
     { key: "s", desc: "Toggle settings" },

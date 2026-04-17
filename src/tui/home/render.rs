@@ -436,6 +436,14 @@ impl HomeView {
                         ));
                     }
                 }
+                if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
+                    let mode = self.get_terminal_mode(id);
+                    let mode_text = match mode {
+                        TerminalMode::Container => " [container]",
+                        TerminalMode::Host => " [host]",
+                    };
+                    line_spans.push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
+                }
             }
         }
 

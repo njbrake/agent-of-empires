@@ -1,5 +1,9 @@
 import { useEffect } from "react";
 
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+
 interface ShortcutActions {
   onNew: () => void;
   onDiff: () => void;
@@ -7,12 +11,14 @@ interface ShortcutActions {
   onHelp: () => void;
   onSettings: () => void;
   onPalette: () => void;
+  onToggleSidebar: () => void;
+  onToggleRightPanel: () => void;
 }
 
 /**
  * Global keyboard shortcuts for the dashboard.
  * Single-key shortcuts fire only when no input/textarea/terminal is focused.
- * Cmd/Ctrl+K (palette) and Escape fire regardless of focus.
+ * Cmd+K (Mac) / Ctrl+K (other) and Escape fire regardless of focus.
  */
 export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
   useEffect(() => {
@@ -25,12 +31,32 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
           target.isContentEditable);
 
       const actions = getActions();
+      const mod = IS_MAC ? e.metaKey : e.metaKey || e.ctrlKey;
 
-      // Palette: Cmd+K / Ctrl+K, works everywhere.
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+      // Palette: Cmd+K (Mac) / Ctrl+K (other), works everywhere.
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
         e.stopPropagation();
         actions.onPalette();
+        return;
+      }
+
+      // Use e.code for B shortcuts because Option+B on Mac produces "∫"
+      // instead of "b", causing e.key matching to fail.
+      // Toggle right panel: Cmd+Opt+B (Mac) / Ctrl+Alt+B (other)
+      // Check alt combo first so Cmd+B doesn't swallow Cmd+Opt+B.
+      if (mod && !e.shiftKey && e.altKey && e.code === "KeyB") {
+        e.preventDefault();
+        e.stopPropagation();
+        actions.onToggleRightPanel();
+        return;
+      }
+
+      // Toggle left sidebar: Cmd+B (Mac) / Ctrl+B (other)
+      if (mod && !e.shiftKey && !e.altKey && e.code === "KeyB") {
+        e.preventDefault();
+        e.stopPropagation();
+        actions.onToggleSidebar();
         return;
       }
 

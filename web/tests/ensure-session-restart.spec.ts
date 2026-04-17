@@ -300,13 +300,13 @@ test.describe("ensure_session restart flow", () => {
     await sessionButton.click();
 
     // The TerminalView shows "Starting session..." while ensureSession() is
-    // restarting the tmux session, then swaps in the xterm container once
+    // restarting the tmux session, then swaps in the terminal container once
     // the WebSocket is ready.
     await expect(page.getByText("Starting session...")).toBeVisible();
     // Once ensureSession() resolves, the "Starting session..." placeholder
-    // unmounts and xterm takes over. The dashboard also renders a paired
-    // host-terminal in the right split, so there are two xterm instances —
-    // just wait for the placeholder to go away.
+    // unmounts and the terminal takes over. The dashboard also renders a
+    // paired host-terminal in the right split, so there are two terminal
+    // instances. Just wait for the placeholder to go away.
     await expect(page.getByText("Starting session...")).toBeHidden({
       timeout: 15_000,
     });

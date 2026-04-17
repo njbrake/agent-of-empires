@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import { WTerm } from "@wterm/dom";
 import type { ResizeMessage } from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
@@ -22,7 +21,7 @@ export interface TerminalState {
 }
 
 /**
- * Manages an xterm.js terminal connected to a PTY-relayed WebSocket.
+ * Manages a wterm terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
  */
 export function useTerminal(
@@ -31,12 +30,18 @@ export function useTerminal(
 ) {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
+  const termRef = useRef<WTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryCountRef = useRef(0);
+  // Shared ref so the wterm onData callback can read the virtual Ctrl state
+  // set by MobileTerminalToolbar. This bridges React state with the native
+  // event handler without requiring focus on the proxy input.
+  const ctrlActiveRef = useRef(false);
+  // Stable callback set by the component to clear React's ctrlActive state
+  // when onData consumes the Ctrl modifier.
+  const clearCtrlRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<TerminalState>({
     connected: false,
     reconnecting: false,
@@ -49,7 +54,7 @@ export function useTerminal(
 
     // Clean up previous instance
     wsRef.current?.close();
-    termRef.current?.dispose();
+    termRef.current?.destroy();
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     retryCountRef.current = 0;
@@ -66,58 +71,75 @@ export function useTerminal(
     };
     const fontSize = readFontSize();
 
-    const term = new Terminal({
+    // Create a child element for WTerm so the container div keeps its own
+    // layout (absolute inset-0 in TerminalView, flex-1 in RightPanel).
+    // WTerm adds .wterm with position:relative which would override the
+    // container's positioning if we used the container directly.
+    const termEl = document.createElement("div");
+    termEl.style.width = "100%";
+    termEl.style.height = "100%";
+    container.appendChild(termEl);
+
+    // Apply custom theme colors via CSS custom properties.
+    // wterm uses --term-* variables for theming instead of a JS theme object.
+    termEl.style.setProperty("--term-bg", "#141416");
+    termEl.style.setProperty("--term-fg", "#e4e4e7");
+    termEl.style.setProperty("--term-cursor", "#d97706");
+    termEl.style.setProperty("--term-color-0", "#1c1c1f");
+    termEl.style.setProperty("--term-color-1", "#ef4444");
+    termEl.style.setProperty("--term-color-2", "#22c55e");
+    termEl.style.setProperty("--term-color-3", "#fbbf24");
+    termEl.style.setProperty("--term-color-4", "#60a5fa");
+    termEl.style.setProperty("--term-color-5", "#a78bfa");
+    termEl.style.setProperty("--term-color-6", "#22d3ee");
+    termEl.style.setProperty("--term-color-7", "#e4e4e7");
+    termEl.style.setProperty("--term-color-8", "#52525b");
+    termEl.style.setProperty("--term-color-9", "#f87171");
+    termEl.style.setProperty("--term-color-10", "#4ade80");
+    termEl.style.setProperty("--term-color-11", "#fde68a");
+    termEl.style.setProperty("--term-color-12", "#93c5fd");
+    termEl.style.setProperty("--term-color-13", "#c4b5fd");
+    termEl.style.setProperty("--term-color-14", "#67e8f9");
+    termEl.style.setProperty("--term-color-15", "#fafafa");
+    termEl.style.setProperty(
+      "--term-font-family",
+      "'Geist Mono', ui-monospace, 'SFMono-Regular', monospace",
+    );
+    termEl.style.setProperty("--term-font-size", `${fontSize}px`);
+
+    // wterm's autoResize uses ResizeObserver to fit the terminal element.
+    const term = new WTerm(termEl, {
+      autoResize: true,
       cursorBlink: true,
-      fontSize,
-      fontFamily: "'Geist Mono', ui-monospace, 'SFMono-Regular', monospace",
-      theme: {
-        background: "#141416",
-        foreground: "#e4e4e7",
-        cursor: "#d97706",
-        cursorAccent: "#141416",
-        selectionBackground: "rgba(161, 161, 170, 0.2)",
-        black: "#1c1c1f",
-        red: "#ef4444",
-        green: "#22c55e",
-        yellow: "#fbbf24",
-        blue: "#60a5fa",
-        magenta: "#a78bfa",
-        cyan: "#22d3ee",
-        white: "#e4e4e7",
-        brightBlack: "#52525b",
-        brightRed: "#f87171",
-        brightGreen: "#4ade80",
-        brightYellow: "#fde68a",
-        brightBlue: "#93c5fd",
-        brightMagenta: "#c4b5fd",
-        brightCyan: "#67e8f9",
-        brightWhite: "#fafafa",
+      onResize: (cols: number, rows: number) => {
+        // Relay resize to the PTY backend
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN) {
+          const msg: ResizeMessage = { type: "resize", cols, rows };
+          ws.send(JSON.stringify(msg));
+        }
       },
     });
 
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(container);
-
     termRef.current = term;
-    fitRef.current = fitAddon;
 
-    requestAnimationFrame(() => fitAddon.fit());
-
-    let dataDisposable: { dispose: () => void } | null = null;
-    let resizeDisposable: { dispose: () => void } | null = null;
+    // Initialize the WASM bridge, then connect to the PTY.
+    let connectOnReady = true;
+    term
+      .init()
+      .then(() => {
+        if (!connectOnReady) return;
+        connect();
+      })
+      .catch((err: unknown) => {
+        console.error("wterm init failed:", err);
+      });
 
     function connect() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       // Pass the auth token via the WebSocket subprotocol list instead of
       // the URL query string. URLs land in access logs (axum, cloudflared,
       // Tailscale, any reverse proxy); subprotocol headers don't.
-      //
-      // We offer two protocols: a marker ("aoe-auth") that the server echoes
-      // back to complete the handshake, and the token itself which the auth
-      // middleware validates. The server-side `extract_ws_protocols` tries
-      // every offered protocol as a candidate token, so the token position
-      // in the list doesn't matter.
       const token = getToken();
       const url = `${proto}//${location.host}/sessions/${sessionId}/${wsPath}`;
       const ws = token
@@ -135,32 +157,33 @@ export function useTerminal(
           retryCountdown: 0,
         });
         term.focus();
-        const sendDims = () => {
-          const dims = fitAddon.proposeDimensions();
+        // Send initial PTY dimensions from the already-autoresized terminal.
+        if (
+          term.cols > 0 &&
+          term.rows > 0 &&
+          ws.readyState === WebSocket.OPEN
+        ) {
+          const msg: ResizeMessage = {
+            type: "resize",
+            cols: term.cols,
+            rows: term.rows,
+          };
+          ws.send(JSON.stringify(msg));
+        }
+        // Re-send after layout settles
+        requestAnimationFrame(() => {
           if (
-            dims &&
-            Number.isFinite(dims.cols) &&
-            Number.isFinite(dims.rows) &&
-            dims.cols > 0 &&
-            dims.rows > 0
+            term.cols > 0 &&
+            term.rows > 0 &&
+            ws.readyState === WebSocket.OPEN
           ) {
             const msg: ResizeMessage = {
               type: "resize",
-              cols: Math.round(dims.cols),
-              rows: Math.round(dims.rows),
+              cols: term.cols,
+              rows: term.rows,
             };
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify(msg));
-            }
+            ws.send(JSON.stringify(msg));
           }
-        };
-        sendDims();
-        // Re-fit after the layout has settled. On first session entry the
-        // flex layout may still be adjusting after the pending → ready
-        // transition; a single frame isn't always enough.
-        requestAnimationFrame(() => {
-          fitAddon.fit();
-          sendDims();
         });
       };
 
@@ -218,43 +241,28 @@ export function useTerminal(
         // onclose will fire after onerror
       };
 
-      // Relay keystrokes as binary
-      dataDisposable?.dispose();
-      dataDisposable = term.onData((data: string) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode(data));
+      // Relay keystrokes as binary. When the virtual Ctrl button is armed,
+      // intercept single printable characters and transform them to their
+      // Ctrl equivalents (Ctrl+A = 0x01, Ctrl+U = 0x15, etc.). This works
+      // regardless of whether the keystroke came from our mobile proxy input
+      // or from wterm's own hidden textarea.
+      term.onData = (data: string) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (ctrlActiveRef.current && data.length === 1) {
+          const code = data.toUpperCase().charCodeAt(0);
+          if (code >= 65 && code <= 90) {
+            ws.send(new TextEncoder().encode(String.fromCharCode(code - 64)));
+            ctrlActiveRef.current = false;
+            clearCtrlRef.current?.();
+            return;
+          }
         }
-      });
-
-      // Relay resize
-      resizeDisposable?.dispose();
-      resizeDisposable = term.onResize(({ cols, rows }) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          const msg: ResizeMessage = { type: "resize", cols, rows };
-          ws.send(JSON.stringify(msg));
-        }
-      });
+        ws.send(new TextEncoder().encode(data));
+      };
     }
 
-    connect();
-
-    // Window resize -> fit terminal
-    const handleResize = () => fitAddon.fit();
-    window.addEventListener("resize", handleResize);
-
     // Two-finger swipe emits SGR mouse-wheel escape sequences to the PTY,
-    // so tmux mouse-mode enters copy-mode and scrolls (and apps that read
-    // wheel events handle their own scrolling). We intentionally do NOT
-    // call term.scrollLines() — under tmux/alt-screen the local xterm
-    // scrollback is empty, so scrollLines would no-op. One-finger touches
-    // are left to xterm's native handling (text selection, taps). Calling
-    // preventDefault on one-finger moves breaks selection — never do it.
-    //
-    // Why we attach to .xterm and not the outer container: xterm.js
-    // registers document-level touch handlers that dispatch custom gesture
-    // events. Our listener sits on xterm's root element with capture:true
-    // so we fire before xterm's internal handlers. touch-action:none
-    // prevents the browser's native pan from competing for the gesture.
+    // so tmux mouse-mode enters copy-mode and scrolls.
     const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
     const sendWheel = (dir: "up" | "down", count: number) => {
@@ -269,21 +277,22 @@ export function useTerminal(
     let touchMidY = 0;
     let touchAccum = 0;
     let lastMoveTs = 0;
-    let velocity = 0; // pixels per ms
+    let velocity = 0;
     let momentumRaf: number | null = null;
-    // Pinch state: once a two-finger gesture exceeds a small deadzone, we
-    // lock into either 'pinch' (zoom) or 'scroll' for the rest of the gesture.
     let gestureMode: "pinch" | "scroll" | null = null;
     let pinchStartDist = 0;
     let pinchStartSize = DEFAULT_FONT_SIZE;
     let pinchStartMidY = 0;
     const GESTURE_LOCK_PX = 12;
-    const LINES_PER_WHEEL = 2; // swipe pixels-per-wheel-event = cellHeight * 2
-    const MAX_VELOCITY = 2.0; // px/ms — a genuinely fast finger is ~1–2 px/ms
-    const MAX_WHEELS_PER_FRAME = 6; // cap runaway bursts
+    const LINES_PER_WHEEL = 2;
+    const MAX_VELOCITY = 2.0;
+    const MAX_WHEELS_PER_FRAME = 6;
     const clampV = (v: number) =>
       Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
-    const cellHeight = () => term.options.fontSize ?? DEFAULT_FONT_SIZE;
+    const cellHeight = () => {
+      const cs = getComputedStyle(term.element);
+      return parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE;
+    };
     const pxPerWheel = () => cellHeight() * LINES_PER_WHEEL;
     const prefersReducedMotion = () =>
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -305,16 +314,19 @@ export function useTerminal(
     const clampFont = (n: number) =>
       Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, n));
 
-    // Pinch/wheel events fire faster than the frame rate; coalesce font-size
-    // updates to at most one fitAddon.fit() per animation frame to avoid
-    // layout thrash and spamming PTY resize messages over the WebSocket.
+    // Font size updates via CSS custom property. Coalesce to one per frame.
     let pendingFontSize: number | null = null;
     let fontSizeRaf: number | null = null;
+    const currentFontSize = (): number => {
+      const cs = getComputedStyle(term.element);
+      return parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE;
+    };
     const applyFontSize = (size: number) => {
       const next = clampFont(Math.round(size));
-      if (next !== term.options.fontSize) {
-        term.options.fontSize = next;
-        fitAddon.fit();
+      const current = currentFontSize();
+      if (next !== current) {
+        term.element.style.setProperty("--term-font-size", `${next}px`);
+        // wterm's ResizeObserver will detect the size change and call resize()
       }
       return next;
     };
@@ -340,7 +352,7 @@ export function useTerminal(
       }
     };
     const currentPendingOrLiveSize = () =>
-      pendingFontSize ?? term.options.fontSize ?? DEFAULT_FONT_SIZE;
+      pendingFontSize ?? currentFontSize();
 
     const cancelMomentum = () => {
       if (momentumRaf !== null) {
@@ -358,12 +370,12 @@ export function useTerminal(
       lastMoveTs = performance.now();
       gestureMode = null;
       pinchStartDist = touchDistance(e);
-      pinchStartSize = term.options.fontSize ?? DEFAULT_FONT_SIZE;
+      pinchStartSize = currentFontSize();
       pinchStartMidY = touchMidY;
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 2) return; // Single-finger = xterm handles it.
+      if (e.touches.length !== 2) return;
       e.preventDefault();
       const y = midpointY(e);
       const now = performance.now();
@@ -377,7 +389,6 @@ export function useTerminal(
           return;
         }
         gestureMode = distDelta > panDelta ? "pinch" : "scroll";
-        // Reset scroll baseline so we don't replay the deadzone travel.
         touchMidY = y;
       }
 
@@ -399,8 +410,6 @@ export function useTerminal(
         Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
       );
       if (wheels !== 0) {
-        // Positive wheels means scrolled up (dy positive = finger moved up =
-        // content should scroll up to reveal lines above = wheel-up).
         sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
         touchAccum -= wheels * step;
         const dt = Math.max(1, now - lastMoveTs);
@@ -410,11 +419,10 @@ export function useTerminal(
     };
 
     const onTouchEnd = (e: TouchEvent) => {
-      // Fires whenever the touch count changes; only decay when all fingers lift.
       if (e.touches.length > 0) return;
       if (gestureMode === "pinch") {
         flushFontSize();
-        persistFontSize(term.options.fontSize ?? DEFAULT_FONT_SIZE);
+        persistFontSize(currentFontSize());
         gestureMode = null;
         velocity = 0;
         return;
@@ -424,14 +432,14 @@ export function useTerminal(
         velocity = 0;
         return;
       }
-      let v = velocity; // px/ms
+      let v = velocity;
       let last = performance.now();
       let carry = 0;
       const decay = () => {
         const now = performance.now();
         const dt = now - last;
         last = now;
-        v *= Math.pow(0.92, dt / 16); // ~400ms decay
+        v *= Math.pow(0.92, dt / 16);
         carry += v * dt;
         const step = pxPerWheel();
         const rawW = Math.trunc(carry / step);
@@ -452,12 +460,9 @@ export function useTerminal(
       momentumRaf = requestAnimationFrame(decay);
     };
 
-    // Attach to the root `.xterm` element created by term.open. It's the
-    // common parent of .xterm-viewport, .xterm-screen, and helpers, so
-    // touches on any xterm surface bubble here first. Capture phase
-    // guarantees we fire before xterm's document-level gesture handler.
-    const viewport =
-      container.querySelector<HTMLElement>(".xterm") ?? container;
+    // Attach touch handlers to the .wterm element. wterm adds this class to
+    // the container automatically during construction.
+    const viewport = term.element;
     viewport.style.touchAction = "none";
     const touchOpts = { passive: false, capture: true } as const;
     viewport.addEventListener("touchstart", onTouchStart, touchOpts);
@@ -465,9 +470,7 @@ export function useTerminal(
     viewport.addEventListener("touchend", onTouchEnd, touchOpts);
     viewport.addEventListener("touchcancel", onTouchEnd, touchOpts);
 
-    // Trackpad pinch fires wheel events with ctrlKey=true (and Ctrl+wheel
-    // mouse zoom matches the same convention). Debounce persistence so we
-    // don't hammer localStorage on every frame of a pinch.
+    // Trackpad pinch fires wheel events with ctrlKey=true
     let wheelAccum = 0;
     let wheelPersistTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = (e: WheelEvent) => {
@@ -484,13 +487,14 @@ export function useTerminal(
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       wheelPersistTimer = setTimeout(() => {
         flushFontSize();
-        persistFontSize(term.options.fontSize ?? DEFAULT_FONT_SIZE);
+        persistFontSize(currentFontSize());
         wheelPersistTimer = null;
       }, WHEEL_PERSIST_DEBOUNCE_MS);
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
 
     return () => {
+      connectOnReady = false;
       cancelMomentum();
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
@@ -499,37 +503,30 @@ export function useTerminal(
       viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
-      window.removeEventListener("resize", handleResize);
-      dataDisposable?.dispose();
-      resizeDisposable?.dispose();
       wsRef.current?.close();
-      term.dispose();
+      term.destroy();
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
       termRef.current = null;
       wsRef.current = null;
-      fitRef.current = null;
     };
-    // We intentionally do NOT depend on settings.{mobile,desktop}FontSize —
-    // that would tear down and reconnect the PTY every time the font
-    // changed (via slider or pinch). The sync effect below mutates
-    // term.options.fontSize in-place instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, wsPath]);
 
-  // Apply font size changes (from settings UI or pinch persistence) to the
-  // live terminal without recreating it.
+  // Apply font size changes from settings UI to the live terminal.
   useEffect(() => {
     const term = termRef.current;
-    const fit = fitRef.current;
     if (!term) return;
     const size =
       window.innerWidth < MOBILE_BREAKPOINT_PX
         ? settings.mobileFontSize
         : settings.desktopFontSize;
-    if (term.options.fontSize !== size) {
-      term.options.fontSize = size;
-      fit?.fit();
+    const current =
+      parseFloat(
+        getComputedStyle(term.element).getPropertyValue("--term-font-size"),
+      ) || DEFAULT_FONT_SIZE;
+    if (current !== size) {
+      term.element.style.setProperty("--term-font-size", `${size}px`);
     }
   }, [settings.mobileFontSize, settings.desktopFontSize]);
 
@@ -541,7 +538,6 @@ export function useTerminal(
       retryCount: 0,
       retryCountdown: 0,
     });
-    // Trigger effect by disconnecting current WS
     wsRef.current?.close();
   };
 
@@ -551,5 +547,5 @@ export function useTerminal(
     }
   }, []);
 
-  return { containerRef, termRef, state, manualReconnect, sendData };
+  return { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef };
 }

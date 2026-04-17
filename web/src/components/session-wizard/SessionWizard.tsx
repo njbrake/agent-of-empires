@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer } from "react";
-import type { AgentInfo, GroupInfo, ProfileInfo, CreateSessionRequest } from "../../lib/types";
+import type { AgentInfo, GroupInfo, ProfileInfo, CreateSessionRequest, SessionResponse } from "../../lib/types";
 import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, getSettings, createSession } from "../../lib/api";
 import { StepIndicator } from "./StepIndicator";
 import type { StepDef, StepId } from "./StepIndicator";
@@ -120,7 +120,7 @@ export interface WizardPrefill {
 
 interface Props {
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (session?: SessionResponse) => void;
   prefill?: WizardPrefill;
 }
 
@@ -194,7 +194,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
       profile: d.profile || undefined,
     };
     const result = await createSession(body);
-    if (result.ok) { dispatch({ type: "SUBMIT_SUCCESS" }); onCreated(); }
+    if (result.ok) { dispatch({ type: "SUBMIT_SUCCESS" }); onCreated(result.session); }
     else dispatch({ type: "SUBMIT_ERROR", error: result.error || "Unknown error" });
   };
 

@@ -161,6 +161,12 @@ pub struct AppState {
     /// first use and live for the lifetime of the process — there are only
     /// as many as the user has sessions.
     pub instance_locks: RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Cached per-profile cleanup defaults for the delete dialog, with a
+    /// timestamp so we re-resolve after config changes. TTL: 30 seconds.
+    pub cleanup_defaults_cache: RwLock<(
+        std::time::Instant,
+        std::collections::HashMap<String, api::CleanupDefaults>,
+    )>,
 }
 
 impl AppState {
@@ -247,6 +253,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         devices: RwLock::new(Vec::new()),
         behind_tunnel: remote,
         instance_locks: RwLock::new(std::collections::HashMap::new()),
+        cleanup_defaults_cache: RwLock::new((
+            std::time::Instant::now() - std::time::Duration::from_secs(60),
+            std::collections::HashMap::new(),
+        )),
     });
 
     let app = build_router(state.clone());
@@ -388,7 +398,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
         )
-        .route("/api/sessions/{id}", patch(api::rename_session))
+        .route(
+            "/api/sessions/{id}",
+            patch(api::rename_session).delete(api::delete_session),
+        )
         .route(
             "/api/sessions/{id}/diff/files",
             get(api::session_diff_files),
