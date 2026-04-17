@@ -80,7 +80,7 @@ export function Dashboard({
           className="text-3xl md:text-5xl font-mono font-semibold text-brand-500 uppercase tracking-tight"
           style={{
             textShadow:
-              "0 0 20px rgba(245,158,11,0.3), 0 0 40px rgba(245,158,11,0.1)",
+              "0 0 24px rgba(245,158,11,0.5), 0 0 48px rgba(245,158,11,0.25), 0 0 80px rgba(245,158,11,0.1)",
           }}
         >
           empires
