@@ -143,6 +143,12 @@ export function useTerminal(
       if (!wtermTextarea) return;
       wtermTextarea.style.left = "0";
       wtermTextarea.style.top = "0";
+      wtermTextarea.style.width = "100%";
+      wtermTextarea.style.height = "100%";
+      wtermTextarea.style.pointerEvents = "auto";
+      // Let text selection pass through to terminal content underneath
+      wtermTextarea.style.userSelect = "none";
+      wtermTextarea.style.webkitUserSelect = "none";
 
       const seedTextarea = () => {
         if (wtermTextarea && !wtermTextarea.value) {
