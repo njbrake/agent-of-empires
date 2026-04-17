@@ -56,6 +56,14 @@ pub struct SessionResponse {
     pub has_managed_worktree: bool,
     pub has_terminal: bool,
     pub profile: String,
+    pub cleanup_defaults: CleanupDefaults,
+}
+
+#[derive(Serialize, Clone)]
+pub struct CleanupDefaults {
+    pub delete_worktree: bool,
+    pub delete_branch: bool,
+    pub delete_sandbox: bool,
 }
 
 impl From<&Instance> for SessionResponse {
@@ -83,13 +91,42 @@ impl From<&Instance> for SessionResponse {
                 .is_some_and(|w| w.managed_by_aoe),
             has_terminal: inst.terminal_info.is_some(),
             profile: inst.source_profile.clone(),
+            cleanup_defaults: CleanupDefaults {
+                delete_worktree: true,
+                delete_branch: false,
+                delete_sandbox: true,
+            },
         }
     }
 }
 
 pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionResponse>> {
+    use std::collections::HashMap;
+
     let instances = state.instances.read().await;
-    let sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
+    let mut sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
+
+    // Resolve per-profile cleanup defaults (cached per profile to avoid redundant I/O)
+    let mut config_cache: HashMap<String, CleanupDefaults> = HashMap::new();
+    for session in &mut sessions {
+        let defaults = config_cache
+            .entry(session.profile.clone())
+            .or_insert_with(|| {
+                crate::session::resolve_config(&session.profile)
+                    .map(|cfg| CleanupDefaults {
+                        delete_worktree: cfg.worktree.auto_cleanup,
+                        delete_branch: cfg.worktree.delete_branch_on_cleanup,
+                        delete_sandbox: cfg.sandbox.auto_cleanup,
+                    })
+                    .unwrap_or(CleanupDefaults {
+                        delete_worktree: true,
+                        delete_branch: false,
+                        delete_sandbox: true,
+                    })
+            });
+        session.cleanup_defaults = defaults.clone();
+    }
+
     Json(sessions)
 }
 

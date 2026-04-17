@@ -459,6 +459,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           branchName={deletingSession.branch}
           hasManagedWorktree={deletingSession.has_managed_worktree}
           isSandboxed={deletingSession.is_sandboxed}
+          cleanupDefaults={deletingSession.cleanup_defaults}
           onConfirm={handleConfirmDelete}
           onCancel={() => setDeletingWorkspaceId(null)}
         />

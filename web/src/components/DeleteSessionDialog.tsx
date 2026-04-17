@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DeleteSessionOptions } from "../lib/api";
+import type { CleanupDefaults } from "../lib/types";
 
 interface Props {
   sessionTitle: string;
   branchName: string | null;
   hasManagedWorktree: boolean;
   isSandboxed: boolean;
+  cleanupDefaults: CleanupDefaults;
   onConfirm: (options: DeleteSessionOptions) => Promise<void>;
   onCancel: () => void;
 }
@@ -15,13 +17,14 @@ export function DeleteSessionDialog({
   branchName,
   hasManagedWorktree,
   isSandboxed,
+  cleanupDefaults,
   onConfirm,
   onCancel,
 }: Props) {
-  const [deleteWorktree, setDeleteWorktree] = useState(hasManagedWorktree);
+  const [deleteWorktree, setDeleteWorktree] = useState(hasManagedWorktree && cleanupDefaults.delete_worktree);
   const [forceDelete, setForceDelete] = useState(false);
-  const [deleteBranch, setDeleteBranch] = useState(false);
-  const [deleteSandbox, setDeleteSandbox] = useState(isSandboxed);
+  const [deleteBranch, setDeleteBranch] = useState(hasManagedWorktree && cleanupDefaults.delete_branch);
+  const [deleteSandbox, setDeleteSandbox] = useState(isSandboxed && cleanupDefaults.delete_sandbox);
   const [deleting, setDeleting] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
 
