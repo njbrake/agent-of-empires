@@ -133,13 +133,13 @@ export function useTerminal(
       if (!isMobileViewport()) return;
       wtermTextarea = termEl.querySelector("textarea");
       if (!wtermTextarea) return;
+      // Move the textarea into the viewport (from -9999px) so iOS shows
+      // the keyboard when it's focused. Keep it tiny and non-interactive
+      // so it doesn't block touches on the terminal content (text
+      // selection, long-press, etc.). Paste uses the toolbar button.
       const ts = wtermTextarea.style;
       ts.left = "0";
       ts.top = "0";
-      ts.width = "100%";
-      ts.height = "100%";
-      ts.pointerEvents = "auto";
-      ts.touchAction = "auto";
 
       // Seed the textarea so iOS has something to delete when backspace
       // is held. Without this, iOS never enters its key-repeat loop.
