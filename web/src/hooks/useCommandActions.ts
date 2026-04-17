@@ -1,4 +1,8 @@
 import { useMemo } from "react";
+
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 import type { SessionResponse } from "../lib/types";
 import type { CommandAction } from "../components/command-palette/types";
 
@@ -69,7 +73,7 @@ export function useCommandActions({
       title: "Toggle sidebar",
       group: "Actions",
       keywords: ["hide", "show", "nav"],
-      shortcut: "⌘B",
+      shortcut: IS_MAC ? "⌘B" : "Ctrl+B",
       perform: onToggleSidebar,
     });
 
