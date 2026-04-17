@@ -101,17 +101,26 @@ impl From<&Instance> for SessionResponse {
 }
 
 pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionResponse>> {
-    use std::collections::HashMap;
-
     let instances = state.instances.read().await;
     let mut sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
 
-    // Resolve per-profile cleanup defaults (cached per profile to avoid redundant I/O)
-    let mut config_cache: HashMap<String, CleanupDefaults> = HashMap::new();
-    for session in &mut sessions {
-        let defaults = config_cache
-            .entry(session.profile.clone())
-            .or_insert_with(|| {
+    // Resolve per-profile cleanup defaults with a 30s TTL cache on AppState
+    let cache = {
+        let guard = state.cleanup_defaults_cache.read().await;
+        if guard.0.elapsed() < std::time::Duration::from_secs(30) {
+            Some(guard.1.clone())
+        } else {
+            None
+        }
+    };
+
+    let defaults_map = if let Some(cached) = cache {
+        cached
+    } else {
+        use std::collections::HashMap;
+        let mut fresh: HashMap<String, CleanupDefaults> = HashMap::new();
+        for session in &sessions {
+            fresh.entry(session.profile.clone()).or_insert_with(|| {
                 crate::session::resolve_config(&session.profile)
                     .map(|cfg| CleanupDefaults {
                         delete_worktree: cfg.worktree.auto_cleanup,
@@ -124,7 +133,15 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
                         delete_sandbox: true,
                     })
             });
-        session.cleanup_defaults = defaults.clone();
+        }
+        *state.cleanup_defaults_cache.write().await = (std::time::Instant::now(), fresh.clone());
+        fresh
+    };
+
+    for session in &mut sessions {
+        if let Some(defaults) = defaults_map.get(&session.profile) {
+            session.cleanup_defaults = defaults.clone();
+        }
     }
 
     Json(sessions)

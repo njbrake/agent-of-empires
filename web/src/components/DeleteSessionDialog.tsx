@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { DeleteSessionOptions } from "../lib/api";
 import type { CleanupDefaults } from "../lib/types";
 
@@ -26,7 +26,6 @@ export function DeleteSessionDialog({
   const [deleteBranch, setDeleteBranch] = useState(hasManagedWorktree && cleanupDefaults.delete_branch);
   const [deleteSandbox, setDeleteSandbox] = useState(isSandboxed && cleanupDefaults.delete_sandbox);
   const [deleting, setDeleting] = useState(false);
-  const dialogRef = useRef<HTMLDivElement>(null);
 
   const hasOptions = hasManagedWorktree || isSandboxed;
 
@@ -60,7 +59,6 @@ export function DeleteSessionDialog({
       onClick={onCancel}
     >
       <div
-        ref={dialogRef}
         className="bg-surface-800 border border-surface-700/50 rounded-lg w-[420px] max-w-[90vw] shadow-2xl animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
