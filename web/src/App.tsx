@@ -277,6 +277,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       const dy = t.clientY - startY;
       if (dx > THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
         tracking = false;
+        // Dismiss the soft keyboard before opening the sidebar
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
         setSidebarOpen(true);
       } else if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) {
         tracking = false;
@@ -463,7 +467,18 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       {showAddProject && (
         <SessionWizard
           onClose={() => { setShowAddProject(false); setWizardPrefill(undefined); }}
-          onCreated={(session?: SessionResponse) => { if (session) injectSession(session); setShowAddProject(false); setWizardPrefill(undefined); }}
+          onCreated={(session?: SessionResponse) => {
+            if (session) {
+              injectSession(session);
+              setActiveSessionId(session.id);
+              const repoPath = (session.main_repo_path ?? session.project_path).replace(/\/+$/, "");
+              const wsId = `${repoPath}::${session.branch ?? "__default__"}`;
+              setActiveWorkspaceId(wsId);
+              if (window.innerWidth < 768) setSidebarOpen(false);
+            }
+            setShowAddProject(false);
+            setWizardPrefill(undefined);
+          }}
           prefill={wizardPrefill}
         />
       )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { CompositionEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { useWebSettings } from "../hooks/useWebSettings";
@@ -27,6 +27,7 @@ export function TerminalView({ session }: Props) {
   const proxyRef = useRef<HTMLInputElement>(null);
   const [proxyFocused, setProxyFocused] = useState(false);
   const [ctrlActive, setCtrlActive] = useState(false);
+  const composingRef = useRef(false);
 
   // Keep the shared ref in sync so wterm's onData callback can read it.
   ctrlActiveRef.current = ctrlActive;
@@ -121,6 +122,9 @@ export function TerminalView({ session }: Props) {
   // reliably expose the terminal's own helper textarea for the soft keyboard.
   const onProxyInput = useCallback(
     (e: FormEvent<HTMLInputElement>) => {
+      // During composition (dictation, IME), skip until compositionend to
+      // avoid sending partial text that gets repeated in the final result.
+      if (composingRef.current) return;
       const value = e.currentTarget.value;
       if (!value) return;
       if (ctrlActive) {
@@ -139,6 +143,21 @@ export function TerminalView({ session }: Props) {
       e.currentTarget.value = "";
     },
     [sendData, ctrlActive],
+  );
+
+  const onCompositionStart = useCallback(() => {
+    composingRef.current = true;
+  }, []);
+
+  const onCompositionEnd = useCallback(
+    (e: CompositionEvent<HTMLInputElement>) => {
+      composingRef.current = false;
+      const value = e.currentTarget.value;
+      if (!value) return;
+      sendData(value);
+      e.currentTarget.value = "";
+    },
+    [sendData],
   );
 
   // iOS soft keyboards don't fire 'input' for Enter/Backspace/Tab/Arrows — they
@@ -297,6 +316,8 @@ export function TerminalView({ session }: Props) {
               spellCheck={false}
               onInput={onProxyInput}
               onKeyDown={onProxyKeyDown}
+              onCompositionStart={onCompositionStart}
+              onCompositionEnd={onCompositionEnd}
               onFocus={() => setProxyFocused(true)}
               onBlur={() => setProxyFocused(false)}
               aria-hidden="true"
