@@ -261,7 +261,7 @@ export function useTerminal(
       };
     }
 
-    // Two-finger swipe emits SGR mouse-wheel escape sequences to the PTY,
+    // Touch swipe emits SGR mouse-wheel escape sequences to the PTY,
     // so tmux mouse-mode enters copy-mode and scrolls.
     const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
@@ -279,10 +279,15 @@ export function useTerminal(
     let lastMoveTs = 0;
     let velocity = 0;
     let momentumRaf: number | null = null;
-    let gestureMode: "pinch" | "scroll" | null = null;
+    let gestureMode: "single-scroll" | "pinch" | "scroll" | null = null;
     let pinchStartDist = 0;
     let pinchStartSize = DEFAULT_FONT_SIZE;
     let pinchStartMidY = 0;
+    let singleStartY = 0;
+    let singleY = 0;
+    let singleAccum = 0;
+    let singleLastTs = 0;
+    let suppressNextClick = false;
     const GESTURE_LOCK_PX = 12;
     const LINES_PER_WHEEL = 2;
     const MAX_VELOCITY = 2.0;
@@ -363,25 +368,73 @@ export function useTerminal(
 
     const onTouchStart = (e: TouchEvent) => {
       cancelMomentum();
-      if (e.touches.length !== 2) return;
-      touchMidY = midpointY(e);
-      touchAccum = 0;
-      velocity = 0;
-      lastMoveTs = performance.now();
-      gestureMode = null;
-      pinchStartDist = touchDistance(e);
-      pinchStartSize = currentFontSize();
-      pinchStartMidY = touchMidY;
+      suppressNextClick = false;
+
+      if (e.touches.length === 1) {
+        const t = e.touches[0]!;
+        singleStartY = t.clientY;
+        singleY = t.clientY;
+        singleAccum = 0;
+        singleLastTs = performance.now();
+        velocity = 0;
+        gestureMode = null;
+        return;
+      }
+
+      if (e.touches.length === 2) {
+        gestureMode = null;
+        touchMidY = midpointY(e);
+        touchAccum = 0;
+        velocity = 0;
+        lastMoveTs = performance.now();
+        pinchStartDist = touchDistance(e);
+        pinchStartSize = currentFontSize();
+        pinchStartMidY = touchMidY;
+      }
     };
 
     const onTouchMove = (e: TouchEvent) => {
+      // Single-finger scroll
+      if (e.touches.length === 1 && (gestureMode === null || gestureMode === "single-scroll")) {
+        const t = e.touches[0]!;
+        const y = t.clientY;
+        const now = performance.now();
+
+        if (gestureMode === null) {
+          if (Math.abs(y - singleStartY) < GESTURE_LOCK_PX) {
+            singleLastTs = now;
+            return;
+          }
+          gestureMode = "single-scroll";
+          singleY = y;
+        }
+
+        e.preventDefault();
+
+        const dy = singleY - y;
+        singleY = y;
+        singleAccum += dy;
+        const step = pxPerWheel();
+        const rawWheels = Math.trunc(singleAccum / step);
+        const wheels = Math.max(-MAX_WHEELS_PER_FRAME, Math.min(MAX_WHEELS_PER_FRAME, rawWheels));
+        if (wheels !== 0) {
+          sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
+          singleAccum -= wheels * step;
+          const dt = Math.max(1, now - singleLastTs);
+          velocity = clampV(dy / dt);
+        }
+        singleLastTs = now;
+        return;
+      }
+
+      // Two-finger gesture (scroll or pinch)
       if (e.touches.length !== 2) return;
       e.preventDefault();
       const y = midpointY(e);
       const now = performance.now();
       const dist = touchDistance(e);
 
-      if (gestureMode === null) {
+      if (gestureMode === null || gestureMode === "single-scroll") {
         const distDelta = Math.abs(dist - pinchStartDist);
         const panDelta = Math.abs(y - pinchStartMidY);
         if (Math.max(distDelta, panDelta) < GESTURE_LOCK_PX) {
@@ -427,7 +480,9 @@ export function useTerminal(
         velocity = 0;
         return;
       }
+      const wasScrolling = gestureMode === "single-scroll" || gestureMode === "scroll";
       gestureMode = null;
+      if (wasScrolling) suppressNextClick = true;
       if (prefersReducedMotion() || Math.abs(velocity) < 0.05) {
         velocity = 0;
         return;
@@ -470,6 +525,16 @@ export function useTerminal(
     viewport.addEventListener("touchend", onTouchEnd, touchOpts);
     viewport.addEventListener("touchcancel", onTouchEnd, touchOpts);
 
+    // After a scroll gesture, suppress the click that follows so it doesn't
+    // accidentally open the soft keyboard.
+    const onClickAfterScroll = (e: MouseEvent) => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        e.stopPropagation();
+      }
+    };
+    viewport.addEventListener("click", onClickAfterScroll, true);
+
     // Trackpad pinch fires wheel events with ctrlKey=true
     let wheelAccum = 0;
     let wheelPersistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -500,6 +565,7 @@ export function useTerminal(
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
+      viewport.removeEventListener("click", onClickAfterScroll, true);
       viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { ClipboardEvent as ReactClipboardEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { useWebSettings } from "../hooks/useWebSettings";
@@ -83,20 +83,23 @@ export function TerminalView({ session }: Props) {
   // fire; proxy focus flips instantly.
   const keyboardVisible = keyboardOpen || proxyFocused;
 
-  // Re-layout the terminal and scroll to the cursor whenever keyboardHeight
-  // changes. useLayoutEffect runs synchronously after React has committed
-  // the new paddingBottom to the DOM, so wterm's ResizeObserver picks up
-  // the correct container size. A rAF then scrolls to bottom after reflow.
+  // Re-layout the terminal and scroll to the cursor when the keyboard settles.
+  // Debounce the resize dispatch so it fires once after the iOS keyboard
+  // animation (~300ms) instead of on every intermediate height change.
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useLayoutEffect(() => {
-    window.dispatchEvent(new Event("resize"));
-    if (!keyboardOpen) return;
-    const id = requestAnimationFrame(() => {
-      if (termRef.current) {
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      window.dispatchEvent(new Event("resize"));
+      if (keyboardOpen && termRef.current) {
         const el = termRef.current.element;
         el.scrollTop = el.scrollHeight;
       }
-    });
-    return () => cancelAnimationFrame(id);
+    }, 150);
+    return () => {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    };
   }, [keyboardOpen, keyboardHeight, termRef]);
 
   // Auto-open soft keyboard when a session is selected, if the user wants it.
@@ -139,6 +142,18 @@ export function TerminalView({ session }: Props) {
       e.currentTarget.value = "";
     },
     [sendData, ctrlActive],
+  );
+
+  // Catch paste events on the proxy input and relay the text to the PTY.
+  // On iOS the proxy input is the only focused element, so paste events land
+  // here rather than on wterm's hidden textarea.
+  const onProxyPaste = useCallback(
+    (e: ReactClipboardEvent<HTMLInputElement>) => {
+      e.preventDefault();
+      const text = e.clipboardData.getData("text");
+      if (text) sendData(text);
+    },
+    [sendData],
   );
 
   // iOS soft keyboards don't fire 'input' for Enter/Backspace/Tab/Arrows — they
@@ -294,9 +309,12 @@ export function TerminalView({ session }: Props) {
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="none"
+              inputMode="none"
+              enterKeyHint="send"
               spellCheck={false}
               onInput={onProxyInput}
               onKeyDown={onProxyKeyDown}
+              onPaste={onProxyPaste}
               onFocus={() => setProxyFocused(true)}
               onBlur={() => setProxyFocused(false)}
               aria-hidden="true"
@@ -346,7 +364,7 @@ export function TerminalView({ session }: Props) {
                   <span aria-hidden="true" className="text-base leading-none">
                     {"\u21C5"}
                   </span>
-                  Two fingers to scroll
+                  Swipe to scroll
                 </span>
               </div>
             )}
