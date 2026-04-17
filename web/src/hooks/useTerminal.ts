@@ -463,7 +463,7 @@ export function useTerminal(
       s.fontSize = "14px";
       s.fontFamily = "system-ui, sans-serif";
       s.backdropFilter = "blur(8px)";
-      (s as Record<string, string>)["webkitBackdropFilter"] = "blur(8px)";
+      s.setProperty("-webkit-backdrop-filter", "blur(8px)");
       s.boxShadow = "0 4px 16px rgba(0,0,0,0.4)";
       s.cursor = "pointer";
       s.touchAction = "manipulation";
