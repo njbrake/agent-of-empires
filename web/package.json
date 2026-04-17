@@ -13,9 +13,9 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",
-    "@wterm/core": "file:vendor/wterm-core",
-    "@wterm/dom": "file:vendor/wterm-dom",
-    "@wterm/react": "file:vendor/wterm-react",
+    "@wterm/core": "^0.1.8",
+    "@wterm/dom": "^0.1.8",
+    "@wterm/react": "^0.1.8",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "react": "^19.2.4",
