@@ -1,3 +1,4 @@
+import { isServerDown } from "./connectionState";
 import { reportError } from "./toastBus";
 import { clearToken, getToken, saveToken } from "./token";
 
@@ -49,7 +50,7 @@ export function installFetchErrorToasts(): void {
       if (res.status === 401 && isApi && getToken()) {
         handleTokenRejected();
       }
-      if (isApi && res.status >= 500) {
+      if (isApi && res.status >= 500 && !isServerDown()) {
         reportError(`Server error ${res.status} from ${path}`);
       }
       return res;
@@ -61,7 +62,9 @@ export function installFetchErrorToasts(): void {
       ) {
         throw err;
       }
-      if (isApi) {
+      // When the server is known to be down, suppress per-request toasts.
+      // The DisconnectBanner handles the user-facing notification instead.
+      if (isApi && !isServerDown()) {
         reportError(
           `Network error contacting ${path}. Check your connection.`,
         );
