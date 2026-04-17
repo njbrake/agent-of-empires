@@ -598,15 +598,15 @@ export function useTerminal(
     viewport.addEventListener("touchend", onTouchEnd, touchOpts);
     viewport.addEventListener("touchcancel", onTouchEnd, touchOpts);
 
-    // After a scroll gesture, suppress the click that follows so it doesn't
-    // accidentally open the soft keyboard.
-    const onClickAfterScroll = (e: MouseEvent) => {
-      if (suppressNextClick) {
-        suppressNextClick = false;
-        e.stopPropagation();
-      }
+    // On mobile, suppress ALL click-to-focus so the keyboard is only
+    // controlled via the FAB button. On desktop, only suppress after a
+    // scroll gesture.
+    const onClickCapture = (e: MouseEvent) => {
+      const wasScroll = suppressNextClick;
+      suppressNextClick = false;
+      if (isMobileViewport() || wasScroll) e.stopPropagation();
     };
-    viewport.addEventListener("click", onClickAfterScroll, true);
+    viewport.addEventListener("click", onClickCapture, true);
 
     // Trackpad pinch fires wheel events with ctrlKey=true
     let wheelAccum = 0;
@@ -638,7 +638,7 @@ export function useTerminal(
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
-      viewport.removeEventListener("click", onClickAfterScroll, true);
+      viewport.removeEventListener("click", onClickCapture, true);
       viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
