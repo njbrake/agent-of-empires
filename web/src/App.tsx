@@ -20,6 +20,7 @@ import { SettingsView } from "./components/SettingsView";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
 import type { WizardPrefill } from "./components/session-wizard/SessionWizard";
+import type { SessionResponse } from "./lib/types";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
 import { AboutModal } from "./components/AboutModal";
@@ -57,7 +58,7 @@ export default function App() {
 }
 
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
-  const { sessions, error, setSessionStatus } = useSessions();
+  const { sessions, error, injectSession, setSessionStatus } = useSessions();
   const workspaces = useWorkspaces(sessions);
   const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
 
@@ -323,6 +324,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onHelp: () => setShowHelp((h) => !h),
         onSettings: () => setShowSettings((s) => !s),
         onPalette: () => setShowPalette((p) => !p),
+        onToggleSidebar: () => setSidebarOpen((o) => !o),
+        onToggleRightPanel: () => setDiffCollapsed((c) => !c),
       }),
       [toggleDiff, showPalette, deletingWorkspaceId],
     ),
@@ -448,7 +451,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       {showAddProject && (
         <SessionWizard
           onClose={() => { setShowAddProject(false); setWizardPrefill(undefined); }}
-          onCreated={() => { setShowAddProject(false); setWizardPrefill(undefined); }}
+          onCreated={(session?: SessionResponse) => { if (session) injectSession(session); setShowAddProject(false); setWizardPrefill(undefined); }}
           prefill={wizardPrefill}
         />
       )}

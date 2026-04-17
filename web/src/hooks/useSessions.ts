@@ -9,6 +9,13 @@ export function useSessions() {
   const [error, setError] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const injectSession = useCallback((session: SessionResponse) => {
+    setSessions((prev) => {
+      if (prev.some((s) => s.id === session.id)) return prev;
+      return [session, ...prev];
+    });
+  }, []);
+
   const refresh = useCallback(async () => {
     const data = await fetchSessions();
     if (data !== null) {
@@ -51,5 +58,5 @@ export function useSessions() {
     setSessions((prev) => prev.map((s) => s.id === id ? { ...s, status } : s));
   }, []);
 
-  return { sessions, error, refresh, setSessionStatus };
+  return { sessions, error, refresh, injectSession, setSessionStatus };
 }
