@@ -167,6 +167,9 @@ pub struct AppState {
         std::time::Instant,
         std::collections::HashMap<String, api::CleanupDefaults>,
     )>,
+    /// Cached remote owner per repo path. Remote owners don't change, so
+    /// entries live for the lifetime of the process.
+    pub remote_owner_cache: RwLock<std::collections::HashMap<String, Option<String>>>,
 }
 
 impl AppState {
@@ -257,6 +260,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             std::time::Instant::now() - std::time::Duration::from_secs(60),
             std::collections::HashMap::new(),
         )),
+        remote_owner_cache: RwLock::new(std::collections::HashMap::new()),
     });
 
     let app = build_router(state.clone());

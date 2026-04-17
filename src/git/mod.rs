@@ -23,6 +23,42 @@ pub(crate) fn open_repo_at(path: &Path) -> std::result::Result<git2::Repository,
     )
 }
 
+/// Extract the owner (first path segment) from a git remote URL.
+///
+/// Handles common formats:
+/// - SSH shorthand: `git@github.com:owner/repo.git`
+/// - HTTPS: `https://github.com/owner/repo.git`
+/// - SSH URL: `ssh://git@github.com/owner/repo.git`
+pub fn parse_owner_from_remote_url(url: &str) -> Option<String> {
+    // SSH shorthand: git@host:owner/repo.git
+    // Detect by presence of '@' before ':' and no "://" scheme prefix.
+    if !url.contains("://") {
+        if let Some(colon_pos) = url.find(':') {
+            if url[..colon_pos].contains('@') {
+                let after = &url[colon_pos + 1..];
+                let owner = after.split('/').next()?;
+                return (!owner.is_empty()).then(|| owner.to_string());
+            }
+        }
+    }
+
+    // URL format: scheme://[user@]host/owner/repo.git
+    let without_scheme = url.split("://").nth(1).unwrap_or(url);
+    let after_host = &without_scheme[without_scheme.find('/')?  + 1..];
+    let owner = after_host.split('/').next()?;
+    (!owner.is_empty()).then(|| owner.to_string())
+}
+
+/// Look up the owner of a git repository by reading the `origin` remote URL.
+/// Returns `None` if the path is not a git repo, has no origin remote, or the
+/// URL cannot be parsed.
+pub fn get_remote_owner(path: &Path) -> Option<String> {
+    let repo = open_repo_at(path).ok()?;
+    let remote = repo.find_remote("origin").ok()?;
+    let url = remote.url()?;
+    parse_owner_from_remote_url(url)
+}
+
 pub struct WorktreeEntry {
     pub path: PathBuf,
     pub branch: Option<String>,
@@ -1359,5 +1395,50 @@ mod tests {
             wt_path.join(".git").is_file(),
             "Worktree should have a .git pointer file"
         );
+    }
+
+    #[test]
+    fn test_parse_owner_ssh_shorthand() {
+        assert_eq!(
+            parse_owner_from_remote_url("git@github.com:njbrake/agent-of-empires.git"),
+            Some("njbrake".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_owner_https() {
+        assert_eq!(
+            parse_owner_from_remote_url("https://github.com/njbrake/agent-of-empires.git"),
+            Some("njbrake".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_owner_ssh_url() {
+        assert_eq!(
+            parse_owner_from_remote_url("ssh://git@github.com/njbrake/agent-of-empires.git"),
+            Some("njbrake".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_owner_http() {
+        assert_eq!(
+            parse_owner_from_remote_url("http://github.com/mozilla-ai/lumigator.git"),
+            Some("mozilla-ai".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_owner_no_dotgit_suffix() {
+        assert_eq!(
+            parse_owner_from_remote_url("https://github.com/njbrake/agent-of-empires"),
+            Some("njbrake".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_owner_empty_url() {
+        assert_eq!(parse_owner_from_remote_url(""), None);
     }
 }
