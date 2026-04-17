@@ -298,6 +298,52 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     };
   }, [sidebarOpen]);
 
+  // Right-edge swipe to open the diff/shell panel (mirrors left-edge sidebar swipe)
+  useEffect(() => {
+    if (!diffCollapsed || !activeSessionId) return;
+    const EDGE_PX = 24;
+    const THRESHOLD_PX = 60;
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (window.innerWidth >= 768 || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (!t || t.clientX < window.innerWidth - EDGE_PX) return;
+      tracking = true;
+      startX = t.clientX;
+      startY = t.clientY;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!tracking) return;
+      const t = e.touches[0];
+      if (!t) return;
+      const dx = startX - t.clientX;
+      const dy = t.clientY - startY;
+      if (dx > THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+        tracking = false;
+        setDiffCollapsed(false);
+      } else if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) {
+        tracking = false;
+      }
+    };
+    const onTouchEnd = () => {
+      tracking = false;
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [diffCollapsed, activeSessionId]);
+
   const handleNewSession = useCallback(() => {
     setWizardPrefill(undefined);
     setShowAddProject(true);
