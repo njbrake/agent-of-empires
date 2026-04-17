@@ -90,9 +90,13 @@ const SessionRow = memo(function SessionRow({
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
-    document.addEventListener("click", close);
-    document.addEventListener("contextmenu", close);
+    // Defer so the event that opened the menu finishes bubbling first
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("click", close);
+      document.addEventListener("contextmenu", close);
+    });
     return () => {
+      cancelAnimationFrame(id);
       document.removeEventListener("click", close);
       document.removeEventListener("contextmenu", close);
     };
@@ -184,8 +188,8 @@ const SessionRow = memo(function SessionRow({
         } ${
           isActive
             ? "bg-surface-850 border-l-2 border-brand-600"
-            : "border-l-2 border-transparent hover:bg-surface-800/50"
-        } ${isDeleting ? "opacity-50" : ""}`}
+            : "border-l-2 border-transparent hover:bg-surface-700/40"
+        } ${isDeleting ? "opacity-50 pointer-events-none" : ""}`}
       >
         <div className="flex items-center gap-2">
           <span
