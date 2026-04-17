@@ -430,78 +430,8 @@ export function useTerminal(
       }
     };
 
-    // Long-press paste popup for mobile. iOS won't show native paste on
-    // wterm's invisible textarea, so we detect the long-press ourselves
-    // and show a floating "Paste" button that uses the Clipboard API.
-    let pastePopup: HTMLElement | null = null;
-    let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-    const PASTE_LONG_PRESS_MS = 500;
-
-    const dismissPastePopup = () => {
-      if (pastePopup) {
-        pastePopup.remove();
-        pastePopup = null;
-      }
-    };
-
-    const showPastePopup = (x: number, y: number) => {
-      dismissPastePopup();
-      const btn = document.createElement("button");
-      btn.textContent = "Paste";
-      btn.setAttribute("type", "button");
-      const s = btn.style;
-      s.position = "fixed";
-      s.left = `${x}px`;
-      s.top = `${y - 44}px`;
-      s.transform = "translateX(-50%)";
-      s.zIndex = "9999";
-      s.padding = "6px 16px";
-      s.borderRadius = "8px";
-      s.border = "1px solid rgba(255,255,255,0.15)";
-      s.background = "rgba(40,40,44,0.95)";
-      s.color = "#e4e4e7";
-      s.fontSize = "14px";
-      s.fontFamily = "system-ui, sans-serif";
-      s.backdropFilter = "blur(8px)";
-      s.setProperty("-webkit-backdrop-filter", "blur(8px)");
-      s.boxShadow = "0 4px 16px rgba(0,0,0,0.4)";
-      s.cursor = "pointer";
-      s.touchAction = "manipulation";
-      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        // Focus wterm's textarea and use execCommand('paste'). On
-        // Safari 13+, this shows a native "Paste" permission callout.
-        // When the user confirms, the paste event fires on the textarea
-        // and wterm's handlePaste processes it automatically.
-        // This works on non-HTTPS origins where the Clipboard API
-        // (navigator.clipboard.readText) is unavailable.
-        const ta = term.element.querySelector("textarea");
-        if (ta) {
-          ta.focus({ preventScroll: true });
-          document.execCommand("paste");
-        }
-        dismissPastePopup();
-      });
-      document.body.appendChild(btn);
-      pastePopup = btn;
-      // Auto-dismiss after 3s
-      setTimeout(() => {
-        if (pastePopup === btn) dismissPastePopup();
-      }, 3000);
-    };
-
-    const cancelLongPress = () => {
-      if (longPressTimer !== null) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-      }
-    };
-
     const onTouchStart = (e: TouchEvent) => {
       cancelMomentum();
-      cancelLongPress();
-      dismissPastePopup();
       suppressNextClick = false;
 
       if (e.touches.length === 1) {
@@ -513,25 +443,10 @@ export function useTerminal(
         singleLastTs = singleStartTs;
         velocity = 0;
         gestureMode = null;
-
-        // Start long-press timer for paste popup (mobile only)
-        if (isMobileViewport()) {
-          const px = t.clientX;
-          const py = t.clientY;
-          longPressTimer = setTimeout(() => {
-            longPressTimer = null;
-            // Only show if gesture hasn't been classified as scroll
-            if (gestureMode === null) {
-              showPastePopup(px, py);
-              navigator.vibrate?.(10);
-            }
-          }, PASTE_LONG_PRESS_MS);
-        }
         return;
       }
 
       if (e.touches.length === 2) {
-        cancelLongPress();
         gestureMode = null;
         touchMidY = midpointY(e);
         touchAccum = 0;
@@ -558,7 +473,6 @@ export function useTerminal(
           // Long-press then drag is text selection, not scroll.
           if (now - singleStartTs > LONG_PRESS_MS) return;
           gestureMode = "single-scroll";
-          cancelLongPress();
           singleY = y;
         }
 
@@ -625,7 +539,6 @@ export function useTerminal(
     };
 
     const onTouchEnd = (e: TouchEvent) => {
-      cancelLongPress();
       if (e.touches.length > 0) return;
       if (gestureMode === "pinch") {
         flushFontSize();
@@ -715,8 +628,6 @@ export function useTerminal(
     return () => {
       connectOnReady = false;
       cancelMomentum();
-      cancelLongPress();
-      dismissPastePopup();
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
