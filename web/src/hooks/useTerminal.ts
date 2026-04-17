@@ -177,12 +177,87 @@ export function useTerminal(
         queueMicrotask(seedTextarea);
       });
 
-      // DEBUG: trace touch/focus events on the textarea to diagnose paste
-      ta.addEventListener("touchstart", () => console.log("[wterm-textarea] touchstart"));
-      ta.addEventListener("touchend", () => console.log("[wterm-textarea] touchend"));
-      ta.addEventListener("contextmenu", () => console.log("[wterm-textarea] contextmenu"));
-      ta.addEventListener("focus", () => console.log("[wterm-textarea] focus"));
-      ta.addEventListener("blur", () => console.log("[wterm-textarea] blur"));
+      // DEBUG: comprehensive paste diagnosis
+      // 1. Dump textarea computed styles that affect iOS paste behavior
+      const dumpTaStyles = () => {
+        const cs = getComputedStyle(ta);
+        console.log("[paste-debug] textarea styles:", {
+          opacity: cs.opacity,
+          pointerEvents: cs.pointerEvents,
+          userSelect: cs.getPropertyValue("user-select") || cs.getPropertyValue("-webkit-user-select"),
+          touchCallout: cs.getPropertyValue("-webkit-touch-callout"),
+          position: cs.position,
+          left: cs.left,
+          top: cs.top,
+          width: cs.width,
+          height: cs.height,
+          visibility: cs.visibility,
+          display: cs.display,
+          zIndex: cs.zIndex,
+          caretColor: cs.caretColor,
+        });
+        console.log("[paste-debug] textarea rect:", ta.getBoundingClientRect());
+        console.log("[paste-debug] textarea contentEditable:", ta.contentEditable);
+        console.log("[paste-debug] textarea readOnly:", ta.readOnly);
+        console.log("[paste-debug] textarea disabled:", ta.disabled);
+        console.log("[paste-debug] textarea value:", JSON.stringify(ta.value));
+      };
+      setTimeout(dumpTaStyles, 500);
+
+      // 2. Trace touch events with timestamps to measure hold duration
+      let touchStartTime = 0;
+      ta.addEventListener("touchstart", (e: TouchEvent) => {
+        touchStartTime = performance.now();
+        console.log("[paste-debug] textarea touchstart", {
+          touches: e.touches.length,
+          defaultPrevented: e.defaultPrevented,
+          cancelable: e.cancelable,
+        });
+      });
+      ta.addEventListener("touchend", (e: TouchEvent) => {
+        const holdMs = performance.now() - touchStartTime;
+        console.log("[paste-debug] textarea touchend", {
+          holdMs: Math.round(holdMs),
+          defaultPrevented: e.defaultPrevented,
+        });
+      });
+      ta.addEventListener("touchmove", (e: TouchEvent) => {
+        console.log("[paste-debug] textarea touchmove", {
+          defaultPrevented: e.defaultPrevented,
+        });
+      });
+      ta.addEventListener("contextmenu", (e: Event) => {
+        console.log("[paste-debug] textarea contextmenu!", {
+          defaultPrevented: e.defaultPrevented,
+          cancelable: e.cancelable,
+        });
+      });
+      ta.addEventListener("focus", () => console.log("[paste-debug] textarea focus"));
+      ta.addEventListener("blur", () => console.log("[paste-debug] textarea blur"));
+      ta.addEventListener("select", () => {
+        console.log("[paste-debug] textarea select event, selectionStart:", ta.selectionStart, "selectionEnd:", ta.selectionEnd);
+      });
+
+      // 3. Listen on document (capture) for contextmenu anywhere
+      document.addEventListener("contextmenu", (e: Event) => {
+        console.log("[paste-debug] DOCUMENT contextmenu", {
+          target: (e.target as HTMLElement)?.tagName,
+          defaultPrevented: e.defaultPrevented,
+        });
+      }, true);
+
+      // 4. Monitor if our parent touch handlers are calling preventDefault
+      // by wrapping the original method briefly
+      const origPreventDefault = TouchEvent.prototype.preventDefault;
+      TouchEvent.prototype.preventDefault = function(this: TouchEvent) {
+        console.log("[paste-debug] preventDefault called on", this.type, {
+          target: (this.target as HTMLElement)?.tagName,
+          stack: new Error().stack?.split("\n").slice(1, 4).join(" | "),
+        });
+        return origPreventDefault.call(this);
+      };
+      // Restore after 60s to avoid perf impact
+      setTimeout(() => { TouchEvent.prototype.preventDefault = origPreventDefault; }, 60000);
     };
 
     // Initialize the WASM bridge, then connect to the PTY.
