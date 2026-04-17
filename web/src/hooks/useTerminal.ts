@@ -146,9 +146,6 @@ export function useTerminal(
       wtermTextarea.style.width = "100%";
       wtermTextarea.style.height = "100%";
       wtermTextarea.style.pointerEvents = "auto";
-      // Let text selection pass through to terminal content underneath
-      wtermTextarea.style.userSelect = "none";
-      wtermTextarea.style.webkitUserSelect = "none";
 
       const seedTextarea = () => {
         if (wtermTextarea && !wtermTextarea.value) {
@@ -158,21 +155,16 @@ export function useTerminal(
       };
       wtermTextarea.addEventListener("focus", seedTextarea);
 
-      // Capture-phase: intercept Backspace before wterm's preventDefault.
-      // Send \x7f ourselves and let the native deletion happen (no
-      // preventDefault) so iOS enters its key-repeat loop.
+      // Capture-phase: block wterm's preventDefault on Backspace so iOS
+      // can enter its key-repeat loop. Don't send \x7f here; the native
+      // deletion fires a deleteContentBackward input event which handles it.
       wtermTextarea.addEventListener("keydown", (e: KeyboardEvent) => {
         if (e.key !== "Backspace") return;
         e.stopImmediatePropagation();
-        const ws = wsRef.current;
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode("\x7f"));
-        }
-        queueMicrotask(seedTextarea);
       }, true);
 
-      // iOS key-repeat fires "input" events with deleteContentBackward,
-      // not repeated keydown. Send \x7f for each one and re-seed.
+      // All backspace handling (first press + iOS repeat) comes through
+      // here as deleteContentBackward input events. Send \x7f and re-seed.
       const ta = wtermTextarea;
       ta.addEventListener("input", (e: Event) => {
         const ie = e as InputEvent;
@@ -184,6 +176,13 @@ export function useTerminal(
         }
         queueMicrotask(seedTextarea);
       });
+
+      // DEBUG: trace touch/focus events on the textarea to diagnose paste
+      ta.addEventListener("touchstart", () => console.log("[wterm-textarea] touchstart"));
+      ta.addEventListener("touchend", () => console.log("[wterm-textarea] touchend"));
+      ta.addEventListener("contextmenu", () => console.log("[wterm-textarea] contextmenu"));
+      ta.addEventListener("focus", () => console.log("[wterm-textarea] focus"));
+      ta.addEventListener("blur", () => console.log("[wterm-textarea] blur"));
     };
 
     // Initialize the WASM bridge, then connect to the PTY.
