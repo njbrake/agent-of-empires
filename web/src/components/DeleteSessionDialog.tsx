@@ -3,7 +3,6 @@ import type { DeleteSessionOptions } from "../lib/api";
 
 interface Props {
   sessionTitle: string;
-  sessionId: string;
   branchName: string | null;
   hasManagedWorktree: boolean;
   isSandboxed: boolean;

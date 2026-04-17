@@ -8,6 +8,7 @@ import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
+import { toastBus } from "./lib/toastBus";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
@@ -159,7 +160,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
     const result = await deleteSession(sessionId, options);
     if (!result.ok) {
-      const { toastBus } = await import("./lib/toastBus");
       toastBus.handler?.error(result.error || "Failed to delete session");
       throw new Error(result.error);
     }
@@ -171,7 +171,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       setActiveSessionId(null);
     }
 
-    const { toastBus } = await import("./lib/toastBus");
     toastBus.handler?.info("Session deleted");
   }, [deletingSession, activeSessionId]);
 
@@ -457,7 +456,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       {deletingSession && (
         <DeleteSessionDialog
           sessionTitle={deletingSession.title}
-          sessionId={deletingSession.id}
           branchName={deletingSession.branch}
           hasManagedWorktree={deletingSession.has_managed_worktree}
           isSandboxed={deletingSession.is_sandboxed}
