@@ -27,7 +27,10 @@ export function TerminalView({ session }: Props) {
   const proxyRef = useRef<HTMLInputElement>(null);
   const [proxyFocused, setProxyFocused] = useState(false);
   const [ctrlActive, setCtrlActive] = useState(false);
-  const composingRef = useRef(false);
+  // Tracks whether any input events were blocked during the current
+  // composition (CJK/IME). If true, compositionEnd must send the final
+  // text. If false (iOS dictation), text already streamed via input events.
+  const blockedDuringCompositionRef = useRef(false);
 
   // Keep the shared ref in sync so wterm's onData callback can read it.
   ctrlActiveRef.current = ctrlActive;
@@ -122,9 +125,15 @@ export function TerminalView({ session }: Props) {
   // reliably expose the terminal's own helper textarea for the soft keyboard.
   const onProxyInput = useCallback(
     (e: FormEvent<HTMLInputElement>) => {
-      // During composition (dictation, IME), skip until compositionend to
-      // avoid sending partial text that gets repeated in the final result.
-      if (composingRef.current) return;
+      // isComposing is true for input events during CJK/IME composition.
+      // Block these to avoid sending intermediate pinyin/kana. iOS dictation
+      // does NOT set isComposing on its streaming input events, so dictated
+      // text flows through normally.
+      const inputEvent = e.nativeEvent as InputEvent;
+      if (inputEvent.isComposing) {
+        blockedDuringCompositionRef.current = true;
+        return;
+      }
       const value = e.currentTarget.value;
       if (!value) return;
       if (ctrlActive) {
@@ -145,17 +154,20 @@ export function TerminalView({ session }: Props) {
     [sendData, ctrlActive],
   );
 
-  const onCompositionStart = useCallback(() => {
-    composingRef.current = true;
-  }, []);
-
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLInputElement>) => {
-      composingRef.current = false;
-      const value = e.currentTarget.value;
-      if (!value) return;
-      sendData(value);
+      if (blockedDuringCompositionRef.current) {
+        // CJK/IME: input events were blocked, send the final composed text.
+        const value = e.currentTarget.value;
+        if (value) {
+          sendData(value);
+        }
+      }
+      // Always clear to prevent a trailing input event from re-sending.
+      // iOS dictation fires compositionend after text already streamed via
+      // input events; clearing prevents the full text from appearing twice.
       e.currentTarget.value = "";
+      blockedDuringCompositionRef.current = false;
     },
     [sendData],
   );
@@ -316,7 +328,6 @@ export function TerminalView({ session }: Props) {
               spellCheck={false}
               onInput={onProxyInput}
               onKeyDown={onProxyKeyDown}
-              onCompositionStart={onCompositionStart}
               onCompositionEnd={onCompositionEnd}
               onFocus={() => setProxyFocused(true)}
               onBlur={() => setProxyFocused(false)}
