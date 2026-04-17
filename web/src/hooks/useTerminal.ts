@@ -137,12 +137,17 @@ export function useTerminal(
     // iOS can't show a paste popup on it. Use the toolbar Paste button.
     const BACKSPACE_SEED = "\u200B";
     let wtermTextarea: HTMLTextAreaElement | null = null;
+    // Hoisted so cleanup can remove the scroll listener.
+    const syncTextareaScroll = () => {
+      if (wtermTextarea) {
+        wtermTextarea.style.top = `${term.element.scrollTop}px`;
+      }
+    };
     const setupMobileTextarea = () => {
       if (!isMobileViewport()) return;
       wtermTextarea = termEl.querySelector("textarea");
       if (!wtermTextarea) return;
       wtermTextarea.style.left = "0";
-      wtermTextarea.style.top = "0";
       wtermTextarea.style.width = "100%";
       wtermTextarea.style.height = "100%";
       wtermTextarea.style.pointerEvents = "auto";
@@ -151,6 +156,15 @@ export function useTerminal(
       // non-zero value. The textarea already has color:transparent and
       // background:transparent so it stays invisible to the human eye.
       wtermTextarea.style.opacity = "0.01";
+      // Ensure textarea is above the terminal grid for touch events.
+      wtermTextarea.style.zIndex = "10";
+      // wterm's .wterm element is scrollable (overflow-y:auto) for
+      // scrollback. position:absolute + top:0 puts the textarea at the
+      // top of the scroll CONTENT, which scrolls off-screen as output
+      // grows. Sync the textarea's top with scrollTop so it always
+      // covers the visible area.
+      syncTextareaScroll();
+      term.element.addEventListener("scroll", syncTextareaScroll);
 
       const seedTextarea = () => {
         if (wtermTextarea && !wtermTextarea.value) {
@@ -722,6 +736,7 @@ export function useTerminal(
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
       viewport.removeEventListener("click", onClickCapture, true);
       viewport.removeEventListener("wheel", onWheel);
+      viewport.removeEventListener("scroll", syncTextareaScroll);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
       wsRef.current?.close();
