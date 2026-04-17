@@ -69,6 +69,7 @@ export function useCommandActions({
       title: "Toggle sidebar",
       group: "Actions",
       keywords: ["hide", "show", "nav"],
+      shortcut: "⌘B",
       perform: onToggleSidebar,
     });
 
