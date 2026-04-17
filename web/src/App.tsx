@@ -6,8 +6,10 @@ import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
-import { loginStatus, logout } from "./lib/api";
+import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
+import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
@@ -132,6 +134,46 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   };
 
   const [wizardPrefill, setWizardPrefill] = useState<WizardPrefill | undefined>(undefined);
+  const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
+  const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
+
+  useEffect(() => {
+    fetchAbout().then((about) => {
+      if (about) setServerAbout(about);
+    });
+  }, []);
+
+  const deletingWorkspace = deletingWorkspaceId
+    ? workspaces.find((w) => w.id === deletingWorkspaceId)
+    : null;
+  const deletingSession = deletingWorkspace?.sessions[0] ?? null;
+
+  const handleDeleteSession = useCallback((workspaceId: string) => {
+    setDeletingWorkspaceId(workspaceId);
+  }, []);
+
+  const handleConfirmDelete = useCallback(async (options: DeleteSessionOptions) => {
+    if (!deletingSession) return;
+    const sessionId = deletingSession.id;
+    const wasActive = sessionId === activeSessionId;
+
+    const result = await deleteSession(sessionId, options);
+    if (!result.ok) {
+      const { toastBus } = await import("./lib/toastBus");
+      toastBus.handler?.error(result.error || "Failed to delete session");
+      throw new Error(result.error);
+    }
+
+    setDeletingWorkspaceId(null);
+
+    if (wasActive) {
+      setActiveWorkspaceId(null);
+      setActiveSessionId(null);
+    }
+
+    const { toastBus } = await import("./lib/toastBus");
+    toastBus.handler?.info("Session deleted");
+  }, [deletingSession, activeSessionId]);
 
   const handleCreateSession = useCallback((repoPath: string) => {
     const projectSessions = sessions
@@ -261,6 +303,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onNew: () => setShowAddProject(true),
         onDiff: () => toggleDiff(),
         onEscape: () => {
+          if (deletingWorkspaceId) {
+            setDeletingWorkspaceId(null);
+            return;
+          }
           if (showPalette) {
             setShowPalette(false);
             return;
@@ -275,7 +321,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onSettings: () => setShowSettings((s) => !s),
         onPalette: () => setShowPalette((p) => !p),
       }),
-      [toggleDiff, showPalette],
+      [toggleDiff, showPalette, deletingWorkspaceId],
     ),
   );
 
@@ -387,6 +433,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
           onRepeatLast={handleRepeatLast}
           hasLastSession={!!lastSession}
+          onDeleteSession={handleDeleteSession}
+          readOnly={serverAbout?.read_only}
         />
 
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
@@ -405,6 +453,18 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
 
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
+
+      {deletingSession && (
+        <DeleteSessionDialog
+          sessionTitle={deletingSession.title}
+          sessionId={deletingSession.id}
+          branchName={deletingSession.branch}
+          hasManagedWorktree={deletingSession.has_managed_worktree}
+          isSandboxed={deletingSession.is_sandboxed}
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setDeletingWorkspaceId(null)}
+        />
+      )}
 
       <CommandPalette
         open={showPalette}

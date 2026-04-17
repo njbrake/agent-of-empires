@@ -361,3 +361,41 @@ export async function renameSession(
     return false;
   }
 }
+
+export interface DeleteSessionOptions {
+  delete_worktree?: boolean;
+  delete_branch?: boolean;
+  delete_sandbox?: boolean;
+  force_delete?: boolean;
+}
+
+export interface DeleteSessionResult {
+  ok: boolean;
+  error?: string;
+}
+
+export async function deleteSession(
+  id: string,
+  options: DeleteSessionOptions = {},
+): Promise<DeleteSessionResult> {
+  try {
+    const res = await fetch(`/api/sessions/${id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return {
+        ok: false,
+        error: data.message || `Server error (${res.status})`,
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `Network error: ${e instanceof Error ? e.message : "connection failed"}`,
+    };
+  }
+}

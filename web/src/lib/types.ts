@@ -13,6 +13,7 @@ export interface SessionResponse {
   branch: string | null;
   main_repo_path: string | null;
   is_sandboxed: boolean;
+  has_managed_worktree: boolean;
   has_terminal: boolean;
   profile: string;
 }

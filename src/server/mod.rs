@@ -388,7 +388,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
         )
-        .route("/api/sessions/{id}", patch(api::rename_session))
+        .route(
+            "/api/sessions/{id}",
+            patch(api::rename_session).delete(api::delete_session),
+        )
         .route(
             "/api/sessions/{id}/diff/files",
             get(api::session_diff_files),

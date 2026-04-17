@@ -22,6 +22,8 @@ interface Props {
   onSettings: () => void;
   onRepeatLast?: () => void;
   hasLastSession?: boolean;
+  onDeleteSession?: (workspaceId: string) => void;
+  readOnly?: boolean;
 }
 
 function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string | null } {
@@ -50,11 +52,15 @@ const SessionRow = memo(function SessionRow({
   workspace,
   isActive,
   onClick,
+  onDelete,
+  readOnly,
   indented,
 }: {
   workspace: Workspace;
   isActive: boolean;
   onClick: () => void;
+  onDelete?: (workspaceId: string) => void;
+  readOnly?: boolean;
   indented?: boolean;
 }) {
   const { status: sessionStatus, createdAt } = bestSession(workspace);
@@ -62,13 +68,15 @@ const SessionRow = memo(function SessionRow({
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
   const sessionId = workspace.sessions[0]?.id;
+  const isDeleting = sessionStatus === "Deleting";
 
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; fromButton?: boolean } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(label);
   const renameRef = useRef<HTMLInputElement>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
+  const moreRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     return () => {
@@ -92,8 +100,18 @@ const SessionRow = memo(function SessionRow({
   }, [contextMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
+    if (isDeleting) return;
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMoreClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isDeleting) return;
+    const rect = moreRef.current?.getBoundingClientRect();
+    if (rect) {
+      setContextMenu({ x: rect.right, y: rect.bottom + 4, fromButton: true });
+    }
   };
 
   const clearLongPress = () => {
@@ -103,13 +121,17 @@ const SessionRow = memo(function SessionRow({
     }
   };
 
-  const handleTouchStart = () => {
+  const handleTouchStart = (e: React.TouchEvent) => {
     clearLongPress();
     longPressFired.current = false;
-    if (!sessionId) return;
+    if (!sessionId || isDeleting) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const tx = touch.clientX;
+    const ty = touch.clientY;
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true;
-      startRename();
+      setContextMenu({ x: tx, y: ty });
     }, 500);
   };
 
@@ -134,6 +156,11 @@ const SessionRow = memo(function SessionRow({
     await renameSession(sessionId, trimmed);
   };
 
+  const handleDelete = () => {
+    setContextMenu(null);
+    onDelete?.(workspace.id);
+  };
+
   if (renaming) {
     return (
       <div className={`py-1 ${indented ? "pl-6 pr-3" : "px-3"}`}>
@@ -155,43 +182,75 @@ const SessionRow = memo(function SessionRow({
 
   return (
     <>
-      <button
-        onClick={() => { if (!longPressFired.current) onClick(); }}
+      <div
         onContextMenu={handleContextMenu}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onTouchMove={clearLongPress}
-        onTouchCancel={clearLongPress}
-        className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
-          indented ? "pl-6 pr-3" : "px-3"
+        className={`group/row flex items-center transition-colors duration-75 ${
+          indented ? "pl-6 pr-1" : "pl-3 pr-1"
         } ${
           isActive
             ? "bg-surface-850 border-l-2 border-brand-600"
             : "border-l-2 border-transparent hover:bg-surface-800/50"
-        }`}
+        } ${isDeleting ? "opacity-50" : ""}`}
       >
-        <div className="flex items-center gap-2">
-          <span
-            className={`text-sm shrink-0 leading-none font-mono ${textClass}`}
+        <button
+          onClick={() => { if (!longPressFired.current) onClick(); }}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          onTouchMove={clearLongPress}
+          onTouchCancel={clearLongPress}
+          className="flex-1 min-w-0 text-left py-2 cursor-pointer"
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className={`text-sm shrink-0 leading-none font-mono ${textClass}`}
+            >
+              <StatusGlyph status={sessionStatus} createdAt={createdAt} />
+            </span>
+            <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive(sessionStatus) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+              {label}
+            </span>
+          </div>
+        </button>
+        {!isDeleting && (
+          <button
+            ref={moreRef}
+            onClick={handleMoreClick}
+            className="w-6 h-6 flex items-center justify-center shrink-0 rounded text-text-dim hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+            aria-label="Session actions"
           >
-            <StatusGlyph status={sessionStatus} createdAt={createdAt} />
-          </span>
-          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive(sessionStatus) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
-            {label}
-          </span>
-        </div>
-      </button>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+              <circle cx="2" cy="6" r="1.2" />
+              <circle cx="6" cy="6" r="1.2" />
+              <circle cx="10" cy="6" r="1.2" />
+            </svg>
+          </button>
+        )}
+      </div>
       {contextMenu && (
         <div
           className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          style={contextMenu.fromButton
+            ? { right: window.innerWidth - contextMenu.x, top: contextMenu.y }
+            : { left: contextMenu.x, top: contextMenu.y }
+          }
         >
           <button
             onClick={startRename}
-            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+            className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
           >
             Rename
           </button>
+          {!readOnly && (
+            <>
+              <div className="border-t border-surface-700/20 my-1" />
+              <button
+                onClick={handleDelete}
+                className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-status-error hover:bg-status-error/10 cursor-pointer transition-colors"
+              >
+                Delete
+              </button>
+            </>
+          )}
         </div>
       )}
     </>
@@ -304,6 +363,8 @@ export function WorkspaceSidebar({
   onSettings,
   onRepeatLast,
   hasLastSession,
+  onDeleteSession,
+  readOnly,
 }: Props) {
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -493,6 +554,8 @@ export function WorkspaceSidebar({
                       workspace={ws}
                       isActive={ws.id === activeId}
                       onClick={() => onSelect(ws.id)}
+                      onDelete={onDeleteSession}
+                      readOnly={readOnly}
                       indented
                     />
                   ))}

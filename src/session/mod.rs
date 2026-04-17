@@ -4,6 +4,7 @@ pub mod builder;
 pub mod civilizations;
 pub mod config;
 pub(crate) mod container_config;
+pub mod deletion;
 pub(crate) mod environment;
 mod groups;
 mod instance;

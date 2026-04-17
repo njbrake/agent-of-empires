@@ -10,10 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::session::{Instance, Storage};
-
-#[cfg(test)]
-use crate::session::Status;
+use crate::session::{Instance, Status, Storage};
 
 use super::AppState;
 
@@ -56,6 +53,7 @@ pub struct SessionResponse {
     pub branch: Option<String>,
     pub main_repo_path: Option<String>,
     pub is_sandboxed: bool,
+    pub has_managed_worktree: bool,
     pub has_terminal: bool,
     pub profile: String,
 }
@@ -79,6 +77,10 @@ impl From<&Instance> for SessionResponse {
                 .as_ref()
                 .map(|w| w.main_repo_path.clone()),
             is_sandboxed: inst.is_sandboxed(),
+            has_managed_worktree: inst
+                .worktree_info
+                .as_ref()
+                .is_some_and(|w| w.managed_by_aoe),
             has_terminal: inst.terminal_info.is_some(),
             profile: inst.source_profile.clone(),
         }
@@ -133,15 +135,144 @@ pub async fn rename_session(
     }
 
     let response = SessionResponse::from(&*inst);
+    let profile = inst.source_profile.clone();
 
-    let profile = state.profile.clone();
     if let Ok(storage) = Storage::new(&profile) {
-        if let Err(e) = storage.save(&instances) {
+        let profile_instances: Vec<_> = instances
+            .iter()
+            .filter(|i| i.source_profile == profile)
+            .cloned()
+            .collect();
+        if let Err(e) = storage.save(&profile_instances) {
             tracing::error!("Failed to save after rename: {e}");
         }
     }
 
     (StatusCode::OK, Json(serde_json::json!(response)))
+}
+
+// --- Delete session ---
+
+#[derive(Default, Deserialize)]
+pub struct DeleteSessionBody {
+    #[serde(default)]
+    pub delete_worktree: bool,
+    #[serde(default)]
+    pub delete_branch: bool,
+    #[serde(default)]
+    pub delete_sandbox: bool,
+    #[serde(default)]
+    pub force_delete: bool,
+}
+
+pub async fn delete_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Option<Json<DeleteSessionBody>>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        );
+    }
+
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+
+    // Acquire per-instance lock to serialize concurrent mutations
+    let lock = state.instance_lock(&id).await;
+    let _guard = lock.lock().await;
+
+    // Find and clone the instance (need the full Instance for deletion)
+    let instance = {
+        let instances = state.instances.read().await;
+        instances.iter().find(|i| i.id == id).cloned()
+    };
+
+    let Some(instance) = instance else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        );
+    };
+
+    let profile = instance.source_profile.clone();
+
+    // Mark as Deleting so polling clients see the status change
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            inst.status = Status::Deleting;
+        }
+    }
+
+    // Run deletion on a blocking thread (may do git/docker/tmux operations)
+    let deletion_id = id.clone();
+    let deletion_result = tokio::task::spawn_blocking(move || {
+        crate::session::deletion::perform_deletion(&crate::session::deletion::DeletionRequest {
+            session_id: deletion_id,
+            instance,
+            delete_worktree: body.delete_worktree,
+            delete_branch: body.delete_branch,
+            delete_sandbox: body.delete_sandbox,
+            force_delete: body.force_delete,
+        })
+    })
+    .await;
+
+    match deletion_result {
+        Ok(result) if result.success => {
+            // Remove from in-memory state and persist
+            let mut instances = state.instances.write().await;
+            instances.retain(|i| i.id != id);
+
+            if let Ok(storage) = Storage::new(&profile) {
+                let profile_instances: Vec<_> = instances
+                    .iter()
+                    .filter(|i| i.source_profile == profile)
+                    .cloned()
+                    .collect();
+                if let Err(e) = storage.save(&profile_instances) {
+                    tracing::error!("Failed to save after deletion: {e}");
+                }
+            }
+
+            // Clean up per-instance lock entry
+            state.instance_locks.write().await.remove(&id);
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "deleted" })),
+            )
+        }
+        Ok(result) => {
+            // Deletion had errors; set status to Error
+            let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+            {
+                let mut instances = state.instances.write().await;
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                    inst.status = Status::Error;
+                    inst.last_error = Some(error_msg.clone());
+                }
+            }
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "deletion_failed",
+                    "message": error_msg,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "internal",
+                "message": format!("Deletion task failed: {e}"),
+            })),
+        ),
+    }
 }
 
 // --- Create session ---
