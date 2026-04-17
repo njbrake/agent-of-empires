@@ -146,6 +146,11 @@ export function useTerminal(
       wtermTextarea.style.width = "100%";
       wtermTextarea.style.height = "100%";
       wtermTextarea.style.pointerEvents = "auto";
+      // wterm sets opacity:0 which makes iOS refuse to show the paste
+      // callout (it considers the element invisible). Override to a tiny
+      // non-zero value. The textarea already has color:transparent and
+      // background:transparent so it stays invisible to the human eye.
+      wtermTextarea.style.opacity = "0.01";
 
       const seedTextarea = () => {
         if (wtermTextarea && !wtermTextarea.value) {
@@ -154,6 +159,8 @@ export function useTerminal(
         }
       };
       wtermTextarea.addEventListener("focus", seedTextarea);
+      // Seed immediately so the textarea has content even before first focus.
+      seedTextarea();
 
       // Capture-phase: block wterm's preventDefault on Backspace so iOS
       // can enter its key-repeat loop. Don't send \x7f here; the native
