@@ -57,7 +57,7 @@ export default function App() {
 }
 
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
-  const { sessions, error } = useSessions();
+  const { sessions, error, setSessionStatus } = useSessions();
   const workspaces = useWorkspaces(sessions);
   const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
 
@@ -158,21 +158,25 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     const sessionId = deletingSession.id;
     const wasActive = sessionId === activeSessionId;
 
-    const result = await deleteSession(sessionId, options);
-    if (!result.ok) {
-      toastBus.handler?.error(result.error || "Failed to delete session");
-      throw new Error(result.error);
-    }
-
+    // Close dialog and show "Deleting" status immediately
     setDeletingWorkspaceId(null);
+    setSessionStatus(sessionId, "Deleting");
 
     if (wasActive) {
       setActiveWorkspaceId(null);
       setActiveSessionId(null);
     }
 
+    const result = await deleteSession(sessionId, options);
+    if (!result.ok) {
+      // Revert status on failure
+      setSessionStatus(sessionId, "Error");
+      toastBus.handler?.error(result.error || "Failed to delete session");
+      return;
+    }
+
     toastBus.handler?.info("Session deleted");
-  }, [deletingSession, activeSessionId]);
+  }, [deletingSession, activeSessionId, setSessionStatus]);
 
   const handleCreateSession = useCallback((repoPath: string) => {
     const projectSessions = sessions
