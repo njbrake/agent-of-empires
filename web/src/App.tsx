@@ -471,6 +471,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             if (session) {
               injectSession(session);
               setActiveSessionId(session.id);
+              // Key format must match useWorkspaces grouping key
               const repoPath = (session.main_repo_path ?? session.project_path).replace(/\/+$/, "");
               const wsId = `${repoPath}::${session.branch ?? "__default__"}`;
               setActiveWorkspaceId(wsId);
