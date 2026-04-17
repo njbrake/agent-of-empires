@@ -17,6 +17,7 @@ export interface SessionResponse {
   has_terminal: boolean;
   profile: string;
   cleanup_defaults: CleanupDefaults;
+  remote_owner: string | null;
 }
 
 export interface CleanupDefaults {
@@ -93,6 +94,7 @@ export interface RepoGroup {
   id: string;
   repoPath: string;
   displayName: string;
+  remoteOwner: string | null;
   workspaces: Workspace[];
   status: WorkspaceStatus;
   collapsed: boolean;

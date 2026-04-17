@@ -44,10 +44,14 @@ export function useRepoGroups(workspaces: Workspace[]): {
       const collapsed =
         collapsedMap[repoPath] ?? loadCollapsed(repoPath);
 
+      const remoteOwner =
+        sorted[0]?.sessions[0]?.remote_owner ?? null;
+
       repoGroups.push({
         id: repoPath,
         repoPath,
         displayName: repoPath.split("/").pop() ?? repoPath,
+        remoteOwner,
         workspaces: sorted,
         status: hasActive ? "active" : "idle",
         collapsed,

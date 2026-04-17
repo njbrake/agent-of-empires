@@ -3,6 +3,7 @@ import type { SessionResponse, SessionStatus } from "../lib/types";
 import { STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
 import { StatusGlyph } from "./StatusGlyph";
 import { renameSession } from "../lib/api";
+import { OwnerAvatar } from "./OwnerAvatar";
 
 interface Props {
   sessions: SessionResponse[];
@@ -14,6 +15,7 @@ interface Props {
 interface ProjectGroup {
   repoPath: string;
   displayName: string;
+  remoteOwner: string | null;
   sessions: SessionResponse[];
   hasActive: boolean;
   activeCount: number;
@@ -63,6 +65,7 @@ export function Dashboard({ sessions, onSelectSession, onNewSession, onCreateSes
         map.set(key, {
           repoPath: key,
           displayName: key.split("/").filter(Boolean).pop() || key,
+          remoteOwner: s.remote_owner,
           sessions: [s],
           hasActive: active,
           activeCount: active ? 1 : 0,
@@ -202,6 +205,7 @@ function ProjectCard({
     >
       {/* Card header */}
       <div className="px-3 py-2 border-b border-surface-800 flex items-center gap-2">
+        <OwnerAvatar owner={group.remoteOwner} size={18} />
         <span className="text-sm font-medium text-text-primary truncate flex-1" title={group.repoPath}>
           {group.displayName}
         </span>
