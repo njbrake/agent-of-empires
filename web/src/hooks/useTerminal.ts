@@ -468,18 +468,18 @@ export function useTerminal(
       s.cursor = "pointer";
       s.touchAction = "manipulation";
       btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-      btn.addEventListener("click", async (e) => {
+      btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        try {
-          const text = await navigator.clipboard.readText();
-          if (text) {
-            const ws = wsRef.current;
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(new TextEncoder().encode(text));
-            }
-          }
-        } catch {
-          // Clipboard access denied
+        // Focus wterm's textarea and use execCommand('paste'). On
+        // Safari 13+, this shows a native "Paste" permission callout.
+        // When the user confirms, the paste event fires on the textarea
+        // and wterm's handlePaste processes it automatically.
+        // This works on non-HTTPS origins where the Clipboard API
+        // (navigator.clipboard.readText) is unavailable.
+        const ta = term.element.querySelector("textarea");
+        if (ta) {
+          ta.focus({ preventScroll: true });
+          document.execCommand("paste");
         }
         dismissPastePopup();
       });

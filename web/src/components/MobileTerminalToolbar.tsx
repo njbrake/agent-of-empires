@@ -120,13 +120,18 @@ export function MobileTerminalToolbar({
         <span className="font-mono text-xs">^C</span>
       </button>
       <button type="button" aria-label="Paste from clipboard" className={btnBase}
-        onClick={async () => {
-          try {
-            const text = await navigator.clipboard.readText();
-            if (text) send(text);
-          } catch {
-            // Clipboard access denied or unavailable
+        onClick={() => {
+          haptic();
+          // Focus wterm's textarea and use execCommand('paste'). On
+          // Safari 13+, this shows a native "Paste" permission callout.
+          // When confirmed, wterm's handlePaste fires automatically.
+          // Works on non-HTTPS origins unlike navigator.clipboard.readText.
+          const ta = termRef.current?.element.querySelector("textarea");
+          if (ta) {
+            (ta as HTMLTextAreaElement).focus({ preventScroll: true });
+            document.execCommand("paste");
           }
+          refocusTerminal();
         }}>
         <svg
           width="14"
