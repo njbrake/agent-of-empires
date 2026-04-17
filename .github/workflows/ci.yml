@@ -102,15 +102,17 @@ jobs:
           for system in $SYSTEMS; do
             echo ""
             echo "--- $system ---"
-            printf "  default: "
-            if output=$(nix eval ".#packages.$system.default.drvPath" --raw 2>&1); then
-              echo "✓"
-            else
-              echo "✗"
-              echo "::error::Evaluation failed for packages.$system.default"
-              echo "$output"
-              exit 1
-            fi
+            for pkg in default aoe-with-web; do
+              printf "  %s: " "$pkg"
+              if output=$(nix eval ".#packages.$system.$pkg.drvPath" --raw 2>&1); then
+                echo "✓"
+              else
+                echo "✗"
+                echo "::error::Evaluation failed for packages.$system.$pkg"
+                echo "$output"
+                exit 1
+              fi
+            done
           done
 
           echo ""

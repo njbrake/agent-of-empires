@@ -1,0 +1,97 @@
+name: Update Nix npm Hash
+
+# Runs whenever web/package-lock.json changes on main, recomputes the
+# npmDepsHash in flake.nix and commits it if it changed.
+#
+# This keeps flake.nix in sync automatically so `nix build .#aoe-with-web`
+# never fails with a hash mismatch after a dependency update.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/package-lock.json
+
+# Only one instance runs at a time. If a second lockfile push lands while
+# this is running, cancel the in-progress run and start fresh with the
+# latest commit — so we never push a stale hash or hit a non-fast-forward.
+concurrency:
+  group: nix-npm-hash
+  cancel-in-progress: true
+
+jobs:
+  update-hash:
+    name: Recompute npmDepsHash
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Use GITHUB_TOKEN intentionally: the bot commit that updates the hash
+          # is mechanical and does not need to trigger CI. GITHUB_TOKEN pushes
+          # are deliberately excluded from workflow triggers by GitHub, which is
+          # the behavior we want here.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+
+      - name: Compute new npmDepsHash
+        id: hash
+        run: |
+          set -euo pipefail
+
+          # Set a fake hash, build the npm deps derivation, capture the real
+          # hash from the mismatch error. This is the standard nixpkgs pattern.
+          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+          # Patch flake.nix with the fake hash so Nix re-fetches
+          sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"$FAKE\"|" flake.nix
+
+          # Build the npm deps derivation; it will fail with the real hash
+          REAL=$(nix build --no-link --impure \
+            .#packages.x86_64-linux.aoe-with-web 2>&1 \
+            | grep "got:" \
+            | sed 's/.*got:[[:space:]]*//' \
+            | tr -d '[:space:]') || true
+
+          if [ -z "$REAL" ]; then
+            echo "Could not extract hash from build output; hash may already be correct."
+            git checkout -- flake.nix
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Compare against the hash already in the committed flake.nix
+          CURRENT=$(git show HEAD:flake.nix \
+            | grep 'npmDepsHash' \
+            | sed 's/.*npmDepsHash = "\(sha256-[^"]*\)".*/\1/')
+
+          if [ "$REAL" = "$CURRENT" ]; then
+            echo "Computed hash matches current flake.nix; nothing to update."
+            git checkout -- flake.nix
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "New hash: $REAL (was: $CURRENT)"
+          echo "hash=$REAL" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Patch flake.nix with real hash
+        if: steps.hash.outputs.changed == 'true'
+        run: |
+          REAL="${{ steps.hash.outputs.hash }}"
+          sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"$REAL\"|" flake.nix
+          echo "Updated flake.nix:"
+          grep "npmDepsHash" flake.nix
+
+      - name: Commit updated hash
+        if: steps.hash.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          git commit -m "chore: update Nix npmDepsHash for web dependencies"
+          git push
