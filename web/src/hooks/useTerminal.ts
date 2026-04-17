@@ -123,12 +123,72 @@ export function useTerminal(
 
     termRef.current = term;
 
+    // Two iOS patches for wterm's textarea:
+    // 1. Move from -9999px to 0,0 so iOS shows the soft keyboard on focus.
+    // 2. Fix backspace repeat: wterm calls preventDefault() on all keydown
+    //    events, which prevents iOS from entering its key-repeat loop.
+    //    We intercept Backspace in capture phase, skip wterm's handler,
+    //    and let the native deletion happen. iOS repeat fires "input"
+    //    events with inputType "deleteContentBackward" (not keydown),
+    //    so we detect those and send \x7f for each one.
+    //    A ZWS seed keeps the textarea non-empty so iOS always has
+    //    something to delete on each repeat tick.
+    // Paste: wterm's textarea has pointerEvents:none and is 1x1px, so
+    // iOS can't show a paste popup on it. Use the toolbar Paste button.
+    const BACKSPACE_SEED = "\u200B";
+    let wtermTextarea: HTMLTextAreaElement | null = null;
+    const setupMobileTextarea = () => {
+      if (!isMobileViewport()) return;
+      wtermTextarea = termEl.querySelector("textarea");
+      if (!wtermTextarea) return;
+
+      // Move wterm's textarea from -9999px into the viewport so iOS
+      // opens the soft keyboard when it receives focus.
+      wtermTextarea.style.left = "0";
+      wtermTextarea.style.top = "0";
+      // wterm sets opacity:0; override so the textarea is technically
+      // "visible" to iOS (needed for future keyboard/paste improvements).
+      wtermTextarea.style.opacity = "0.01";
+
+      const seedTextarea = () => {
+        if (wtermTextarea && !wtermTextarea.value) {
+          wtermTextarea.value = BACKSPACE_SEED;
+          wtermTextarea.setSelectionRange(1, 1);
+        }
+      };
+      wtermTextarea.addEventListener("focus", seedTextarea);
+      seedTextarea();
+
+      // Capture-phase: block wterm's preventDefault on Backspace so iOS
+      // can enter its key-repeat loop. Don't send \x7f here; the native
+      // deletion fires a deleteContentBackward input event which handles it.
+      wtermTextarea.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key !== "Backspace") return;
+        e.stopImmediatePropagation();
+      }, true);
+
+      // All backspace handling (first press + iOS repeat) comes through
+      // here as deleteContentBackward input events. Send \x7f and re-seed.
+      const ta = wtermTextarea;
+      ta.addEventListener("input", (e: Event) => {
+        const ie = e as InputEvent;
+        if (ie.inputType === "deleteContentBackward") {
+          const ws = wsRef.current;
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(new TextEncoder().encode("\x7f"));
+          }
+        }
+        queueMicrotask(seedTextarea);
+      });
+    };
+
     // Initialize the WASM bridge, then connect to the PTY.
     let connectOnReady = true;
     term
       .init()
       .then(() => {
         if (!connectOnReady) return;
+        setupMobileTextarea();
         connect();
       })
       .catch((err: unknown) => {
@@ -243,11 +303,13 @@ export function useTerminal(
 
       // Relay keystrokes as binary. When the virtual Ctrl button is armed,
       // intercept single printable characters and transform them to their
-      // Ctrl equivalents (Ctrl+A = 0x01, Ctrl+U = 0x15, etc.). This works
-      // regardless of whether the keystroke came from our mobile proxy input
-      // or from wterm's own hidden textarea.
+      // Ctrl equivalents (Ctrl+A = 0x01, Ctrl+U = 0x15, etc.).
       term.onData = (data: string) => {
         if (ws.readyState !== WebSocket.OPEN) return;
+        // Strip the backspace-seed ZWS so it never reaches the PTY.
+        const cleaned = data.replace(/\u200B/g, "");
+        if (!cleaned) return;
+        data = cleaned;
         if (ctrlActiveRef.current && data.length === 1) {
           const code = data.toUpperCase().charCodeAt(0);
           if (code >= 65 && code <= 90) {
@@ -261,7 +323,7 @@ export function useTerminal(
       };
     }
 
-    // Two-finger swipe emits SGR mouse-wheel escape sequences to the PTY,
+    // Touch swipe emits SGR mouse-wheel escape sequences to the PTY,
     // so tmux mouse-mode enters copy-mode and scrolls.
     const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
@@ -279,11 +341,18 @@ export function useTerminal(
     let lastMoveTs = 0;
     let velocity = 0;
     let momentumRaf: number | null = null;
-    let gestureMode: "pinch" | "scroll" | null = null;
+    let gestureMode: "single-scroll" | "pinch" | "scroll" | null = null;
     let pinchStartDist = 0;
     let pinchStartSize = DEFAULT_FONT_SIZE;
     let pinchStartMidY = 0;
+    let singleStartY = 0;
+    let singleStartTs = 0;
+    let singleY = 0;
+    let singleAccum = 0;
+    let singleLastTs = 0;
+    let suppressNextClick = false;
     const GESTURE_LOCK_PX = 12;
+    const LONG_PRESS_MS = 300;
     const LINES_PER_WHEEL = 2;
     const MAX_VELOCITY = 2.0;
     const MAX_WHEELS_PER_FRAME = 6;
@@ -363,25 +432,76 @@ export function useTerminal(
 
     const onTouchStart = (e: TouchEvent) => {
       cancelMomentum();
-      if (e.touches.length !== 2) return;
-      touchMidY = midpointY(e);
-      touchAccum = 0;
-      velocity = 0;
-      lastMoveTs = performance.now();
-      gestureMode = null;
-      pinchStartDist = touchDistance(e);
-      pinchStartSize = currentFontSize();
-      pinchStartMidY = touchMidY;
+      suppressNextClick = false;
+
+      if (e.touches.length === 1) {
+        const t = e.touches[0]!;
+        singleStartY = t.clientY;
+        singleStartTs = performance.now();
+        singleY = t.clientY;
+        singleAccum = 0;
+        singleLastTs = singleStartTs;
+        velocity = 0;
+        gestureMode = null;
+        return;
+      }
+
+      if (e.touches.length === 2) {
+        gestureMode = null;
+        touchMidY = midpointY(e);
+        touchAccum = 0;
+        velocity = 0;
+        lastMoveTs = performance.now();
+        pinchStartDist = touchDistance(e);
+        pinchStartSize = currentFontSize();
+        pinchStartMidY = touchMidY;
+      }
     };
 
     const onTouchMove = (e: TouchEvent) => {
+      // Single-finger scroll
+      if (e.touches.length === 1 && (gestureMode === null || gestureMode === "single-scroll")) {
+        const t = e.touches[0]!;
+        const y = t.clientY;
+        const now = performance.now();
+
+        if (gestureMode === null) {
+          if (Math.abs(y - singleStartY) < GESTURE_LOCK_PX) {
+            singleLastTs = now;
+            return;
+          }
+          // Long-press then drag is text selection, not scroll.
+          if (now - singleStartTs > LONG_PRESS_MS) return;
+          gestureMode = "single-scroll";
+          singleY = y;
+        }
+
+        e.preventDefault();
+
+        const dy = singleY - y;
+        singleY = y;
+        singleAccum += dy;
+        const step = pxPerWheel();
+        const rawWheels = Math.trunc(singleAccum / step);
+        const wheels = Math.max(-MAX_WHEELS_PER_FRAME, Math.min(MAX_WHEELS_PER_FRAME, rawWheels));
+        if (wheels !== 0) {
+          sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
+          singleAccum -= wheels * step;
+          const dt = Math.max(1, now - singleLastTs);
+          velocity = clampV(dy / dt);
+        }
+        singleLastTs = now;
+        return;
+      }
+
+      // Two-finger gesture (scroll or pinch)
       if (e.touches.length !== 2) return;
       e.preventDefault();
       const y = midpointY(e);
       const now = performance.now();
       const dist = touchDistance(e);
 
-      if (gestureMode === null) {
+      if (gestureMode === null || gestureMode === "single-scroll") {
         const distDelta = Math.abs(dist - pinchStartDist);
         const panDelta = Math.abs(y - pinchStartMidY);
         if (Math.max(distDelta, panDelta) < GESTURE_LOCK_PX) {
@@ -427,7 +547,9 @@ export function useTerminal(
         velocity = 0;
         return;
       }
+      const wasScrolling = gestureMode === "single-scroll" || gestureMode === "scroll";
       gestureMode = null;
+      if (wasScrolling) suppressNextClick = true;
       if (prefersReducedMotion() || Math.abs(velocity) < 0.05) {
         velocity = 0;
         return;
@@ -460,15 +582,25 @@ export function useTerminal(
       momentumRaf = requestAnimationFrame(decay);
     };
 
-    // Attach touch handlers to the .wterm element. wterm adds this class to
-    // the container automatically during construction.
+    // Attach touch handlers to the .wterm element. We do NOT set
+    // touch-action: none; our non-passive capture-phase handlers call
+    // preventDefault() when scrolling, which is sufficient.
     const viewport = term.element;
-    viewport.style.touchAction = "none";
     const touchOpts = { passive: false, capture: true } as const;
     viewport.addEventListener("touchstart", onTouchStart, touchOpts);
     viewport.addEventListener("touchmove", onTouchMove, touchOpts);
     viewport.addEventListener("touchend", onTouchEnd, touchOpts);
     viewport.addEventListener("touchcancel", onTouchEnd, touchOpts);
+
+    // On mobile, suppress ALL click-to-focus so the keyboard is only
+    // controlled via the FAB button. On desktop, only suppress after a
+    // scroll gesture.
+    const onClickCapture = (e: MouseEvent) => {
+      const wasScroll = suppressNextClick;
+      suppressNextClick = false;
+      if (isMobileViewport() || wasScroll) e.stopPropagation();
+    };
+    viewport.addEventListener("click", onClickCapture, true);
 
     // Trackpad pinch fires wheel events with ctrlKey=true
     let wheelAccum = 0;
@@ -500,6 +632,7 @@ export function useTerminal(
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
+      viewport.removeEventListener("click", onClickCapture, true);
       viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);

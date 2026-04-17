@@ -14,6 +14,7 @@ export function useMobileKeyboard() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const rafRef = useRef(0);
   const stableCountRef = useRef(0);
+  const lastOcclusionRef = useRef(0);
   // Track the max viewport height ever seen (before keyboard opens) so we can
   // detect keyboard-open on devices where innerHeight shrinks with the keyboard.
   const fullHeightRef = useRef(0);
@@ -71,15 +72,25 @@ export function useMobileKeyboard() {
     };
 
     // iOS keyboard animation takes ~300ms but visualViewport events don't
-    // fire every frame during it. Poll via rAF to catch the transition as
-    // it happens, then stop once the value is stable for ~60 frames.
+    // fire every frame during it. Poll via rAF to catch the transition,
+    // stopping early when the measurement stabilizes (same value 3 frames
+    // in a row) or after 20 frames max to avoid burning CPU while typing.
+    const MAX_POLL_FRAMES = 20;
+    const STABLE_THRESHOLD = 3;
     const startPolling = () => {
       cancelAnimationFrame(rafRef.current);
       stableCountRef.current = 0;
+      let frameCount = 0;
       const poll = () => {
-        measure();
-        stableCountRef.current++;
-        if (stableCountRef.current < 60) {
+        frameCount++;
+        const occlusion = measure();
+        if (Math.abs(occlusion - lastOcclusionRef.current) < 1) {
+          stableCountRef.current++;
+        } else {
+          stableCountRef.current = 0;
+        }
+        lastOcclusionRef.current = occlusion;
+        if (stableCountRef.current < STABLE_THRESHOLD && frameCount < MAX_POLL_FRAMES) {
           rafRef.current = requestAnimationFrame(poll);
         }
       };

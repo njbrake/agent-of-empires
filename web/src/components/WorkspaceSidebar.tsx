@@ -412,14 +412,14 @@ export function WorkspaceSidebar({
   return (
     <>
       <div
-        className={`fixed inset-0 z-30 md:hidden transition-opacity duration-300 ${
+        className={`fixed top-12 inset-x-0 bottom-0 z-30 md:hidden transition-opacity duration-300 ${
           open ? "bg-black/50" : "opacity-0 pointer-events-none"
         }`}
         onClick={onToggle}
       />
       <div
         style={{ width }}
-        className={`fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none ${
+        className={`fixed top-12 bottom-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col md:h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none ${
           open ? "translate-x-0" : "-translate-x-full md:hidden"
         }`}
       >

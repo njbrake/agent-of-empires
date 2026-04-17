@@ -340,6 +340,21 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
 
     cmd.stdin(Stdio::null());
 
+    // Create a new session so the daemon is not killed by SIGHUP when the
+    // parent terminal closes. setsid() is async-signal-safe.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid() is async-signal-safe per POSIX, which is the
+        // only requirement for pre_exec closures.
+        unsafe {
+            cmd.pre_exec(|| {
+                nix::unistd::setsid().map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
+    }
+
     // Redirect stdout/stderr to a log file so controllers like the TUI can
     // tail the daemon's output. Truncate on each start so stale content from
     // a prior run doesn't confuse the UI.

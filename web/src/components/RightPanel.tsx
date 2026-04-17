@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DiffFileList } from "./diff/DiffFileList";
 import { useTerminal } from "../hooks/useTerminal";
+import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
+import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { ensureTerminal } from "../lib/api";
 import type { RichDiffFile, SessionResponse } from "../lib/types";
 import "@wterm/dom/css";
@@ -46,10 +48,13 @@ function PairedTerminal({
   const [ready, setReady] = useState(false);
   const wsPath =
     mode === "container" ? "container-terminal/ws" : "terminal/ws";
-  const { containerRef, state, manualReconnect } = useTerminal(
-    ready ? sessionId : null,
-    wsPath,
-  );
+  const { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef } =
+    useTerminal(ready ? sessionId : null, wsPath);
+  const { isMobile, keyboardHeight } = useMobileKeyboard();
+  const [ctrlActive, setCtrlActive] = useState(false);
+
+  ctrlActiveRef.current = ctrlActive;
+  clearCtrlRef.current = () => setCtrlActive(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,6 +99,15 @@ function PairedTerminal({
         ref={containerRef}
         className="flex-1 overflow-hidden bg-surface-950"
       />
+      {isMobile && state.connected && (
+        <MobileTerminalToolbar
+          sendData={sendData}
+          termRef={termRef}
+          keyboardHeight={keyboardHeight}
+          ctrlActive={ctrlActive}
+          onCtrlToggle={() => setCtrlActive((v) => !v)}
+        />
+      )}
     </div>
   );
 }
