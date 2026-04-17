@@ -123,12 +123,59 @@ export function useTerminal(
 
     termRef.current = term;
 
+    // On mobile, restyle wterm's hidden textarea so it covers the terminal
+    // area. This lets iOS show the paste popup on long-press and gives the
+    // soft keyboard a real element to attach to. The textarea is still
+    // visually hidden (opacity 0) but touchable.
+    const BACKSPACE_SEED = "\u200B";
+    let wtermTextarea: HTMLTextAreaElement | null = null;
+    const setupMobileTextarea = () => {
+      if (!isMobileViewport()) return;
+      wtermTextarea = termEl.querySelector("textarea");
+      if (!wtermTextarea) return;
+      const ts = wtermTextarea.style;
+      ts.left = "0";
+      ts.top = "0";
+      ts.width = "100%";
+      ts.height = "100%";
+      ts.pointerEvents = "auto";
+
+      // Seed the textarea so iOS has something to delete when backspace
+      // is held. Without this, iOS never enters its key-repeat loop.
+      const seedTextarea = () => {
+        if (wtermTextarea && !wtermTextarea.value) {
+          wtermTextarea.value = BACKSPACE_SEED;
+          wtermTextarea.setSelectionRange(1, 1);
+        }
+      };
+      wtermTextarea.addEventListener("focus", seedTextarea);
+
+      // Intercept Backspace before wterm's handler (which calls
+      // preventDefault and kills iOS repeat). We let the deletion happen
+      // natively, then re-seed in a microtask.
+      wtermTextarea.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key !== "Backspace") return;
+        e.stopImmediatePropagation(); // skip wterm's preventDefault
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode("\x7f"));
+        }
+        queueMicrotask(seedTextarea);
+      }, true);
+
+      // After wterm clears the textarea on regular input, re-seed.
+      wtermTextarea.addEventListener("input", () => {
+        queueMicrotask(seedTextarea);
+      });
+    };
+
     // Initialize the WASM bridge, then connect to the PTY.
     let connectOnReady = true;
     term
       .init()
       .then(() => {
         if (!connectOnReady) return;
+        setupMobileTextarea();
         connect();
       })
       .catch((err: unknown) => {
@@ -243,11 +290,13 @@ export function useTerminal(
 
       // Relay keystrokes as binary. When the virtual Ctrl button is armed,
       // intercept single printable characters and transform them to their
-      // Ctrl equivalents (Ctrl+A = 0x01, Ctrl+U = 0x15, etc.). This works
-      // regardless of whether the keystroke came from our mobile proxy input
-      // or from wterm's own hidden textarea.
+      // Ctrl equivalents (Ctrl+A = 0x01, Ctrl+U = 0x15, etc.).
       term.onData = (data: string) => {
         if (ws.readyState !== WebSocket.OPEN) return;
+        // Strip the backspace-seed ZWS so it never reaches the PTY.
+        const cleaned = data.replace(/\u200B/g, "");
+        if (!cleaned) return;
+        data = cleaned;
         if (ctrlActiveRef.current && data.length === 1) {
           const code = data.toUpperCase().charCodeAt(0);
           if (code >= 65 && code <= 90) {
