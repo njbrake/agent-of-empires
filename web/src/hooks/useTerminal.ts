@@ -137,34 +137,18 @@ export function useTerminal(
     // iOS can't show a paste popup on it. Use the toolbar Paste button.
     const BACKSPACE_SEED = "\u200B";
     let wtermTextarea: HTMLTextAreaElement | null = null;
-    // Hoisted so cleanup can remove the scroll listener.
-    const syncTextareaScroll = () => {
-      if (wtermTextarea) {
-        wtermTextarea.style.top = `${term.element.scrollTop}px`;
-      }
-    };
     const setupMobileTextarea = () => {
       if (!isMobileViewport()) return;
       wtermTextarea = termEl.querySelector("textarea");
       if (!wtermTextarea) return;
+
+      // Move wterm's textarea from -9999px into the viewport so iOS
+      // opens the soft keyboard when it receives focus.
       wtermTextarea.style.left = "0";
-      wtermTextarea.style.width = "100%";
-      wtermTextarea.style.height = "100%";
-      wtermTextarea.style.pointerEvents = "auto";
-      // wterm sets opacity:0 which makes iOS refuse to show the paste
-      // callout (it considers the element invisible). Override to a tiny
-      // non-zero value. The textarea already has color:transparent and
-      // background:transparent so it stays invisible to the human eye.
+      wtermTextarea.style.top = "0";
+      // wterm sets opacity:0; override so the textarea is technically
+      // "visible" to iOS (needed for future keyboard/paste improvements).
       wtermTextarea.style.opacity = "0.01";
-      // Ensure textarea is above the terminal grid for touch events.
-      wtermTextarea.style.zIndex = "10";
-      // wterm's .wterm element is scrollable (overflow-y:auto) for
-      // scrollback. position:absolute + top:0 puts the textarea at the
-      // top of the scroll CONTENT, which scrolls off-screen as output
-      // grows. Sync the textarea's top with scrollTop so it always
-      // covers the visible area.
-      syncTextareaScroll();
-      term.element.addEventListener("scroll", syncTextareaScroll);
 
       const seedTextarea = () => {
         if (wtermTextarea && !wtermTextarea.value) {
@@ -173,7 +157,6 @@ export function useTerminal(
         }
       };
       wtermTextarea.addEventListener("focus", seedTextarea);
-      // Seed immediately so the textarea has content even before first focus.
       seedTextarea();
 
       // Capture-phase: block wterm's preventDefault on Backspace so iOS
@@ -197,88 +180,6 @@ export function useTerminal(
         }
         queueMicrotask(seedTextarea);
       });
-
-      // DEBUG: comprehensive paste diagnosis
-      // 1. Dump textarea computed styles that affect iOS paste behavior
-      const dumpTaStyles = () => {
-        const cs = getComputedStyle(ta);
-        console.log("[paste-debug] textarea styles:", {
-          opacity: cs.opacity,
-          pointerEvents: cs.pointerEvents,
-          userSelect: cs.getPropertyValue("user-select") || cs.getPropertyValue("-webkit-user-select"),
-          touchCallout: cs.getPropertyValue("-webkit-touch-callout"),
-          position: cs.position,
-          left: cs.left,
-          top: cs.top,
-          width: cs.width,
-          height: cs.height,
-          visibility: cs.visibility,
-          display: cs.display,
-          zIndex: cs.zIndex,
-          caretColor: cs.caretColor,
-        });
-        console.log("[paste-debug] textarea rect:", ta.getBoundingClientRect());
-        console.log("[paste-debug] textarea contentEditable:", ta.contentEditable);
-        console.log("[paste-debug] textarea readOnly:", ta.readOnly);
-        console.log("[paste-debug] textarea disabled:", ta.disabled);
-        console.log("[paste-debug] textarea value:", JSON.stringify(ta.value));
-      };
-      setTimeout(dumpTaStyles, 500);
-
-      // 2. Trace touch events with timestamps to measure hold duration
-      let touchStartTime = 0;
-      ta.addEventListener("touchstart", (e: TouchEvent) => {
-        touchStartTime = performance.now();
-        console.log("[paste-debug] textarea touchstart", {
-          touches: e.touches.length,
-          defaultPrevented: e.defaultPrevented,
-          cancelable: e.cancelable,
-        });
-      });
-      ta.addEventListener("touchend", (e: TouchEvent) => {
-        const holdMs = performance.now() - touchStartTime;
-        console.log("[paste-debug] textarea touchend", {
-          holdMs: Math.round(holdMs),
-          defaultPrevented: e.defaultPrevented,
-        });
-      });
-      ta.addEventListener("touchmove", (e: TouchEvent) => {
-        console.log("[paste-debug] textarea touchmove", {
-          defaultPrevented: e.defaultPrevented,
-        });
-      });
-      ta.addEventListener("contextmenu", (e: Event) => {
-        console.log("[paste-debug] textarea contextmenu!", {
-          defaultPrevented: e.defaultPrevented,
-          cancelable: e.cancelable,
-        });
-      });
-      ta.addEventListener("focus", () => console.log("[paste-debug] textarea focus"));
-      ta.addEventListener("blur", () => console.log("[paste-debug] textarea blur"));
-      ta.addEventListener("select", () => {
-        console.log("[paste-debug] textarea select event, selectionStart:", ta.selectionStart, "selectionEnd:", ta.selectionEnd);
-      });
-
-      // 3. Listen on document (capture) for contextmenu anywhere
-      document.addEventListener("contextmenu", (e: Event) => {
-        console.log("[paste-debug] DOCUMENT contextmenu", {
-          target: (e.target as HTMLElement)?.tagName,
-          defaultPrevented: e.defaultPrevented,
-        });
-      }, true);
-
-      // 4. Monitor if our parent touch handlers are calling preventDefault
-      // by wrapping the original method briefly
-      const origPreventDefault = TouchEvent.prototype.preventDefault;
-      TouchEvent.prototype.preventDefault = function(this: TouchEvent) {
-        console.log("[paste-debug] preventDefault called on", this.type, {
-          target: (this.target as HTMLElement)?.tagName,
-          stack: new Error().stack?.split("\n").slice(1, 4).join(" | "),
-        });
-        return origPreventDefault.call(this);
-      };
-      // Restore after 60s to avoid perf impact
-      setTimeout(() => { TouchEvent.prototype.preventDefault = origPreventDefault; }, 60000);
     };
 
     // Initialize the WASM bridge, then connect to the PTY.
@@ -529,8 +430,78 @@ export function useTerminal(
       }
     };
 
+    // Long-press paste popup for mobile. iOS won't show native paste on
+    // wterm's invisible textarea, so we detect the long-press ourselves
+    // and show a floating "Paste" button that uses the Clipboard API.
+    let pastePopup: HTMLElement | null = null;
+    let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+    const PASTE_LONG_PRESS_MS = 500;
+
+    const dismissPastePopup = () => {
+      if (pastePopup) {
+        pastePopup.remove();
+        pastePopup = null;
+      }
+    };
+
+    const showPastePopup = (x: number, y: number) => {
+      dismissPastePopup();
+      const btn = document.createElement("button");
+      btn.textContent = "Paste";
+      btn.setAttribute("type", "button");
+      const s = btn.style;
+      s.position = "fixed";
+      s.left = `${x}px`;
+      s.top = `${y - 44}px`;
+      s.transform = "translateX(-50%)";
+      s.zIndex = "9999";
+      s.padding = "6px 16px";
+      s.borderRadius = "8px";
+      s.border = "1px solid rgba(255,255,255,0.15)";
+      s.background = "rgba(40,40,44,0.95)";
+      s.color = "#e4e4e7";
+      s.fontSize = "14px";
+      s.fontFamily = "system-ui, sans-serif";
+      s.backdropFilter = "blur(8px)";
+      s.WebkitBackdropFilter = "blur(8px)";
+      s.boxShadow = "0 4px 16px rgba(0,0,0,0.4)";
+      s.cursor = "pointer";
+      s.touchAction = "manipulation";
+      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            const ws = wsRef.current;
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(new TextEncoder().encode(text));
+            }
+          }
+        } catch {
+          // Clipboard access denied
+        }
+        dismissPastePopup();
+      });
+      document.body.appendChild(btn);
+      pastePopup = btn;
+      // Auto-dismiss after 3s
+      setTimeout(() => {
+        if (pastePopup === btn) dismissPastePopup();
+      }, 3000);
+    };
+
+    const cancelLongPress = () => {
+      if (longPressTimer !== null) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    };
+
     const onTouchStart = (e: TouchEvent) => {
       cancelMomentum();
+      cancelLongPress();
+      dismissPastePopup();
       suppressNextClick = false;
 
       if (e.touches.length === 1) {
@@ -542,10 +513,25 @@ export function useTerminal(
         singleLastTs = singleStartTs;
         velocity = 0;
         gestureMode = null;
+
+        // Start long-press timer for paste popup (mobile only)
+        if (isMobileViewport()) {
+          const px = t.clientX;
+          const py = t.clientY;
+          longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            // Only show if gesture hasn't been classified as scroll
+            if (gestureMode === null) {
+              showPastePopup(px, py);
+              navigator.vibrate?.(10);
+            }
+          }, PASTE_LONG_PRESS_MS);
+        }
         return;
       }
 
       if (e.touches.length === 2) {
+        cancelLongPress();
         gestureMode = null;
         touchMidY = midpointY(e);
         touchAccum = 0;
@@ -572,6 +558,7 @@ export function useTerminal(
           // Long-press then drag is text selection, not scroll.
           if (now - singleStartTs > LONG_PRESS_MS) return;
           gestureMode = "single-scroll";
+          cancelLongPress();
           singleY = y;
         }
 
@@ -638,6 +625,7 @@ export function useTerminal(
     };
 
     const onTouchEnd = (e: TouchEvent) => {
+      cancelLongPress();
       if (e.touches.length > 0) return;
       if (gestureMode === "pinch") {
         flushFontSize();
@@ -681,12 +669,9 @@ export function useTerminal(
       momentumRaf = requestAnimationFrame(decay);
     };
 
-    // Attach touch handlers to the .wterm element. wterm adds this class to
-    // the container automatically during construction.
-    // NOTE: we intentionally do NOT set touch-action: none. Our non-passive
-    // capture-phase handlers call preventDefault() when scrolling, which is
-    // sufficient. Leaving touch-action unset lets iOS show the paste popup
-    // on long-press of the terminal's textarea.
+    // Attach touch handlers to the .wterm element. We do NOT set
+    // touch-action: none; our non-passive capture-phase handlers call
+    // preventDefault() when scrolling, which is sufficient.
     const viewport = term.element;
     const touchOpts = { passive: false, capture: true } as const;
     viewport.addEventListener("touchstart", onTouchStart, touchOpts);
@@ -730,13 +715,14 @@ export function useTerminal(
     return () => {
       connectOnReady = false;
       cancelMomentum();
+      cancelLongPress();
+      dismissPastePopup();
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
       viewport.removeEventListener("click", onClickCapture, true);
       viewport.removeEventListener("wheel", onWheel);
-      viewport.removeEventListener("scroll", syncTextareaScroll);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
       wsRef.current?.close();
