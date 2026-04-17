@@ -107,7 +107,7 @@ pub enum Commands {
         command: ThemeCommands,
     },
 
-    /// Start a web dashboard for remote session access [experimental]
+    /// Start a web dashboard for remote session access
     #[cfg(feature = "serve")]
     Serve(ServeArgs),
 

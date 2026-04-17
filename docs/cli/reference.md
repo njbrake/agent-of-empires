@@ -72,7 +72,7 @@ Run without arguments to launch the TUI dashboard.
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
 * `theme` — Manage color themes (list, export, customize)
-* `serve` — Start a web dashboard for remote session access [experimental]
+* `serve` — Start a web dashboard for remote session access
 * `uninstall` — Uninstall Agent of Empires
 * `completion` — Generate shell completions
 
@@ -628,7 +628,7 @@ Show the custom themes directory path
 
 ## `aoe serve`
 
-Start a web dashboard for remote session access [experimental]
+Start a web dashboard for remote session access
 
 **Usage:** `aoe serve [OPTIONS]`
 

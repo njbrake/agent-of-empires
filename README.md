@@ -13,7 +13,7 @@
   </p>
 </p>
 
-A session manager for AI coding agents on Linux and macOS. Use it from the terminal (TUI) or from any browser ([web dashboard](docs/guides/web-dashboard.md), experimental).
+A session manager for AI coding agents on Linux and macOS. Use it from the terminal (TUI) or from any browser ([web dashboard](docs/guides/web-dashboard.md)).
 
 Run multiple AI agents in parallel across different branches of your codebase, each in its own isolated session with optional Docker sandboxing. Access your agents from your laptop, phone, or tablet.
 
@@ -33,7 +33,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 
 - **Multi-agent support**: Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi.dev, and Factory Droid
 - **TUI app**: visual interface to create, monitor, and manage sessions
-- **Web app**: create, monitor, and control your agents from any browser, installable as a PWA ([experimental](docs/guides/web-dashboard.md))
+- **Web app**: create, monitor, and control your agents from any browser, installable as a PWA ([guide](docs/guides/web-dashboard.md))
 - **CLI app**: create, monitor, and control agents from the command line (integrates with tools like OpenClaw)
 - **Remote access from your phone**: press `R` in the TUI to expose the web dashboard over a Cloudflare tunnel with QR + passphrase auth ([guide](docs/guides/remote-phone-access.md))
 - **Status detection**: see which agents are running, waiting for input, or idle
@@ -42,7 +42,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 - **Diff view**: review git changes and edit files without leaving the TUI
 - **Profiles**: separate workspaces for different projects or clients
 
-## Web Dashboard (Beta)
+## Web Dashboard
 
 Access your agents from any browser. The real agent terminal renders in the page; switch sessions, type into the terminal, and review diffs without leaving the tab. Press `R` in the TUI to start the server, or see the [web dashboard guide](docs/guides/web-dashboard.md) for details.
 
@@ -66,7 +66,7 @@ curl -fsSL \
   https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh \
   | bash
 
-# Homebrew (TUI only, web dashboard not yet included)
+# Homebrew
 brew install aoe
 
 # Nix

@@ -13,7 +13,7 @@
 - `src/process/`: OS-specific process handling (`macos.rs`, `linux.rs`).
 - `src/docker/`: Docker sandboxing and container management.
 - `src/git/`: git worktree operations and template resolution.
-- `src/server/`: web dashboard backend (axum server, REST API, WebSocket PTY relay, auth), gated behind `serve` feature.
+- `src/server/`: web dashboard backend (axum server, REST API, WebSocket PTY relay, auth).
 - `src/update/`: version checking against GitHub releases.
 - `web/`: React + TypeScript frontend for the web dashboard (built with Vite + Tailwind CSS).
 - `src/migrations/`: versioned data migrations for breaking changes (see below).
@@ -29,15 +29,13 @@
 
 - `cargo build` / `cargo build --release`: TUI-only (release binary at `target/release/aoe`).
 - `cargo build --profile dev-release`: optimized local builds without LTO; faster compile. Use `--release` for CI.
-- `cargo build --features serve`: web dashboard support (needs Node.js + npm).
+- `cargo build --features serve`: includes the web dashboard (needs Node.js + npm).
 - `cargo test`: unit + integration tests (some skip if `tmux` unavailable).
 - `cargo fmt` + `cargo clippy`: run before pushing; fix clippy warnings unless there's a strong reason not to.
 - Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes `debug.log` in app data dir).
 - Running from source needs `tmux` installed.
 
-### Web Dashboard (experimental)
-
-Behind the `serve` feature flag; experimental, subject to change.
+### Web Dashboard
 
 - Stack: React 19, TypeScript, Vite, Tailwind v4, xterm.js v6. Installable as a PWA ("Install Agent of Empires" in Chrome; "Add to Home Screen" on iOS).
 - Build: `cargo build --features serve` (build.rs runs `npm install && npm run build` in `web/` when inputs change).
