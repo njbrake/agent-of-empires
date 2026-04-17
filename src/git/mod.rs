@@ -29,7 +29,7 @@ pub(crate) fn open_repo_at(path: &Path) -> std::result::Result<git2::Repository,
 /// - SSH shorthand: `git@github.com:owner/repo.git`
 /// - HTTPS: `https://github.com/owner/repo.git`
 /// - SSH URL: `ssh://git@github.com/owner/repo.git`
-pub fn parse_owner_from_remote_url(url: &str) -> Option<String> {
+pub(crate) fn parse_owner_from_remote_url(url: &str) -> Option<String> {
     // SSH shorthand: git@host:owner/repo.git
     // Detect by presence of '@' before ':' and no "://" scheme prefix.
     if !url.contains("://") {
@@ -44,7 +44,7 @@ pub fn parse_owner_from_remote_url(url: &str) -> Option<String> {
 
     // URL format: scheme://[user@]host/owner/repo.git
     let without_scheme = url.split("://").nth(1).unwrap_or(url);
-    let after_host = &without_scheme[without_scheme.find('/')?  + 1..];
+    let after_host = &without_scheme[without_scheme.find('/')? + 1..];
     let owner = after_host.split('/').next()?;
     (!owner.is_empty()).then(|| owner.to_string())
 }
