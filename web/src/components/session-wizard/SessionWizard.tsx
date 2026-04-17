@@ -227,9 +227,9 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
   const nextDisabled = currentStepDef?.id === "project" && !state.data.path;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-surface-800 border-l border-surface-700/30 flex flex-col h-full">
+      <div className="relative w-full max-w-lg bg-surface-800 border border-surface-700/30 rounded-xl flex flex-col max-h-[min(720px,90vh)]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700/20">
           <h1 className="text-sm font-medium text-text-secondary">Add project</h1>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-700/50 transition-colors" aria-label="Close">&times;</button>

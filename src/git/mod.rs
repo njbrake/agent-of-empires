@@ -23,6 +23,35 @@ pub(crate) fn open_repo_at(path: &Path) -> std::result::Result<git2::Repository,
     )
 }
 
+/// Clone a git repository from a URL into the given destination directory.
+///
+/// The destination must not already exist. The URL must use a recognized
+/// scheme (https://, git://, ssh://, or scp-style git@host:path).
+pub fn clone_repo(url: &str, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        return Err(GitError::CloneFailed(format!(
+            "Destination already exists: {}",
+            destination.display()
+        )));
+    }
+
+    let dest_str = destination
+        .to_str()
+        .ok_or_else(|| GitError::CloneFailed("Invalid destination path".to_string()))?;
+
+    let output = std::process::Command::new("git")
+        .args(["clone", url, dest_str])
+        .output()
+        .map_err(|e| GitError::CloneFailed(format!("Failed to run git clone: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(GitError::CloneFailed(stderr));
+    }
+
+    Ok(())
+}
+
 pub struct WorktreeEntry {
     pub path: PathBuf,
     pub branch: Option<String>,

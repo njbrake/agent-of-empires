@@ -543,6 +543,157 @@ pub async fn create_session(
     }
 }
 
+// --- Clone repository ---
+
+#[derive(Deserialize)]
+pub struct CloneRepoBody {
+    pub url: String,
+    pub destination: Option<String>,
+}
+
+/// Extract a repository name from a git URL.
+///
+/// Handles HTTPS, SSH, and scp-style URLs:
+///   https://github.com/user/repo.git  -> repo
+///   git@github.com:user/repo.git      -> repo
+///   ssh://git@host/user/repo          -> repo
+fn repo_name_from_url(url: &str) -> Option<String> {
+    let path_part = if let Some((_host, path)) = url.rsplit_once(':') {
+        // scp-style: git@github.com:user/repo.git
+        if !url.contains("://") {
+            path
+        } else {
+            url.rsplit_once('/')?.1
+        }
+    } else {
+        url.rsplit_once('/')?.1
+    };
+    let name = path_part
+        .rsplit('/')
+        .next()
+        .unwrap_or(path_part)
+        .trim_end_matches(".git");
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+pub async fn clone_repo(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CloneRepoBody>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+
+    let url = body.url.trim().to_string();
+    if url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": "URL cannot be empty"})),
+        )
+            .into_response();
+    }
+
+    // Basic URL scheme validation
+    let looks_like_url = url.starts_with("https://")
+        || url.starts_with("http://")
+        || url.starts_with("git://")
+        || url.starts_with("ssh://")
+        || (url.contains('@') && url.contains(':') && !url.contains(' '));
+    if !looks_like_url {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": "URL does not look like a git repository URL"})),
+        )
+            .into_response();
+    }
+
+    // Resolve destination path
+    let destination = if let Some(ref dest) = body.destination {
+        let dest = dest.trim();
+        if dest.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(dest))
+        }
+    } else {
+        None
+    };
+
+    let destination = match destination {
+        Some(d) => d,
+        None => {
+            let repo_name = repo_name_from_url(&url).unwrap_or_else(|| "cloned-repo".to_string());
+            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            home.join(&repo_name)
+        }
+    };
+
+    // Security: destination must be within the home directory
+    if let Some(home) = dirs::home_dir() {
+        let canonical_home = home.canonicalize().unwrap_or(home);
+        // For new paths that don't exist yet, check the parent
+        let check_path = if destination.exists() {
+            destination.canonicalize().unwrap_or(destination.clone())
+        } else {
+            destination
+                .parent()
+                .and_then(|p| p.canonicalize().ok())
+                .map(|p| p.join(destination.file_name().unwrap_or_default()))
+                .unwrap_or(destination.clone())
+        };
+        if !check_path.starts_with(&canonical_home) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "validation_failed", "message": "Destination must be within the home directory"})),
+            )
+                .into_response();
+        }
+    }
+
+    let dest_display = destination.display().to_string();
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::git::clone_repo(&url, &destination)?;
+        Ok::<String, crate::git::error::GitError>(destination.display().to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(path)) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"path": path})),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            tracing::warn!("Clone failed for {dest_display}: {msg}");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "clone_failed", "message": msg})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Clone task panicked: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 // --- Ensure agent session ---
 
 /// Ensure the main agent tmux session is alive, restarting it if dead.
@@ -1794,5 +1945,39 @@ mod tests {
             &changed(&["deleted.txt"]),
         );
         assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
+    }
+
+    // ── repo_name_from_url tests ─────────────────────────────────────────────
+
+    #[test]
+    fn repo_name_from_https_url() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/my-repo.git"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_https_url_no_dotgit() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/my-repo"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_scp_url() {
+        assert_eq!(
+            repo_name_from_url("git@github.com:user/my-repo.git"),
+            Some("my-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_ssh_url() {
+        assert_eq!(
+            repo_name_from_url("ssh://git@github.com/user/my-repo.git"),
+            Some("my-repo".to_string())
+        );
     }
 }
