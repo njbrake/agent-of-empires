@@ -66,6 +66,8 @@ Setup:
 3. Enable Funnel once in the admin console or tailnet ACL: [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file)
 4. `aoe serve --remote`
 
+Caveat: `aoe serve --remote` calls `tailscale serve --https=443` to point port 443 at the dashboard. If you already have a different service funneled on port 443 (your own webapp, a dev server), aoe's call will replace that mapping. Pass `--no-tailscale` to skip auto-detection and fall back to Cloudflare if you need to keep the existing config.
+
 ### 2. Named Cloudflare tunnel
 
 Stable hostname on your own Cloudflare-managed domain. Takes precedence over Tailscale auto-detection when you pass the flags:
@@ -102,6 +104,7 @@ aoe prints a notice when it falls back to this path so you don't accidentally in
 | `--host` | 127.0.0.1 | Bind address. Use `0.0.0.0` for LAN/VPN access |
 | `--remote` | off | Expose over HTTPS tunnel (Tailscale Funnel if available, else Cloudflare quick tunnel) |
 | `--tunnel-name` | | Use a named Cloudflare tunnel (requires `--remote`; overrides Tailscale auto-detection) |
+| `--no-tailscale` | off | Skip Tailscale Funnel auto-detection and use Cloudflare (requires `--remote`) |
 | `--tunnel-url` | | Hostname for a named tunnel (requires `--tunnel-name`) |
 | `--no-auth` | off | Disable token auth (localhost only) |
 | `--read-only` | off | View terminals but cannot send keystrokes |

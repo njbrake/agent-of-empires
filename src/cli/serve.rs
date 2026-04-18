@@ -35,6 +35,11 @@ pub struct ServeArgs {
     #[arg(long, requires = "remote")]
     pub tunnel_name: Option<String>,
 
+    /// Skip Tailscale Funnel auto-detection and go straight to Cloudflare.
+    /// Useful if you have Tailscale installed for unrelated reasons.
+    #[arg(long, requires = "remote")]
+    pub no_tailscale: bool,
+
     /// Hostname for a named tunnel (e.g., aoe.example.com)
     #[arg(long, requires = "tunnel_name")]
     pub tunnel_url: Option<String>,
@@ -282,6 +287,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         remote: args.remote,
         tunnel_name: args.tunnel_name.as_deref(),
         tunnel_url: args.tunnel_url.as_deref(),
+        no_tailscale: args.no_tailscale,
         is_daemon: false,
         passphrase: args.passphrase.as_deref(),
     })
@@ -355,6 +361,9 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     }
     if let Some(ref url) = args.tunnel_url {
         cmd.args(["--tunnel-url", url]);
+    }
+    if args.no_tailscale {
+        cmd.arg("--no-tailscale");
     }
     if let Some(ref passphrase) = args.passphrase {
         // Pass via env var to avoid exposing the passphrase in the process list
@@ -447,14 +456,10 @@ fn stop_daemon() -> Result<()> {
             // released before a new daemon can be spawned. Without
             // this, closing the dialog and immediately reopening
             // races with the dying daemon and can orphan it.
-            let deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                match nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid),
-                    None,
-                ) {
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
                     Err(nix::errno::Errno::ESRCH) => break,
                     _ if std::time::Instant::now() >= deadline => {
                         // Still alive after timeout; escalate.
@@ -462,9 +467,7 @@ fn stop_daemon() -> Result<()> {
                             nix::unistd::Pid::from_raw(pid),
                             nix::sys::signal::Signal::SIGKILL,
                         );
-                        std::thread::sleep(
-                            std::time::Duration::from_millis(50),
-                        );
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                         break;
                     }
                     _ => {}

@@ -243,6 +243,7 @@ pub struct ServerConfig<'a> {
     pub remote: bool,
     pub tunnel_name: Option<&'a str>,
     pub tunnel_url: Option<&'a str>,
+    pub no_tailscale: bool,
     pub is_daemon: bool,
     pub passphrase: Option<&'a str>,
 }
@@ -257,6 +258,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         remote,
         tunnel_name,
         tunnel_url,
+        no_tailscale,
         is_daemon,
         passphrase,
     } = config;
@@ -350,7 +352,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     let tunnel_handle = if remote {
         let handle = if let (Some(name), Some(url)) = (tunnel_name, tunnel_url) {
             tunnel::TunnelHandle::spawn_named(name, url, local_port).await?
-        } else if tunnel::tailscale_available().await {
+        } else if !no_tailscale && tunnel::tailscale_available().await {
             info!("Tailscale detected; using Tailscale Funnel for stable HTTPS origin");
             match tunnel::TunnelHandle::spawn_tailscale(local_port).await {
                 Ok(h) => h,
@@ -374,6 +376,19 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 
         // Print QR code unless running as daemon
         if !is_daemon {
+            eprintln!(
+                "Remote access via {} (URL is {}).",
+                match handle.mode_label() {
+                    "tailscale" => "Tailscale Funnel",
+                    "tunnel" => "Cloudflare tunnel",
+                    other => other,
+                },
+                if handle.is_stable_origin() {
+                    "stable across restarts"
+                } else {
+                    "temporary; rotates on restart"
+                }
+            );
             tunnel::print_qr_code(&tunnel_url_with_token);
             if !handle.is_stable_origin() {
                 eprintln!(
