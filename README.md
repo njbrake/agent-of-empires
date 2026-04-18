@@ -35,7 +35,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 - **TUI app**: visual interface to create, monitor, and manage sessions
 - **Web app**: create, monitor, and control your agents from any browser, installable as a PWA ([guide](docs/guides/web-dashboard.md))
 - **CLI app**: create, monitor, and control agents from the command line (integrates with tools like OpenClaw)
-- **Remote access from your phone**: press `R` in the TUI to expose the web dashboard over a Cloudflare tunnel with QR + passphrase auth ([guide](docs/guides/remote-phone-access.md))
+- **Remote access from your phone**: press `R` in the TUI to expose the web dashboard over HTTPS with QR + passphrase auth. Uses Tailscale Funnel when available (stable URL, installable PWAs keep working across restarts) or Cloudflare Tunnel as a fallback ([guide](docs/guides/remote-phone-access.md))
 - **Status detection**: see which agents are running, waiting for input, or idle
 - **Git worktrees**: run parallel agents on different branches of the same repo
 - **Docker sandboxing**: isolate agents in containers with shared auth volumes
@@ -91,7 +91,7 @@ In the TUI, press `?` for help. The bottom information bar shows all available k
 
 - **[Installation](https://www.agent-of-empires.com/docs/installation/)**: prerequisites and install methods
 - **[Quick Start](https://www.agent-of-empires.com/docs/quick-start/)**: first steps and basic usage
-- **[Remote Phone Access](https://www.agent-of-empires.com/guides/remote-phone-access/)**: check on your agents from your phone via a Cloudflare tunnel
+- **[Remote Phone Access](https://www.agent-of-empires.com/guides/remote-phone-access/)**: check on your agents from your phone via Tailscale Funnel or a Cloudflare tunnel
 - **[Git Worktrees](https://www.agent-of-empires.com/guides/worktrees/)**: parallel agents on different branches
 - **[Docker Sandbox](https://www.agent-of-empires.com/guides/sandbox/)**: container isolation for agents
 - **[Repo Config & Hooks](https://www.agent-of-empires.com/guides/repo-config/)**: per-project settings and automation

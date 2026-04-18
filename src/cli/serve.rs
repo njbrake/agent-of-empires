@@ -23,11 +23,15 @@ pub struct ServeArgs {
     #[arg(long)]
     pub read_only: bool,
 
-    /// Expose via Cloudflare Tunnel for secure remote access
+    /// Expose the dashboard over a public HTTPS tunnel. Prefers Tailscale
+    /// Funnel when `tailscale` is installed and logged in (stable
+    /// `.ts.net` URL, installable PWAs survive restarts). Falls back to a
+    /// Cloudflare quick tunnel otherwise (fresh URL on every restart).
     #[arg(long)]
     pub remote: bool,
 
-    /// Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+    /// Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`).
+    /// Takes precedence over Tailscale auto-detection.
     #[arg(long, requires = "remote")]
     pub tunnel_name: Option<String>,
 

@@ -22,7 +22,7 @@ The build automatically runs `npm install && npm run build` in the `web/` direct
 # Localhost only (safe, default)
 aoe serve
 
-# Remote access via Cloudflare Tunnel (HTTPS, QR code pairing)
+# Remote access over HTTPS (Tailscale Funnel if available, else Cloudflare quick tunnel)
 aoe serve --remote
 
 # Accessible from other devices on your LAN/VPN (HTTP, requires VPN)
@@ -54,14 +54,21 @@ The `--remote` flag is the recommended way to access the dashboard from your pho
 aoe serve --remote
 ```
 
-This starts a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) that gives you a public HTTPS URL with a QR code. No account, DNS, or certificate setup needed.
+aoe picks a transport automatically in this order:
 
-**Requirements:** `cloudflared` must be installed on the host:
-- macOS: `brew install cloudflared`
-- Linux: `sudo apt install cloudflared`
-- Other: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+### 1. Tailscale Funnel (preferred when available)
 
-**Named tunnels** provide a stable domain (useful for bookmarks and future passkey support):
+If `tailscale` is on the host's PATH and the daemon is logged in, aoe runs `tailscale serve` + `tailscale funnel` and exposes the dashboard at your stable `https://<machine>.<tailnet>.ts.net` URL. No domain, no Cloudflare account, no rotating URLs. **This is the only option where a PWA installed on your phone keeps working across server restarts** (the URL is stable).
+
+Setup:
+1. Install Tailscale on the host ([tailscale.com/download](https://tailscale.com/download))
+2. `tailscale up`
+3. Enable Funnel once in the admin console or tailnet ACL: [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file)
+4. `aoe serve --remote`
+
+### 2. Named Cloudflare tunnel
+
+Stable hostname on your own Cloudflare-managed domain. Takes precedence over Tailscale auto-detection when you pass the flags:
 
 ```bash
 # One-time setup
@@ -72,14 +79,29 @@ cloudflared tunnel create my-tunnel
 aoe serve --remote --tunnel-name my-tunnel --tunnel-url aoe.example.com
 ```
 
+### 3. Cloudflare quick tunnel (fallback)
+
+Zero-config but the URL rotates on every restart. Fine for one-off remote sessions, **bad for installed PWAs**: the home-screen app is bound to the URL it was installed from, so every restart costs you a delete-and-reinstall.
+
+```bash
+aoe serve --remote
+```
+
+Requires `cloudflared` on the host:
+- macOS: `brew install cloudflared`
+- Linux: `sudo apt install cloudflared`
+- Other: [Cloudflare's downloads page](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+
+aoe prints a notice when it falls back to this path so you don't accidentally install a PWA from a rotating URL.
+
 ## Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | 8080 | Port to listen on |
 | `--host` | 127.0.0.1 | Bind address. Use `0.0.0.0` for LAN/VPN access |
-| `--remote` | off | Expose via Cloudflare Tunnel (HTTPS, QR code) |
-| `--tunnel-name` | | Use a named tunnel (requires `--remote`) |
+| `--remote` | off | Expose over HTTPS tunnel (Tailscale Funnel if available, else Cloudflare quick tunnel) |
+| `--tunnel-name` | | Use a named Cloudflare tunnel (requires `--remote`; overrides Tailscale auto-detection) |
 | `--tunnel-url` | | Hostname for a named tunnel (requires `--tunnel-name`) |
 | `--no-auth` | off | Disable token auth (localhost only) |
 | `--read-only` | off | View terminals but cannot send keystrokes |
