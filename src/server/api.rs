@@ -1439,7 +1439,7 @@ pub async fn get_settings(
     let config_result = if let Some(ref profile_name) = query.profile {
         crate::session::resolve_config(profile_name)
     } else {
-        crate::session::Config::load().map_err(|e| e.into())
+        crate::session::Config::load()
     };
 
     match config_result {
