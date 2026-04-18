@@ -104,6 +104,10 @@ pub enum ServeDialogState {
         /// the Tunnel card correctly ("Tailscale Funnel" vs "Cloudflare
         /// tunnel") and mention the stable-origin advantage.
         prefer_tailscale: bool,
+        /// True when the host has a Tailscale-range IP but the CLI is
+        /// missing or the daemon isn't logged in. Surfaces a small hint
+        /// on the Tunnel card pointing at the installation path.
+        suggest_tailscale_install: bool,
         local_available: bool,
         /// Transient flash message shown for ~1s after a rejected keypress
         /// (e.g., picking Tunnel when no tunnel tool is installed).
@@ -204,7 +208,17 @@ impl ServeDialog {
             let cloudflared_ok = crate::server::tunnel::check_cloudflared().is_ok();
             let tunnel_available = tailscale_ok || cloudflared_ok;
             let prefer_tailscale = tailscale_ok;
-            let local_available = !crate::server::discover_tagged_ips().is_empty();
+            let tagged_ips = crate::server::discover_tagged_ips();
+            let local_available = !tagged_ips.is_empty();
+            // If the host has a Tailscale-range IP (100.64.0.0/10 CGNAT)
+            // but `tailscale` isn't on PATH or the daemon isn't running,
+            // the user is reachable over their tailnet and one short
+            // install/login away from the stable-URL Funnel flow. Worth
+            // surfacing as a one-liner on the Tunnel card.
+            let suggest_tailscale_install = !tailscale_ok
+                && tagged_ips
+                    .iter()
+                    .any(|(kind, _)| matches!(kind, crate::server::IpKind::Tailscale));
             // Default highlight: the last mode the user successfully
             // launched (read from serve.last_mode). Fall back to Local as
             // safer first-time default. If Local isn't actually available,
@@ -222,6 +236,7 @@ impl ServeDialog {
                     selected,
                     tunnel_available,
                     prefer_tailscale,
+                    suggest_tailscale_install,
                     local_available,
                     flash: None,
                 },
@@ -236,6 +251,7 @@ impl ServeDialog {
                 selected,
                 tunnel_available,
                 prefer_tailscale: _,
+                suggest_tailscale_install: _,
                 local_available,
                 flash,
             } => {
@@ -562,6 +578,7 @@ impl ServeDialog {
                 selected,
                 tunnel_available,
                 prefer_tailscale,
+                suggest_tailscale_install,
                 local_available,
                 flash,
             } => render_mode_picker(
@@ -571,6 +588,7 @@ impl ServeDialog {
                 *selected,
                 *tunnel_available,
                 *prefer_tailscale,
+                *suggest_tailscale_install,
                 *local_available,
                 flash.as_ref().map(|(m, _)| m.as_str()),
             ),
@@ -916,6 +934,7 @@ fn render_mode_picker(
     selected: ServeMode,
     tunnel_available: bool,
     prefer_tailscale: bool,
+    suggest_tailscale_install: bool,
     local_available: bool,
     flash: Option<&str>,
 ) {
@@ -1088,6 +1107,14 @@ fn render_mode_picker(
         if !tunnel_available {
             Line::from(Span::styled(
                 "  (brew install cloudflared or tailscale up)",
+                Style::default().fg(theme.dimmed),
+            ))
+        } else if suggest_tailscale_install {
+            // User has a Tailscale IP on an interface but the CLI is
+            // missing or logged out. One install+login away from the
+            // stable-URL Funnel flow.
+            Line::from(Span::styled(
+                "  Tailscale VPN detected: install the CLI for a stable URL",
                 Style::default().fg(theme.dimmed),
             ))
         } else {
