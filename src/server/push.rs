@@ -107,8 +107,7 @@ impl VapidKeypair {
         // Pull 32 bytes of OS entropy and reduce via SigningKey::from_slice;
         // avoids the rand/rand_core OsRng shuffle across major versions.
         let mut seed = [0u8; 32];
-        getrandom::fill(&mut seed)
-            .map_err(|e| anyhow::anyhow!("getrandom failed: {}", e))?;
+        getrandom::fill(&mut seed).map_err(|e| anyhow::anyhow!("getrandom failed: {}", e))?;
         let signing_key = SigningKey::from_slice(&seed)
             .map_err(|e| anyhow::anyhow!("derive signing key: {}", e))?;
         let verifying_key = signing_key.verifying_key();
@@ -232,11 +231,7 @@ impl SubscriptionStore {
         self.persist().await
     }
 
-    pub async fn remove_if_owner(
-        &self,
-        endpoint: &str,
-        owner: &[u8; 32],
-    ) -> anyhow::Result<bool> {
+    pub async fn remove_if_owner(&self, endpoint: &str, owner: &[u8; 32]) -> anyhow::Result<bool> {
         let removed = {
             let mut guard = self.subs.write().await;
             match guard.get(endpoint) {

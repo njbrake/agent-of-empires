@@ -517,7 +517,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/themes", get(api::list_themes))
         // Push notifications
         .route("/api/push/status", get(push::get_status))
-        .route("/api/push/vapid-public-key", get(push::get_vapid_public_key))
+        .route(
+            "/api/push/vapid-public-key",
+            get(push::get_vapid_public_key),
+        )
         .route("/api/push/subscribe", post(push::subscribe))
         .route("/api/push/unsubscribe", post(push::unsubscribe))
         .route("/api/push/test", post(push::test))
@@ -815,10 +818,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
         // holding the lock across the blocking tmux work.
         let prev: std::collections::HashMap<String, crate::session::Status> = {
             let instances = state.instances.read().await;
-            instances
-                .iter()
-                .map(|i| (i.id.clone(), i.status))
-                .collect()
+            instances.iter().map(|i| (i.id.clone(), i.status)).collect()
         };
 
         // Run blocking tmux subprocess calls in a dedicated thread
