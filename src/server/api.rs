@@ -106,13 +106,13 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
     let instances = state.instances.read().await;
     let mut sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
 
-    // Resolve per-profile cleanup defaults with a 30s TTL cache on AppState
+    // Resolve per-profile cleanup defaults with a TTL cache on AppState
     let cache = {
         let guard = state.cleanup_defaults_cache.read().await;
-        if guard.0.elapsed() < std::time::Duration::from_secs(30) {
-            Some(guard.1.clone())
-        } else {
+        if guard.stale() {
             None
+        } else {
+            Some(guard.entries.clone())
         }
     };
 
@@ -136,7 +136,10 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
                     })
             });
         }
-        *state.cleanup_defaults_cache.write().await = (std::time::Instant::now(), fresh.clone());
+        *state.cleanup_defaults_cache.write().await = super::CleanupDefaultsCache {
+            refreshed_at: std::time::Instant::now(),
+            entries: fresh.clone(),
+        };
         fresh
     };
 

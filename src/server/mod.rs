@@ -146,6 +146,21 @@ impl TokenManager {
 
 // ── AppState ────────────────────────────────────────────────────────────────
 
+/// Per-profile cleanup defaults with a refresh timestamp. Re-resolved from
+/// disk after `CLEANUP_DEFAULTS_TTL`.
+pub struct CleanupDefaultsCache {
+    pub refreshed_at: std::time::Instant,
+    pub entries: std::collections::HashMap<String, api::CleanupDefaults>,
+}
+
+pub const CLEANUP_DEFAULTS_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl CleanupDefaultsCache {
+    pub fn stale(&self) -> bool {
+        self.refreshed_at.elapsed() >= CLEANUP_DEFAULTS_TTL
+    }
+}
+
 /// Shared application state accessible by all request handlers.
 pub struct AppState {
     pub profile: String,
@@ -162,11 +177,9 @@ pub struct AppState {
     /// as many as the user has sessions.
     pub instance_locks: RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Cached per-profile cleanup defaults for the delete dialog, with a
-    /// timestamp so we re-resolve after config changes. TTL: 30 seconds.
-    pub cleanup_defaults_cache: RwLock<(
-        std::time::Instant,
-        std::collections::HashMap<String, api::CleanupDefaults>,
-    )>,
+    /// timestamp so we re-resolve after config changes (see
+    /// `CLEANUP_DEFAULTS_TTL`).
+    pub cleanup_defaults_cache: RwLock<CleanupDefaultsCache>,
     /// Cached remote owner per repo path. Remote owners don't change, so
     /// entries live for the lifetime of the process.
     pub remote_owner_cache: RwLock<std::collections::HashMap<String, Option<String>>>,
@@ -256,10 +269,12 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         devices: RwLock::new(Vec::new()),
         behind_tunnel: remote,
         instance_locks: RwLock::new(std::collections::HashMap::new()),
-        cleanup_defaults_cache: RwLock::new((
-            std::time::Instant::now() - std::time::Duration::from_secs(60),
-            std::collections::HashMap::new(),
-        )),
+        cleanup_defaults_cache: RwLock::new(CleanupDefaultsCache {
+            // Seed with an already-stale timestamp so the first request
+            // forces a fresh resolve instead of handing out an empty map.
+            refreshed_at: std::time::Instant::now() - CLEANUP_DEFAULTS_TTL,
+            entries: std::collections::HashMap::new(),
+        }),
         remote_owner_cache: RwLock::new(std::collections::HashMap::new()),
     });
 
@@ -807,6 +822,26 @@ mod tests {
         let mut v = [IpKind::Loopback, IpKind::Lan, IpKind::Tailscale];
         v.sort();
         assert_eq!(v, [IpKind::Tailscale, IpKind::Lan, IpKind::Loopback]);
+    }
+
+    #[test]
+    fn cleanup_defaults_cache_stale_within_ttl_is_false() {
+        let cache = CleanupDefaultsCache {
+            refreshed_at: std::time::Instant::now(),
+            entries: std::collections::HashMap::new(),
+        };
+        assert!(!cache.stale());
+    }
+
+    #[test]
+    fn cleanup_defaults_cache_stale_past_ttl_is_true() {
+        let cache = CleanupDefaultsCache {
+            refreshed_at: std::time::Instant::now()
+                - CLEANUP_DEFAULTS_TTL
+                - std::time::Duration::from_millis(1),
+            entries: std::collections::HashMap::new(),
+        };
+        assert!(cache.stale());
     }
 
     #[tokio::test]
