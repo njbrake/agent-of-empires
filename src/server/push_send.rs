@@ -104,10 +104,7 @@ pub fn vapid_auth_header(state: &PushState, endpoint: &str) -> Result<String> {
     let key = EncodingKey::from_ec_pem(state.vapid.private_pem.as_bytes())
         .context("load VAPID private key for JWT signing")?;
     let jwt = encode(&header, &claims, &key).context("sign VAPID JWT")?;
-    Ok(format!(
-        "vapid t={}, k={}",
-        jwt, state.vapid.public_b64url
-    ))
+    Ok(format!("vapid t={}, k={}", jwt, state.vapid.public_b64url))
 }
 
 fn endpoint_origin(endpoint: &str) -> Result<String> {
@@ -134,10 +131,9 @@ pub fn encrypt_aes128gcm(subscription: &Subscription, plaintext: &[u8]) -> Resul
     use p256::{PublicKey, SecretKey};
 
     // Subscription-side key material.
-    let p_ua_bytes = base64_url_decode(&subscription.p256dh)
-        .context("decode subscription p256dh")?;
-    let auth_secret = base64_url_decode(&subscription.auth)
-        .context("decode subscription auth")?;
+    let p_ua_bytes =
+        base64_url_decode(&subscription.p256dh).context("decode subscription p256dh")?;
+    let auth_secret = base64_url_decode(&subscription.auth).context("decode subscription auth")?;
     if auth_secret.len() != 16 {
         return Err(anyhow!(
             "subscription auth must be 16 bytes, got {}",
@@ -149,10 +145,8 @@ pub fn encrypt_aes128gcm(subscription: &Subscription, plaintext: &[u8]) -> Resul
 
     // Ephemeral server keypair (fresh per push).
     let mut eph_seed = [0u8; 32];
-    getrandom::fill(&mut eph_seed)
-        .map_err(|e| anyhow!("getrandom for ephemeral key: {}", e))?;
-    let d_as = SecretKey::from_slice(&eph_seed)
-        .context("derive ephemeral P-256 key from seed")?;
+    getrandom::fill(&mut eph_seed).map_err(|e| anyhow!("getrandom for ephemeral key: {}", e))?;
+    let d_as = SecretKey::from_slice(&eph_seed).context("derive ephemeral P-256 key from seed")?;
     let p_as = d_as.public_key();
     let p_as_encoded = p_as.to_encoded_point(false);
     let p_as_bytes = p_as_encoded.as_bytes();
@@ -203,7 +197,10 @@ pub fn encrypt_aes128gcm(subscription: &Subscription, plaintext: &[u8]) -> Resul
 
     // aes128gcm body layout:
     //   salt(16) || record_size u32 BE (4) || idlen u8 (1) || keyid(idlen) || ciphertext
-    let record_size: u32 = (ciphertext.len() + 17).max(18).try_into().unwrap_or(u32::MAX);
+    let record_size: u32 = (ciphertext.len() + 17)
+        .max(18)
+        .try_into()
+        .unwrap_or(u32::MAX);
     let mut body = Vec::with_capacity(16 + 4 + 1 + 65 + ciphertext.len());
     body.extend_from_slice(&salt);
     body.extend_from_slice(&record_size.to_be_bytes());

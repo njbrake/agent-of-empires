@@ -502,8 +502,7 @@ async fn fire_due_pushes(
                     return;
                 };
                 let outcome =
-                    super::push_send::send_one(&client, push.as_ref(), &sub, &payload_clone)
-                        .await;
+                    super::push_send::send_one(&client, push.as_ref(), &sub, &payload_clone).await;
                 if outcome == super::push_send::SendOutcome::Gone {
                     let _ = push.store.gc_stale(&sub.endpoint, sub.generation).await;
                 }
@@ -683,14 +682,14 @@ pub async fn test(
 
     let payload = super::push_send::PushPayload {
         title: "Agent of Empires".to_string(),
-        body: "Test notification. If you see this on your lock screen, push is working.".to_string(),
+        body: "Test notification. If you see this on your lock screen, push is working."
+            .to_string(),
         url: "/".to_string(),
         tag: "aoe-test".to_string(),
         session_id: String::new(),
     };
 
-    let outcome =
-        super::push_send::send_one(&client, push, &subscription, &payload).await;
+    let outcome = super::push_send::send_one(&client, push, &subscription, &payload).await;
     let mut result = TestResult {
         delivered: 0,
         failed: 0,
@@ -806,10 +805,7 @@ mod tests {
         assert_eq!(store.snapshot().await.len(), 3);
 
         // Keep current (hash 2) and grace (hash 1); drop hash 3.
-        let removed = store
-            .retain_owners(&[[1u8; 32], [2u8; 32]])
-            .await
-            .unwrap();
+        let removed = store.retain_owners(&[[1u8; 32], [2u8; 32]]).await.unwrap();
         assert_eq!(removed, 1);
         let remaining: Vec<_> = store
             .snapshot()
