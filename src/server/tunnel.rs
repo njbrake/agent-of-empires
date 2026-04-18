@@ -467,6 +467,30 @@ pub fn check_cloudflared() -> anyhow::Result<()> {
     }
 }
 
+/// Sync counterpart of `tailscale_available()` for use from the TUI
+/// (which avoids spinning up a tokio runtime just to probe for a CLI).
+/// Conservative: any error means "not available" and we fall through
+/// to Cloudflare.
+pub fn tailscale_available_sync() -> bool {
+    let version_ok = std::process::Command::new("tailscale")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !version_ok {
+        return false;
+    }
+    std::process::Command::new("tailscale")
+        .arg("status")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

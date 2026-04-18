@@ -94,15 +94,19 @@ const LOG_TAIL_LINES: usize = 200;
 pub enum ServeDialogState {
     /// No daemon running; first screen the user sees. They pick Local
     /// (bind 0.0.0.0, token auth only) or Tunnel (cloudflared + passphrase).
-    /// `cloudflared_available` gates the Tunnel card; `local_available`
+    /// `tunnel_available` gates the Tunnel card; `local_available`
     /// is false when the host has no non-loopback interface (dockerized
     /// dev env with only lo).
     ModePicker {
         selected: ServeMode,
-        cloudflared_available: bool,
+        tunnel_available: bool,
+        /// True when a logged-in Tailscale is detected; used to label
+        /// the Tunnel card correctly ("Tailscale Funnel" vs "Cloudflare
+        /// tunnel") and mention the stable-origin advantage.
+        prefer_tailscale: bool,
         local_available: bool,
         /// Transient flash message shown for ~1s after a rejected keypress
-        /// (e.g., picking Tunnel when cloudflared isn't installed).
+        /// (e.g., picking Tunnel when no tunnel tool is installed).
         flash: Option<(String, Instant)>,
     },
     /// Tunnel-only: show the two-factor explanation and wait for the user
@@ -193,7 +197,13 @@ impl ServeDialog {
                 }
             }
         } else {
-            let cloudflared_available = crate::server::tunnel::check_cloudflared().is_ok();
+            // Tunnel mode is usable if EITHER a logged-in Tailscale or
+            // cloudflared is installed. Tailscale is preferred when both
+            // are available (stable URL, installable PWAs keep working).
+            let tailscale_ok = crate::server::tunnel::tailscale_available_sync();
+            let cloudflared_ok = crate::server::tunnel::check_cloudflared().is_ok();
+            let tunnel_available = tailscale_ok || cloudflared_ok;
+            let prefer_tailscale = tailscale_ok;
             let local_available = !crate::server::discover_tagged_ips().is_empty();
             // Default highlight: the last mode the user successfully
             // launched (read from serve.last_mode). Fall back to Local as
@@ -202,15 +212,16 @@ impl ServeDialog {
             let remembered_default = read_last_mode().unwrap_or(ServeMode::Local);
             let selected = match remembered_default {
                 ServeMode::Local if local_available => ServeMode::Local,
-                ServeMode::Local if cloudflared_available => ServeMode::Tunnel,
-                ServeMode::Tunnel if cloudflared_available => ServeMode::Tunnel,
+                ServeMode::Local if tunnel_available => ServeMode::Tunnel,
+                ServeMode::Tunnel if tunnel_available => ServeMode::Tunnel,
                 ServeMode::Tunnel if local_available => ServeMode::Local,
                 _ => ServeMode::Local, // no-op default when neither works; picker handles it
             };
             Self {
                 state: ServeDialogState::ModePicker {
                     selected,
-                    cloudflared_available,
+                    tunnel_available,
+                    prefer_tailscale,
                     local_available,
                     flash: None,
                 },
@@ -223,7 +234,8 @@ impl ServeDialog {
         match &mut self.state {
             ServeDialogState::ModePicker {
                 selected,
-                cloudflared_available,
+                tunnel_available,
+                prefer_tailscale: _,
                 local_available,
                 flash,
             } => {
@@ -233,7 +245,7 @@ impl ServeDialog {
                 let commit = |dialog: &mut ServeDialog| -> DialogResult<()> {
                     let ServeDialogState::ModePicker {
                         selected,
-                        cloudflared_available,
+                        tunnel_available,
                         local_available,
                         ..
                     } = &dialog.state
@@ -241,13 +253,14 @@ impl ServeDialog {
                         return DialogResult::Continue;
                     };
                     let mode = *selected;
-                    let cf = *cloudflared_available;
+                    let cf = *tunnel_available;
                     let la = *local_available;
                     match mode {
                         ServeMode::Tunnel if !cf => {
                             if let ServeDialogState::ModePicker { flash, .. } = &mut dialog.state {
                                 *flash = Some((
-                                    "Install cloudflared to enable Tunnel mode.".to_string(),
+                                    "Install tailscale or cloudflared to enable Tunnel mode."
+                                        .to_string(),
                                     Instant::now(),
                                 ));
                             }
@@ -304,14 +317,14 @@ impl ServeDialog {
                         // Only move to Tunnel if it's usable; otherwise
                         // keep Local selected (don't let the user park
                         // the cursor on a dimmed card).
-                        if *cloudflared_available {
+                        if *tunnel_available {
                             *selected = ServeMode::Tunnel;
                         }
                         DialogResult::Continue
                     }
                     KeyCode::Tab => {
                         *selected = match *selected {
-                            ServeMode::Local if *cloudflared_available => ServeMode::Tunnel,
+                            ServeMode::Local if *tunnel_available => ServeMode::Tunnel,
                             ServeMode::Tunnel if *local_available => ServeMode::Local,
                             other => other,
                         };
@@ -547,7 +560,8 @@ impl ServeDialog {
         match &self.state {
             ServeDialogState::ModePicker {
                 selected,
-                cloudflared_available,
+                tunnel_available,
+                prefer_tailscale,
                 local_available,
                 flash,
             } => render_mode_picker(
@@ -555,7 +569,8 @@ impl ServeDialog {
                 area,
                 theme,
                 *selected,
-                *cloudflared_available,
+                *tunnel_available,
+                *prefer_tailscale,
                 *local_available,
                 flash.as_ref().map(|(m, _)| m.as_str()),
             ),
@@ -663,8 +678,8 @@ fn spawn_daemon(mode: ServeMode, passphrase: Option<&str>) -> Result<(), String>
 
         let hint = match mode {
             ServeMode::Tunnel => format!(
-                "Most likely `cloudflared` is not installed \
-                 (brew install cloudflared) or port {} is in use.",
+                "Most likely no tunnel tool is installed (install tailscale \
+                 or cloudflared) or port {} is in use.",
                 port
             ),
             ServeMode::Local => format!("Most likely port {} is in use.", port),
@@ -893,12 +908,14 @@ fn append_new_log_lines_from(
     changed
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_mode_picker(
     frame: &mut Frame,
     area: Rect,
     theme: &Theme,
     selected: ServeMode,
-    cloudflared_available: bool,
+    tunnel_available: bool,
+    prefer_tailscale: bool,
     local_available: bool,
     flash: Option<&str>,
 ) {
@@ -1006,33 +1023,50 @@ fn render_mode_picker(
 
     // ── Tunnel card ───────────────────────────────────────────────────────
     let (tunnel_border, tunnel_title_style, tunnel_body_style) =
-        if selected == ServeMode::Tunnel && cloudflared_available {
+        if selected == ServeMode::Tunnel && tunnel_available {
             (theme.accent, theme.accent, theme.text)
-        } else if !cloudflared_available {
+        } else if !tunnel_available {
             (theme.dimmed, theme.dimmed, theme.dimmed)
         } else {
             (theme.border, theme.title, theme.text)
         };
+    let tunnel_title = if !tunnel_available {
+        " HTTPS tunnel "
+    } else if prefer_tailscale {
+        " Tailscale Funnel "
+    } else {
+        " Cloudflare tunnel "
+    };
     let tunnel_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(tunnel_border))
         .padding(Padding::horizontal(1))
         .title(Line::styled(
-            " Cloudflare tunnel ",
+            tunnel_title,
             Style::default().fg(tunnel_title_style).bold(),
         ));
     let tunnel_inner = tunnel_block.inner(cards[2]);
     frame.render_widget(tunnel_block, cards[2]);
+    let status_line = if !tunnel_available {
+        "no tunnel tool installed"
+    } else if prefer_tailscale {
+        "stable HTTPS URL"
+    } else {
+        "public HTTPS URL (rotates)"
+    };
+    let secondary_line = if !tunnel_available {
+        ""
+    } else if prefer_tailscale {
+        "Installed PWAs stay working."
+    } else {
+        "URL changes on restart."
+    };
     let tunnel_body = vec![
         Line::from(""),
         Line::from(Span::styled(
-            if cloudflared_available {
-                "public HTTPS URL"
-            } else {
-                "cloudflared not installed"
-            },
-            Style::default().fg(if cloudflared_available {
+            status_line,
+            Style::default().fg(if tunnel_available {
                 theme.accent
             } else {
                 theme.dimmed
@@ -1044,12 +1078,16 @@ fn render_mode_picker(
             Style::default().fg(tunnel_body_style),
         )),
         Line::from(Span::styled(
-            "Reachable from anywhere.",
+            if secondary_line.is_empty() {
+                "Reachable from anywhere."
+            } else {
+                secondary_line
+            },
             Style::default().fg(tunnel_body_style),
         )),
-        if !cloudflared_available {
+        if !tunnel_available {
             Line::from(Span::styled(
-                "  (brew install cloudflared)",
+                "  (brew install cloudflared or tailscale up)",
                 Style::default().fg(theme.dimmed),
             ))
         } else {
@@ -1087,7 +1125,7 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected:
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Line::styled(
-            " Enable Cloudflare tunnel? ",
+            " Enable HTTPS tunnel? ",
             Style::default().fg(theme.accent).bold(),
         ));
     let inner = block.inner(dialog);
@@ -1105,7 +1143,7 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected:
             Style::default().fg(theme.text),
         )),
         Line::from(Span::styled(
-            "(or any browser) via a public Cloudflare URL.",
+            "(or any browser) via a public HTTPS URL.",
             Style::default().fg(theme.text),
         )),
         Line::from(""),
@@ -1116,7 +1154,7 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected:
         Line::from(vec![
             Span::styled("  \u{2022} ", Style::default().fg(theme.running)),
             Span::styled(
-                "HTTPS end-to-end via Cloudflare (traffic is encrypted).",
+                "HTTPS end-to-end via Tailscale or Cloudflare (encrypted).",
                 Style::default().fg(theme.text),
             ),
         ]),
@@ -1161,7 +1199,7 @@ fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected:
             Style::default().fg(theme.dimmed),
         )),
         Line::from(Span::styled(
-            "Requires `cloudflared` (brew install cloudflared).",
+            "Requires tailscale (recommended) or cloudflared.",
             Style::default().fg(theme.dimmed),
         )),
         Line::from(Span::styled(
@@ -1211,7 +1249,7 @@ fn render_starting(
     frame.render_widget(Clear, dialog);
     let (title, wait_line1, wait_line2) = match mode {
         ServeMode::Tunnel => (
-            " Starting Cloudflare tunnel... ",
+            " Starting HTTPS tunnel... ",
             "Waiting for the daemon to bring the tunnel up",
             "(usually 5\u{2013}15 seconds).",
         ),
