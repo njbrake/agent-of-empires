@@ -64,7 +64,7 @@ self.addEventListener('push', (event) => {
       (c) => c.visibilityState === 'visible' && c.focused,
     );
     if (focused) {
-      // User is already in the app — forward the payload for an in-app
+      // User is already in the app, forward the payload for an in-app
       // toast, skip the OS notification. If the client has no handler,
       // the message is silently dropped which is fine.
       try {

@@ -548,8 +548,16 @@ async fn fire_due_pushes(
     let web_config = app_state.web_config.clone();
 
     for (instance_id, instance_title, event) in to_fire {
-        let instance = instances.iter().find(|i| i.id == instance_id);
-        if !should_fire(event, &web_config, instance) {
+        // If the instance vanished (externally deleted, tmux killed,
+        // storage file hand-edited) between the dwell timer starting
+        // and firing, skip rather than sending a notification that
+        // deep-links to a 404. Also drop the dwell entry so we don't
+        // keep retrying every tick forever.
+        let Some(instance) = instances.iter().find(|i| i.id == instance_id) else {
+            dwell.remove(&instance_id);
+            continue;
+        };
+        if !should_fire(event, &web_config, Some(instance)) {
             continue;
         }
 
@@ -1035,13 +1043,13 @@ mod tests {
         assert!(!should_fire(NotificationEvent::Idle, &web, Some(&inst)));
         assert!(should_fire(NotificationEvent::Error, &web, Some(&inst)));
 
-        // Session opts INTO idle despite global default off — the
-        // critical "I want to babysit this one long session" case.
+        // Session opts INTO idle despite global default off; this is
+        // the "I want to babysit this one long session" case.
         inst.notify_on_idle = Some(true);
         assert!(should_fire(NotificationEvent::Idle, &web, Some(&inst)));
 
-        // Session opts OUT of waiting despite global on — the "stop
-        // spamming me about this noisy session" case.
+        // Session opts OUT of waiting despite global on; this is the
+        // "stop spamming me about this noisy session" case.
         inst.notify_on_waiting = Some(false);
         assert!(!should_fire(NotificationEvent::Waiting, &web, Some(&inst)));
 
