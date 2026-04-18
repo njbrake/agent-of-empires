@@ -208,6 +208,9 @@ pub struct AppState {
     /// to the config flag require a server restart to take effect; this
     /// is a documented limitation of the toggle for v1.
     pub push_enabled: bool,
+    /// Snapshot of the resolved WebConfig at startup. Consumed by the
+    /// push consumer task to evaluate per-event-type defaults.
+    pub web_config: crate::session::config::WebConfig,
 }
 
 impl AppState {
@@ -330,6 +333,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
         push: push_state,
         push_enabled,
+        web_config: config.web.clone(),
     });
 
     let app = build_router(state.clone());
@@ -571,6 +575,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}/diff/file", get(api::session_diff_file))
         .route("/api/sessions/{id}/ensure", post(api::ensure_session))
+        .route(
+            "/api/sessions/{id}/notifications",
+            patch(api::update_session_notifications),
+        )
         .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
         .route(
             "/api/sessions/{id}/container-terminal",

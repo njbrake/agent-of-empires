@@ -37,14 +37,19 @@ pub struct StatusChange {
 /// logs and continues; push delivery is best-effort anyway.
 pub const STATUS_CHANNEL_CAPACITY: usize = 64;
 
-/// Dwell requirement: a session must remain in `Waiting` for at least
-/// this long before firing a push. Suppresses phone buzzes caused by
-/// transient tmux scrape flicker.
-pub const DWELL_MS: u64 = 5_000;
+/// Dwell requirement for Waiting: Claude sometimes pauses briefly in
+/// Waiting before resolving, and tmux scrape results flicker. Require
+/// 5s of continuous Waiting before firing.
+pub const DWELL_WAITING_MS: u64 = 5_000;
+
+/// Dwell for Idle and Error is shorter because these are terminal
+/// states and far less flicker-prone. Still non-zero to absorb the
+/// 2s poll-loop update boundary.
+pub const DWELL_TERMINAL_MS: u64 = 2_000;
 
 /// Post-send cooldown per session. After a push fires for a session,
-/// suppress further pushes until the session leaves `Waiting` OR this
-/// long has passed, whichever comes second.
+/// suppress further pushes until the session leaves the firing state
+/// OR this long has passed, whichever comes second.
 pub const COOLDOWN_MS: u64 = 60_000;
 
 // ── VAPID keypair ───────────────────────────────────────────────────────────
@@ -343,19 +348,42 @@ pub fn base64_url_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
 
 // ── Consumer task ───────────────────────────────────────────────────────────
 
+/// Push-notification event types that the consumer can fire. Each
+/// has its own server-wide default (in WebConfig) and a per-session
+/// override (in Instance). The dwell requirement also varies by kind:
+/// Waiting uses a longer dwell since Claude often pauses briefly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NotificationEvent {
+    Waiting,
+    Idle,
+    Error,
+}
+
+impl NotificationEvent {
+    fn dwell_ms(self) -> u64 {
+        match self {
+            Self::Waiting => DWELL_WAITING_MS,
+            _ => DWELL_TERMINAL_MS,
+        }
+    }
+}
+
 /// Per-session timing state the consumer maintains to apply the dwell
-/// requirement (don't buzz for flickers under DWELL_MS) and the post-
-/// send cooldown (don't re-buzz within COOLDOWN_MS unless the session
-/// has left `Waiting` and returned).
+/// requirement and the post-send cooldown per event type.
 #[derive(Default)]
 struct DwellState {
-    /// When the session entered `Waiting` most recently; None if it's
-    /// not currently waiting.
+    /// When the session most recently entered Waiting. None if not
+    /// currently waiting.
     waiting_since: Option<std::time::Instant>,
-    /// Last time a push fired for this session. Used for the cooldown.
+    /// When the session most recently entered Idle.
+    idle_since: Option<std::time::Instant>,
+    /// When the session most recently entered Error.
+    error_since: Option<std::time::Instant>,
+    /// Last time a push fired for this session (any event type). Used
+    /// for a shared per-session cooldown: rapid-fire events like
+    /// Error → brief Running → Error don't double-buzz.
     last_notified: Option<std::time::Instant>,
-    /// Cached title, so we have something to show on the push payload
-    /// even if the session state map doesn't carry it when we fire.
+    /// Cached title for the payload body.
     title: String,
 }
 
@@ -371,10 +399,9 @@ pub const SEND_CONCURRENCY: usize = 8;
 /// The task runs for the lifetime of the server; no clean shutdown
 /// path is required since `broadcast::Receiver` is drained on drop.
 pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
-    let push = match state.push.as_ref() {
-        Some(p) => p.clone(),
-        None => return, // feature disabled, nothing to spawn
-    };
+    if state.push.is_none() {
+        return; // feature disabled, nothing to spawn
+    }
 
     tokio::spawn(async move {
         let client = match super::push_send::build_client() {
@@ -389,8 +416,8 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
         let mut dwell: HashMap<String, DwellState> = HashMap::new();
 
         // Interleave receiving status changes with polling the dwell
-        // map for sessions whose DWELL_MS has elapsed. A simple 500ms
-        // tick is precise enough for our 5s dwell window and cheap.
+        // map for sessions whose dwell window has elapsed. A simple
+        // 500ms tick is precise enough and cheap.
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -410,7 +437,7 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
                     }
                 }
                 _ = tick.tick() => {
-                    fire_due_pushes(push.clone(), &client, &semaphore, &mut dwell).await;
+                    fire_due_pushes(state.clone(), &client, &semaphore, &mut dwell).await;
                 }
             }
         }
@@ -420,23 +447,19 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
 fn handle_status_change(dwell: &mut HashMap<String, DwellState>, change: StatusChange) {
     let entry = dwell.entry(change.instance_id.clone()).or_default();
     entry.title = change.instance_title;
+    let now = std::time::Instant::now();
+    // Exactly one `*_since` is set at a time: the current state's timer.
+    // Transitioning clears the others. Each fresh entry into a fire-worthy
+    // state resets that state's dwell timer (a flicker Waiting → Running →
+    // Waiting restarts the 5s clock, which is what we want).
+    entry.waiting_since = None;
+    entry.idle_since = None;
+    entry.error_since = None;
     match change.new {
-        Status::Waiting => {
-            // Start (or keep) the dwell timer. If a flicker Waiting →
-            // Running → Waiting happens within DWELL_MS, each fresh
-            // Waiting transition resets the timer, which is what we
-            // want: only commit to a push once the session has
-            // actually settled in Waiting.
-            entry.waiting_since = Some(std::time::Instant::now());
-        }
-        _ => {
-            // Left Waiting: cancel any pending push for this session.
-            // Once we leave, the user's attention is no longer required
-            // until the next Running → Waiting transition, which will
-            // also reset cooldown semantics by clearing last_notified
-            // if enough time has passed.
-            entry.waiting_since = None;
-        }
+        Status::Waiting => entry.waiting_since = Some(now),
+        Status::Idle => entry.idle_since = Some(now),
+        Status::Error => entry.error_since = Some(now),
+        _ => {}
     }
     // Drop entries for transitions into Stopped/Deleting so the map
     // doesn't grow forever in long-running servers that create and
@@ -446,47 +469,108 @@ fn handle_status_change(dwell: &mut HashMap<String, DwellState>, change: StatusC
     }
 }
 
+/// Resolve whether a given event type should fire for a given instance,
+/// combining server-wide defaults with per-session overrides.
+fn should_fire(
+    event: NotificationEvent,
+    web: &crate::session::config::WebConfig,
+    instance: Option<&crate::session::Instance>,
+) -> bool {
+    let (global, override_val) = match event {
+        NotificationEvent::Waiting => (
+            web.notify_on_waiting,
+            instance.and_then(|i| i.notify_on_waiting),
+        ),
+        NotificationEvent::Idle => (web.notify_on_idle, instance.and_then(|i| i.notify_on_idle)),
+        NotificationEvent::Error => (
+            web.notify_on_error,
+            instance.and_then(|i| i.notify_on_error),
+        ),
+    };
+    override_val.unwrap_or(global)
+}
+
 async fn fire_due_pushes(
-    push: std::sync::Arc<PushState>,
+    app_state: std::sync::Arc<super::AppState>,
     client: &reqwest::Client,
     semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     dwell: &mut HashMap<String, DwellState>,
 ) {
+    let Some(push) = app_state.push.as_ref() else {
+        return; // feature disabled, nothing to do
+    };
+    let push = push.clone();
+
     let now = std::time::Instant::now();
-    let mut to_fire: Vec<(String, String)> = Vec::new();
+    // Collect (instance_id, title, event) tuples to fire. Firing mutates
+    // the dwell map (clear `*_since`, set `last_notified`) so we collect
+    // before sending to avoid holding a borrow across the await boundary.
+    let mut to_fire: Vec<(String, String, NotificationEvent)> = Vec::new();
 
     for (id, state) in dwell.iter_mut() {
-        let Some(since) = state.waiting_since else {
-            continue;
-        };
-        if now.duration_since(since).as_millis() < DWELL_MS as u128 {
-            continue;
-        }
-        // Dwell satisfied. Check cooldown.
+        // Cooldown gates ALL event types for this session. Rapid
+        // oscillation Error → Running → Error shouldn't double-buzz.
         if let Some(last) = state.last_notified {
             if now.duration_since(last).as_millis() < COOLDOWN_MS as u128 {
                 continue;
             }
         }
-        // Mark as notified so we don't re-fire until the session leaves
-        // Waiting (clearing waiting_since) or COOLDOWN_MS elapses.
-        state.last_notified = Some(now);
-        state.waiting_since = None;
-        to_fire.push((id.clone(), state.title.clone()));
+
+        // Evaluate each event in priority order. At most one *_since is
+        // set at any time (handle_status_change maintains this), so this
+        // loop terminates early with a single fire or zero fires.
+        let checks = [
+            (NotificationEvent::Waiting, state.waiting_since),
+            (NotificationEvent::Error, state.error_since),
+            (NotificationEvent::Idle, state.idle_since),
+        ];
+        for (event, since_opt) in checks {
+            let Some(since) = since_opt else { continue };
+            if now.duration_since(since).as_millis() < event.dwell_ms() as u128 {
+                continue;
+            }
+            state.last_notified = Some(now);
+            state.waiting_since = None;
+            state.idle_since = None;
+            state.error_since = None;
+            to_fire.push((id.clone(), state.title.clone(), event));
+            break;
+        }
     }
 
-    for (instance_id, instance_title) in to_fire {
+    if to_fire.is_empty() {
+        return;
+    }
+
+    // Snapshot instances once; fire_due_pushes holds no locks across
+    // the tokio::spawn boundary below.
+    let instances = app_state.instances.read().await.clone();
+    let web_config = app_state.web_config.clone();
+
+    for (instance_id, instance_title, event) in to_fire {
+        let instance = instances.iter().find(|i| i.id == instance_id);
+        if !should_fire(event, &web_config, instance) {
+            continue;
+        }
+
         let subs = push.store.snapshot().await;
         if subs.is_empty() {
             continue;
         }
+
+        let (title, body_prefix) = match event {
+            NotificationEvent::Waiting => ("Claude is waiting", "Waiting for input"),
+            NotificationEvent::Idle => ("Session finished", "Agent is idle"),
+            NotificationEvent::Error => ("Session error", "Agent errored"),
+        };
+        let body = if instance_title.is_empty() {
+            body_prefix.to_string()
+        } else {
+            format!("{}: {}", body_prefix, instance_title)
+        };
         let payload = super::push_send::PushPayload {
-            title: "Claude is waiting".to_string(),
-            body: if instance_title.is_empty() {
-                "Session needs input".to_string()
-            } else {
-                instance_title.clone()
-            },
+            title: title.to_string(),
+            body,
             url: format!("/?session={}", instance_id),
             tag: format!("session-{}", instance_id),
             session_id: instance_id.clone(),
@@ -895,6 +979,74 @@ mod tests {
             },
         );
         assert!(dwell.get(&id).unwrap().waiting_since.is_none());
+    }
+
+    #[test]
+    fn dwell_switches_between_event_types() {
+        let mut dwell: HashMap<String, DwellState> = HashMap::new();
+        let id = "sess-3".to_string();
+        let ev = |new: Status| StatusChange {
+            instance_id: id.clone(),
+            instance_title: "s".into(),
+            old: Status::Running,
+            new,
+            at: Utc::now(),
+        };
+
+        handle_status_change(&mut dwell, ev(Status::Waiting));
+        let s = dwell.get(&id).unwrap();
+        assert!(s.waiting_since.is_some());
+        assert!(s.idle_since.is_none());
+        assert!(s.error_since.is_none());
+
+        handle_status_change(&mut dwell, ev(Status::Error));
+        let s = dwell.get(&id).unwrap();
+        assert!(s.waiting_since.is_none());
+        assert!(s.idle_since.is_none());
+        assert!(s.error_since.is_some());
+
+        handle_status_change(&mut dwell, ev(Status::Idle));
+        let s = dwell.get(&id).unwrap();
+        assert!(s.waiting_since.is_none());
+        assert!(s.idle_since.is_some());
+        assert!(s.error_since.is_none());
+    }
+
+    #[test]
+    fn should_fire_respects_per_session_override() {
+        use crate::session::config::WebConfig;
+        use crate::session::Instance;
+
+        let web = WebConfig {
+            notifications_enabled: true,
+            notify_on_waiting: true,
+            notify_on_idle: false, // globally off
+            notify_on_error: true,
+        };
+
+        // No instance (session not in state): fall back to web defaults.
+        assert!(should_fire(NotificationEvent::Waiting, &web, None));
+        assert!(!should_fire(NotificationEvent::Idle, &web, None));
+        assert!(should_fire(NotificationEvent::Error, &web, None));
+
+        // Instance with no overrides: inherits web defaults.
+        let mut inst = Instance::new("t", "/tmp");
+        assert!(should_fire(NotificationEvent::Waiting, &web, Some(&inst)));
+        assert!(!should_fire(NotificationEvent::Idle, &web, Some(&inst)));
+        assert!(should_fire(NotificationEvent::Error, &web, Some(&inst)));
+
+        // Session opts INTO idle despite global default off — the
+        // critical "I want to babysit this one long session" case.
+        inst.notify_on_idle = Some(true);
+        assert!(should_fire(NotificationEvent::Idle, &web, Some(&inst)));
+
+        // Session opts OUT of waiting despite global on — the "stop
+        // spamming me about this noisy session" case.
+        inst.notify_on_waiting = Some(false);
+        assert!(!should_fire(NotificationEvent::Waiting, &web, Some(&inst)));
+
+        // Error unaffected: per-event-type overrides don't cross-pollute.
+        assert!(should_fire(NotificationEvent::Error, &web, Some(&inst)));
     }
 
     #[test]
