@@ -1,8 +1,14 @@
-//! Cloudflare Tunnel integration for secure remote access.
+//! Public-HTTPS tunnel integration for secure remote access.
 //!
-//! Spawns `cloudflared tunnel --url http://localhost:PORT` for zero-config tunnels,
-//! or `cloudflared tunnel run` for named tunnels with stable domains.
-//! Parses the assigned URL from stderr and provides it for QR code display.
+//! Supports three transports, auto-picked in `prefer_tailscale_then_cloudflare`:
+//! 1. Tailscale Funnel: preferred when `tailscale` is installed and logged in.
+//!    Gives a stable `https://<machine>.<tailnet>.ts.net` URL, so installed
+//!    PWAs survive server restarts. No child process to manage; the Tailscale
+//!    daemon owns the ingress.
+//! 2. Named Cloudflare tunnel: user-provided `--tunnel-name` + `--tunnel-url`.
+//!    Stable hostname on the user's own domain.
+//! 3. Cloudflare quick tunnel: fallback. Zero-config, but the URL rotates on
+//!    every restart, which breaks installed PWAs. Documented limitation.
 
 use std::sync::Arc;
 
@@ -12,9 +18,13 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-/// Manages a cloudflared tunnel subprocess.
+/// Manages a public-HTTPS tunnel. For Cloudflare variants, wraps a
+/// `cloudflared` subprocess and supervises it. For Tailscale Funnel,
+/// there's no child process: the Tailscale daemon owns the ingress,
+/// and this handle is essentially a URL carrier.
 pub struct TunnelHandle {
-    child: Arc<Mutex<Child>>,
+    /// None for Tailscale (no child process to supervise).
+    child: Option<Arc<Mutex<Child>>>,
     pub url: String,
     port: u16,
     kind: TunnelKind,
@@ -25,6 +35,28 @@ pub struct TunnelHandle {
 enum TunnelKind {
     Quick,
     Named { tunnel_name: String },
+    Tailscale,
+}
+
+impl TunnelKind {
+    /// Short label for `serve.mode` and the TUI status bar.
+    pub fn mode_label(&self) -> &'static str {
+        match self {
+            Self::Quick | Self::Named { .. } => "tunnel",
+            Self::Tailscale => "tailscale",
+        }
+    }
+}
+
+impl TunnelHandle {
+    pub fn mode_label(&self) -> &'static str {
+        self.kind.mode_label()
+    }
+
+    pub fn is_stable_origin(&self) -> bool {
+        // Quick CF tunnels rotate; named CF and Tailscale are stable.
+        !matches!(self.kind, TunnelKind::Quick)
+    }
 }
 
 impl TunnelHandle {
@@ -69,7 +101,7 @@ impl TunnelHandle {
         info!(url = %url, "Cloudflare tunnel established");
 
         Ok(TunnelHandle {
-            child: Arc::new(Mutex::new(child)),
+            child: Some(Arc::new(Mutex::new(child))),
             url,
             port: local_port,
             kind: TunnelKind::Quick,
@@ -128,7 +160,7 @@ impl TunnelHandle {
         info!(url = %url, tunnel = %tunnel_name, "Named Cloudflare tunnel started");
 
         Ok(TunnelHandle {
-            child: Arc::new(Mutex::new(child)),
+            child: Some(Arc::new(Mutex::new(child))),
             url,
             port: local_port,
             kind: TunnelKind::Named {
@@ -138,14 +170,72 @@ impl TunnelHandle {
         })
     }
 
+    /// Configure Tailscale Funnel for the local port and return a
+    /// handle carrying the stable `https://<host>.<tailnet>.ts.net` URL.
+    /// No subprocess supervision is needed; `tailscale serve` and
+    /// `tailscale funnel` configure state in the Tailscale daemon and
+    /// return immediately.
+    pub async fn spawn_tailscale(local_port: u16) -> anyhow::Result<Self> {
+        // Step 1: point the funnel's https:443 at our local port.
+        // `tailscale serve` is idempotent; re-running with a different
+        // port overwrites the previous mapping.
+        let out = Command::new("tailscale")
+            .args([
+                "serve",
+                "--bg",
+                "--https=443",
+                &format!("http://127.0.0.1:{}", local_port),
+            ])
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to run tailscale serve: {}", e))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "tailscale serve failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        // Step 2: open the funnel on port 443. Also idempotent.
+        let out = Command::new("tailscale")
+            .args(["funnel", "--bg", "443"])
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to run tailscale funnel: {}", e))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "tailscale funnel failed: {}. Funnel may need to be enabled in the admin console.",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        // Step 3: read the stable funnel URL from `tailscale status`.
+        let url = tailscale_funnel_url().await?;
+        info!(url = %url, "Tailscale Funnel established");
+
+        Ok(TunnelHandle {
+            child: None,
+            url,
+            port: local_port,
+            kind: TunnelKind::Tailscale,
+            cancel: CancellationToken::new(),
+        })
+    }
+
     /// Gracefully shut down the tunnel process.
     /// Cancels the health monitor first, then sends SIGTERM to cloudflared.
+    /// For Tailscale funnels, leaves the funnel configuration in place on
+    /// purpose: restarting aoe shouldn't tear down the PWA's origin.
     pub async fn shutdown(self) {
         self.cancel.cancel();
         // Brief yield to let the monitor task observe cancellation
         tokio::task::yield_now().await;
 
-        let mut child = self.child.lock().await;
+        let Some(child_arc) = self.child else {
+            info!("Tailscale Funnel handle released (Funnel config left in place)");
+            return;
+        };
+        let mut child = child_arc.lock().await;
         if let Some(id) = child.id() {
             let _ = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(id as i32),
@@ -163,8 +253,13 @@ impl TunnelHandle {
 
     /// Spawn a background task that monitors tunnel health and attempts one restart.
     /// The task stops when the cancellation token is cancelled (during shutdown).
+    /// No-op for Tailscale funnels (no child process to supervise; the
+    /// Tailscale daemon handles its own health).
     pub fn spawn_health_monitor(&self) {
-        let child = Arc::clone(&self.child);
+        let Some(child_arc) = self.child.as_ref() else {
+            return; // Tailscale: no child to monitor
+        };
+        let child = Arc::clone(child_arc);
         let kind = self.kind.clone();
         let port = self.port;
         let cancel = self.cancel.clone();
@@ -249,7 +344,63 @@ async fn restart_tunnel(kind: &TunnelKind, port: u16) -> anyhow::Result<Child> {
                 .spawn()?;
             Ok(child)
         }
+        TunnelKind::Tailscale => {
+            // Unreachable in practice: the health monitor doesn't run
+            // for Tailscale (see spawn_health_monitor early-return), so
+            // restart_tunnel is never called with this variant. If a
+            // future refactor changes that invariant, fail loudly.
+            anyhow::bail!("restart_tunnel called for Tailscale; no child process exists")
+        }
     }
+}
+
+/// True if `tailscale` is on PATH, the daemon is logged in, and Funnel
+/// is enabled for the tailnet. Conservative: any failure returns false
+/// so callers fall back cleanly to Cloudflare.
+pub async fn tailscale_available() -> bool {
+    // Cheapest possible check first: does the CLI exist and return
+    // a successful status?
+    let Ok(out) = Command::new("tailscale").arg("--version").output().await else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    // Then confirm the daemon is running and signed in. `status` exits
+    // non-zero if not logged in.
+    let Ok(out) = Command::new("tailscale").arg("status").output().await else {
+        return false;
+    };
+    out.status.success()
+}
+
+/// Read the stable Tailscale Funnel URL from `tailscale status --json`.
+/// The self node's `DNSName` is the `.ts.net` hostname; we wrap it in
+/// `https://` and strip the trailing dot that appears in the JSON.
+async fn tailscale_funnel_url() -> anyhow::Result<String> {
+    let out = Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to run tailscale status: {}", e))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "tailscale status --json failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| anyhow::anyhow!("parse tailscale status JSON: {}", e))?;
+    let dns = parsed
+        .get("Self")
+        .and_then(|s| s.get("DNSName"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Self.DNSName missing from tailscale status"))?;
+    let host = dns.trim_end_matches('.');
+    if host.is_empty() {
+        anyhow::bail!("empty DNSName from tailscale status");
+    }
+    Ok(format!("https://{}", host))
 }
 
 /// Extract a trycloudflare.com tunnel URL from a cloudflared stderr line.

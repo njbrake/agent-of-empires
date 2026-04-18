@@ -341,10 +341,27 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let local_port = listener.local_addr()?.port();
 
-    // Start tunnel if remote mode
+    // Start tunnel if remote mode. Preference order:
+    //  1. User-specified named Cloudflare tunnel (stable, explicit choice).
+    //  2. Tailscale Funnel if tailscale is installed and logged in
+    //     (stable .ts.net URL, installable PWAs keep working).
+    //  3. Cloudflare quick tunnel (fallback; URL rotates per restart,
+    //     which breaks installed PWAs).
     let tunnel_handle = if remote {
         let handle = if let (Some(name), Some(url)) = (tunnel_name, tunnel_url) {
             tunnel::TunnelHandle::spawn_named(name, url, local_port).await?
+        } else if tunnel::tailscale_available().await {
+            info!("Tailscale detected; using Tailscale Funnel for stable HTTPS origin");
+            match tunnel::TunnelHandle::spawn_tailscale(local_port).await {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!(
+                        "Tailscale Funnel setup failed ({}); falling back to Cloudflare quick tunnel",
+                        e
+                    );
+                    tunnel::TunnelHandle::spawn_quick(local_port).await?
+                }
+            }
         } else {
             tunnel::TunnelHandle::spawn_quick(local_port).await?
         };
@@ -358,6 +375,15 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         // Print QR code unless running as daemon
         if !is_daemon {
             tunnel::print_qr_code(&tunnel_url_with_token);
+            if !handle.is_stable_origin() {
+                eprintln!(
+                    "\nNote: this Cloudflare quick tunnel URL changes on every restart.\n\
+                     Installed PWAs (home-screen apps) break when the URL changes.\n\
+                     For a stable installable dashboard, install Tailscale and run\n\
+                     `tailscale up` on this host before `aoe serve --remote`, or use\n\
+                     a named Cloudflare tunnel via --tunnel-name/--tunnel-url.\n"
+                );
+            }
         }
 
         // Write tunnel URL for daemon discovery. Single-line content:
@@ -366,8 +392,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         if let Ok(app_dir) = crate::session::get_app_dir() {
             write_secret_file(&app_dir.join("serve.url"), &tunnel_url_with_token);
             // serve.mode lets the TUI reattach to a running daemon and
-            // know whether to render "Serving (tunnel)" vs "(local)".
-            let _ = std::fs::write(app_dir.join("serve.mode"), "tunnel\n");
+            // render the right transport label: "tunnel" for Cloudflare,
+            // "tailscale" for Tailscale Funnel, "local" for local-only.
+            let mode = format!("{}\n", handle.mode_label());
+            let _ = std::fs::write(app_dir.join("serve.mode"), mode);
         }
 
         // Start health monitor (uses CancellationToken internally)

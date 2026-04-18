@@ -11,6 +11,22 @@ Not yet triggering (planned):
 - `Running` to `Idle` when a long-running session finishes.
 - Per-session opt-in ("only notify me for this session").
 
+## Stable HTTPS for persistent PWA installs (read this first if using mobile)
+
+Push requires HTTPS. An installed PWA is bound to the exact origin it was installed from, so if the origin changes the install breaks: the user has to delete the PWA from the home screen and reinstall at the new URL.
+
+`aoe serve --remote` with no other flags defaults to a Cloudflare **quick tunnel** that gets a fresh random URL on every restart (`foo-bar-xxxx.trycloudflare.com`). That's fine for one-off remote sessions, but a PWA installed from that URL stops working the next time you restart the server.
+
+aoe picks a stable transport automatically when it can:
+
+1. **Tailscale Funnel (preferred).** If `tailscale` is installed on the host and logged in, aoe runs `tailscale serve` + `tailscale funnel` at startup and uses the resulting `https://<machine>.<tailnet>.ts.net` URL. That URL is stable across restarts, so a PWA installed from it keeps working forever. No domain or Cloudflare account needed. Enable Funnel once at [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file) (or in your tailnet ACL), then `tailscale up` on the host, and `aoe serve --remote` does the rest.
+
+2. **Named Cloudflare tunnel.** Pass `--tunnel-name <name> --tunnel-url <hostname>` to aoe. Requires a Cloudflare account and a one-time `cloudflared tunnel create` + DNS setup. Stable hostname on your own domain.
+
+3. **Cloudflare quick tunnel.** Fallback when neither of the above is available. Works for ad-hoc sessions; don't install the PWA from it.
+
+aoe prints a notice when it falls back to the quick tunnel so you don't accidentally install a PWA from an unstable origin.
+
 ## Setup on iPhone (iOS 16.4 or later)
 
 Push notifications on iOS require the dashboard to be installed as a Home Screen app. Safari tabs cannot receive pushes.

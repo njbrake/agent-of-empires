@@ -91,6 +91,7 @@ fn read_serve_mode_label() -> Option<&'static str> {
     match raw.trim() {
         "local" => Some("local"),
         "tunnel" => Some("tunnel"),
+        "tailscale" => Some("tailscale"),
         _ => None,
     }
 }
