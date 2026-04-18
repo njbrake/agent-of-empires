@@ -1,8 +1,8 @@
 //! Web Push notifications for the dashboard PWA.
 //!
 //! Sends VAPID-signed pushes to subscribed browsers when session status
-//! transitions require user attention (currently: Running -> Waiting).
-//! Consumed via a broadcast channel off `AppState.status_tx`, so the
+//! transitions require user attention (v1: Running -> Waiting only).
+//! Consumed via a broadcast channel on `AppState.status_tx`, so the
 //! transition-detection logic is decoupled from tmux polling and can be
 //! unit-tested by feeding events directly.
 //!
@@ -12,6 +12,10 @@
 
 use crate::session::Status;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use tokio::sync::RwLock;
 
 /// Emitted when an instance's status changes. The broadcast channel on
 /// `AppState.status_tx` carries these; `push.rs` is the only consumer in
@@ -28,6 +32,435 @@ pub struct StatusChange {
 /// Capacity of the broadcast channel. Large enough that short bursts of
 /// concurrent transitions (e.g., `/api/sessions` bulk refresh) don't drop
 /// events even if the consumer is momentarily behind. If a receiver lags
-/// past this, broadcast surfaces `RecvError::Lagged` and the consumer can
-/// log and continue; push delivery is best-effort anyway.
+/// past this, broadcast surfaces `RecvError::Lagged` and the consumer
+/// logs and continues; push delivery is best-effort anyway.
 pub const STATUS_CHANNEL_CAPACITY: usize = 64;
+
+/// Dwell requirement: a session must remain in `Waiting` for at least
+/// this long before firing a push. Suppresses phone buzzes caused by
+/// transient tmux scrape flicker.
+pub const DWELL_MS: u64 = 5_000;
+
+/// Post-send cooldown per session. After a push fires for a session,
+/// suppress further pushes until the session leaves `Waiting` OR this
+/// long has passed, whichever comes second.
+pub const COOLDOWN_MS: u64 = 60_000;
+
+// ── VAPID keypair ───────────────────────────────────────────────────────────
+
+/// Persisted form of the VAPID keypair. PKCS#8 PEM for the private key,
+/// base64url for the uncompressed public key (which is what the browser's
+/// `applicationServerKey` expects after base64url decoding).
+#[derive(Serialize, Deserialize)]
+pub struct VapidKeypairFile {
+    pub private_pem: String,
+    pub public_b64url: String,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct VapidKeypair {
+    pub signing_key: p256::ecdsa::SigningKey,
+    pub public_b64url: String,
+    pub private_pem: String,
+}
+
+impl VapidKeypair {
+    /// Load from disk, or generate and persist a new keypair. Uses an
+    /// exclusive file lock on `<path>.lock` to prevent two concurrent
+    /// `aoe serve` invocations from racing and producing two keypairs.
+    pub fn load_or_generate(path: &Path) -> anyhow::Result<Self> {
+        use fs2::FileExt;
+        use std::fs::OpenOptions;
+
+        // Short-circuit: file already present, load directly.
+        if path.exists() {
+            return Self::load(path);
+        }
+
+        // Acquire the generate-lock (creating the lock file if absent).
+        let lock_path = path.with_extension("json.lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        lock_file.lock_exclusive()?;
+
+        // Re-check: another process may have generated while we were
+        // waiting for the lock.
+        if path.exists() {
+            let _ = FileExt::unlock(&lock_file);
+            return Self::load(path);
+        }
+
+        let kp = Self::generate()?;
+        kp.persist(path)?;
+        let _ = FileExt::unlock(&lock_file);
+        Ok(kp)
+    }
+
+    fn generate() -> anyhow::Result<Self> {
+        use p256::ecdsa::SigningKey;
+        use p256::pkcs8::EncodePrivateKey;
+
+        // Pull 32 bytes of OS entropy and reduce via SigningKey::from_slice;
+        // avoids the rand/rand_core OsRng shuffle across major versions.
+        let mut seed = [0u8; 32];
+        getrandom::fill(&mut seed)
+            .map_err(|e| anyhow::anyhow!("getrandom failed: {}", e))?;
+        let signing_key = SigningKey::from_slice(&seed)
+            .map_err(|e| anyhow::anyhow!("derive signing key: {}", e))?;
+        let verifying_key = signing_key.verifying_key();
+
+        // Private key as PKCS#8 PEM.
+        let private_pem = signing_key
+            .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?
+            .to_string();
+
+        // Public key in uncompressed SEC1 form, base64url encoded. This
+        // is the shape browsers expect for applicationServerKey.
+        let public_bytes = verifying_key.to_encoded_point(false);
+        let public_b64url = base64_url_encode(public_bytes.as_bytes());
+
+        Ok(Self {
+            signing_key,
+            public_b64url,
+            private_pem,
+        })
+    }
+
+    fn load(path: &Path) -> anyhow::Result<Self> {
+        use p256::ecdsa::SigningKey;
+        use p256::pkcs8::DecodePrivateKey;
+
+        let raw = std::fs::read_to_string(path)?;
+        let file: VapidKeypairFile = serde_json::from_str(&raw)?;
+        let signing_key = SigningKey::from_pkcs8_pem(&file.private_pem)?;
+        Ok(Self {
+            signing_key,
+            public_b64url: file.public_b64url,
+            private_pem: file.private_pem,
+        })
+    }
+
+    fn persist(&self, path: &Path) -> anyhow::Result<()> {
+        let file = VapidKeypairFile {
+            private_pem: self.private_pem.clone(),
+            public_b64url: self.public_b64url.clone(),
+            created_at: Utc::now(),
+        };
+        let body = serde_json::to_string_pretty(&file)?;
+
+        // Atomic: write to tmp, fsync, rename.
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, &body)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+}
+
+// ── Subscription store ──────────────────────────────────────────────────────
+
+/// A browser push subscription. Fields mirror the browser-side
+/// `PushSubscription.toJSON()` with added ownership and bookkeeping.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Subscription {
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+    /// SHA-256 of the bearer token at the time of subscribe. Pushes and
+    /// mutations only fire for subscriptions whose hash matches the
+    /// current (or grace-period) token.
+    pub owner_token_hash: [u8; 32],
+    pub user_agent: String,
+    pub created_at: DateTime<Utc>,
+    /// Monotonic counter for optimistic-lock GC: the send path snapshots
+    /// the generation before sending; the GC path removes only if the
+    /// counter still matches. Prevents wiping a freshly re-subscribed
+    /// entry when a concurrent send returns 410.
+    pub generation: u64,
+}
+
+pub struct SubscriptionStore {
+    path: PathBuf,
+    subs: RwLock<HashMap<String, Subscription>>,
+}
+
+impl SubscriptionStore {
+    pub fn load_or_empty(path: PathBuf) -> Self {
+        let subs = match std::fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str::<Vec<Subscription>>(&raw)
+                .map(|v| v.into_iter().map(|s| (s.endpoint.clone(), s)).collect())
+                .unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        };
+        Self {
+            path,
+            subs: RwLock::new(subs),
+        }
+    }
+
+    pub async fn snapshot(&self) -> Vec<Subscription> {
+        self.subs.read().await.values().cloned().collect()
+    }
+
+    pub async fn for_owner(&self, owner: &[u8; 32]) -> Vec<Subscription> {
+        self.subs
+            .read()
+            .await
+            .values()
+            .filter(|s| &s.owner_token_hash == owner)
+            .cloned()
+            .collect()
+    }
+
+    pub async fn upsert(&self, mut sub: Subscription) -> anyhow::Result<()> {
+        {
+            let mut guard = self.subs.write().await;
+            if let Some(existing) = guard.get(&sub.endpoint) {
+                sub.generation = existing.generation.saturating_add(1);
+                sub.created_at = existing.created_at;
+            }
+            guard.insert(sub.endpoint.clone(), sub);
+        }
+        self.persist().await
+    }
+
+    pub async fn remove_if_owner(
+        &self,
+        endpoint: &str,
+        owner: &[u8; 32],
+    ) -> anyhow::Result<bool> {
+        let removed = {
+            let mut guard = self.subs.write().await;
+            match guard.get(endpoint) {
+                Some(s) if &s.owner_token_hash == owner => {
+                    guard.remove(endpoint);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if removed {
+            self.persist().await?;
+        }
+        Ok(removed)
+    }
+
+    /// GC a subscription following a push-endpoint 410/404, gated on the
+    /// generation counter so we don't wipe an entry that was re-subscribed
+    /// while the send was in flight.
+    pub async fn gc_stale(&self, endpoint: &str, observed_generation: u64) -> anyhow::Result<bool> {
+        let removed = {
+            let mut guard = self.subs.write().await;
+            match guard.get(endpoint) {
+                Some(s) if s.generation == observed_generation => {
+                    guard.remove(endpoint);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if removed {
+            self.persist().await?;
+        }
+        Ok(removed)
+    }
+
+    /// Drop any subscriptions whose owner hash is not in `valid`.
+    /// Called on token rotation once we know which hashes are
+    /// current-or-grace-period.
+    pub async fn retain_owners(&self, valid: &[[u8; 32]]) -> anyhow::Result<usize> {
+        let removed = {
+            let mut guard = self.subs.write().await;
+            let before = guard.len();
+            guard.retain(|_, s| valid.iter().any(|v| v == &s.owner_token_hash));
+            before - guard.len()
+        };
+        if removed > 0 {
+            self.persist().await?;
+        }
+        Ok(removed)
+    }
+
+    async fn persist(&self) -> anyhow::Result<()> {
+        let all: Vec<Subscription> = self.subs.read().await.values().cloned().collect();
+        let body = serde_json::to_string_pretty(&all)?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, &body)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&tmp, &self.path)?;
+        Ok(())
+    }
+}
+
+// ── Module-level state ──────────────────────────────────────────────────────
+
+/// The push feature's mutable state, owned by `AppState.push`.
+pub struct PushState {
+    pub vapid: VapidKeypair,
+    pub store: SubscriptionStore,
+    /// VAPID `sub:` claim identifying the sending application. Must be
+    /// either `mailto:` or an `https://` URL per the spec. Not strongly
+    /// validated by push endpoints in practice.
+    pub subject: String,
+}
+
+impl PushState {
+    pub fn init(app_dir: &Path) -> anyhow::Result<Self> {
+        let vapid = VapidKeypair::load_or_generate(&app_dir.join("push.vapid.json"))?;
+        let store = SubscriptionStore::load_or_empty(app_dir.join("push.subscriptions.json"));
+        Ok(Self {
+            vapid,
+            store,
+            subject: "mailto:aoe@localhost".to_string(),
+        })
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+pub fn base64_url_encode(bytes: &[u8]) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn base64_url_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD.decode(s)
+}
+
+pub fn sha256_token(token: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    let out = h.finalize();
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&out);
+    arr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vapid_generate_roundtrip() {
+        let kp = VapidKeypair::generate().unwrap();
+        assert!(kp.public_b64url.len() > 80);
+        assert!(kp.private_pem.contains("BEGIN PRIVATE KEY"));
+    }
+
+    #[test]
+    fn vapid_persist_and_reload_same_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("push.vapid.json");
+        let first = VapidKeypair::load_or_generate(&path).unwrap();
+        let second = VapidKeypair::load_or_generate(&path).unwrap();
+        assert_eq!(first.public_b64url, second.public_b64url);
+        assert_eq!(first.private_pem, second.private_pem);
+    }
+
+    #[tokio::test]
+    async fn subscription_store_upsert_increments_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("push.subscriptions.json");
+        let store = SubscriptionStore::load_or_empty(path);
+
+        let base = Subscription {
+            endpoint: "https://push.example/abc".into(),
+            p256dh: "pk".into(),
+            auth: "auth".into(),
+            owner_token_hash: [1u8; 32],
+            user_agent: "UA".into(),
+            created_at: Utc::now(),
+            generation: 0,
+        };
+        store.upsert(base.clone()).await.unwrap();
+        store.upsert(base.clone()).await.unwrap();
+
+        let all = store.snapshot().await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].generation, 1);
+    }
+
+    #[tokio::test]
+    async fn gc_stale_respects_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("push.subscriptions.json");
+        let store = SubscriptionStore::load_or_empty(path);
+
+        let sub = Subscription {
+            endpoint: "https://push.example/abc".into(),
+            p256dh: "pk".into(),
+            auth: "auth".into(),
+            owner_token_hash: [1u8; 32],
+            user_agent: "UA".into(),
+            created_at: Utc::now(),
+            generation: 5,
+        };
+        store.upsert(sub.clone()).await.unwrap();
+
+        // Stale GC (observed generation differs) does NOT remove.
+        let removed = store.gc_stale(&sub.endpoint, 4).await.unwrap();
+        assert!(!removed);
+        assert_eq!(store.snapshot().await.len(), 1);
+
+        // Matching generation removes.
+        let removed = store.gc_stale(&sub.endpoint, 5).await.unwrap();
+        assert!(removed);
+        assert_eq!(store.snapshot().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn remove_if_owner_blocks_cross_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("push.subscriptions.json");
+        let store = SubscriptionStore::load_or_empty(path);
+
+        let sub = Subscription {
+            endpoint: "https://push.example/abc".into(),
+            p256dh: "pk".into(),
+            auth: "auth".into(),
+            owner_token_hash: [1u8; 32],
+            user_agent: "UA".into(),
+            created_at: Utc::now(),
+            generation: 0,
+        };
+        store.upsert(sub).await.unwrap();
+
+        // Different owner must not succeed.
+        let removed = store
+            .remove_if_owner("https://push.example/abc", &[2u8; 32])
+            .await
+            .unwrap();
+        assert!(!removed);
+        assert_eq!(store.snapshot().await.len(), 1);
+
+        // Correct owner succeeds.
+        let removed = store
+            .remove_if_owner("https://push.example/abc", &[1u8; 32])
+            .await
+            .unwrap();
+        assert!(removed);
+        assert_eq!(store.snapshot().await.len(), 0);
+    }
+
+    #[test]
+    fn sha256_token_is_deterministic_and_differs_per_input() {
+        let a = sha256_token("token-1");
+        let b = sha256_token("token-1");
+        let c = sha256_token("token-2");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+}
