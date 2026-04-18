@@ -474,11 +474,6 @@ pub async fn unsubscribe(
 /// to the caller). Used by the "Send test notification" button. No
 /// fire-to-all fallback: that would let any authenticated caller spam
 /// every subscriber.
-///
-/// Note: actual HTTPS delivery to Apple/Google push endpoints is wired
-/// up in a follow-up commit (requires VAPID JWT + payload encryption).
-/// For now this returns a synthetic TestResult after validating owner
-/// match, so the UI flow is reviewable end-to-end.
 pub async fn test(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthenticatedTokenHash>,
@@ -496,20 +491,49 @@ pub async fn test(
         .for_owner(&auth.0)
         .await
         .into_iter()
-        .any(|s| s.endpoint == body.endpoint);
-    if !owned {
+        .find(|s| s.endpoint == body.endpoint);
+    let Some(subscription) = owned else {
         return Err(StatusCode::FORBIDDEN);
-    }
+    };
 
-    tracing::info!(
-        endpoint = %body.endpoint,
-        "push: test notification requested (delivery stub; real send lands in follow-up)"
-    );
-    Ok(Json(TestResult {
+    let client = match super::push_send::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "push: failed to build reqwest client");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let payload = super::push_send::PushPayload {
+        title: "Agent of Empires".to_string(),
+        body: "Test notification. If you see this on your lock screen, push is working.".to_string(),
+        url: "/".to_string(),
+        tag: "aoe-test".to_string(),
+        session_id: String::new(),
+    };
+
+    let outcome =
+        super::push_send::send_one(&client, push, &subscription, &payload).await;
+    let mut result = TestResult {
         delivered: 0,
         failed: 0,
         gone: 0,
-    }))
+    };
+    match outcome {
+        super::push_send::SendOutcome::Delivered => result.delivered = 1,
+        super::push_send::SendOutcome::Failed => result.failed = 1,
+        super::push_send::SendOutcome::Gone => {
+            result.gone = 1;
+            // Best-effort GC; the result still reports gone=1 even if GC
+            // races with a re-subscribe (that's what the generation
+            // counter in gc_stale prevents).
+            let _ = push
+                .store
+                .gc_stale(&body.endpoint, subscription.generation)
+                .await;
+        }
+    }
+    Ok(Json(result))
 }
 
 #[cfg(test)]
