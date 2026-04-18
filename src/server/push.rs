@@ -311,14 +311,20 @@ pub struct PushState {
     pub subject: String,
 }
 
+/// VAPID `sub` claim (RFC 8292). Spec requires a `mailto:` or `https://`
+/// URL but does not require deliverability; major push services do not
+/// validate this for reachability in practice. We use the project's
+/// public URL so providers that do care have somewhere real to reach.
+pub const VAPID_SUBJECT: &str = "https://github.com/njbrake/agent-of-empires";
+
 impl PushState {
-    pub fn init(app_dir: &Path, subject: String) -> anyhow::Result<Self> {
+    pub fn init(app_dir: &Path) -> anyhow::Result<Self> {
         let vapid = VapidKeypair::load_or_generate(&app_dir.join("push.vapid.json"))?;
         let store = SubscriptionStore::load_or_empty(app_dir.join("push.subscriptions.json"));
         Ok(Self {
             vapid,
             store,
-            subject,
+            subject: VAPID_SUBJECT.to_string(),
         })
     }
 }

@@ -749,7 +749,7 @@ impl SettingsView {
                 }
             }
             // Web settings are server-global; no per-profile override to clear.
-            FieldKey::WebNotificationsEnabled | FieldKey::WebVapidSubject => {}
+            FieldKey::WebNotificationsEnabled => {}
         }
 
         // Sync repo_config when in Repo scope
