@@ -4,8 +4,14 @@ import type { ResizeMessage } from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 5000;
+// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s (cap). Seven attempts
+// cover typical tunnel restarts and transient WiFi drops without flooding
+// the server or burning the user's battery on a truly dead backend.
+const MAX_RETRIES = 7;
+const RETRY_BASE_MS = 1000;
+const RETRY_CAP_MS = 30000;
+const retryDelayMs = (attempt: number) =>
+  Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 28;
 const DEFAULT_FONT_SIZE = 14;
@@ -260,7 +266,8 @@ export function useTerminal(
         if (retryCountRef.current < MAX_RETRIES) {
           retryCountRef.current += 1;
           const count = retryCountRef.current;
-          let countdown = RETRY_DELAY / 1000;
+          const delayMs = retryDelayMs(count);
+          let countdown = Math.ceil(delayMs / 1000);
 
           setState({
             connected: false,
@@ -283,7 +290,7 @@ export function useTerminal(
           retryTimerRef.current = setTimeout(() => {
             if (countdownRef.current) clearInterval(countdownRef.current);
             connect();
-          }, RETRY_DELAY);
+          }, delayMs);
         } else {
           term.write(
             "\r\n\x1b[31m[Connection lost. Click retry or press Enter to reconnect.]\x1b[0m\r\n",
