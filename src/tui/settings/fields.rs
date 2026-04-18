@@ -96,6 +96,9 @@ pub enum FieldKey {
     HookOnDestroy,
     // Web
     WebNotificationsEnabled,
+    WebNotifyOnWaiting,
+    WebNotifyOnIdle,
+    WebNotifyOnError,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -270,15 +273,44 @@ fn build_web_fields(
     // always apply to the global config.
     let _ = scope;
 
-    vec![SettingField {
-        key: FieldKey::WebNotificationsEnabled,
-        label: "Push notifications",
-        description: "Allow the web dashboard to deliver browser push notifications (server-wide kill switch).",
-        value: FieldValue::Bool(global.web.notifications_enabled),
-        category: SettingsCategory::Web,
-        has_override: false,
-        inherited_display: None,
-    }]
+    vec![
+        SettingField {
+            key: FieldKey::WebNotificationsEnabled,
+            label: "Push notifications",
+            description: "Allow the web dashboard to deliver browser push notifications (server-wide kill switch).",
+            value: FieldValue::Bool(global.web.notifications_enabled),
+            category: SettingsCategory::Web,
+            has_override: false,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::WebNotifyOnWaiting,
+            label: "Notify on waiting",
+            description: "Default: send a push when a session transitions Running to Waiting (agent is asking for input). Sessions can override individually.",
+            value: FieldValue::Bool(global.web.notify_on_waiting),
+            category: SettingsCategory::Web,
+            has_override: false,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::WebNotifyOnIdle,
+            label: "Notify on idle",
+            description: "Default: send a push when a session finishes (Running to Idle). Off by default because short sessions make this noisy; sessions can opt in individually.",
+            value: FieldValue::Bool(global.web.notify_on_idle),
+            category: SettingsCategory::Web,
+            has_override: false,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::WebNotifyOnError,
+            label: "Notify on error",
+            description: "Default: send a push when a session errors (Running to Error).",
+            value: FieldValue::Bool(global.web.notify_on_error),
+            category: SettingsCategory::Web,
+            has_override: false,
+            inherited_display: None,
+        },
+    ]
 }
 
 fn build_theme_fields(
@@ -1422,6 +1454,15 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         // Web
         (FieldKey::WebNotificationsEnabled, FieldValue::Bool(v)) => {
             config.web.notifications_enabled = *v;
+        }
+        (FieldKey::WebNotifyOnWaiting, FieldValue::Bool(v)) => {
+            config.web.notify_on_waiting = *v;
+        }
+        (FieldKey::WebNotifyOnIdle, FieldValue::Bool(v)) => {
+            config.web.notify_on_idle = *v;
+        }
+        (FieldKey::WebNotifyOnError, FieldValue::Bool(v)) => {
+            config.web.notify_on_error = *v;
         }
         _ => {}
     }

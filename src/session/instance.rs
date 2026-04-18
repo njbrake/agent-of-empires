@@ -133,6 +133,19 @@ pub struct Instance {
     #[serde(default, skip_serializing)]
     pub source_profile: String,
 
+    // Push-notification per-session overrides. None means "inherit the
+    // server-wide default for this event type" (WebConfig.notify_on_*).
+    // Some(true)/Some(false) is an explicit user toggle and takes
+    // precedence over the global. Because the overrides are per-event-
+    // type, a session can opt INTO an event that is globally off (e.g.,
+    // Running to Idle), not just opt out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_waiting: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_idle: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_error: Option<bool>,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -163,6 +176,9 @@ impl Instance {
             sandbox_info: None,
             terminal_info: None,
             source_profile: String::new(),
+            notify_on_waiting: None,
+            notify_on_idle: None,
+            notify_on_error: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,

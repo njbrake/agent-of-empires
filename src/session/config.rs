@@ -260,8 +260,7 @@ fn default_context_lines() -> usize {
     3
 }
 
-/// Web dashboard runtime configuration. Currently just the push-notification
-/// kill switch; expected to grow as more dashboard features pick up config.
+/// Web dashboard runtime configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfig {
     /// Operator kill switch for browser push notifications. When false,
@@ -271,12 +270,30 @@ pub struct WebConfig {
     /// users to re-opt-in.
     #[serde(default = "default_true")]
     pub notifications_enabled: bool,
+
+    /// Server-wide default: fire a push on Running to Waiting transitions.
+    /// Sessions can override per-session via `Instance.notify_on_waiting`.
+    #[serde(default = "default_true")]
+    pub notify_on_waiting: bool,
+
+    /// Server-wide default: fire a push on Running to Idle transitions.
+    /// Off by default because Idle fires on every session completion and
+    /// gets spammy quickly. Sessions can opt in via `Instance.notify_on_idle`.
+    #[serde(default)]
+    pub notify_on_idle: bool,
+
+    /// Server-wide default: fire a push on Running to Error transitions.
+    #[serde(default = "default_true")]
+    pub notify_on_error: bool,
 }
 
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
             notifications_enabled: true,
+            notify_on_waiting: true,
+            notify_on_idle: false,
+            notify_on_error: true,
         }
     }
 }
