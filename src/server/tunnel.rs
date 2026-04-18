@@ -179,9 +179,10 @@ impl TunnelHandle {
         // Hard cap on each tailscale command so we never wedge if
         // tailscale pops an interactive prompt (HTTPS-certs consent,
         // Funnel-not-enabled-in-ACL, node not signed in). When the
-        // timeout fires, start_server catches the error and falls back
-        // to Cloudflare instead of leaving the user staring at a
-        // frozen "Starting tunnel..." screen.
+        // timeout fires, the error bubbles up to start_server which
+        // surfaces it to the user with fix instructions; we do NOT
+        // silently fall back to Cloudflare because that would hide
+        // the real problem from the user.
         const STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
         // Step 1: point the funnel's https:443 at our local port.

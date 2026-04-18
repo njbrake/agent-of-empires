@@ -354,16 +354,29 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             tunnel::TunnelHandle::spawn_named(name, url, local_port).await?
         } else if !no_tailscale && tunnel::tailscale_available().await {
             info!("Tailscale detected; using Tailscale Funnel for stable HTTPS origin");
-            match tunnel::TunnelHandle::spawn_tailscale(local_port).await {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::warn!(
-                        "Tailscale Funnel setup failed ({}); falling back to Cloudflare quick tunnel",
-                        e
-                    );
-                    tunnel::TunnelHandle::spawn_quick(local_port).await?
-                }
-            }
+            // Do NOT fall back to Cloudflare on Tailscale failure: the
+            // user is on the Tailscale path because they want the
+            // stable-URL benefit, and silently downgrading to a rotating
+            // Cloudflare URL would break the feature they wanted. Bail
+            // with the real error; the user fixes Tailscale or passes
+            // --no-tailscale to explicitly opt into Cloudflare.
+            tunnel::TunnelHandle::spawn_tailscale(local_port)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Tailscale Funnel setup failed: {e}\n\n\
+                         aoe detected a logged-in Tailscale on this host and did not \
+                         fall back to Cloudflare, because doing so silently would \
+                         give you a rotating URL that breaks installed PWAs (the \
+                         reason Tailscale is the preferred transport).\n\n\
+                         Ways to move forward:\n  \
+                         - Fix the Tailscale issue above and re-run `aoe serve --remote`.\n  \
+                         - Re-run with `aoe serve --remote --no-tailscale` to use \
+                         Cloudflare intentionally (quick-tunnel URL rotates on restart).\n  \
+                         - Re-run with `--tunnel-name <name> --tunnel-url <host>` \
+                         to use a named Cloudflare tunnel."
+                    )
+                })?
         } else {
             tunnel::TunnelHandle::spawn_quick(local_port).await?
         };
