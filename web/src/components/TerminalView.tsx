@@ -83,24 +83,46 @@ export function TerminalView({ session }: Props) {
     };
   }, [keyboardHeight]);
 
-  // FAB controls keyboard: focus or blur wterm's textarea.
+  // On initial connect, auto-open the keyboard.
   useEffect(() => {
     if (!isMobile || !state.connected) return;
     const term = termRef.current;
     if (!term) return;
-    if (keyboardOpen) {
-      // Small delay to ensure wterm is fully mounted
-      const t = setTimeout(() => term.focus(), 50);
-      return () => clearTimeout(t);
-    } else {
-      const ta = term.element.querySelector("textarea");
-      ta?.blur();
-    }
-  }, [isMobile, state.connected, keyboardOpen, termRef]);
+    // Retry a few times: wterm's textarea may not exist immediately.
+    const delays = [50, 200, 500];
+    const timers = delays.map((ms) =>
+      setTimeout(() => {
+        const ta = term.element.querySelector("textarea");
+        if (ta instanceof HTMLElement) ta.focus();
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [isMobile, state.connected, termRef]);
 
+  // Blur wterm's textarea when keyboardOpen flips to false.
+  useEffect(() => {
+    if (!isMobile || keyboardOpen) return;
+    const term = termRef.current;
+    if (!term) return;
+    const ta = term.element.querySelector("textarea");
+    ta?.blur();
+  }, [isMobile, keyboardOpen, termRef]);
+
+  // Toggle keyboard: focus synchronously in the click handler so iOS
+  // honors the user-gesture context. Blur can go through state + effect.
   const toggleKeyboard = useCallback(() => {
-    setKeyboardOpen((v) => !v);
-  }, []);
+    setKeyboardOpen((prev) => {
+      if (!prev) {
+        // Opening: focus synchronously within the click handler.
+        const term = termRef.current;
+        if (term) {
+          const ta = term.element.querySelector("textarea");
+          if (ta instanceof HTMLElement) ta.focus();
+        }
+      }
+      return !prev;
+    });
+  }, [termRef]);
 
   // Dismiss scroll hint on first touch or timeout.
   useEffect(() => {
