@@ -6,6 +6,7 @@
 pub mod api;
 pub mod auth;
 pub mod login;
+pub mod push;
 pub mod rate_limit;
 pub mod tunnel;
 pub mod ws;
@@ -17,8 +18,10 @@ use std::time::Duration;
 use axum::Router;
 use rust_embed::Embed;
 use serde::Serialize;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tracing::info;
+
+use self::push::{StatusChange, STATUS_CHANNEL_CAPACITY};
 
 use crate::session::Instance;
 use crate::session::Storage;
@@ -183,6 +186,11 @@ pub struct AppState {
     /// Cached remote owner per repo path. Remote owners don't change, so
     /// entries live for the lifetime of the process.
     pub remote_owner_cache: RwLock<std::collections::HashMap<String, Option<String>>>,
+    /// Broadcasts session status transitions to consumers (currently the
+    /// push-notification module). Emitted from `status_poll_loop` after
+    /// each tmux scrape when `old != new`. Keep the Sender around even
+    /// when no receivers exist so callers can emit without checking.
+    pub status_tx: broadcast::Sender<StatusChange>,
 }
 
 impl AppState {
@@ -276,6 +284,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             entries: std::collections::HashMap::new(),
         }),
         remote_owner_cache: RwLock::new(std::collections::HashMap::new()),
+        status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
     });
 
     let app = build_router(state.clone());
@@ -749,11 +758,27 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     Ok(all)
 }
 
-/// Background task that periodically refreshes session statuses.
+/// Background task that periodically refreshes session statuses. On each
+/// tick, diffs pre- and post-refresh statuses and emits a `StatusChange`
+/// on `state.status_tx` for every transition. Keeping the diff here,
+/// rather than pushing it into `Instance::update_status_with_metadata`,
+/// leaves the session module free of any broadcast-channel dependency
+/// and keeps TUI/CLI callers unchanged.
 async fn status_poll_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
     loop {
         interval.tick().await;
+
+        // Snapshot prior statuses so we can detect transitions without
+        // holding the lock across the blocking tmux work.
+        let prev: std::collections::HashMap<String, crate::session::Status> = {
+            let instances = state.instances.read().await;
+            instances
+                .iter()
+                .map(|i| (i.id.clone(), i.status))
+                .collect()
+        };
+
         // Run blocking tmux subprocess calls in a dedicated thread
         let updated = tokio::task::spawn_blocking(move || {
             let mut instances = load_all_instances().unwrap_or_default();
@@ -772,6 +797,25 @@ async fn status_poll_loop(state: Arc<AppState>) {
         .await;
 
         if let Ok(instances) = updated {
+            // Emit transitions before swapping in the new snapshot so
+            // consumers see events in the same order regardless of when
+            // they read state.instances themselves.
+            let now = chrono::Utc::now();
+            for inst in &instances {
+                if let Some(old) = prev.get(&inst.id) {
+                    if *old != inst.status {
+                        // send() errors only when there are no receivers;
+                        // that's fine, we emit best-effort.
+                        let _ = state.status_tx.send(StatusChange {
+                            instance_id: inst.id.clone(),
+                            instance_title: inst.title.clone(),
+                            old: *old,
+                            new: inst.status,
+                            at: now,
+                        });
+                    }
+                }
+            }
             *state.instances.write().await = instances;
         }
     }
