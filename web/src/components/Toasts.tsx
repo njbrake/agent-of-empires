@@ -46,6 +46,28 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [push],
   );
 
+  // Service worker forwards incoming push payloads here when the PWA
+  // is already visible and focused, so we show the notification as an
+  // in-app toast instead of an OS lock-screen buzz. Matches the
+  // "don't bug me if I'm already looking at the app" requirement.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.serviceWorker) return;
+    const handler = (event: MessageEvent) => {
+      const data = event.data as
+        | { type?: string; payload?: { title?: string; body?: string } }
+        | null;
+      if (!data || data.type !== "aoe-push" || !data.payload) return;
+      const title = data.payload.title ?? "Agent of Empires";
+      const body = data.payload.body ?? "";
+      const message = body ? `${title}: ${body}` : title;
+      push(message, "info");
+    };
+    navigator.serviceWorker.addEventListener("message", handler);
+    return () => {
+      navigator.serviceWorker.removeEventListener("message", handler);
+    };
+  }, [push]);
+
   return (
     <ToastContext.Provider value={api}>
       {children}

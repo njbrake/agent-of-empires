@@ -311,6 +311,33 @@ export async function renameSession(
   }
 }
 
+/** Three-preset helper for the sidebar context menu:
+ *  - "off":     set all three overrides to false (silence this session)
+ *  - "default": clear all three overrides (inherit server defaults)
+ *  - "all":     set all three overrides to true (notify on any event)
+ *  Sends all three fields in one PATCH to avoid multi-request ordering. */
+export async function setSessionNotifications(
+  id: string,
+  preset: "off" | "default" | "all",
+): Promise<boolean> {
+  const value =
+    preset === "off" ? false : preset === "all" ? true : null;
+  try {
+    const res = await fetch(`/api/sessions/${id}/notifications`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notify_on_waiting: value,
+        notify_on_idle: value,
+        notify_on_error: value,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface DeleteSessionOptions {
   delete_worktree?: boolean;
   delete_branch?: boolean;

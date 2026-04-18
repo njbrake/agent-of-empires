@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
-import { renameSession } from "../lib/api";
+import { renameSession, setSessionNotifications } from "../lib/api";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
 
@@ -34,6 +34,22 @@ function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string 
   if (error) return { status: "Error", createdAt: error.created_at };
   const first = ws.sessions[0];
   return { status: first?.status ?? "Unknown", createdAt: first?.created_at ?? null };
+}
+
+/** Derive which of the three context-menu presets best describes a
+ *  session's current per-event notification overrides. If the three
+ *  overrides aren't all the same value, the session is in a "custom"
+ *  mixed state, which the context menu renders as "Default" too
+ *  (selecting "Default" then resets it cleanly). */
+type NotifyPreset = "off" | "default" | "all";
+function detectNotifyPreset(
+  waiting: boolean | null | undefined,
+  idle: boolean | null | undefined,
+  error: boolean | null | undefined,
+): NotifyPreset {
+  if (waiting === false && idle === false && error === false) return "off";
+  if (waiting === true && idle === true && error === true) return "all";
+  return "default";
 }
 
 function loadSavedWidth(): number {
@@ -68,8 +84,20 @@ const SessionRow = memo(function SessionRow({
   const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
-  const sessionId = workspace.sessions[0]?.id;
+  const firstSession = workspace.sessions[0];
+  const sessionId = firstSession?.id;
   const isDeleting = sessionStatus === "Deleting";
+  const notifyPreset = detectNotifyPreset(
+    firstSession?.notify_on_waiting,
+    firstSession?.notify_on_idle,
+    firstSession?.notify_on_error,
+  );
+
+  const setNotifyPreset = async (preset: NotifyPreset) => {
+    setContextMenu(null);
+    if (!sessionId || preset === notifyPreset) return;
+    await setSessionNotifications(sessionId, preset);
+  };
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -205,7 +233,7 @@ const SessionRow = memo(function SessionRow({
       </button>
       {contextMenu && createPortal(
         <div
-          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -214,6 +242,33 @@ const SessionRow = memo(function SessionRow({
           >
             Rename
           </button>
+          <div className="border-t border-surface-700/20 my-1" />
+          <div className="px-3 py-1 text-[11px] font-mono uppercase tracking-widest text-text-muted">
+            Notifications
+          </div>
+          {(["off", "default", "all"] as const).map((preset) => {
+            const label =
+              preset === "off"
+                ? "Off"
+                : preset === "default"
+                  ? "Default"
+                  : "All events";
+            const selected = notifyPreset === preset;
+            return (
+              <button
+                key={preset}
+                onClick={() => void setNotifyPreset(preset)}
+                className={`w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2 ${
+                  selected ? "text-text-primary" : "text-text-secondary"
+                }`}
+              >
+                <span className="w-3 text-brand-500">
+                  {selected ? "✓" : ""}
+                </span>
+                {label}
+              </button>
+            );
+          })}
           {!readOnly && (
             <>
               <div className="border-t border-surface-700/20 my-1" />

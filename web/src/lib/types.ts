@@ -18,6 +18,11 @@ export interface SessionResponse {
   profile: string;
   cleanup_defaults: CleanupDefaults;
   remote_owner: string | null;
+  /** Per-session push-notification overrides. null means "inherit the
+   *  server default" for that event type; boolean is an explicit toggle. */
+  notify_on_waiting: boolean | null;
+  notify_on_idle: boolean | null;
+  notify_on_error: boolean | null;
 }
 
 export interface CleanupDefaults {
