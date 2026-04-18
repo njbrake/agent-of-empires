@@ -22,6 +22,7 @@ pub enum SettingsCategory {
     Session,
     Sound,
     Hooks,
+    Web,
 }
 
 impl SettingsCategory {
@@ -35,6 +36,7 @@ impl SettingsCategory {
             Self::Session => "Session",
             Self::Sound => "Sound",
             Self::Hooks => "Hooks",
+            Self::Web => "Web",
         }
     }
 }
@@ -92,6 +94,8 @@ pub enum FieldKey {
     HookOnCreate,
     HookOnLaunch,
     HookOnDestroy,
+    // Web
+    WebNotificationsEnabled,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -252,7 +256,31 @@ pub fn build_fields_for_category(
         SettingsCategory::Session => build_session_fields(scope, global, profile),
         SettingsCategory::Sound => build_sound_fields(scope, global, profile),
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
+        SettingsCategory::Web => build_web_fields(scope, global, profile),
     }
+}
+
+fn build_web_fields(
+    scope: SettingsScope,
+    global: &Config,
+    _profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    // Web settings are server-global, not profile-scoped. In Profile mode
+    // we still surface the field (read-only) so users discover it; writes
+    // always apply to the global config.
+    let value = FieldValue::Bool(global.web.notifications_enabled);
+    let has_override = false;
+    let _ = scope;
+
+    vec![SettingField {
+        key: FieldKey::WebNotificationsEnabled,
+        label: "Push notifications",
+        description: "Allow the web dashboard to deliver browser push notifications (server-wide kill switch).",
+        value,
+        category: SettingsCategory::Web,
+        has_override,
+        inherited_display: None,
+    }]
 }
 
 fn build_theme_fields(
@@ -1393,6 +1421,10 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::HookOnCreate, FieldValue::List(v)) => config.hooks.on_create = v.clone(),
         (FieldKey::HookOnLaunch, FieldValue::List(v)) => config.hooks.on_launch = v.clone(),
         (FieldKey::HookOnDestroy, FieldValue::List(v)) => config.hooks.on_destroy = v.clone(),
+        // Web
+        (FieldKey::WebNotificationsEnabled, FieldValue::Bool(v)) => {
+            config.web.notifications_enabled = *v;
+        }
         _ => {}
     }
 }

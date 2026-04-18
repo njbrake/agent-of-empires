@@ -45,6 +45,9 @@ pub struct Config {
 
     #[serde(default)]
     pub app_state: AppStateConfig,
+
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 /// Session list sort order
@@ -255,6 +258,27 @@ impl Default for DiffConfig {
 
 fn default_context_lines() -> usize {
     3
+}
+
+/// Web dashboard runtime configuration. Currently just the push-notification
+/// kill switch; expected to grow as more dashboard features pick up config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Operator kill switch for browser push notifications. When false,
+    /// `/api/push/*` returns 404 and the status-change consumer drops
+    /// events without sending. Existing subscriptions persist across
+    /// flips, so toggling back to true resumes delivery without requiring
+    /// users to re-opt-in.
+    #[serde(default = "default_true")]
+    pub notifications_enabled: bool,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            notifications_enabled: true,
+        }
+    }
 }
 
 fn default_profile() -> String {
