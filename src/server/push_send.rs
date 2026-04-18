@@ -319,14 +319,11 @@ mod tests {
         // for p256dh, 16 for auth) and verify the body layout.
         let p_ua_bytes = {
             // Generate a valid P-256 public key.
-            let mut seed = [7u8; 32];
+            let seed = [7u8; 32];
             let sk = p256::SecretKey::from_slice(&seed).unwrap();
             use p256::elliptic_curve::sec1::ToEncodedPoint;
             let pt = sk.public_key().to_encoded_point(false);
-            let mut v = Vec::new();
-            v.extend_from_slice(pt.as_bytes());
-            seed[0] += 1; // suppress unused_mut warn
-            v
+            pt.as_bytes().to_vec()
         };
         let subscription = super::super::push::Subscription {
             endpoint: "https://example.com/push/xyz".to_string(),

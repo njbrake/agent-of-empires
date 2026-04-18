@@ -312,13 +312,13 @@ pub struct PushState {
 }
 
 impl PushState {
-    pub fn init(app_dir: &Path) -> anyhow::Result<Self> {
+    pub fn init(app_dir: &Path, subject: String) -> anyhow::Result<Self> {
         let vapid = VapidKeypair::load_or_generate(&app_dir.join("push.vapid.json"))?;
         let store = SubscriptionStore::load_or_empty(app_dir.join("push.subscriptions.json"));
         Ok(Self {
             vapid,
             store,
-            subject: "mailto:aoe@localhost".to_string(),
+            subject,
         })
     }
 }

@@ -260,8 +260,9 @@ fn default_context_lines() -> usize {
     3
 }
 
-/// Web dashboard runtime configuration. Currently just the push-notification
-/// kill switch; expected to grow as more dashboard features pick up config.
+/// Web dashboard runtime configuration. Currently the push-notification
+/// kill switch and VAPID contact; expected to grow as more dashboard
+/// features pick up config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfig {
     /// Operator kill switch for browser push notifications. When false,
@@ -271,12 +272,25 @@ pub struct WebConfig {
     /// users to re-opt-in.
     #[serde(default = "default_true")]
     pub notifications_enabled: bool,
+
+    /// VAPID `sub` claim. Must be either a `mailto:` URL or an
+    /// `https://` URL per RFC 8292. Some push services (notably Apple
+    /// web.push.apple.com) validate this as a real contact for abuse
+    /// reporting and may reject non-deliverable defaults. Set it to a
+    /// real contact for production use.
+    #[serde(default = "default_vapid_subject")]
+    pub vapid_subject: String,
+}
+
+fn default_vapid_subject() -> String {
+    "mailto:aoe@localhost".to_string()
 }
 
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
             notifications_enabled: true,
+            vapid_subject: default_vapid_subject(),
         }
     }
 }

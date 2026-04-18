@@ -290,7 +290,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     let push_enabled = config.web.notifications_enabled;
     let push_state = if push_enabled {
         match crate::session::get_app_dir() {
-            Ok(dir) => match PushState::init(&dir) {
+            Ok(dir) => match PushState::init(&dir, config.web.vapid_subject.clone()) {
                 Ok(s) => Some(Arc::new(s)),
                 Err(e) => {
                     tracing::warn!(
