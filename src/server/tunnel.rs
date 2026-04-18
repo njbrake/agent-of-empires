@@ -176,18 +176,39 @@ impl TunnelHandle {
     /// `tailscale funnel` configure state in the Tailscale daemon and
     /// return immediately.
     pub async fn spawn_tailscale(local_port: u16) -> anyhow::Result<Self> {
+        // Hard cap on each tailscale command so we never wedge if
+        // tailscale pops an interactive prompt (HTTPS-certs consent,
+        // Funnel-not-enabled-in-ACL, node not signed in). When the
+        // timeout fires, start_server catches the error and falls back
+        // to Cloudflare instead of leaving the user staring at a
+        // frozen "Starting tunnel..." screen.
+        const STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
         // Step 1: point the funnel's https:443 at our local port.
         // `tailscale serve` is idempotent; re-running with a different
-        // port overwrites the previous mapping.
-        let out = Command::new("tailscale")
+        // port overwrites the previous mapping. stdin is null so any
+        // interactive prompt fails fast rather than hanging.
+        let serve_fut = Command::new("tailscale")
             .args([
                 "serve",
                 "--bg",
                 "--https=443",
                 &format!("http://127.0.0.1:{}", local_port),
             ])
-            .output()
+            .stdin(std::process::Stdio::null())
+            .output();
+        let out = tokio::time::timeout(STEP_TIMEOUT, serve_fut)
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "tailscale serve timed out after {}s; it may be waiting on an \
+                     interactive prompt (HTTPS certs, Funnel consent). \
+                     Run `tailscale serve --bg --https=443 http://127.0.0.1:{}` manually \
+                     once to clear it, or use --no-tailscale to skip.",
+                    STEP_TIMEOUT.as_secs(),
+                    local_port
+                )
+            })?
             .map_err(|e| anyhow::anyhow!("failed to run tailscale serve: {}", e))?;
         if !out.status.success() {
             anyhow::bail!(
@@ -197,10 +218,20 @@ impl TunnelHandle {
         }
 
         // Step 2: open the funnel on port 443. Also idempotent.
-        let out = Command::new("tailscale")
+        let funnel_fut = Command::new("tailscale")
             .args(["funnel", "--bg", "443"])
-            .output()
+            .stdin(std::process::Stdio::null())
+            .output();
+        let out = tokio::time::timeout(STEP_TIMEOUT, funnel_fut)
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "tailscale funnel timed out after {}s; Funnel may not be enabled \
+                     in your tailnet ACL. Enable it at \
+                     https://login.tailscale.com/admin/acls/file or use --no-tailscale.",
+                    STEP_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|e| anyhow::anyhow!("failed to run tailscale funnel: {}", e))?;
         if !out.status.success() {
             anyhow::bail!(
@@ -210,7 +241,14 @@ impl TunnelHandle {
         }
 
         // Step 3: read the stable funnel URL from `tailscale status`.
-        let url = tailscale_funnel_url().await?;
+        let url = tokio::time::timeout(STEP_TIMEOUT, tailscale_funnel_url())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "tailscale status timed out after {}s",
+                    STEP_TIMEOUT.as_secs()
+                )
+            })??;
         info!(url = %url, "Tailscale Funnel established");
 
         Ok(TunnelHandle {

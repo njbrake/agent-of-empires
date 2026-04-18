@@ -1104,17 +1104,18 @@ fn render_mode_picker(
             },
             Style::default().fg(tunnel_body_style),
         )),
-        if !tunnel_available {
-            Line::from(Span::styled(
-                "  (brew install cloudflared or tailscale up)",
-                Style::default().fg(theme.dimmed),
-            ))
-        } else if suggest_tailscale_install {
-            // User has a Tailscale IP on an interface but the CLI is
-            // missing or logged out. One install+login away from the
-            // stable-URL Funnel flow.
+        if suggest_tailscale_install {
+            // User has a Tailscale-range IP on an interface but the CLI
+            // is missing or logged out. One install+login away from the
+            // stable-URL Funnel flow; prioritized over the generic
+            // install hint because it's the specific, actionable path.
             Line::from(Span::styled(
                 "  Tailscale VPN detected: install the CLI for a stable URL",
+                Style::default().fg(theme.dimmed),
+            ))
+        } else if !tunnel_available {
+            Line::from(Span::styled(
+                "  (brew install cloudflared or tailscale up)",
                 Style::default().fg(theme.dimmed),
             ))
         } else {
