@@ -442,14 +442,10 @@ fn stop_daemon() -> Result<()> {
             // released before a new daemon can be spawned. Without
             // this, closing the dialog and immediately reopening
             // races with the dying daemon and can orphan it.
-            let deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                match nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid),
-                    None,
-                ) {
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
                     Err(nix::errno::Errno::ESRCH) => break,
                     _ if std::time::Instant::now() >= deadline => {
                         // Still alive after timeout; escalate.
@@ -457,9 +453,7 @@ fn stop_daemon() -> Result<()> {
                             nix::unistd::Pid::from_raw(pid),
                             nix::sys::signal::Signal::SIGKILL,
                         );
-                        std::thread::sleep(
-                            std::time::Duration::from_millis(50),
-                        );
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                         break;
                     }
                     _ => {}
