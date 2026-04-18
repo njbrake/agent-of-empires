@@ -113,6 +113,16 @@ function StatusRow({ state }: { state: ReturnType<typeof usePushSubscription>["s
         </p>
       );
     case "unsupported":
+      if (state.reason === "insecure-origin") {
+        return (
+          <p className="text-sm text-text-secondary">
+            Push notifications require HTTPS. On mobile, access this
+            dashboard through a Cloudflare tunnel by running{" "}
+            <code className="font-mono text-text-primary">aoe serve --remote</code>{" "}
+            on your host, then open the printed URL on your phone.
+          </p>
+        );
+      }
       if (state.reason === "ios-not-standalone") {
         return (
           <p className="text-sm text-text-secondary">

@@ -11,6 +11,17 @@ const DEFAULT_WIDTH = 280;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
 
+// Module-level bus for closing any open SessionRow context menu when a
+// new one opens. Each SessionRow manages its own menu state; without
+// this bus, long-pressing a second session on mobile leaves the first
+// menu visible because document "click" listeners don't fire on
+// touchstart. Publishing on open + subscribing here keeps "one menu at
+// a time" without lifting state up to the parent.
+const menuBus = new EventTarget();
+function closeOtherContextMenus() {
+  menuBus.dispatchEvent(new Event("close"));
+}
+
 interface Props {
   groups: RepoGroup[];
   activeId: string | null;
@@ -124,16 +135,22 @@ const SessionRow = memo(function SessionRow({
       document.addEventListener("click", close);
       document.addEventListener("contextmenu", close);
     });
+    // Listen for the "close" broadcast from any sibling SessionRow
+    // that is opening its own menu. This is what fixes the long-press
+    // bug: touchstart doesn't propagate as "click" to document.
+    menuBus.addEventListener("close", close);
     return () => {
       cancelAnimationFrame(id);
       document.removeEventListener("click", close);
       document.removeEventListener("contextmenu", close);
+      menuBus.removeEventListener("close", close);
     };
   }, [contextMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     if (isDeleting) return;
     e.preventDefault();
+    closeOtherContextMenus();
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
 
@@ -154,6 +171,7 @@ const SessionRow = memo(function SessionRow({
     const ty = touch.clientY;
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true;
+      closeOtherContextMenus();
       setContextMenu({ x: tx, y: ty });
     }, 500);
   };

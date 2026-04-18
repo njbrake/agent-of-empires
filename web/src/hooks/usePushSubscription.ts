@@ -19,7 +19,10 @@ export type PushState =
   | { kind: "sending-test" }
   | { kind: "disabling" }
   | { kind: "denied" }
-  | { kind: "unsupported"; reason: "no-api" | "ios-not-standalone" }
+  | {
+      kind: "unsupported";
+      reason: "no-api" | "ios-not-standalone" | "insecure-origin";
+    }
   | { kind: "disabled-by-server" }
   | { kind: "error"; message: string };
 
@@ -45,6 +48,19 @@ const supportsPush = (): boolean =>
   "PushManager" in window &&
   "Notification" in window;
 
+/** Web Push requires a secure context. Localhost and 127.0.0.1 are
+ *  allowed over http for dev, but any LAN IP or hostname must be
+ *  served over https. This is especially relevant on mobile where
+ *  users hit the dashboard at `http://<laptop-ip>:<port>` and are
+ *  surprised push doesn't work. Tunnel mode (aoe serve --remote)
+ *  provides https out of the box via Cloudflare. */
+const isSecureOrigin = (): boolean => {
+  if (typeof window === "undefined") return false;
+  if (window.isSecureContext) return true;
+  const host = window.location.hostname;
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+};
+
 function base64UrlToUint8Array(b64: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (b64.length % 4)) % 4);
   const raw = atob((b64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
@@ -58,6 +74,10 @@ export function usePushSubscription() {
   const [state, setState] = useState<PushState>({ kind: "loading" });
 
   const refresh = useCallback(async () => {
+    if (!isSecureOrigin()) {
+      setState({ kind: "unsupported", reason: "insecure-origin" });
+      return;
+    }
     if (!supportsPush()) {
       if (isIOS() && !isStandalone()) {
         setState({ kind: "unsupported", reason: "ios-not-standalone" });
@@ -100,6 +120,10 @@ export function usePushSubscription() {
   }, [refresh]);
 
   const enable = useCallback(async () => {
+    if (!isSecureOrigin()) {
+      setState({ kind: "unsupported", reason: "insecure-origin" });
+      return;
+    }
     if (!supportsPush()) {
       if (isIOS() && !isStandalone()) {
         setState({ kind: "unsupported", reason: "ios-not-standalone" });
