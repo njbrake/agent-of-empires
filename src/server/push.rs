@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 //! Web Push notifications for the dashboard PWA.
 //!
 //! Sends VAPID-signed pushes to subscribed browsers when session status
@@ -347,6 +348,173 @@ pub fn sha256_token(token: &str) -> [u8; 32] {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&out);
     arr
+}
+
+// ── HTTP handlers ───────────────────────────────────────────────────────────
+
+use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::Json;
+use std::sync::Arc;
+
+use super::auth::AuthenticatedTokenHash;
+use super::AppState;
+
+/// Body accepted by POST /api/push/subscribe. Mirrors the browser's
+/// `PushSubscription.toJSON()` output.
+#[derive(Deserialize)]
+pub struct SubscribeBody {
+    pub endpoint: String,
+    pub keys: SubscribeKeys,
+}
+
+#[derive(Deserialize)]
+pub struct SubscribeKeys {
+    pub p256dh: String,
+    pub auth: String,
+}
+
+#[derive(Deserialize)]
+pub struct EndpointBody {
+    pub endpoint: String,
+}
+
+#[derive(Serialize)]
+pub struct TestResult {
+    pub delivered: u32,
+    pub failed: u32,
+    pub gone: u32,
+}
+
+/// GET /api/push/status
+/// Tells the client whether the feature is enabled server-wide. Cheap,
+/// no secrets: used by the UI on mount to decide whether to show the
+/// Enable button or the "disabled by operator" state.
+pub async fn get_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "enabled": state.push_enabled }))
+}
+
+/// GET /api/push/vapid-public-key
+/// Returns the base64url-encoded raw public key for the browser's
+/// `pushManager.subscribe({ applicationServerKey })` call.
+pub async fn get_vapid_public_key(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(
+        serde_json::json!({ "public_key": push.vapid.public_b64url }),
+    ))
+}
+
+/// POST /api/push/subscribe
+/// Stores a browser subscription, binding it to the requesting token's
+/// hash. Idempotent: re-subscribing the same endpoint updates the stored
+/// keys/user-agent and bumps the generation counter (the GC path uses
+/// that counter to avoid wiping freshly-re-subscribed entries when a
+/// concurrent 410 arrives for the old generation).
+pub async fn subscribe(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthenticatedTokenHash>,
+    headers: HeaderMap,
+    Json(body): Json<SubscribeBody>,
+) -> Result<StatusCode, StatusCode> {
+    let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
+
+    // Minimal shape validation so we don't store garbage.
+    if body.endpoint.is_empty() || body.keys.p256dh.is_empty() || body.keys.auth.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let sub = Subscription {
+        endpoint: body.endpoint,
+        p256dh: body.keys.p256dh,
+        auth: body.keys.auth,
+        owner_token_hash: auth.0,
+        user_agent,
+        created_at: Utc::now(),
+        generation: 0,
+    };
+    push.store
+        .upsert(sub)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /api/push/unsubscribe
+/// Removes a subscription by endpoint. Requires owner match: cross-token
+/// attempts return 403 (intentionally visible: helps debug "why isn't
+/// my disable working" without leaking whether the endpoint exists).
+pub async fn unsubscribe(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthenticatedTokenHash>,
+    Json(body): Json<EndpointBody>,
+) -> Result<StatusCode, StatusCode> {
+    let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
+    if body.endpoint.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let removed = push
+        .store
+        .remove_if_owner(&body.endpoint, &auth.0)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if removed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        // Either the endpoint doesn't exist or belongs to another owner.
+        // Return 403 rather than 204 so clients know the call did nothing.
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+/// POST /api/push/test
+/// Fires a single notification to the given endpoint (which MUST belong
+/// to the caller). Used by the "Send test notification" button. No
+/// fire-to-all fallback: that would let any authenticated caller spam
+/// every subscriber.
+///
+/// Note: actual HTTPS delivery to Apple/Google push endpoints is wired
+/// up in a follow-up commit (requires VAPID JWT + payload encryption).
+/// For now this returns a synthetic TestResult after validating owner
+/// match, so the UI flow is reviewable end-to-end.
+pub async fn test(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthenticatedTokenHash>,
+    Json(body): Json<EndpointBody>,
+) -> Result<Json<TestResult>, StatusCode> {
+    let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
+    if body.endpoint.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Confirm ownership before doing anything. Reject cross-owner test
+    // calls with 403 even if the subscription exists.
+    let owned = push
+        .store
+        .for_owner(&auth.0)
+        .await
+        .into_iter()
+        .any(|s| s.endpoint == body.endpoint);
+    if !owned {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    tracing::info!(
+        endpoint = %body.endpoint,
+        "push: test notification requested (delivery stub; real send lands in follow-up)"
+    );
+    Ok(Json(TestResult {
+        delivered: 0,
+        failed: 0,
+        gone: 0,
+    }))
 }
 
 #[cfg(test)]

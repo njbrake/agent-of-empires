@@ -21,7 +21,7 @@ use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
 
-use self::push::{StatusChange, STATUS_CHANNEL_CAPACITY};
+use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 
 use crate::session::Instance;
 use crate::session::Storage;
@@ -191,6 +191,14 @@ pub struct AppState {
     /// each tmux scrape when `old != new`. Keep the Sender around even
     /// when no receivers exist so callers can emit without checking.
     pub status_tx: broadcast::Sender<StatusChange>,
+    /// Web Push state: VAPID keypair, subscription store, VAPID subject.
+    /// None when `web.notifications_enabled` is false at startup (the
+    /// feature is fully off and endpoints return 404).
+    pub push: Option<Arc<PushState>>,
+    /// Cached value of `web.notifications_enabled` at startup. Changes
+    /// to the config flag require a server restart to take effect; this
+    /// is a documented limitation of the toggle for v1.
+    pub push_enabled: bool,
 }
 
 impl AppState {
@@ -267,6 +275,32 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         info!("Passphrase login enabled (second-factor authentication)");
     }
 
+    // Push notifications: initialize only when the operator flag is on at
+    // startup. Flipping it later requires a server restart to take effect.
+    let config = crate::session::resolve_config(profile).unwrap_or_default();
+    let push_enabled = config.web.notifications_enabled;
+    let push_state = if push_enabled {
+        match crate::session::get_app_dir() {
+            Ok(dir) => match PushState::init(&dir) {
+                Ok(s) => Some(Arc::new(s)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Push notifications disabled: failed to init VAPID/state: {}",
+                        e
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Push notifications disabled: app_dir unavailable: {}", e);
+                None
+            }
+        }
+    } else {
+        info!("Push notifications disabled by web.notifications_enabled=false");
+        None
+    };
+
     let state = Arc::new(AppState {
         profile: profile.to_string(),
         read_only,
@@ -285,6 +319,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         }),
         remote_owner_cache: RwLock::new(std::collections::HashMap::new()),
         status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
+        push: push_state,
+        push_enabled,
     });
 
     let app = build_router(state.clone());
@@ -479,6 +515,12 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
+        // Push notifications
+        .route("/api/push/status", get(push::get_status))
+        .route("/api/push/vapid-public-key", get(push::get_vapid_public_key))
+        .route("/api/push/subscribe", post(push::subscribe))
+        .route("/api/push/unsubscribe", post(push::unsubscribe))
+        .route("/api/push/test", post(push::test))
         // Login (second-factor auth)
         .route("/api/login", post(login::login_handler))
         .route("/api/logout", post(login::logout_handler))
