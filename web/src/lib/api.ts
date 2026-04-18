@@ -5,22 +5,26 @@ import type {
   AgentInfo,
   ProfileInfo,
   BrowseResponse,
-  BranchInfo,
   GroupInfo,
   DockerStatusResponse,
   CreateSessionRequest,
 } from "./types";
 
-// --- Sessions ---
-
-export async function fetchSessions(): Promise<SessionResponse[] | null> {
+// GET a JSON endpoint; returns null on non-2xx or network/parse errors.
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T | null> {
   try {
-    const res = await fetch("/api/sessions");
+    const res = await fetch(url, init);
     if (!res.ok) return null;
-    return await res.json();
+    return (await res.json()) as T;
   } catch {
     return null;
   }
+}
+
+// --- Sessions ---
+
+export function fetchSessions(): Promise<SessionResponse[] | null> {
+  return fetchJson<SessionResponse[]>("/api/sessions");
 }
 
 export interface EnsureSessionResult {
@@ -80,44 +84,26 @@ export async function ensureTerminal(
   }
 }
 
-export async function getSessionDiffFiles(
+export function getSessionDiffFiles(
   id: string,
 ): Promise<RichDiffFilesResponse | null> {
-  try {
-    const res = await fetch(`/api/sessions/${id}/diff/files`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+  return fetchJson<RichDiffFilesResponse>(`/api/sessions/${id}/diff/files`);
 }
 
-export async function getSessionFileDiff(
+export function getSessionFileDiff(
   id: string,
   filePath: string,
 ): Promise<RichFileDiffResponse | null> {
-  try {
-    const res = await fetch(
-      `/api/sessions/${id}/diff/file?path=${encodeURIComponent(filePath)}`,
-    );
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+  return fetchJson<RichFileDiffResponse>(
+    `/api/sessions/${id}/diff/file?path=${encodeURIComponent(filePath)}`,
+  );
 }
 
 // --- Settings ---
 
-export async function getSettings(profile?: string): Promise<Record<string, unknown> | null> {
-  try {
-    const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
-    const res = await fetch(`/api/settings${params}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+export function getSettings(profile?: string): Promise<Record<string, unknown> | null> {
+  const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  return fetchJson<Record<string, unknown>>(`/api/settings${params}`);
 }
 
 export async function updateSettings(
@@ -146,14 +132,8 @@ export interface ServerAbout {
   profile: string;
 }
 
-export async function fetchAbout(): Promise<ServerAbout | null> {
-  try {
-    const res = await fetch("/api/about");
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+export function fetchAbout(): Promise<ServerAbout | null> {
+  return fetchJson<ServerAbout>("/api/about");
 }
 
 // --- Devices ---
@@ -166,107 +146,47 @@ export interface DeviceInfo {
   request_count: number;
 }
 
-export async function fetchDevices(): Promise<DeviceInfo[] | null> {
-  try {
-    const res = await fetch("/api/devices");
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-// --- Themes ---
-
-export async function fetchThemes(): Promise<string[]> {
-  try {
-    const res = await fetch("/api/themes");
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    return [];
-  }
+export function fetchDevices(): Promise<DeviceInfo[] | null> {
+  return fetchJson<DeviceInfo[]>("/api/devices");
 }
 
 // --- Wizard APIs ---
 
 export async function fetchAgents(): Promise<AgentInfo[]> {
-  try {
-    const res = await fetch("/api/agents");
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    return [];
-  }
+  return (await fetchJson<AgentInfo[]>("/api/agents")) ?? [];
 }
 
 export async function fetchProfiles(): Promise<ProfileInfo[]> {
-  try {
-    const res = await fetch("/api/profiles");
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    return [];
-  }
+  return (await fetchJson<ProfileInfo[]>("/api/profiles")) ?? [];
 }
 
 export async function getHomePath(): Promise<string | null> {
-  try {
-    const res = await fetch("/api/filesystem/home");
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.path ?? null;
-  } catch {
-    return null;
-  }
+  const data = await fetchJson<{ path?: string }>("/api/filesystem/home");
+  return data?.path ?? null;
 }
 
 export async function browseFilesystem(
   path: string,
   limit?: number,
 ): Promise<BrowseResponse & { ok: boolean }> {
-  try {
-    const params = new URLSearchParams({ path });
-    if (limit != null) params.set("limit", String(limit));
-    const res = await fetch(`/api/filesystem/browse?${params}`);
-    if (!res.ok) return { entries: [], has_more: false, ok: false };
-    const data = await res.json();
-    return { ...data, ok: true };
-  } catch {
-    return { entries: [], has_more: false, ok: false };
-  }
-}
-
-export async function fetchBranches(path: string): Promise<BranchInfo[]> {
-  try {
-    const res = await fetch(
-      `/api/git/branches?path=${encodeURIComponent(path)}`,
-    );
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    return [];
-  }
+  const params = new URLSearchParams({ path });
+  if (limit != null) params.set("limit", String(limit));
+  const data = await fetchJson<BrowseResponse>(`/api/filesystem/browse?${params}`);
+  if (!data) return { entries: [], has_more: false, ok: false };
+  return { ...data, ok: true };
 }
 
 export async function fetchGroups(): Promise<GroupInfo[]> {
-  try {
-    const res = await fetch("/api/groups");
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    return [];
-  }
+  return (await fetchJson<GroupInfo[]>("/api/groups")) ?? [];
 }
 
 export async function fetchDockerStatus(): Promise<DockerStatusResponse> {
-  try {
-    const res = await fetch("/api/docker/status");
-    if (!res.ok) return { available: false, runtime: null };
-    return await res.json();
-  } catch {
-    return { available: false, runtime: null };
-  }
+  return (
+    (await fetchJson<DockerStatusResponse>("/api/docker/status")) ?? {
+      available: false,
+      runtime: null,
+    }
+  );
 }
 
 export async function createSession(
@@ -340,13 +260,11 @@ export async function loginStatus(): Promise<{
   required: boolean;
   authenticated: boolean;
 }> {
-  try {
-    const res = await fetch("/api/login/status");
-    if (!res.ok) return { required: false, authenticated: true };
-    return await res.json();
-  } catch {
-    return { required: false, authenticated: true };
-  }
+  return (
+    (await fetchJson<{ required: boolean; authenticated: boolean }>(
+      "/api/login/status",
+    )) ?? { required: false, authenticated: true }
+  );
 }
 
 export async function login(

@@ -14,7 +14,6 @@ const MAX_WIDTH = 480;
 interface Props {
   groups: RepoGroup[];
   activeId: string | null;
-  creatingForProject: string | null;
   open: boolean;
   onToggle: () => void;
   onSelect: (workspaceId: string) => void;
@@ -236,13 +235,11 @@ const SessionRow = memo(function SessionRow({
 const RepoGroupHeader = memo(function RepoGroupHeader({
   group,
   hasActiveChild,
-  creating,
   onClick,
   onNewSession,
 }: {
   group: RepoGroup;
   hasActiveChild: boolean;
-  creating: boolean;
   onClick: () => void;
   onNewSession: () => void;
 }) {
@@ -279,28 +276,16 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
           {group.displayName}
         </span>
       </button>
-      <Tooltip text={creating ? "Creating..." : "New session"}>
+      <Tooltip text="New session">
         <button
           onClick={onNewSession}
-          disabled={creating}
-          className={`w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors ${
-            creating
-              ? "text-text-dim cursor-not-allowed"
-              : "text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
-          }`}
+          className="w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
           aria-label={`New session in ${group.displayName}`}
         >
-          {creating ? (
-            <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          )}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
         </button>
       </Tooltip>
     </div>
@@ -330,7 +315,6 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 export function WorkspaceSidebar({
   groups,
   activeId,
-  creatingForProject,
   open,
   onToggle,
   onSelect,
@@ -520,7 +504,6 @@ export function WorkspaceSidebar({
                 <RepoGroupHeader
                   group={{ ...group, collapsed: !showExpanded }}
                   hasActiveChild={!showExpanded && hasActiveChild}
-                  creating={creatingForProject === group.repoPath}
                   onClick={() => !q && onToggleRepo(group.id)}
                   onNewSession={() => onCreateSession(group.repoPath)}
                 />

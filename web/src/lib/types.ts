@@ -140,12 +140,6 @@ export interface BrowseResponse {
   has_more: boolean;
 }
 
-/** Branch info returned by /api/git/branches */
-export interface BranchInfo {
-  name: string;
-  is_current: boolean;
-}
-
 /** Group info returned by /api/groups */
 export interface GroupInfo {
   path: string;

@@ -17,8 +17,7 @@ export function useSessions() {
     });
   }, []);
 
-  const refresh = useCallback(async () => {
-    const data = await fetchSessions();
+  const applyResult = useCallback((data: SessionResponse[] | null) => {
     if (data !== null) {
       setSessions(data);
       setError(false);
@@ -29,37 +28,20 @@ export function useSessions() {
     }
   }, []);
 
+  const refresh = useCallback(async () => {
+    applyResult(await fetchSessions());
+  }, [applyResult]);
+
   useEffect(() => {
-    // Initial fetch
-    void fetchSessions().then((data) => {
-      if (data !== null) {
-        setSessions(data);
-        setError(false);
-        setServerDown(false);
-      } else {
-        setError(true);
-        setServerDown(true);
-      }
-    });
-
-    // Polling
-    intervalRef.current = setInterval(() => {
-      void fetchSessions().then((data) => {
-        if (data !== null) {
-          setSessions(data);
-          setError(false);
-          setServerDown(false);
-        } else {
-          setError(true);
-          setServerDown(true);
-        }
-      });
-    }, POLL_INTERVAL);
-
+    void fetchSessions().then(applyResult);
+    intervalRef.current = setInterval(
+      () => void fetchSessions().then(applyResult),
+      POLL_INTERVAL,
+    );
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, []);
+  }, [applyResult]);
 
   const setSessionStatus = useCallback((id: string, status: SessionResponse["status"]) => {
     setSessions((prev) => prev.map((s) => s.id === id ? { ...s, status } : s));
