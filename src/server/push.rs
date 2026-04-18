@@ -335,6 +335,183 @@ pub fn base64_url_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     URL_SAFE_NO_PAD.decode(s)
 }
 
+// ── Consumer task ───────────────────────────────────────────────────────────
+
+/// Per-session timing state the consumer maintains to apply the dwell
+/// requirement (don't buzz for flickers under DWELL_MS) and the post-
+/// send cooldown (don't re-buzz within COOLDOWN_MS unless the session
+/// has left `Waiting` and returned).
+#[derive(Default)]
+struct DwellState {
+    /// When the session entered `Waiting` most recently; None if it's
+    /// not currently waiting.
+    waiting_since: Option<std::time::Instant>,
+    /// Last time a push fired for this session. Used for the cooldown.
+    last_notified: Option<std::time::Instant>,
+    /// Cached title, so we have something to show on the push payload
+    /// even if the session state map doesn't carry it when we fire.
+    title: String,
+}
+
+/// Max concurrent push sends. Caps the number of parallel outbound
+/// HTTP requests the consumer will hold open; above this, sends queue
+/// behind the semaphore and are processed in FIFO order.
+pub const SEND_CONCURRENCY: usize = 8;
+
+/// Spawn the consumer task. Subscribes to `state.status_tx`, applies
+/// dwell + cooldown logic, and fans out pushes to all still-valid
+/// subscriptions when a session stays in `Waiting` past DWELL_MS.
+///
+/// The task runs for the lifetime of the server; no clean shutdown
+/// path is required since `broadcast::Receiver` is drained on drop.
+pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
+    let push = match state.push.as_ref() {
+        Some(p) => p.clone(),
+        None => return, // feature disabled, nothing to spawn
+    };
+
+    tokio::spawn(async move {
+        let client = match super::push_send::build_client() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "push: consumer failed to build reqwest client");
+                return;
+            }
+        };
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(SEND_CONCURRENCY));
+        let mut rx = state.status_tx.subscribe();
+        let mut dwell: HashMap<String, DwellState> = HashMap::new();
+
+        // Interleave receiving status changes with polling the dwell
+        // map for sessions whose DWELL_MS has elapsed. A simple 500ms
+        // tick is precise enough for our 5s dwell window and cheap.
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                recv = rx.recv() => {
+                    match recv {
+                        Ok(change) => handle_status_change(&mut dwell, change),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(lagged = n, "push: consumer lagged, skipped events");
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::info!("push: status channel closed, consumer exiting");
+                            return;
+                        }
+                    }
+                }
+                _ = tick.tick() => {
+                    fire_due_pushes(push.clone(), &client, &semaphore, &mut dwell).await;
+                }
+            }
+        }
+    });
+}
+
+fn handle_status_change(dwell: &mut HashMap<String, DwellState>, change: StatusChange) {
+    let entry = dwell.entry(change.instance_id.clone()).or_default();
+    entry.title = change.instance_title;
+    match change.new {
+        Status::Waiting => {
+            // Start (or keep) the dwell timer. If a flicker Waiting →
+            // Running → Waiting happens within DWELL_MS, each fresh
+            // Waiting transition resets the timer, which is what we
+            // want: only commit to a push once the session has
+            // actually settled in Waiting.
+            entry.waiting_since = Some(std::time::Instant::now());
+        }
+        _ => {
+            // Left Waiting: cancel any pending push for this session.
+            // Once we leave, the user's attention is no longer required
+            // until the next Running → Waiting transition, which will
+            // also reset cooldown semantics by clearing last_notified
+            // if enough time has passed.
+            entry.waiting_since = None;
+        }
+    }
+    // Drop entries for transitions into Stopped/Deleting so the map
+    // doesn't grow forever in long-running servers that create and
+    // destroy many sessions.
+    if matches!(change.new, Status::Stopped | Status::Deleting) {
+        dwell.remove(&change.instance_id);
+    }
+}
+
+async fn fire_due_pushes(
+    push: std::sync::Arc<PushState>,
+    client: &reqwest::Client,
+    semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    dwell: &mut HashMap<String, DwellState>,
+) {
+    let now = std::time::Instant::now();
+    let mut to_fire: Vec<(String, String)> = Vec::new();
+
+    for (id, state) in dwell.iter_mut() {
+        let Some(since) = state.waiting_since else {
+            continue;
+        };
+        if now.duration_since(since).as_millis() < DWELL_MS as u128 {
+            continue;
+        }
+        // Dwell satisfied. Check cooldown.
+        if let Some(last) = state.last_notified {
+            if now.duration_since(last).as_millis() < COOLDOWN_MS as u128 {
+                continue;
+            }
+        }
+        // Mark as notified so we don't re-fire until the session leaves
+        // Waiting (clearing waiting_since) or COOLDOWN_MS elapses.
+        state.last_notified = Some(now);
+        state.waiting_since = None;
+        to_fire.push((id.clone(), state.title.clone()));
+    }
+
+    for (instance_id, instance_title) in to_fire {
+        let subs = push.store.snapshot().await;
+        if subs.is_empty() {
+            continue;
+        }
+        let payload = super::push_send::PushPayload {
+            title: "Claude is waiting".to_string(),
+            body: if instance_title.is_empty() {
+                "Session needs input".to_string()
+            } else {
+                instance_title.clone()
+            },
+            url: format!("/?session={}", instance_id),
+            tag: format!("session-{}", instance_id),
+            session_id: instance_id.clone(),
+        };
+
+        for sub in subs {
+            let permit_sem = semaphore.clone();
+            let client = client.clone();
+            let push = push.clone();
+            let payload_clone = super::push_send::PushPayload {
+                title: payload.title.clone(),
+                body: payload.body.clone(),
+                url: payload.url.clone(),
+                tag: payload.tag.clone(),
+                session_id: payload.session_id.clone(),
+            };
+            tokio::spawn(async move {
+                let Ok(_permit) = permit_sem.acquire_owned().await else {
+                    return;
+                };
+                let outcome =
+                    super::push_send::send_one(&client, push.as_ref(), &sub, &payload_clone)
+                        .await;
+                if outcome == super::push_send::SendOutcome::Gone {
+                    let _ = push.store.gc_stale(&sub.endpoint, sub.generation).await;
+                }
+            });
+        }
+    }
+}
+
 pub fn sha256_token(token: &str) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -640,6 +817,68 @@ mod tests {
             .unwrap();
         assert!(removed);
         assert_eq!(store.snapshot().await.len(), 0);
+    }
+
+    #[test]
+    fn dwell_starts_on_enter_waiting_and_clears_on_exit() {
+        let mut dwell: HashMap<String, DwellState> = HashMap::new();
+        let id = "sess-1".to_string();
+
+        // Enter Waiting: dwell starts.
+        handle_status_change(
+            &mut dwell,
+            StatusChange {
+                instance_id: id.clone(),
+                instance_title: "my session".to_string(),
+                old: Status::Running,
+                new: Status::Waiting,
+                at: Utc::now(),
+            },
+        );
+        assert!(dwell.get(&id).unwrap().waiting_since.is_some());
+        assert_eq!(dwell.get(&id).unwrap().title, "my session");
+
+        // Leave Waiting: dwell clears (but entry still exists so
+        // last_notified survives for cooldown checking).
+        handle_status_change(
+            &mut dwell,
+            StatusChange {
+                instance_id: id.clone(),
+                instance_title: "my session".to_string(),
+                old: Status::Waiting,
+                new: Status::Running,
+                at: Utc::now(),
+            },
+        );
+        assert!(dwell.get(&id).unwrap().waiting_since.is_none());
+    }
+
+    #[test]
+    fn dwell_entry_drops_on_stopped() {
+        let mut dwell: HashMap<String, DwellState> = HashMap::new();
+        let id = "sess-2".to_string();
+        handle_status_change(
+            &mut dwell,
+            StatusChange {
+                instance_id: id.clone(),
+                instance_title: "s".to_string(),
+                old: Status::Running,
+                new: Status::Waiting,
+                at: Utc::now(),
+            },
+        );
+        assert!(dwell.contains_key(&id));
+        handle_status_change(
+            &mut dwell,
+            StatusChange {
+                instance_id: id.clone(),
+                instance_title: "s".to_string(),
+                old: Status::Waiting,
+                new: Status::Stopped,
+                at: Utc::now(),
+            },
+        );
+        assert!(!dwell.contains_key(&id));
     }
 
     #[test]

@@ -426,6 +426,11 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         status_poll_loop(poll_state).await;
     });
 
+    // Push-notification consumer: subscribes to status_tx, applies
+    // dwell + cooldown, sends pushes. No-op when push_state is None
+    // (feature disabled via web.notifications_enabled=false).
+    push::spawn_consumer(state.clone());
+
     rate_limiter.spawn_cleanup_task();
     login_manager.spawn_cleanup_task();
 
