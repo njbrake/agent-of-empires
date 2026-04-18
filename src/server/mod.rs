@@ -110,6 +110,14 @@ impl TokenManager {
         self.state.read().await.lifetime.as_secs()
     }
 
+    /// Clear the previous token after the grace period has expired.
+    /// Used by the rotation task after the 5-minute grace window.
+    pub async fn clear_previous(&self) {
+        let mut state = self.state.write().await;
+        state.previous = None;
+        state.grace_expires = None;
+    }
+
     /// Rotate: generate new token, move current to previous with grace period.
     pub async fn rotate(&self) {
         let mut state = self.state.write().await;
@@ -435,7 +443,70 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     login_manager.spawn_cleanup_task();
 
     if remote {
-        token_manager.spawn_rotation_task();
+        // Inline the rotation loop here rather than calling
+        // token_manager.spawn_rotation_task() so we can also invalidate
+        // push subscriptions whose owner hash is no longer valid after
+        // rotation. Behavior otherwise matches the original: wait one
+        // lifetime, rotate, wait 300s grace, clear previous.
+        let rot_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                let lifetime = rot_state.token_manager.lifetime_secs().await;
+                tokio::time::sleep(std::time::Duration::from_secs(lifetime)).await;
+
+                // Capture the hashes of the current and (about-to-be)
+                // previous tokens BEFORE rotating, so we know which
+                // owner-hashes are still valid in the store.
+                let pre_rotate_current = rot_state.token_manager.current_token().await;
+                rot_state.token_manager.rotate().await;
+                let post_rotate_current = rot_state.token_manager.current_token().await;
+
+                if let Some(push) = rot_state.push.as_ref() {
+                    let mut valid_hashes: Vec<[u8; 32]> = Vec::new();
+                    if let Some(t) = &post_rotate_current {
+                        valid_hashes.push(push::sha256_token(t));
+                    }
+                    if let Some(t) = &pre_rotate_current {
+                        // The old token remains in the grace period (5m)
+                        // so devices that haven't yet picked up the new
+                        // token should keep receiving pushes.
+                        valid_hashes.push(push::sha256_token(t));
+                    }
+                    // In no-auth mode the token is None and we use a
+                    // zero hash; preserve that so zero-hash subs survive.
+                    if valid_hashes.is_empty() {
+                        valid_hashes.push([0u8; 32]);
+                    }
+                    match push.store.retain_owners(&valid_hashes).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(
+                            removed = n,
+                            "push: dropped subscriptions whose owner-hash is no longer valid after rotation"
+                        ),
+                        Err(e) => tracing::warn!(error = %e, "push: retain_owners failed"),
+                    }
+                }
+
+                // After grace period, the previous token becomes invalid.
+                // Clear it AND drop any subscriptions that were bound
+                // only to the old hash (retain_owners with only the new).
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                // Clear previous token inside TokenManager. Reuse its
+                // internal state access via a tiny helper on the manager.
+                rot_state.token_manager.clear_previous().await;
+
+                if let Some(push) = rot_state.push.as_ref() {
+                    let mut valid_hashes: Vec<[u8; 32]> = Vec::new();
+                    if let Some(t) = rot_state.token_manager.current_token().await {
+                        valid_hashes.push(push::sha256_token(&t));
+                    }
+                    if valid_hashes.is_empty() {
+                        valid_hashes.push([0u8; 32]);
+                    }
+                    let _ = push.store.retain_owners(&valid_hashes).await;
+                }
+            }
+        });
     }
 
     // Graceful shutdown: SIGINT (Ctrl-C), SIGTERM (`aoe serve --stop`),

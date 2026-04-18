@@ -786,6 +786,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retain_owners_keeps_grace_token_drops_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("push.subscriptions.json");
+        let store = SubscriptionStore::load_or_empty(path);
+
+        let mk = |hash: [u8; 32], endpoint: &str| Subscription {
+            endpoint: endpoint.to_string(),
+            p256dh: "pk".into(),
+            auth: "auth".into(),
+            owner_token_hash: hash,
+            user_agent: "UA".into(),
+            created_at: Utc::now(),
+            generation: 0,
+        };
+        store.upsert(mk([1u8; 32], "https://x/1")).await.unwrap();
+        store.upsert(mk([2u8; 32], "https://x/2")).await.unwrap();
+        store.upsert(mk([3u8; 32], "https://x/3")).await.unwrap();
+        assert_eq!(store.snapshot().await.len(), 3);
+
+        // Keep current (hash 2) and grace (hash 1); drop hash 3.
+        let removed = store
+            .retain_owners(&[[1u8; 32], [2u8; 32]])
+            .await
+            .unwrap();
+        assert_eq!(removed, 1);
+        let remaining: Vec<_> = store
+            .snapshot()
+            .await
+            .into_iter()
+            .map(|s| s.endpoint)
+            .collect();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.contains(&"https://x/1".to_string()));
+        assert!(remaining.contains(&"https://x/2".to_string()));
+
+        // After grace expires, only hash 2 remains valid. hash 1 drops.
+        let removed = store.retain_owners(&[[2u8; 32]]).await.unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(store.snapshot().await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn remove_if_owner_blocks_cross_owner() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("push.subscriptions.json");
