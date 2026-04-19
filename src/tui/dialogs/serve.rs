@@ -121,10 +121,15 @@ pub enum ServeDialogState {
     },
     /// We issued `aoe serve --daemon`; now polling `serve.url`.
     /// `passphrase` is Some only for Tunnel spawns from this TUI.
+    /// `log_tail` is a rolling window of the daemon's serve.log so the
+    /// user sees real progress during the 30-60s cert-provisioning
+    /// wait on a fresh Tailscale node instead of a frozen screen.
     Starting {
         mode: ServeMode,
         passphrase: Option<String>,
         started_at: Instant,
+        log_tail: Vec<String>,
+        log_offset: u64,
     },
     /// Daemon is live. No child field — the TUI does not own it.
     Active {
@@ -183,6 +188,8 @@ impl ServeDialog {
                         mode,
                         passphrase: remembered,
                         started_at: Instant::now(),
+                        log_tail: initial_log_tail(),
+                        log_offset: log_file_size(),
                     },
                     pending_passphrase: generate_passphrase(),
                 }
@@ -305,6 +312,8 @@ impl ServeDialog {
                                         mode: ServeMode::Local,
                                         passphrase: None,
                                         started_at: Instant::now(),
+                                        log_tail: initial_log_tail(),
+                                        log_offset: log_file_size(),
                                     };
                                 }
                                 Err(e) => dialog.state = ServeDialogState::Error(e),
@@ -373,6 +382,8 @@ impl ServeDialog {
                                 mode: ServeMode::Tunnel,
                                 passphrase: Some(self.pending_passphrase.clone()),
                                 started_at: Instant::now(),
+                                log_tail: initial_log_tail(),
+                                log_offset: log_file_size(),
                             };
                         }
                         Err(e) => {
@@ -391,6 +402,8 @@ impl ServeDialog {
                                     mode: ServeMode::Tunnel,
                                     passphrase: Some(self.pending_passphrase.clone()),
                                     started_at: Instant::now(),
+                                    log_tail: initial_log_tail(),
+                                    log_offset: log_file_size(),
                                 };
                             }
                             Err(e) => {
@@ -489,7 +502,13 @@ impl ServeDialog {
                 mode,
                 passphrase,
                 started_at,
+                log_tail,
+                log_offset,
             } => {
+                // Tail the daemon's serve.log so the user watches real
+                // progress (cert generation, tunnel handshake, etc.)
+                // during the 30-60s wait instead of a frozen screen.
+                let log_changed = append_new_log_lines(log_tail, log_offset);
                 let mode = *mode;
                 let urls = read_serve_urls();
                 if !urls.is_empty() {
@@ -553,15 +572,17 @@ impl ServeDialog {
                         format!("\n\nLast log lines:\n{}", tail.join("\n"))
                     };
                     self.state = ServeDialogState::Error(format!(
-                        "Cloudflare tunnel did not announce a URL within {}s. \
+                        "HTTPS tunnel did not announce a URL within {}s. \
                          {}\n\n\
-                         Most likely cause: `cloudflared` rate-limited, \
-                         captive portal, or no internet.{}",
+                         Most likely cause: Tailscale Funnel needs HTTPS certs \
+                         or ACL approval, OR cloudflared is rate-limited / \
+                         offline. Re-run with AGENT_OF_EMPIRES_DEBUG=1 and \
+                         check debug.log for details.{}",
                         TUNNEL_STARTUP_TIMEOUT_SECS, stop_note, tail_detail
                     ));
                     return true;
                 }
-                false
+                log_changed
             }
             ServeDialogState::Active {
                 log_tail,
@@ -596,8 +617,11 @@ impl ServeDialog {
                 render_confirm(frame, area, theme, *confirm_selected)
             }
             ServeDialogState::Starting {
-                mode, started_at, ..
-            } => render_starting(frame, area, theme, *mode, started_at.elapsed()),
+                mode,
+                started_at,
+                log_tail,
+                ..
+            } => render_starting(frame, area, theme, *mode, started_at.elapsed(), log_tail),
             ServeDialogState::Active {
                 mode,
                 urls,
@@ -1272,14 +1296,19 @@ fn render_starting(
     theme: &Theme,
     mode: ServeMode,
     elapsed: Duration,
+    log_tail: &[String],
 ) {
-    let dialog = super::centered_rect(area, 60, 9);
+    // Taller dialog so the daemon's serve.log can tail live underneath
+    // the wait banner. On a cold Tailscale node, HTTPS-cert provisioning
+    // can take 30-60s; a static "please wait" screen looks frozen.
+    // Showing the log makes real progress visible.
+    let dialog = super::centered_rect(area, 76, 18);
     frame.render_widget(Clear, dialog);
     let (title, wait_line1, wait_line2) = match mode {
         ServeMode::Tunnel => (
             " Starting HTTPS tunnel... ",
             "Waiting for the daemon to bring the tunnel up",
-            "(usually 5\u{2013}15 seconds).",
+            "(first-time Tailscale cert provisioning can take 30\u{2013}60s).",
         ),
         ServeMode::Local => (
             " Starting local server... ",
@@ -1295,7 +1324,13 @@ fn render_starting(
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
-    let body = vec![
+    // Split: top for the wait banner, bottom for the live log tail.
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Min(1)])
+        .split(inner);
+
+    let banner = vec![
         Line::from(""),
         Line::from(Span::styled(wait_line1, Style::default().fg(theme.text))),
         Line::from(Span::styled(wait_line2, Style::default().fg(theme.text))),
@@ -1305,7 +1340,37 @@ fn render_starting(
             Style::default().fg(theme.dimmed),
         )),
     ];
-    frame.render_widget(Paragraph::new(body).alignment(Alignment::Center), inner);
+    frame.render_widget(
+        Paragraph::new(banner).alignment(Alignment::Center),
+        split[0],
+    );
+
+    let tail_block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(theme.dimmed))
+        .title(Line::styled(
+            " daemon log ",
+            Style::default().fg(theme.dimmed),
+        ));
+    let tail_inner = tail_block.inner(split[1]);
+    frame.render_widget(tail_block, split[1]);
+
+    // Show the tail end of the log bounded to available rows.
+    let rows = tail_inner.height as usize;
+    let skip = log_tail.len().saturating_sub(rows);
+    let lines: Vec<Line> = if log_tail.is_empty() {
+        vec![Line::from(Span::styled(
+            "(waiting for daemon output...)",
+            Style::default().fg(theme.dimmed),
+        ))]
+    } else {
+        log_tail
+            .iter()
+            .skip(skip)
+            .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(theme.text))))
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), tail_inner);
 }
 
 #[allow(clippy::too_many_arguments)]

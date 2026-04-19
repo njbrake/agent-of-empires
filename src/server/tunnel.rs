@@ -236,13 +236,16 @@ impl TunnelHandle {
         let stderr = child.stderr.take();
 
         // Spawn drain tasks for both streams. Tailscale emits progress
-        // on stderr (most useful for diagnosing hangs) but we tail
-        // stdout too so users see banner output if one prints.
+        // on stderr (most useful for diagnosing hangs); logged at info!
+        // so daemons writing to serve.log show it in the TUI Starting
+        // screen without needing AGENT_OF_EMPIRES_DEBUG=1. Stdout stays
+        // at debug! because Tailscale rarely prints there and the lines
+        // that do appear are noisier.
         if let Some(stderr) = stderr {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    debug!(stream = "stderr", line = %line, "tailscale funnel progress");
+                    info!(target: "tailscale_funnel", "{}", line);
                 }
             });
         }
