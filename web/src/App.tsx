@@ -53,7 +53,7 @@ export default function App() {
   }
 
   if (loginRequired === null) {
-    return <div className="h-dvh bg-surface-900" />;
+    return <div className="h-dvh bg-surface-900 safe-area-inset" />;
   }
 
   return <AppContent loginRequired={loginRequired} onLogout={handleLogout} />;
@@ -387,7 +387,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   };
 
   return (
-    <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
+    <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset">
       <TopBar
         activeWorkspace={activeWorkspace}
         activeSession={activeSession ?? null}
