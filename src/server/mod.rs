@@ -349,10 +349,25 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     //     (stable .ts.net URL, installable PWAs keep working).
     //  3. Cloudflare quick tunnel (fallback; URL rotates per restart,
     //     which breaks installed PWAs).
+    // Capture the Tailscale probe result before the branch so the
+    // debug log shows why we did or didn't take the Tailscale path.
+    // The probe itself also logs details about each underlying call.
+    let tailscale_ok = if remote && !no_tailscale {
+        let available = tunnel::tailscale_available().await;
+        tracing::debug!(
+            no_tailscale,
+            tailscale_available = available,
+            "tunnel: choosing transport"
+        );
+        available
+    } else {
+        false
+    };
+
     let tunnel_handle = if remote {
         let handle = if let (Some(name), Some(url)) = (tunnel_name, tunnel_url) {
             tunnel::TunnelHandle::spawn_named(name, url, local_port).await?
-        } else if !no_tailscale && tunnel::tailscale_available().await {
+        } else if tailscale_ok {
             info!("Tailscale detected; using Tailscale Funnel for stable HTTPS origin");
             // Do NOT fall back to Cloudflare on Tailscale failure: the
             // user is on the Tailscale path because they want the

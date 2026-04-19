@@ -16,7 +16,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Manages a public-HTTPS tunnel. For Cloudflare variants, wraps a
 /// `cloudflared` subprocess and supervises it. For Tailscale Funnel,
@@ -184,18 +184,25 @@ impl TunnelHandle {
         // silently fall back to Cloudflare because that would hide
         // the real problem from the user.
         const STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+        debug!(
+            local_port = local_port,
+            timeout_s = STEP_TIMEOUT.as_secs(),
+            "tailscale: spawn_tailscale starting"
+        );
 
         // Step 1: point the funnel's https:443 at our local port.
         // `tailscale serve` is idempotent; re-running with a different
         // port overwrites the previous mapping. stdin is null so any
         // interactive prompt fails fast rather than hanging.
+        let serve_args = [
+            "serve".to_string(),
+            "--bg".to_string(),
+            "--https=443".to_string(),
+            format!("http://127.0.0.1:{}", local_port),
+        ];
+        debug!(args = ?serve_args, "tailscale: running `tailscale serve`");
         let serve_fut = Command::new("tailscale")
-            .args([
-                "serve",
-                "--bg",
-                "--https=443",
-                &format!("http://127.0.0.1:{}", local_port),
-            ])
+            .args(&serve_args)
             .stdin(std::process::Stdio::null())
             .output();
         let out = tokio::time::timeout(STEP_TIMEOUT, serve_fut)
@@ -211,6 +218,13 @@ impl TunnelHandle {
                 )
             })?
             .map_err(|e| anyhow::anyhow!("failed to run tailscale serve: {}", e))?;
+        debug!(
+            exit = ?out.status.code(),
+            success = out.status.success(),
+            stdout = %String::from_utf8_lossy(&out.stdout),
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "tailscale: `tailscale serve` returned"
+        );
         if !out.status.success() {
             anyhow::bail!(
                 "tailscale serve failed: {}",
@@ -219,6 +233,7 @@ impl TunnelHandle {
         }
 
         // Step 2: open the funnel on port 443. Also idempotent.
+        debug!("tailscale: running `tailscale funnel --bg 443`");
         let funnel_fut = Command::new("tailscale")
             .args(["funnel", "--bg", "443"])
             .stdin(std::process::Stdio::null())
@@ -234,6 +249,13 @@ impl TunnelHandle {
                 )
             })?
             .map_err(|e| anyhow::anyhow!("failed to run tailscale funnel: {}", e))?;
+        debug!(
+            exit = ?out.status.code(),
+            success = out.status.success(),
+            stdout = %String::from_utf8_lossy(&out.stdout),
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "tailscale: `tailscale funnel` returned"
+        );
         if !out.status.success() {
             anyhow::bail!(
                 "tailscale funnel failed: {}. Funnel may need to be enabled in the admin console.",
@@ -242,6 +264,7 @@ impl TunnelHandle {
         }
 
         // Step 3: read the stable funnel URL from `tailscale status`.
+        debug!("tailscale: reading stable URL via `tailscale status --json`");
         let url = tokio::time::timeout(STEP_TIMEOUT, tailscale_funnel_url())
             .await
             .map_err(|_| {
@@ -399,7 +422,18 @@ async fn restart_tunnel(kind: &TunnelKind, port: u16) -> anyhow::Result<Child> {
 pub async fn tailscale_available() -> bool {
     // Cheapest possible check first: does the CLI exist and return
     // a successful status?
-    let Ok(out) = Command::new("tailscale").arg("--version").output().await else {
+    let version = Command::new("tailscale").arg("--version").output().await;
+    match &version {
+        Ok(o) => debug!(
+            exit = ?o.status.code(),
+            success = o.status.success(),
+            stdout = %String::from_utf8_lossy(&o.stdout).trim(),
+            stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+            "tailscale_available: `tailscale --version` returned"
+        ),
+        Err(e) => debug!(error = %e, "tailscale_available: `tailscale --version` spawn failed"),
+    }
+    let Ok(out) = version else {
         return false;
     };
     if !out.status.success() {
@@ -407,7 +441,17 @@ pub async fn tailscale_available() -> bool {
     }
     // Then confirm the daemon is running and signed in. `status` exits
     // non-zero if not logged in.
-    let Ok(out) = Command::new("tailscale").arg("status").output().await else {
+    let status = Command::new("tailscale").arg("status").output().await;
+    match &status {
+        Ok(o) => debug!(
+            exit = ?o.status.code(),
+            success = o.status.success(),
+            stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+            "tailscale_available: `tailscale status` returned"
+        ),
+        Err(e) => debug!(error = %e, "tailscale_available: `tailscale status` spawn failed"),
+    }
+    let Ok(out) = status else {
         return false;
     };
     out.status.success()
@@ -422,23 +466,42 @@ async fn tailscale_funnel_url() -> anyhow::Result<String> {
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("failed to run tailscale status: {}", e))?;
+    debug!(
+        exit = ?out.status.code(),
+        success = out.status.success(),
+        stdout_len = out.stdout.len(),
+        stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+        "tailscale_funnel_url: `tailscale status --json` returned"
+    );
     if !out.status.success() {
         anyhow::bail!(
             "tailscale status --json failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| anyhow::anyhow!("parse tailscale status JSON: {}", e))?;
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| {
+        debug!(
+            stdout_head = %String::from_utf8_lossy(&out.stdout).chars().take(200).collect::<String>(),
+            "tailscale_funnel_url: status JSON parse failed"
+        );
+        anyhow::anyhow!("parse tailscale status JSON: {}", e)
+    })?;
     let dns = parsed
         .get("Self")
         .and_then(|s| s.get("DNSName"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Self.DNSName missing from tailscale status"))?;
+        .ok_or_else(|| {
+            debug!(
+                keys = ?parsed.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+                "tailscale_funnel_url: Self.DNSName missing; dumping top-level keys"
+            );
+            anyhow::anyhow!("Self.DNSName missing from tailscale status")
+        })?;
     let host = dns.trim_end_matches('.');
     if host.is_empty() {
         anyhow::bail!("empty DNSName from tailscale status");
     }
+    debug!(host = %host, "tailscale_funnel_url: resolved stable hostname");
     Ok(format!("https://{}", host))
 }
 
@@ -511,23 +574,38 @@ pub fn check_cloudflared() -> anyhow::Result<()> {
 /// Conservative: any error means "not available" and we fall through
 /// to Cloudflare.
 pub fn tailscale_available_sync() -> bool {
-    let version_ok = std::process::Command::new("tailscale")
+    // Unlike the async path, this runs on the TUI render hot path, so
+    // we keep it cheap and quiet on the happy path. On failure, we log
+    // at debug! so `AGENT_OF_EMPIRES_DEBUG=1` surfaces exactly which
+    // step bounced.
+    let version = std::process::Command::new("tailscale")
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .status();
+    let version_ok = version.as_ref().map(|s| s.success()).unwrap_or(false);
     if !version_ok {
+        debug!(
+            error = ?version.as_ref().err(),
+            exit = ?version.as_ref().ok().and_then(|s| s.code()),
+            "tailscale_available_sync: `tailscale --version` failed"
+        );
         return false;
     }
-    std::process::Command::new("tailscale")
+    let status = std::process::Command::new("tailscale")
         .arg("status")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .status();
+    let status_ok = status.as_ref().map(|s| s.success()).unwrap_or(false);
+    if !status_ok {
+        debug!(
+            error = ?status.as_ref().err(),
+            exit = ?status.as_ref().ok().and_then(|s| s.code()),
+            "tailscale_available_sync: `tailscale status` failed (likely not logged in)"
+        );
+    }
+    status_ok
 }
 
 #[cfg(test)]
