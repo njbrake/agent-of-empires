@@ -66,7 +66,7 @@ Setup:
 3. Enable Funnel once in the admin console or tailnet ACL: [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file)
 4. `aoe serve --remote`
 
-Caveat: `aoe serve --remote` calls `tailscale serve --https=443` to point port 443 at the dashboard. If you already have a different service funneled on port 443 (your own webapp, a dev server), aoe's call will replace that mapping. Pass `--no-tailscale` to skip auto-detection and fall back to Cloudflare if you need to keep the existing config.
+Caveat: `aoe serve --remote` runs `tailscale funnel --bg --yes <port>` (the Tailscale 1.52+ single-command syntax), which configures port 443 to proxy to the dashboard. If you already have a different service on port 443 of this node's Funnel config (your own webapp, a dev server), aoe will detect the conflict via `tailscale funnel status` and refuse to start rather than silently replace it. Clear the conflicting config with `tailscale funnel reset` and re-run, or pass `--no-tailscale` to use Cloudflare instead.
 
 ### 2. Named Cloudflare tunnel
 

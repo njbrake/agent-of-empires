@@ -172,9 +172,13 @@ impl TunnelHandle {
 
     /// Configure Tailscale Funnel for the local port and return a
     /// handle carrying the stable `https://<host>.<tailnet>.ts.net` URL.
-    /// No subprocess supervision is needed; `tailscale serve` and
-    /// `tailscale funnel` configure state in the Tailscale daemon and
-    /// return immediately.
+    /// Uses the single-command Funnel syntax introduced in Tailscale
+    /// 1.52: one call to `tailscale funnel --bg --yes <port>` replaces
+    /// the legacy `tailscale serve` + `tailscale funnel` dance and
+    /// surfaces clearer errors when Funnel isn't pre-approved in the
+    /// tailnet ACL. No subprocess supervision is needed; the Tailscale
+    /// daemon owns the ingress and the command returns once the config
+    /// is applied.
     pub async fn spawn_tailscale(local_port: u16) -> anyhow::Result<Self> {
         // Hard cap on each tailscale command so we never wedge if
         // tailscale pops an interactive prompt (HTTPS-certs consent,
@@ -190,62 +194,43 @@ impl TunnelHandle {
             "tailscale: spawn_tailscale starting"
         );
 
-        // Step 1: point the funnel's https:443 at our local port.
-        // `tailscale serve` is idempotent; re-running with a different
-        // port overwrites the previous mapping. stdin is null so any
-        // interactive prompt fails fast rather than hanging.
-        let serve_args = [
-            "serve".to_string(),
-            "--bg".to_string(),
-            "--https=443".to_string(),
-            format!("http://127.0.0.1:{}", local_port),
-        ];
-        debug!(args = ?serve_args, "tailscale: running `tailscale serve`");
-        let serve_fut = Command::new("tailscale")
-            .args(&serve_args)
-            .stdin(std::process::Stdio::null())
-            .output();
-        let out = tokio::time::timeout(STEP_TIMEOUT, serve_fut)
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "tailscale serve timed out after {}s; it may be waiting on an \
-                     interactive prompt (HTTPS certs, Funnel consent). \
-                     Run `tailscale serve --bg --https=443 http://127.0.0.1:{}` manually \
-                     once to clear it, or use --no-tailscale to skip.",
-                    STEP_TIMEOUT.as_secs(),
-                    local_port
-                )
-            })?
-            .map_err(|e| anyhow::anyhow!("failed to run tailscale serve: {}", e))?;
-        debug!(
-            exit = ?out.status.code(),
-            success = out.status.success(),
-            stdout = %String::from_utf8_lossy(&out.stdout),
-            stderr = %String::from_utf8_lossy(&out.stderr),
-            "tailscale: `tailscale serve` returned"
-        );
-        if !out.status.success() {
+        // Pre-flight: if Funnel is already configured on our chosen
+        // HTTPS port (443) for a DIFFERENT backend, bail rather than
+        // silently taking it over. Belt-and-suspenders; the modern
+        // `tailscale funnel <port>` single-command syntax is mostly
+        // additive, but a user with a Funnel on 443 pointing at their
+        // own service would have it replaced otherwise.
+        if let Some(existing) = inspect_existing_funnel(local_port).await {
             anyhow::bail!(
-                "tailscale serve failed: {}",
-                String::from_utf8_lossy(&out.stderr)
+                "port 443 is already configured on this node for a different \
+                 backend ({}). Run `tailscale funnel reset` to clear the \
+                 existing config, or pass --no-tailscale to use Cloudflare.",
+                existing
             );
         }
 
-        // Step 2: open the funnel on port 443. Also idempotent.
-        debug!("tailscale: running `tailscale funnel --bg 443`");
+        // Single-command Funnel (Tailscale 1.52+). Replaces the old
+        // `tailscale serve --https=443` + `tailscale funnel 443` two-step
+        // dance. `--bg` persists across aoe restarts; `--yes` skips
+        // interactive prompts so we fail fast instead of hanging if
+        // Funnel isn't pre-approved in the tailnet ACL.
+        let funnel_arg = local_port.to_string();
+        let funnel_args = ["funnel", "--bg", "--yes", &funnel_arg];
+        debug!(args = ?funnel_args, "tailscale: running `tailscale funnel`");
         let funnel_fut = Command::new("tailscale")
-            .args(["funnel", "--bg", "443"])
+            .args(funnel_args)
             .stdin(std::process::Stdio::null())
             .output();
         let out = tokio::time::timeout(STEP_TIMEOUT, funnel_fut)
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "tailscale funnel timed out after {}s; Funnel may not be enabled \
-                     in your tailnet ACL. Enable it at \
-                     https://login.tailscale.com/admin/acls/file or use --no-tailscale.",
-                    STEP_TIMEOUT.as_secs()
+                    "tailscale funnel timed out after {}s; your node may not have \
+                     HTTPS certs enabled or Funnel may not be enabled in your tailnet \
+                     ACL. Run `tailscale funnel --bg --yes {}` manually once to \
+                     see the prompt, or pass --no-tailscale to skip.",
+                    STEP_TIMEOUT.as_secs(),
+                    local_port
                 )
             })?
             .map_err(|e| anyhow::anyhow!("failed to run tailscale funnel: {}", e))?;
@@ -258,12 +243,14 @@ impl TunnelHandle {
         );
         if !out.status.success() {
             anyhow::bail!(
-                "tailscale funnel failed: {}. Funnel may need to be enabled in the admin console.",
+                "tailscale funnel failed: {}. Confirm Funnel is enabled in your \
+                 tailnet ACL (https://login.tailscale.com/admin/acls/file) and HTTPS \
+                 is enabled on the node.",
                 String::from_utf8_lossy(&out.stderr)
             );
         }
 
-        // Step 3: read the stable funnel URL from `tailscale status`.
+        // Read the stable funnel URL from `tailscale status`.
         debug!("tailscale: reading stable URL via `tailscale status --json`");
         let url = tokio::time::timeout(STEP_TIMEOUT, tailscale_funnel_url())
             .await
@@ -460,6 +447,70 @@ pub async fn tailscale_available() -> bool {
 /// Read the stable Tailscale Funnel URL from `tailscale status --json`.
 /// The self node's `DNSName` is the `.ts.net` hostname; we wrap it in
 /// `https://` and strip the trailing dot that appears in the JSON.
+/// Probe `tailscale funnel status --json` to see if port 443 is already
+/// configured. Returns `Some(<description>)` when a different backend
+/// already holds the port; `None` when the port is free OR already
+/// points at our local port (same-target re-runs are idempotent and
+/// safe). Used as a pre-flight before we run `tailscale funnel` so we
+/// don't stomp on a user's existing setup.
+///
+/// Best-effort: any probe failure returns `None` so the spawn attempt
+/// proceeds. If Tailscale's JSON schema changes or the CLI errors out
+/// for an unrelated reason, we don't want a parse miss to block a user
+/// whose Funnel would otherwise work fine.
+async fn inspect_existing_funnel(local_port: u16) -> Option<String> {
+    let out = Command::new("tailscale")
+        .args(["funnel", "status", "--json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        debug!(
+            exit = ?out.status.code(),
+            stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+            "inspect_existing_funnel: `tailscale funnel status --json` non-zero; assuming empty"
+        );
+        return None;
+    }
+    let parsed: serde_json::Value = match serde_json::from_slice(&out.stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!(error = %e, "inspect_existing_funnel: JSON parse failed; assuming empty");
+            return None;
+        }
+    };
+
+    // Walk the Web map looking for a port-443 handler whose target
+    // isn't our local port. Shape (from Tailscale's ServeConfig):
+    //   { "Web": { "${host}:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:4999" } } } } }
+    let web = parsed.get("Web")?.as_object()?;
+    let expected_proxy_substring = format!("127.0.0.1:{}", local_port);
+    for (vhost, cfg) in web.iter() {
+        if !vhost.ends_with(":443") {
+            continue;
+        }
+        let handlers = cfg.get("Handlers").and_then(|h| h.as_object())?;
+        for (path, handler) in handlers.iter() {
+            let proxy = handler.get("Proxy").and_then(|v| v.as_str()).unwrap_or("");
+            if !proxy.contains(&expected_proxy_substring) {
+                debug!(
+                    vhost = %vhost,
+                    path = %path,
+                    proxy = %proxy,
+                    "inspect_existing_funnel: port 443 already held by different backend"
+                );
+                return Some(format!("path {} -> {}", path, proxy));
+            }
+        }
+    }
+    debug!(
+        local_port = local_port,
+        "inspect_existing_funnel: port 443 free or already matches our local port"
+    );
+    None
+}
+
 async fn tailscale_funnel_url() -> anyhow::Result<String> {
     let out = Command::new("tailscale")
         .args(["status", "--json"])
