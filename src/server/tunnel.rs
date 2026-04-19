@@ -182,12 +182,13 @@ impl TunnelHandle {
     pub async fn spawn_tailscale(local_port: u16) -> anyhow::Result<Self> {
         // Hard cap on each tailscale command so we never wedge if
         // tailscale pops an interactive prompt (HTTPS-certs consent,
-        // Funnel-not-enabled-in-ACL, node not signed in). When the
-        // timeout fires, the error bubbles up to start_server which
-        // surfaces it to the user with fix instructions; we do NOT
-        // silently fall back to Cloudflare because that would hide
-        // the real problem from the user.
-        const STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+        // Funnel-not-enabled-in-ACL, node not signed in). 60s because
+        // first-time HTTPS cert provisioning on a fresh node can
+        // legitimately take 30-45s. When the timeout fires, the error
+        // bubbles up to start_server which surfaces it to the user
+        // with fix instructions; we do NOT silently fall back to
+        // Cloudflare because that would hide the real problem.
+        const STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
         debug!(
             local_port = local_port,
             timeout_s = STEP_TIMEOUT.as_secs(),
@@ -214,39 +215,74 @@ impl TunnelHandle {
         // dance. `--bg` persists across aoe restarts; `--yes` skips
         // interactive prompts so we fail fast instead of hanging if
         // Funnel isn't pre-approved in the tailnet ACL.
+        //
+        // We stream stderr line-by-line into the debug log instead of
+        // buffering with `.output()`, so the user can watch progress
+        // (cert provisioning, etc.) in debug.log instead of staring at
+        // a black box for up to a minute.
         let funnel_arg = local_port.to_string();
         let funnel_args = ["funnel", "--bg", "--yes", &funnel_arg];
         debug!(args = ?funnel_args, "tailscale: running `tailscale funnel`");
-        let funnel_fut = Command::new("tailscale")
+
+        let mut child = Command::new("tailscale")
             .args(funnel_args)
             .stdin(std::process::Stdio::null())
-            .output();
-        let out = tokio::time::timeout(STEP_TIMEOUT, funnel_fut)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to run tailscale funnel: {}", e))?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        // Spawn drain tasks for both streams. Tailscale emits progress
+        // on stderr (most useful for diagnosing hangs) but we tail
+        // stdout too so users see banner output if one prints.
+        if let Some(stderr) = stderr {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    debug!(stream = "stderr", line = %line, "tailscale funnel progress");
+                }
+            });
+        }
+        if let Some(stdout) = stdout {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    debug!(stream = "stdout", line = %line, "tailscale funnel output");
+                }
+            });
+        }
+
+        let status = tokio::time::timeout(STEP_TIMEOUT, child.wait())
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
                     "tailscale funnel timed out after {}s; your node may not have \
                      HTTPS certs enabled or Funnel may not be enabled in your tailnet \
-                     ACL. Run `tailscale funnel --bg --yes {}` manually once to \
-                     see the prompt, or pass --no-tailscale to skip.",
+                     ACL. Run `AGENT_OF_EMPIRES_DEBUG=1 aoe serve --remote` and \
+                     check debug.log for the live output, or try \
+                     `tailscale funnel --bg --yes {}` manually, or pass \
+                     --no-tailscale to skip.",
                     STEP_TIMEOUT.as_secs(),
                     local_port
                 )
             })?
-            .map_err(|e| anyhow::anyhow!("failed to run tailscale funnel: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to wait on tailscale funnel: {}", e))?;
+
         debug!(
-            exit = ?out.status.code(),
-            success = out.status.success(),
-            stdout = %String::from_utf8_lossy(&out.stdout),
-            stderr = %String::from_utf8_lossy(&out.stderr),
-            "tailscale: `tailscale funnel` returned"
+            exit = ?status.code(),
+            success = status.success(),
+            "tailscale: `tailscale funnel` exited"
         );
-        if !out.status.success() {
+        if !status.success() {
             anyhow::bail!(
-                "tailscale funnel failed: {}. Confirm Funnel is enabled in your \
-                 tailnet ACL (https://login.tailscale.com/admin/acls/file) and HTTPS \
-                 is enabled on the node.",
-                String::from_utf8_lossy(&out.stderr)
+                "tailscale funnel exited with status {:?}. Confirm Funnel is enabled \
+                 in your tailnet ACL (https://login.tailscale.com/admin/acls/file) \
+                 and HTTPS is enabled on the node. Run with \
+                 AGENT_OF_EMPIRES_DEBUG=1 to see the full stderr stream.",
+                status.code()
             );
         }
 
@@ -444,9 +480,6 @@ pub async fn tailscale_available() -> bool {
     out.status.success()
 }
 
-/// Read the stable Tailscale Funnel URL from `tailscale status --json`.
-/// The self node's `DNSName` is the `.ts.net` hostname; we wrap it in
-/// `https://` and strip the trailing dot that appears in the JSON.
 /// Probe `tailscale funnel status --json` to see if port 443 is already
 /// configured. Returns `Some(<description>)` when a different backend
 /// already holds the port; `None` when the port is free OR already
@@ -483,7 +516,15 @@ async fn inspect_existing_funnel(local_port: u16) -> Option<String> {
 
     // Walk the Web map looking for a port-443 handler whose target
     // isn't our local port. Shape (from Tailscale's ServeConfig):
-    //   { "Web": { "${host}:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:4999" } } } } }
+    //   { "Web": { "${host}:443": { "Handlers": {
+    //       "/": { "Proxy": "http://127.0.0.1:4999" },  // or:
+    //       "/": { "Path":  "/var/www" },               // file server, or:
+    //       "/": { "Text":  "hello" }                   // static text
+    //   } } } }
+    // Proxy handlers get a substring match on the local port (our own
+    // same-target config is a no-op). Non-Proxy handlers are always a
+    // conflict because `tailscale funnel --bg <port>` installs a Proxy
+    // and would replace them.
     let web = parsed.get("Web")?.as_object()?;
     let expected_proxy_substring = format!("127.0.0.1:{}", local_port);
     for (vhost, cfg) in web.iter() {
@@ -492,15 +533,39 @@ async fn inspect_existing_funnel(local_port: u16) -> Option<String> {
         }
         let handlers = cfg.get("Handlers").and_then(|h| h.as_object())?;
         for (path, handler) in handlers.iter() {
-            let proxy = handler.get("Proxy").and_then(|v| v.as_str()).unwrap_or("");
-            if !proxy.contains(&expected_proxy_substring) {
+            if let Some(proxy) = handler.get("Proxy").and_then(|v| v.as_str()) {
+                if !proxy.contains(&expected_proxy_substring) {
+                    debug!(
+                        vhost = %vhost,
+                        path = %path,
+                        proxy = %proxy,
+                        "inspect_existing_funnel: port 443 already held by different proxy backend"
+                    );
+                    return Some(format!("proxy {} -> {}", path, proxy));
+                }
+            } else if let Some(p) = handler.get("Path").and_then(|v| v.as_str()) {
                 debug!(
                     vhost = %vhost,
                     path = %path,
-                    proxy = %proxy,
-                    "inspect_existing_funnel: port 443 already held by different backend"
+                    file_path = %p,
+                    "inspect_existing_funnel: port 443 held by file-server handler"
                 );
-                return Some(format!("path {} -> {}", path, proxy));
+                return Some(format!("file server {} -> {}", path, p));
+            } else if handler.get("Text").is_some() {
+                debug!(
+                    vhost = %vhost,
+                    path = %path,
+                    "inspect_existing_funnel: port 443 held by static-text handler"
+                );
+                return Some(format!("static text at {}", path));
+            } else {
+                debug!(
+                    vhost = %vhost,
+                    path = %path,
+                    handler = ?handler,
+                    "inspect_existing_funnel: port 443 held by unknown handler type"
+                );
+                return Some(format!("unknown handler at {}", path));
             }
         }
     }
