@@ -281,6 +281,15 @@ impl Session {
     /// terminals send for Shift+Enter) so the coding agent inserts a newline
     /// rather than submitting after each line.
     pub fn send_keys(&self, text: &str) -> Result<()> {
+        self.send_keys_with_delay(text, 0)
+    }
+
+    /// Like [`send_keys`](Self::send_keys), but waits `enter_delay_ms` between
+    /// the literal text and the final Enter. Agents with paste-burst detection
+    /// (e.g. Codex) swallow Enter keys that arrive within their burst window,
+    /// treating them as newlines instead of submit. The delay lets the
+    /// suppression window expire before Enter is sent.
+    pub fn send_keys_with_delay(&self, text: &str, enter_delay_ms: u64) -> Result<()> {
         if !self.exists() {
             bail!("Session does not exist: {}", self.name);
         }
@@ -294,6 +303,10 @@ impl Session {
                 // ESC + CR: what terminals send for Shift+Enter (inserts newline)
                 Self::tmux_send(&target, &["-H", "1b", "0d"])?;
             }
+        }
+
+        if enter_delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(enter_delay_ms));
         }
 
         // Enter to submit
