@@ -241,11 +241,18 @@ impl TunnelHandle {
         // screen without needing AGENT_OF_EMPIRES_DEBUG=1. Stdout stays
         // at debug! because Tailscale rarely prints there and the lines
         // that do appear are noisier.
+        //
+        // Do NOT override the `target` on these log macros: the
+        // EnvFilter uses `agent_of_empires=debug`, which matches the
+        // default module path (agent_of_empires::server::tunnel). A
+        // custom target like "tailscale_funnel" would not match that
+        // prefix and every line would be silently dropped, which is
+        // exactly how this used to fail.
         if let Some(stderr) = stderr {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    info!(target: "tailscale_funnel", "{}", line);
+                    info!(source = "tailscale funnel", "{}", line);
                 }
             });
         }
@@ -253,7 +260,7 @@ impl TunnelHandle {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    debug!(stream = "stdout", line = %line, "tailscale funnel output");
+                    debug!(source = "tailscale funnel stdout", "{}", line);
                 }
             });
         }
