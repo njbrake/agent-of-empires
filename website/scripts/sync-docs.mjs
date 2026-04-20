@@ -59,7 +59,7 @@ const PAGES = [
     dest: "guides/remote-phone-access.md",
     title: "Remote Access from Your Phone",
     description:
-      "Access your Agent of Empires sessions from your phone via a one-keystroke Cloudflare Tunnel with QR pairing.",
+      "Access your Agent of Empires sessions from your phone via Tailscale Funnel or Cloudflare Tunnel with QR pairing.",
   },
   {
     source: "docs/guides/worktrees.md",
@@ -196,9 +196,14 @@ function rewriteLinks(content, sourceDir) {
     }
   );
 
-  // Rewrite relative image/asset paths to absolute (assets/ → /assets/)
-  // The build copies docs/assets/* to website/public/assets/
-  // Handle both assets/ (from docs/) and ../assets/ (from docs/guides/)
+  // Rewrite relative image/asset paths to absolute (/assets/...).
+  // The build copies docs/assets/* to website/public/assets/. Both
+  // `assets/foo.png` (used by root-level docs like docs/index.md) and
+  // `../assets/foo.png` (used by guides at docs/guides/foo.md) map to
+  // the same place, so normalize both to `/assets/`. This catches
+  // markdown links, markdown images (![alt](..) contains ](..)), and
+  // HTML-less references alike. `(?:\.\.\/)*` handles any depth of
+  // parent-directory hops so deeper-nested docs future-proof through.
   content = content.replace(/\]\((?:\.\.\/)*assets\//g, "](/assets/");
 
   return content;

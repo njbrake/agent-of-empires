@@ -23,13 +23,22 @@ pub struct ServeArgs {
     #[arg(long)]
     pub read_only: bool,
 
-    /// Expose via Cloudflare Tunnel for secure remote access
+    /// Expose the dashboard over a public HTTPS tunnel. Prefers Tailscale
+    /// Funnel when `tailscale` is installed and logged in (stable
+    /// `.ts.net` URL, installable PWAs survive restarts). Falls back to a
+    /// Cloudflare quick tunnel otherwise (fresh URL on every restart).
     #[arg(long)]
     pub remote: bool,
 
-    /// Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+    /// Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`).
+    /// Takes precedence over Tailscale auto-detection.
     #[arg(long, requires = "remote")]
     pub tunnel_name: Option<String>,
+
+    /// Skip Tailscale Funnel auto-detection and go straight to Cloudflare.
+    /// Useful if you have Tailscale installed for unrelated reasons.
+    #[arg(long, requires = "remote")]
+    pub no_tailscale: bool,
 
     /// Hostname for a named tunnel (e.g., aoe.example.com)
     #[arg(long, requires = "tunnel_name")]
@@ -91,6 +100,7 @@ fn read_serve_mode_label() -> Option<&'static str> {
     match raw.trim() {
         "local" => Some("local"),
         "tunnel" => Some("tunnel"),
+        "tailscale" => Some("tailscale"),
         _ => None,
     }
 }
@@ -277,6 +287,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         remote: args.remote,
         tunnel_name: args.tunnel_name.as_deref(),
         tunnel_url: args.tunnel_url.as_deref(),
+        no_tailscale: args.no_tailscale,
         is_daemon: false,
         passphrase: args.passphrase.as_deref(),
     })
@@ -350,6 +361,9 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     }
     if let Some(ref url) = args.tunnel_url {
         cmd.args(["--tunnel-url", url]);
+    }
+    if args.no_tailscale {
+        cmd.arg("--no-tailscale");
     }
     if let Some(ref passphrase) = args.passphrase {
         // Pass via env var to avoid exposing the passphrase in the process list
