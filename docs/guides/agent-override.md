@@ -2,7 +2,7 @@
 
 The "Agent Command Override" feature lets you define alternative commands/scripts for agents supported by `aoe`. This
 can be useful for running with specific options (though this can also be done using "Agent Extra Args"), via a script,
-or under a sandbox such as `nono`.
+or under a sandbox such as [nono](https://github.com/always-further/nono/).
 
 ## Configuring an override
 
@@ -28,7 +28,7 @@ opencode=nono run --profile opencode-dev --allow-cwd -- opencode
 
 Similarly, agent command overrides can also be added to your `aoe` config at the global, profile, or repo level:
 
-```
+```toml
 [session.agent_command_override]
 opencode = "my-opencode-command"
 ```
