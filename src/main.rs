@@ -7,6 +7,19 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 
+/// Did the user invoke `aoe serve`? Feature-gated because `Commands::Serve`
+/// only exists when the `serve` feature is on; in TUI-only builds we
+/// always return false so the tracing-init branch below compiles.
+#[cfg(feature = "serve")]
+fn is_serve_command(cli: &Cli) -> bool {
+    matches!(cli.command, Some(Commands::Serve(_)))
+}
+
+#[cfg(not(feature = "serve"))]
+fn is_serve_command(_cli: &Cli) -> bool {
+    false
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -31,7 +44,7 @@ async fn main() -> Result<()> {
                 "AGENT_OF_EMPIRES_DEBUG is set but the debug log file could not be created. Debug logging is disabled.".to_string(),
             );
         }
-    } else if matches!(cli.command, Some(Commands::Serve(_))) {
+    } else if is_serve_command(&cli) {
         // `aoe serve` writes info-level tracing to stdout so the daemon
         // path (which redirects child stdout/stderr into serve.log) can
         // capture progress for the TUI's Starting-screen log tail.

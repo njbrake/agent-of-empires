@@ -188,9 +188,14 @@ function rewriteLinks(content, sourceDir) {
     }
   );
 
-  // Rewrite relative image/asset paths to absolute (assets/ → /assets/)
-  // The build copies docs/assets/* to website/public/assets/
-  content = content.replace(/\]\(assets\//g, "](/assets/");
+  // Rewrite relative image/asset paths to absolute (/assets/...).
+  // The build copies docs/assets/* to website/public/assets/. Both
+  // `assets/foo.png` (used by root-level docs like docs/index.md) and
+  // `../assets/foo.png` (used by guides at docs/guides/foo.md) map to
+  // the same place, so normalize both to `/assets/`. This catches
+  // markdown links, markdown images (![alt](..) contains ](..)), and
+  // HTML-less references alike.
+  content = content.replace(/\]\((?:\.\.\/)?assets\//g, "](/assets/");
 
   return content;
 }
