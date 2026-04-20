@@ -113,7 +113,7 @@ impl HomeView {
 
         // Render dialogs on top
         if self.show_help {
-            HelpOverlay::render(frame, area, theme, self.sort_order);
+            HelpOverlay::render(frame, area, theme, self.sort_order, self.strict_hotkeys);
         }
 
         if let Some(dialog) = &self.new_dialog {
@@ -824,12 +824,13 @@ impl HomeView {
                 Span::styled(enter_action_text, desc_style),
             ])
         }
+        let strict = self.strict_hotkeys;
         spans.extend([
             Span::styled("│", sep_style),
-            Span::styled(" t", key_style),
+            Span::styled(if strict { " T" } else { " t" }, key_style),
             Span::styled(" View ", desc_style),
             Span::styled("│", sep_style),
-            Span::styled(" g", key_style),
+            Span::styled(if strict { " ^G" } else { " g" }, key_style),
             Span::styled(" Group ", desc_style),
         ]);
 
@@ -840,7 +841,7 @@ impl HomeView {
                     if inst.is_sandboxed() {
                         spans.extend([
                             Span::styled("│", sep_style),
-                            Span::styled(" c", key_style),
+                            Span::styled(if strict { " C" } else { " c" }, key_style),
                             Span::styled(" Mode ", desc_style),
                         ]);
                     }
@@ -850,14 +851,14 @@ impl HomeView {
 
         spans.extend([
             Span::styled("│", sep_style),
-            Span::styled(" n", key_style),
+            Span::styled(if strict { " N" } else { " n" }, key_style),
             Span::styled(" New ", desc_style),
         ]);
 
         if self.selected_session.is_some() {
             spans.extend([
                 Span::styled("│", sep_style),
-                Span::styled(" m", key_style),
+                Span::styled(if strict { " M" } else { " m" }, key_style),
                 Span::styled(" Msg ", desc_style),
             ]);
         }
@@ -865,7 +866,7 @@ impl HomeView {
         if !self.flat_items.is_empty() {
             spans.extend([
                 Span::styled("│", sep_style),
-                Span::styled(" d", key_style),
+                Span::styled(if strict { " D" } else { " d" }, key_style),
                 Span::styled(" Del ", desc_style),
             ]);
         }
@@ -875,13 +876,13 @@ impl HomeView {
             Span::styled(" /", key_style),
             Span::styled(" Search ", desc_style),
             Span::styled("│", sep_style),
-            Span::styled(" D", key_style),
+            Span::styled(if strict { " ^D" } else { " D" }, key_style),
             Span::styled(" Diff ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" ?", key_style),
             Span::styled(" Help ", desc_style),
             Span::styled("│", sep_style),
-            Span::styled(" q", key_style),
+            Span::styled(if strict { " Q" } else { " q" }, key_style),
             Span::styled(" Quit", desc_style),
         ]);
 

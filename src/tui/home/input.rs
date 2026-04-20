@@ -651,8 +651,7 @@ impl HomeView {
                 self.search_query = Input::default();
             }
             KeyCode::Char('n') if !self.search_matches.is_empty() => {
-                self.search_match_index =
-                    (self.search_match_index + 1) % self.search_matches.len();
+                self.search_match_index = (self.search_match_index + 1) % self.search_matches.len();
                 self.cursor = self.search_matches[self.search_match_index];
                 self.update_selected();
             }
@@ -1262,10 +1261,30 @@ impl HomeView {
                     }
                 }
             }
+            KeyCode::Char('M') if self.strict_hotkeys => {
+                if let Some(id) = self.selected_session.clone() {
+                    if let Some(inst) = self.get_instance(&id) {
+                        if inst.status == Status::Creating {
+                            return None;
+                        }
+                        let title = inst.title.clone();
+                        let inst_id = inst.id.clone();
+                        let tmux_session = crate::tmux::Session::new(&inst_id, &title).ok();
+                        let is_running = tmux_session.as_ref().is_some_and(|s| s.exists());
+                        if is_running {
+                            self.pending_send_session = Some(id);
+                            self.send_message_dialog = Some(SendMessageDialog::new(&title));
+                        }
+                    }
+                }
+            }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.apply_sort_order(self.sort_order.cycle_reverse());
             }
-            KeyCode::Char('o') => {
+            KeyCode::Char('o') if !self.strict_hotkeys => {
+                self.apply_sort_order(self.sort_order.cycle());
+            }
+            KeyCode::Char('O') if self.strict_hotkeys => {
                 self.apply_sort_order(self.sort_order.cycle());
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1284,7 +1303,12 @@ impl HomeView {
                 self.cursor = 0;
                 self.update_selected();
             }
-            KeyCode::Char('g') => {
+            KeyCode::Char('g')
+                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.apply_group_by(self.group_by.cycle());
+            }
+            KeyCode::Char('g') if !self.strict_hotkeys => {
                 self.apply_group_by(self.group_by.cycle());
             }
             KeyCode::End | KeyCode::Char('G') if !self.flat_items.is_empty() => {
