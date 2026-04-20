@@ -1,0 +1,105 @@
+---
+interface Props {
+  title: string;
+  description: string;
+  ogTitle?: string;
+  ogDescription?: string;
+  ogImage?: string;
+}
+
+const siteUrl = Astro.site?.toString().replace(/\/$/, '') ?? '';
+
+const {
+  title,
+  description,
+  ogTitle = 'Agent of Empires',
+  ogDescription = 'Terminal session manager for AI coding agents. Git worktrees, Docker sandboxing, beautiful TUI.',
+  ogImage = `${siteUrl}/assets/social-preview.png`
+} = Astro.props;
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Agent of Empires",
+  "description": "A terminal session manager for Linux and macOS using tmux to manage and monitor AI coding agents. Features git worktrees, Docker sandboxing, and a beautiful TUI.",
+  "url": siteUrl,
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux, macOS",
+  "programmingLanguage": "Rust",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "Nate Brake",
+    "url": "https://twitter.com/natebrake"
+  },
+  "license": "https://github.com/njbrake/agent-of-empires/blob/main/LICENSE",
+  "codeRepository": "https://github.com/njbrake/agent-of-empires",
+  "keywords": ["AI coding agent", "terminal session manager", "tmux", "Claude Code", "Codex", "OpenCode", "Mistral Vibe", "Gemini CLI", "git worktrees", "Docker sandbox"]
+};
+---
+
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" style="color-scheme: dark">
+<head>
+  <script is:inline>
+    (function() {
+      var theme = localStorage.getItem('theme') || 'dark';
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <meta name="description" content={description}>
+  <meta name="keywords" content="AI coding agent, terminal session manager, tmux, Claude Code, Codex, OpenCode, Mistral Vibe, Gemini CLI, git worktrees, Docker sandbox, Rust, TUI, CLI, developer tools">
+  <meta name="author" content="Nate Brake">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href={canonicalURL}>
+
+  <!-- Open Graph -->
+  <meta property="og:title" content={ogTitle}>
+  <meta property="og:description" content={ogDescription}>
+  <meta property="og:image" content={ogImage}>
+  <meta property="og:url" content={canonicalURL}>
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Agent of Empires">
+  <meta property="og:locale" content="en_US">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@natebrake">
+  <meta name="twitter:creator" content="@natebrake">
+  <meta name="twitter:title" content={ogTitle}>
+  <meta name="twitter:description" content={ogDescription}>
+  <meta name="twitter:image" content={ogImage}>
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+  <link rel="icon" type="image/png" href="/assets/logo.png">
+
+  <!-- Structured Data -->
+  <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+  <link rel="preload" href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700,900&display=swap" as="style">
+  <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700,900&display=swap" rel="stylesheet">
+  <link rel="preload" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" as="style">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="gradient-bg min-h-screen text-gray-100 antialiased">
+  <slot />
+  <script is:inline src="/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          else
+            brew install tmux
+          fi
+      - run: cargo test
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy -- -D warnings
+
+  deny:
+    name: Supply Chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: EmbarkStudios/cargo-deny-action@175dc7fd4fb85ec8f46948fb98f44db001149081 # v2.0.16
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check CLI docs are up-to-date
+        run: |
+          cargo xtask gen-docs
+          git diff --exit-code docs/cli/reference.md \
+            || (echo "::error::CLI docs are out of date. Run 'cargo xtask gen-docs' and commit." && exit 1)
+
+  skill:
+    name: Skill Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check skill file references valid CLI commands
+        run: cargo xtask check-skill
+
+  nix:
+    name: Nix Eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+      - name: Evaluate flake outputs (all systems)
+        run: |
+          set -euo pipefail
+          nix --version
+
+          echo "=== Flake metadata ==="
+          nix flake metadata
+
+          echo ""
+          echo "=== Flake structure ==="
+          nix flake show --all-systems
+
+          SYSTEMS="x86_64-linux aarch64-linux x86_64-darwin aarch64-darwin"
+
+          echo ""
+          echo "=== Evaluating packages for all systems ==="
+          for system in $SYSTEMS; do
+            echo ""
+            echo "--- $system ---"
+            for pkg in default aoe-with-web; do
+              printf "  %s: " "$pkg"
+              if output=$(nix eval ".#packages.$system.$pkg.drvPath" --raw 2>&1); then
+                echo "✓"
+              else
+                echo "✗"
+                echo "::error::Evaluation failed for packages.$system.$pkg"
+                echo "$output"
+                exit 1
+              fi
+            done
+          done
+
+          echo ""
+          echo "=== Evaluating devShells for all systems ==="
+          for system in $SYSTEMS; do
+            printf "%s: " "$system"
+            if output=$(nix eval ".#devShells.$system.default.drvPath" --raw 2>&1); then
+              echo "✓"
+            else
+              echo "✗"
+              echo "::error::Evaluation failed for devShells.$system.default"
+              echo "$output"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=== All evaluations passed ==="
+
+  website:
+    name: Website Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '22'
+      - name: Install and build
+        working-directory: website
+        run: npm install && npm run build

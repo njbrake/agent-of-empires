@@ -1,0 +1,380 @@
+//! Preview panel component
+
+use ansi_to_tui::IntoText;
+use ratatui::prelude::*;
+use ratatui::widgets::*;
+
+use crate::session::Instance;
+use crate::tui::styles::Theme;
+
+pub struct Preview;
+
+impl Preview {
+    pub fn render_terminal_preview(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        terminal_running: bool,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
+        let info_height = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
+            4 // title + path + status + sandbox
+        } else {
+            3 // title + path + status
+        };
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(info_height), // Minimal info section
+                Constraint::Min(1),              // Output section
+            ])
+            .split(area);
+
+        // Minimal info for terminal view
+        let mut info_lines = vec![
+            Line::from(vec![
+                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
+                Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
+            ]),
+            Line::from(vec![
+                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    shorten_path(&instance.project_path),
+                    Style::default().fg(theme.text),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    if terminal_running {
+                        "Running"
+                    } else {
+                        "Not started"
+                    },
+                    Style::default().fg(if terminal_running {
+                        theme.terminal_active
+                    } else {
+                        theme.dimmed
+                    }),
+                ),
+            ]),
+        ];
+        if let Some(sandbox) = &instance.sandbox_info {
+            if sandbox.enabled {
+                info_lines.push(Line::from(vec![
+                    Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
+                    Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
+                ]));
+            }
+        }
+        let paragraph = Paragraph::new(info_lines);
+        frame.render_widget(paragraph, chunks[0]);
+
+        // Output section
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Terminal Output ")
+            .title_style(Style::default().fg(theme.dimmed));
+
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+
+        if !terminal_running {
+            let hint = Paragraph::new("Press Enter to start terminal")
+                .style(Style::default().fg(theme.dimmed))
+                .alignment(Alignment::Center);
+            frame.render_widget(hint, inner);
+        } else if cached_output.is_empty() {
+            let hint = Paragraph::new("No output available")
+                .style(Style::default().fg(theme.dimmed))
+                .alignment(Alignment::Center);
+            frame.render_widget(hint, inner);
+        } else {
+            let output_text = parse_output_text(cached_output);
+            let line_count = output_text.lines.len();
+            let visible_height = inner.height as usize;
+
+            let scroll_offset = if line_count > visible_height {
+                (line_count - visible_height) as u16
+            } else {
+                0
+            };
+
+            let paragraph = Paragraph::new(output_text)
+                .style(Style::default().fg(theme.text))
+                .scroll((scroll_offset, 0));
+
+            frame.render_widget(paragraph, inner);
+        }
+    }
+
+    pub fn render_with_cache(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
+        // 3 base lines (profile+tool / path / status) + optional sandbox + optional worktree block
+        let base = 3;
+        let sandbox_lines = if instance.is_sandboxed() { 1 } else { 0 };
+        let info_height = if instance.worktree_info.is_some() {
+            base + sandbox_lines + 4 // blank + header + branch + main
+        } else {
+            base + sandbox_lines
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(info_height), // Info section
+                Constraint::Min(1),              // Output section
+            ])
+            .split(area);
+
+        Self::render_info(frame, chunks[0], instance, theme);
+        Self::render_output_cached(frame, chunks[1], instance, cached_output, theme);
+    }
+
+    fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
+        let mut info_lines = Vec::new();
+
+        // Profile and Tool on the same row to save vertical space
+        let mut profile_tool_spans = Vec::new();
+        if !instance.source_profile.is_empty() {
+            profile_tool_spans.push(Span::styled("Profile: ", Style::default().fg(theme.dimmed)));
+            profile_tool_spans.push(Span::styled(
+                &instance.source_profile,
+                Style::default().fg(theme.accent),
+            ));
+            profile_tool_spans.push(Span::raw("  "));
+        }
+        profile_tool_spans.push(Span::styled("Tool: ", Style::default().fg(theme.dimmed)));
+        profile_tool_spans.push(Span::styled(
+            &instance.tool,
+            Style::default().fg(theme.accent),
+        ));
+        info_lines.push(Line::from(profile_tool_spans));
+
+        info_lines.extend([
+            Line::from(vec![
+                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    shorten_path(&instance.project_path),
+                    Style::default().fg(theme.text),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    format!("{:?}", instance.status),
+                    Style::default().fg(match instance.status {
+                        crate::session::Status::Running => theme.running,
+                        crate::session::Status::Waiting => theme.waiting,
+                        crate::session::Status::Idle => theme.idle,
+                        crate::session::Status::Unknown => theme.waiting,
+                        crate::session::Status::Stopped => theme.dimmed,
+                        crate::session::Status::Error => theme.error,
+                        crate::session::Status::Starting => theme.dimmed,
+                        crate::session::Status::Deleting => theme.waiting,
+                        crate::session::Status::Creating => theme.accent,
+                    }),
+                ),
+            ]),
+        ]);
+
+        // Add sandbox information if present
+        if let Some(sandbox) = &instance.sandbox_info {
+            if sandbox.enabled {
+                info_lines.push(Line::from(vec![
+                    Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
+                    Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
+                ]));
+            }
+        }
+
+        // Add worktree information if present
+        if let Some(wt_info) = &instance.worktree_info {
+            info_lines.push(Line::from(""));
+            info_lines.push(Line::from(vec![
+                Span::styled("─", Style::default().fg(theme.border)),
+                Span::styled(" Worktree ", Style::default().fg(theme.dimmed)),
+                Span::styled("─", Style::default().fg(theme.border)),
+            ]));
+            info_lines.push(Line::from(vec![
+                Span::styled("Branch:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(&wt_info.branch, Style::default().fg(theme.branch)),
+            ]));
+            info_lines.push(Line::from(vec![
+                Span::styled("Main:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    shorten_path(&wt_info.main_repo_path),
+                    Style::default().fg(theme.text),
+                ),
+            ]));
+        }
+
+        let paragraph = Paragraph::new(info_lines);
+        frame.render_widget(paragraph, area);
+    }
+
+    fn render_output_cached(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        cached_output: &str,
+        theme: &Theme,
+    ) {
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Output ")
+            .title_style(Style::default().fg(theme.dimmed));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if let Some(error) = &instance.last_error {
+            let error_lines: Vec<Line> = vec![
+                Line::from(Span::styled(
+                    "Error:",
+                    Style::default().fg(theme.error).bold(),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    error.as_str(),
+                    Style::default().fg(theme.error),
+                )),
+            ];
+            let paragraph = Paragraph::new(error_lines).wrap(Wrap { trim: false });
+            frame.render_widget(paragraph, inner);
+            return;
+        }
+
+        if cached_output.is_empty() {
+            let hint = Paragraph::new("No output available")
+                .style(Style::default().fg(theme.dimmed))
+                .alignment(Alignment::Center);
+            frame.render_widget(hint, inner);
+        } else {
+            let output_text = parse_output_text(cached_output);
+            let line_count = output_text.lines.len();
+            let visible_height = inner.height as usize;
+
+            // Scroll to show the bottom of the content
+            let scroll_offset = if line_count > visible_height {
+                (line_count - visible_height) as u16
+            } else {
+                0
+            };
+
+            let paragraph = Paragraph::new(output_text)
+                .style(Style::default().fg(theme.text))
+                .scroll((scroll_offset, 0));
+
+            frame.render_widget(paragraph, inner);
+        }
+    }
+}
+
+fn parse_output_text(content: &str) -> Text<'static> {
+    content
+        .into_text()
+        .unwrap_or_else(|_| Text::from(content.to_string()))
+}
+
+fn shorten_path(path: &str) -> String {
+    let path_buf = std::path::PathBuf::from(path);
+
+    if let Some(home) = dirs::home_dir() {
+        if let (Ok(canonical_path), Ok(canonical_home)) =
+            (path_buf.canonicalize(), home.canonicalize())
+        {
+            let path_str = canonical_path.to_string_lossy();
+            if let Some(home_str) = canonical_home.to_str() {
+                if let Some(stripped) = path_str.strip_prefix(home_str) {
+                    return format!("~{}", stripped);
+                }
+            }
+            return path_str.into_owned();
+        }
+
+        if let Some(home_str) = home.to_str() {
+            if let Some(stripped) = path.strip_prefix(home_str) {
+                return format!("~{}", stripped);
+            }
+        }
+    }
+    path.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shorten_path_with_home() {
+        if let Some(home) = dirs::home_dir() {
+            if let Some(home_str) = home.to_str() {
+                let path = format!("{}/projects/myapp", home_str);
+                let shortened = shorten_path(&path);
+                assert_eq!(shortened, "~/projects/myapp");
+            }
+        }
+    }
+
+    #[test]
+    fn test_shorten_path_without_home_prefix() {
+        let path = "/tmp/some/path";
+        let shortened = shorten_path(path);
+        assert_eq!(shortened, "/tmp/some/path");
+    }
+
+    #[test]
+    fn test_shorten_path_exact_home() {
+        if let Some(home) = dirs::home_dir() {
+            if let Some(home_str) = home.to_str() {
+                let shortened = shorten_path(home_str);
+                assert_eq!(shortened, "~");
+            }
+        }
+    }
+
+    #[test]
+    fn test_shorten_path_relative() {
+        let path = "relative/path";
+        let shortened = shorten_path(path);
+        assert_eq!(shortened, "relative/path");
+    }
+
+    #[test]
+    fn test_shorten_path_empty() {
+        let path = "";
+        let shortened = shorten_path(path);
+        assert_eq!(shortened, "");
+    }
+
+    #[test]
+    fn test_shorten_path_similar_prefix_not_home() {
+        if let Some(home) = dirs::home_dir() {
+            if let Some(home_str) = home.to_str() {
+                let path = format!("{}extra/not/home", home_str);
+                let shortened = shorten_path(&path);
+                assert_eq!(shortened, format!("~extra/not/home"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_shorten_path_preserves_trailing_slash() {
+        if let Some(home) = dirs::home_dir() {
+            if let Some(home_str) = home.to_str() {
+                let path = format!("{}/projects/", home_str);
+                let shortened = shorten_path(&path);
+                assert_eq!(shortened, "~/projects/");
+            }
+        }
+    }
+}

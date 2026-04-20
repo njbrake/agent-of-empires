@@ -1,0 +1,228 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { browseFilesystem, getHomePath } from "../lib/api";
+import type { DirEntry } from "../lib/types";
+
+interface Props {
+  initialPath?: string;
+  onSelect: (path: string) => void;
+}
+
+export function DirectoryBrowser({ initialPath, onSelect }: Props) {
+  const [currentPath, setCurrentPath] = useState(initialPath || "");
+  const [entries, setEntries] = useState<DirEntry[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const initialized = useRef(false);
+
+  const navigate = useCallback(async (path: string) => {
+    setLoading(true);
+    setError(null);
+    setFilter("");
+    const resp = await browseFilesystem(path, 100);
+    if (!resp.ok) {
+      setError("Can't access this folder. It may not exist or is outside the home directory.");
+      setLoading(false);
+      return;
+    }
+    // Success: update state even if empty (empty dir is valid)
+    setEntries(resp.entries);
+    setHasMore(resp.has_more);
+    setCurrentPath(path);
+    setLoading(false);
+  }, []);
+
+  // Discover and navigate to home dir on mount
+  useEffect(() => {
+    if (initialized.current) return;
+    initialized.current = true;
+
+    if (initialPath) {
+      navigate(initialPath);
+      return;
+    }
+
+    // Ask the server for the home directory path
+    getHomePath().then((home) => {
+      navigate(home || "/");
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pathSegments = currentPath.split("/").filter(Boolean);
+
+  const goUp = () => {
+    const parent = currentPath.split("/").slice(0, -1).join("/") || "/";
+    navigate(parent);
+  };
+
+  const goToSegment = (index: number) => {
+    const target = "/" + pathSegments.slice(0, index + 1).join("/");
+    navigate(target);
+  };
+
+  const handleEntryClick = (entry: DirEntry) => {
+    if (entry.is_git_repo) {
+      onSelect(entry.path);
+    } else {
+      navigate(entry.path);
+    }
+  };
+
+  const filtered = filter
+    ? entries.filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()))
+    : entries;
+
+  // Breadcrumb truncation for mobile: show first + "..." + last 2
+  const renderBreadcrumbs = () => {
+    if (pathSegments.length <= 3) {
+      return pathSegments.map((seg, i) => (
+        <span key={i} className="flex items-center">
+          <span className="text-text-dim mx-1">/</span>
+          <button
+            onClick={() => goToSegment(i)}
+            className="text-text-secondary hover:text-text-primary cursor-pointer text-sm truncate max-w-[120px]"
+          >
+            {seg}
+          </button>
+        </span>
+      ));
+    }
+    return (
+      <>
+        <span className="flex items-center">
+          <span className="text-text-dim mx-1">/</span>
+          <button onClick={() => goToSegment(0)} className="text-text-secondary hover:text-text-primary cursor-pointer text-sm">{pathSegments[0]}</button>
+        </span>
+        <span className="text-text-dim mx-1">/...</span>
+        {pathSegments.slice(-2).map((seg, i) => (
+          <span key={i} className="flex items-center">
+            <span className="text-text-dim mx-1">/</span>
+            <button
+              onClick={() => goToSegment(pathSegments.length - 2 + i)}
+              className="text-text-secondary hover:text-text-primary cursor-pointer text-sm truncate max-w-[120px]"
+            >
+              {seg}
+            </button>
+          </span>
+        ))}
+      </>
+    );
+  };
+
+  return (
+    <div>
+      {/* Breadcrumbs */}
+      <nav aria-label="Directory path" className="flex items-center flex-wrap gap-0.5 mb-3 min-h-[28px]">
+        <button
+          onClick={() => navigate(currentPath.split("/").slice(0, 2).join("/") || "/")}
+          className="text-text-dim hover:text-text-secondary cursor-pointer text-sm"
+          title="Go to home"
+        >
+          ~
+        </button>
+        {renderBreadcrumbs()}
+      </nav>
+
+      {/* Search/filter */}
+      <div className="mb-3">
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Type to filter..."
+          className="w-full bg-surface-900 border border-surface-700 rounded-md px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+        />
+      </div>
+
+      {/* Directory listing */}
+      <div className="border border-surface-700 rounded-lg overflow-hidden" role="listbox" aria-label="Directories">
+        {loading ? (
+          // Skeleton loading rows
+          <div className="animate-pulse">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="flex items-center px-3 h-[44px] border-b border-surface-800 last:border-0">
+                <div className="w-5 h-5 bg-surface-700 rounded mr-3" />
+                <div className="h-4 bg-surface-700 rounded w-1/2" />
+              </div>
+            ))}
+          </div>
+        ) : error ? (
+          <div className="px-4 py-6 text-center">
+            <p className="text-sm text-status-error mb-3">{error}</p>
+            <button
+              onClick={() => navigate(currentPath || "/")}
+              className="text-sm text-brand-600 hover:text-brand-500 cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Parent directory link */}
+            {pathSegments.length > 1 && (
+              <button
+                onClick={goUp}
+                className="flex items-center w-full px-3 h-[44px] text-left hover:bg-surface-700/50 cursor-pointer transition-colors border-b border-surface-800 text-text-dim"
+                role="option"
+              >
+                <span className="w-5 mr-3 text-center">..</span>
+                <span className="text-sm">(parent directory)</span>
+              </button>
+            )}
+
+            {/* Empty state */}
+            {filtered.length === 0 && (
+              <div className="px-4 py-6 text-center">
+                <p className="text-sm text-text-dim">
+                  {filter ? "No folders match your filter" : "No visible subfolders here"}
+                </p>
+                {!filter && (
+                  <p className="text-xs text-text-dim mt-1">
+                    Hidden folders (starting with .) are not shown
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Directory entries */}
+            {filtered.map((entry) => (
+              <button
+                key={entry.path}
+                onClick={() => handleEntryClick(entry)}
+                className="flex items-center w-full px-3 h-[44px] text-left hover:bg-surface-700/50 cursor-pointer transition-colors border-b border-surface-800 last:border-0"
+                role="option"
+              >
+                <span className="w-5 mr-3 text-center text-text-dim">
+                  {entry.is_git_repo ? (
+                    <svg className="w-4 h-4 inline text-accent-600" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M15.698 7.287 8.712.302a1.03 1.03 0 0 0-1.457 0l-1.45 1.45 1.84 1.84a1.223 1.223 0 0 1 1.55 1.56l1.773 1.774a1.224 1.224 0 1 1-.733.693L8.535 5.918v4.27a1.229 1.229 0 1 1-1.008-.036V5.847a1.224 1.224 0 0 1-.664-1.608L5.045 2.422l-4.743 4.743a1.03 1.03 0 0 0 0 1.457l6.986 6.986a1.03 1.03 0 0 0 1.457 0l6.953-6.953a1.031 1.031 0 0 0 0-1.457" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4 inline text-text-dim" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M2 6a2 2 0 0 1 2-2h5l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6z" />
+                    </svg>
+                  )}
+                </span>
+                <span className={`text-sm font-mono truncate ${entry.is_git_repo ? "text-text-primary font-medium" : "text-text-secondary"}`}>
+                  {entry.name}
+                </span>
+                {entry.is_git_repo && (
+                  <span className="ml-auto text-[10px] font-mono uppercase tracking-wider text-accent-600 bg-accent-600/10 px-1.5 py-0.5 rounded">
+                    repo
+                  </span>
+                )}
+              </button>
+            ))}
+
+            {hasMore && (
+              <div className="px-3 py-2 text-center text-xs text-text-dim border-t border-surface-800">
+                Showing first 100 entries. Use the filter to narrow results.
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

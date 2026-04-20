@@ -1,0 +1,53 @@
+# aoe-dev-sandbox: Extended sandbox with development tools
+# Includes: Rust, uv (Python), nvm + Node.js, pnpm, bun, gh (GitHub CLI)
+# Note: Claude Code, OpenCode, and Codex CLI are inherited from the base image
+
+ARG BASE_IMAGE=ghcr.io/njbrake/aoe-sandbox:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Continue as root (base image sets IS_SANDBOX=1)
+WORKDIR /root
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+ENV NVM_DIR="/root/.nvm"
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash \
+    && . "$NVM_DIR/nvm.sh" \
+    && nvm install --lts \
+    && nvm alias default node \
+    && npm install -g pnpm \
+    && ln -s "$(which node)" /root/.local/bin/node \
+    && ln -s "$(which npm)" /root/.local/bin/npm \
+    && ln -s "$(which npx)" /root/.local/bin/npx \
+    && ln -s "$(which pnpm)" /root/.local/bin/pnpm
+
+# Install Bun (requires unzip)
+RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Add dev tool paths to profile.d so they're available in all shells (login and non-login)
+RUN echo 'export PATH="/root/.bun/bin:/root/.cargo/bin:/root/.local/bin:$PATH"' > /etc/profile.d/dev-tools.sh \
+    && echo 'export NVM_DIR="/root/.nvm"' >> /etc/profile.d/dev-tools.sh \
+    && echo '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' >> /etc/profile.d/dev-tools.sh \
+    && chmod +x /etc/profile.d/dev-tools.sh
+
+# Also set BASH_ENV so non-interactive bash shells source the paths
+ENV BASH_ENV=/etc/profile.d/dev-tools.sh
+
+WORKDIR /workspace

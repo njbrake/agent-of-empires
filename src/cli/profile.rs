@@ -1,0 +1,143 @@
+//! `agent-of-empires profile` subcommands implementation
+
+use anyhow::{bail, Result};
+use clap::Subcommand;
+use std::io::{self, Write};
+
+use crate::session;
+
+#[derive(Subcommand)]
+pub enum ProfileCommands {
+    /// List all profiles
+    #[command(alias = "ls")]
+    List,
+
+    /// Create a new profile
+    #[command(alias = "new")]
+    Create {
+        /// Profile name
+        name: String,
+    },
+
+    /// Delete a profile
+    #[command(alias = "rm")]
+    Delete {
+        /// Profile name
+        name: String,
+    },
+
+    /// Rename a profile
+    #[command(alias = "mv")]
+    Rename {
+        /// Current profile name
+        old_name: String,
+        /// New profile name
+        new_name: String,
+    },
+
+    /// Show or set default profile
+    Default {
+        /// Profile name (optional, shows current if not provided)
+        name: Option<String>,
+    },
+}
+
+pub async fn run(command: Option<ProfileCommands>) -> Result<()> {
+    match command {
+        Some(ProfileCommands::List) | None => list_profiles().await,
+        Some(ProfileCommands::Create { name }) => create_profile(&name).await,
+        Some(ProfileCommands::Delete { name }) => delete_profile(&name).await,
+        Some(ProfileCommands::Rename { old_name, new_name }) => {
+            rename_profile(&old_name, &new_name).await
+        }
+        Some(ProfileCommands::Default { name }) => {
+            if let Some(n) = name {
+                set_default_profile(&n).await
+            } else {
+                show_default_profile().await
+            }
+        }
+    }
+}
+
+async fn list_profiles() -> Result<()> {
+    let profiles = session::list_profiles()?;
+    let config = session::load_config()?;
+    let default_profile = config
+        .as_ref()
+        .map(|c| c.default_profile.as_str())
+        .unwrap_or(session::DEFAULT_PROFILE);
+
+    if profiles.is_empty() {
+        println!("No profiles found.");
+        println!("Run 'agent-of-empires' to create the default profile automatically.");
+        return Ok(());
+    }
+
+    println!("Profiles:");
+    for p in &profiles {
+        if p == default_profile {
+            println!("  * {} (default)", p);
+        } else {
+            println!("    {}", p);
+        }
+    }
+    println!("\nTotal: {} profiles", profiles.len());
+
+    Ok(())
+}
+
+async fn create_profile(name: &str) -> Result<()> {
+    session::create_profile(name)?;
+    println!("✓ Created profile: {}", name);
+    println!("  Use with: agent-of-empires -p {}", name);
+    Ok(())
+}
+
+async fn rename_profile(old_name: &str, new_name: &str) -> Result<()> {
+    session::rename_profile(old_name, new_name)?;
+    println!("✓ Renamed profile: {} -> {}", old_name, new_name);
+    Ok(())
+}
+
+async fn delete_profile(name: &str) -> Result<()> {
+    print!(
+        "Are you sure you want to delete profile '{}'? This will remove all sessions in this profile. [y/N] ",
+        name
+    );
+    io::stdout().flush()?;
+
+    let mut response = String::new();
+    io::stdin().read_line(&mut response)?;
+
+    if response.trim().to_lowercase() != "y" {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    session::delete_profile(name)?;
+    println!("✓ Deleted profile: {}", name);
+    Ok(())
+}
+
+async fn show_default_profile() -> Result<()> {
+    let config = session::load_config()?;
+    let default_profile = config
+        .as_ref()
+        .map(|c| c.default_profile.as_str())
+        .unwrap_or(session::DEFAULT_PROFILE);
+    println!("Default profile: {}", default_profile);
+    Ok(())
+}
+
+async fn set_default_profile(name: &str) -> Result<()> {
+    // Verify profile exists
+    let profiles = session::list_profiles()?;
+    if !profiles.contains(&name.to_string()) {
+        bail!("Profile '{}' does not exist", name);
+    }
+
+    session::set_default_profile(name)?;
+    println!("✓ Default profile set to: {}", name);
+    Ok(())
+}

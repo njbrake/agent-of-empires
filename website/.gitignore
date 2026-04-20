@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.astro/
+
+# Auto-generated during build
+public/assets/*
+!public/assets/.gitkeep
+!public/assets/social-banner.svg
+!public/assets/social-preview.png
+sitemap.xml

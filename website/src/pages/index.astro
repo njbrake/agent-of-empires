@@ -1,0 +1,171 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import InstallBlock from '../components/InstallBlock.astro';
+import FeatureCard from '../components/FeatureCard.astro';
+
+const compactFeatures = [
+  {
+    icon: 'dashboard',
+    title: 'TUI Dashboard',
+    description: 'Visual interface to manage all your AI coding sessions. See status at a glance, navigate with keyboard shortcuts.',
+    tint: 'brand' as const,
+  },
+  {
+    icon: 'worktrees',
+    title: 'Git Worktrees',
+    description: 'Run parallel agents on different branches of the same repo. Automatic worktree creation and cleanup.',
+    tint: 'accent' as const,
+  },
+  {
+    icon: 'docker',
+    title: 'Docker Sandbox',
+    description: 'Run agents in isolated containers for safety. Configurable volume mounts, persistent auth, and automatic lifecycle management.',
+    tint: 'green' as const,
+  },
+  {
+    icon: 'status',
+    title: 'Status Detection',
+    description: 'Know when agents are working, waiting for input, or idle without switching sessions.',
+    tint: 'brand' as const,
+  },
+  {
+    icon: 'tmux',
+    title: 'tmux Persistence',
+    description: 'Sessions persist in tmux. Close aoe anytime and your agents keep running.',
+    tint: 'green' as const,
+  },
+];
+---
+
+<Base
+  title="Agent of Empires - Terminal Session Manager for AI Coding Agents"
+  description="A terminal session manager for Linux and macOS using tmux to manage and monitor AI coding agents. Git worktrees, Docker sandboxing, and a beautiful TUI. Written in Rust."
+>
+  <Nav />
+
+  <main>
+  <!-- Hero Section -->
+  <section class="relative pt-32 pb-8 px-6 hero-glow hero-gradient-animated">
+    <div class="max-w-6xl mx-auto text-left">
+      <div class="mb-8">
+        <img src="/assets/logo.svg" alt="Agent of Empires" class="w-20 h-20 mb-8 drop-shadow-2xl" width="80" height="80" fetchpriority="high">
+        <h1 class="text-5xl md:text-6xl lg:text-7xl font-semibold mb-6 tracking-hero font-display">
+          <span class="text-gradient">Agent of Empires</span>
+        </h1>
+        <p class="text-xl md:text-2xl text-gray-100 max-w-2xl leading-relaxed">
+          Terminal session manager for AI coding agents
+        </p>
+      </div>
+
+      <p class="text-lg text-gray-100 max-w-3xl mb-12 leading-relaxed">
+        Manage multiple <span class="text-white font-medium">Claude Code</span>, <span class="text-white font-medium">OpenCode</span>, and many more AI coding agent sessions with a beautiful TUI.
+        <span class="text-gray-400">Git worktrees for parallel development. Docker sandboxing for safety. Built on tmux.</span>
+      </p>
+
+      <InstallBlock />
+
+      <div class="flex flex-col sm:flex-row gap-4 justify-start mb-16">
+        <a href="/docs/quick-start/" class="btn-primary text-base px-8 py-3.5 inline-flex items-center justify-center">
+          Get Started
+        </a>
+        <a href="https://github.com/njbrake/agent-of-empires" target="_blank" rel="noopener" class="btn-secondary text-base px-8 py-3.5 group inline-flex items-center justify-center gap-2" title="Star on GitHub">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          <svg class="w-4 h-4 text-brand-400 group-hover:scale-110 transition-transform" fill="currentColor" viewBox="0 0 24 24"><path d="M12 .587l3.668 7.568 8.332 1.151-6.064 5.828 1.48 8.279-7.416-3.967-7.417 3.967 1.481-8.279-6.064-5.828 8.332-1.151z"/></svg>
+          <span id="star-count">...</span> Stars
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Demo Section -->
+  <section class="py-8 px-6 animate-on-scroll">
+    <div class="max-w-[90%] md:max-w-4xl mx-auto">
+      <div class="terminal-window rounded-2xl overflow-hidden">
+        <div class="flex items-center gap-2 px-5 py-4 bg-surface-850 border-b border-surface-700/50">
+          <div class="w-3 h-3 rounded-full bg-red-500"></div>
+          <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+          <div class="w-3 h-3 rounded-full bg-green-500"></div>
+          <span class="ml-3 text-sm text-gray-400 font-mono">aoe</span>
+        </div>
+        <img src="/assets/demo.gif" alt="Agent of Empires terminal user interface showing session management with Claude Code, git worktree creation, and Docker container status indicators" class="w-full" width="1200" height="750" loading="lazy">
+      </div>
+      <p class="text-center text-gray-400 text-sm mt-4">
+        <a href="https://www.youtube.com/watch?v=Kk8dX_F-P4E" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline">Watch the getting started video</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- Feature Grid -->
+  <section class="py-12 px-6">
+    <div class="max-w-6xl mx-auto">
+      <div class="mb-8">
+        <span class="font-mono text-xs uppercase tracking-widest text-brand-600">Features</span>
+      </div>
+      <div class="grid lg:grid-cols-[1.4fr_1fr] gap-6">
+        <!-- Featured card spanning 2 rows -->
+        <div class="lg:row-span-2 delay-100">
+          <FeatureCard
+            icon={compactFeatures[0].icon}
+            title={compactFeatures[0].title}
+            description={compactFeatures[0].description}
+            tint={compactFeatures[0].tint}
+            featured={true}
+          />
+        </div>
+        <!-- Supporting cards -->
+        {compactFeatures.slice(1).map((feature, i) => (
+          <div class={`delay-${(i + 2) * 100}`}>
+            <FeatureCard
+              icon={feature.icon}
+              title={feature.title}
+              description={feature.description}
+              tint={feature.tint}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <!-- YouTube Section -->
+  <section class="py-12 px-6">
+    <div class="max-w-6xl mx-auto">
+      <div class="mb-8">
+        <span class="font-mono text-xs uppercase tracking-widest text-brand-600">Learn</span>
+        <h2 class="text-3xl md:text-4xl font-semibold mt-3 mb-4 font-display">Tutorials & help videos</h2>
+        <p class="text-gray-100 text-lg leading-relaxed mb-8 max-w-xl">Watch walkthroughs, setup guides, and tips for getting the most out of aoe on our YouTube channel.</p>
+      </div>
+      <div class="max-w-3xl rounded-2xl overflow-hidden bg-surface-800 border border-surface-700/50">
+        <iframe
+          width="100%"
+          style="aspect-ratio:16/9;display:block"
+          src="https://www.youtube-nocookie.com/embed/videoseries?list=UUjGgsnOCZXvvk6UwUQAuwPg"
+          title="Agent of Empires YouTube Channel"
+          frameborder="0"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          allowfullscreen
+          loading="lazy"
+        ></iframe>
+        <div class="flex items-center gap-4 p-4">
+          <a href="https://www.youtube.com/@agent-of-empires" target="_blank" rel="noopener" class="flex items-center gap-3 flex-1 min-w-0 group">
+            <img src="/assets/logo-youtube.png" alt="Agent of Empires" class="w-10 h-10 rounded-full shrink-0" width="40" height="40">
+            <div class="min-w-0">
+              <span class="text-white font-semibold group-hover:text-brand-400 transition-colors">Agent of Empires</span>
+              <p class="text-gray-500 text-sm">Tutorials, walkthroughs, and tips</p>
+            </div>
+          </a>
+          <a href="https://www.youtube.com/@agent-of-empires?sub_confirmation=1" target="_blank" rel="noopener" class="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-600 hover:bg-red-500 text-white text-sm font-semibold transition-colors">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+            Subscribe
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  </main>
+
+  <Footer />
+</Base>
