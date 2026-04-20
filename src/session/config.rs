@@ -179,6 +179,15 @@ pub struct SessionConfig {
     /// Maps a custom (or built-in) agent to another agent's status detection heuristics.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_detect_as: HashMap<String, String>,
+
+    /// Require SHIFT on letter-based TUI hotkeys (e.g. SHIFT+N for New, SHIFT+D for Delete).
+    /// Guards against accidental destructive actions from dictation software, a forgotten
+    /// focus, or stray keystrokes. Navigation keys (h/j/k/l, arrows, Enter, Esc), punctuation
+    /// (/, ?), and numeric modifiers stay unshifted. Previously-uppercase bindings
+    /// (P, R, T, N, D, G) relocate to Ctrl+letter so nothing is lost.
+    /// Off by default — existing users keep the legacy single-letter UX.
+    #[serde(default)]
+    pub strict_hotkeys: bool,
 }
 
 impl SessionConfig {
