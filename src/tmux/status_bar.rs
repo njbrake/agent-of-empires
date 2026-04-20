@@ -105,8 +105,10 @@ pub fn apply_all_tmux_options(
     branch: Option<&str>,
     sandbox: Option<&SandboxDisplay>,
 ) {
-    use crate::session::config::{should_apply_tmux_mouse, should_apply_tmux_status_bar};
-    use crate::tui::styles::load_theme;
+    use crate::session::config::{
+        should_apply_tmux_mouse, should_apply_tmux_status_bar, ColorMode,
+    };
+    use crate::tui::styles::load_theme_with_mode;
 
     if should_apply_tmux_status_bar() {
         let config = crate::session::config::Config::load().unwrap_or_default();
@@ -115,7 +117,8 @@ pub fn apply_all_tmux_options(
         } else {
             &config.theme.name
         };
-        let theme = load_theme(theme_name);
+        let palette_mode = matches!(config.theme.color_mode, ColorMode::Palette);
+        let theme = load_theme_with_mode(theme_name, palette_mode);
 
         if let Err(e) = apply_status_bar(session_name, title, branch, sandbox, &theme) {
             tracing::debug!("Failed to apply tmux status bar: {}", e);

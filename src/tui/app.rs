@@ -64,7 +64,11 @@ impl App {
         } else {
             &config.theme.name
         };
-        let theme = load_theme(theme_name);
+        let palette_mode = matches!(
+            config.theme.color_mode,
+            crate::session::config::ColorMode::Palette
+        );
+        let theme = crate::tui::styles::load_theme_with_mode(theme_name, palette_mode);
         let current_version = env!("CARGO_PKG_VERSION").to_string();
 
         if !config.app_state.has_seen_welcome {
