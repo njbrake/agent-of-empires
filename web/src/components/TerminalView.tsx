@@ -20,9 +20,8 @@ export function TerminalView({ session }: Props) {
   const [ensureError, setEnsureError] = useState<string | null>(null);
   const { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef } =
     useTerminal(ensureState === "ready" ? session.id : null);
-  const { isMobile, keyboardHeight } = useMobileKeyboard();
+  const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
-  const [keyboardOpen, setKeyboardOpen] = useState(true);
 
   ctrlActiveRef.current = ctrlActive;
   clearCtrlRef.current = () => setCtrlActive(false);
@@ -99,30 +98,18 @@ export function TerminalView({ session }: Props) {
     return () => timers.forEach(clearTimeout);
   }, [isMobile, state.connected, termRef]);
 
-  // Blur wterm's textarea when keyboardOpen flips to false.
-  useEffect(() => {
-    if (!isMobile || keyboardOpen) return;
+  // Toggle keyboard: focus/blur synchronously in the click handler so iOS
+  // honors the user-gesture context.
+  const toggleKeyboard = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
     const ta = term.element.querySelector("textarea");
-    ta?.blur();
-  }, [isMobile, keyboardOpen, termRef]);
-
-  // Toggle keyboard: focus synchronously in the click handler so iOS
-  // honors the user-gesture context. Blur can go through state + effect.
-  const toggleKeyboard = useCallback(() => {
-    setKeyboardOpen((prev) => {
-      if (!prev) {
-        // Opening: focus synchronously within the click handler.
-        const term = termRef.current;
-        if (term) {
-          const ta = term.element.querySelector("textarea");
-          if (ta instanceof HTMLElement) ta.focus();
-        }
-      }
-      return !prev;
-    });
-  }, [termRef]);
+    if (keyboardOpen) {
+      ta?.blur();
+    } else if (ta instanceof HTMLElement) {
+      ta.focus();
+    }
+  }, [termRef, keyboardOpen]);
 
   // Dismiss scroll hint on first touch or timeout.
   useEffect(() => {

@@ -45,6 +45,9 @@ pub struct Config {
 
     #[serde(default)]
     pub app_state: AppStateConfig,
+
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 /// Session list sort order
@@ -255,6 +258,44 @@ impl Default for DiffConfig {
 
 fn default_context_lines() -> usize {
     3
+}
+
+/// Web dashboard runtime configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Operator kill switch for browser push notifications. When false,
+    /// `/api/push/*` returns 404 and the status-change consumer drops
+    /// events without sending. Existing subscriptions persist across
+    /// flips, so toggling back to true resumes delivery without requiring
+    /// users to re-opt-in.
+    #[serde(default = "default_true")]
+    pub notifications_enabled: bool,
+
+    /// Server-wide default: fire a push on Running to Waiting transitions.
+    /// Sessions can override per-session via `Instance.notify_on_waiting`.
+    #[serde(default = "default_true")]
+    pub notify_on_waiting: bool,
+
+    /// Server-wide default: fire a push on Running to Idle transitions.
+    /// Off by default because Idle fires on every session completion and
+    /// gets spammy quickly. Sessions can opt in via `Instance.notify_on_idle`.
+    #[serde(default)]
+    pub notify_on_idle: bool,
+
+    /// Server-wide default: fire a push on Running to Error transitions.
+    #[serde(default = "default_true")]
+    pub notify_on_error: bool,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            notifications_enabled: true,
+            notify_on_waiting: true,
+            notify_on_idle: false,
+            notify_on_error: true,
+        }
+    }
 }
 
 fn default_profile() -> String {

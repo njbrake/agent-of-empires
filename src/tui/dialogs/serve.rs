@@ -594,6 +594,17 @@ impl ServeDialog {
 fn spawn_daemon(mode: ServeMode, passphrase: Option<&str>) -> Result<(), String> {
     use std::process::Command;
 
+    // Guard: refuse to spawn if a daemon is already running. The dialog
+    // constructor checks daemon_pid() and skips to Active, but there is
+    // a window between that check and reaching here (user navigating
+    // ModePicker). A spawn here would overwrite the PID file and orphan
+    // the existing daemon.
+    if crate::cli::serve::daemon_pid().is_some() {
+        return Err(
+            "A daemon is already running. Close this dialog and reopen to see it.".to_string(),
+        );
+    }
+
     let exe =
         std::env::current_exe().map_err(|e| format!("Could not resolve aoe binary path: {}", e))?;
 

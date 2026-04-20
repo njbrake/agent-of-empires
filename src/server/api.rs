@@ -58,6 +58,12 @@ pub struct SessionResponse {
     pub profile: String,
     pub cleanup_defaults: CleanupDefaults,
     pub remote_owner: Option<String>,
+    /// Per-session push-notification overrides. None means the session
+    /// inherits the server-wide default (`web.notify_on_*`) for that
+    /// event type; Some(true)/Some(false) is an explicit toggle.
+    pub notify_on_waiting: Option<bool>,
+    pub notify_on_idle: Option<bool>,
+    pub notify_on_error: Option<bool>,
 }
 
 #[derive(Serialize, Clone)]
@@ -98,6 +104,9 @@ impl From<&Instance> for SessionResponse {
                 delete_sandbox: true,
             },
             remote_owner: None,
+            notify_on_waiting: inst.notify_on_waiting,
+            notify_on_idle: inst.notify_on_idle,
+            notify_on_error: inst.notify_on_error,
         }
     }
 }
@@ -106,13 +115,13 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
     let instances = state.instances.read().await;
     let mut sessions: Vec<SessionResponse> = instances.iter().map(SessionResponse::from).collect();
 
-    // Resolve per-profile cleanup defaults with a 30s TTL cache on AppState
+    // Resolve per-profile cleanup defaults with a TTL cache on AppState
     let cache = {
         let guard = state.cleanup_defaults_cache.read().await;
-        if guard.0.elapsed() < std::time::Duration::from_secs(30) {
-            Some(guard.1.clone())
-        } else {
+        if guard.stale() {
             None
+        } else {
+            Some(guard.entries.clone())
         }
     };
 
@@ -136,7 +145,10 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
                     })
             });
         }
-        *state.cleanup_defaults_cache.write().await = (std::time::Instant::now(), fresh.clone());
+        *state.cleanup_defaults_cache.write().await = super::CleanupDefaultsCache {
+            refreshed_at: std::time::Instant::now(),
+            entries: fresh.clone(),
+        };
         fresh
     };
 
@@ -246,6 +258,93 @@ pub async fn rename_session(
             .collect();
         if let Err(e) = storage.save(&profile_instances) {
             tracing::error!("Failed to save after rename: {e}");
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!(response)))
+}
+
+// --- Update session notification preferences ---
+
+/// Body for `PATCH /api/sessions/:id/notifications`. Each field is an
+/// outer Option so absence means "leave this value alone"; an inner
+/// Option where `Some(null)` is a valid JSON value means "clear this
+/// override." We represent that as an untagged enum below so the
+/// caller can send `{"notify_on_idle": true}`, `{"notify_on_idle": false}`,
+/// or `{"notify_on_idle": null}` and each means what you'd expect.
+#[derive(Deserialize, Default)]
+pub struct UpdateNotificationsBody {
+    #[serde(default, deserialize_with = "deserialize_tristate")]
+    pub notify_on_waiting: Tristate,
+    #[serde(default, deserialize_with = "deserialize_tristate")]
+    pub notify_on_idle: Tristate,
+    #[serde(default, deserialize_with = "deserialize_tristate")]
+    pub notify_on_error: Tristate,
+}
+
+/// Three-state field representing JSON `undefined | null | true | false`:
+/// - Unset: leave the current session value untouched.
+/// - Clear: set to None (inherit the server default).
+/// - Set(v): explicit user override.
+#[derive(Default)]
+pub enum Tristate {
+    #[default]
+    Unset,
+    Clear,
+    Set(bool),
+}
+
+fn deserialize_tristate<'de, D>(d: D) -> Result<Tristate, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Option<Option<bool>>: absent -> None, null -> Some(None), bool -> Some(Some(bool))
+    let v: Option<Option<bool>> = Option::deserialize(d)?;
+    Ok(match v {
+        None => Tristate::Unset,
+        Some(None) => Tristate::Clear,
+        Some(Some(b)) => Tristate::Set(b),
+    })
+}
+
+pub async fn update_session_notifications(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateNotificationsBody>,
+) -> impl IntoResponse {
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        );
+    };
+
+    // Apply each field independently. `Unset` leaves the stored value
+    // alone; `Clear` sets it to None (inherit default); `Set(v)` writes
+    // an explicit override.
+    fn apply(target: &mut Option<bool>, tri: Tristate) {
+        match tri {
+            Tristate::Unset => {}
+            Tristate::Clear => *target = None,
+            Tristate::Set(v) => *target = Some(v),
+        }
+    }
+    apply(&mut inst.notify_on_waiting, body.notify_on_waiting);
+    apply(&mut inst.notify_on_idle, body.notify_on_idle);
+    apply(&mut inst.notify_on_error, body.notify_on_error);
+
+    let response = SessionResponse::from(&*inst);
+    let profile = inst.source_profile.clone();
+
+    if let Ok(storage) = Storage::new(&profile) {
+        let profile_instances: Vec<_> = instances
+            .iter()
+            .filter(|i| i.source_profile == profile)
+            .cloned()
+            .collect();
+        if let Err(e) = storage.save(&profile_instances) {
+            tracing::error!("Failed to save after notification update: {e}");
         }
     }
 
@@ -1439,7 +1538,7 @@ pub async fn get_settings(
     let config_result = if let Some(ref profile_name) = query.profile {
         crate::session::resolve_config(profile_name)
     } else {
-        crate::session::Config::load().map_err(|e| e.into())
+        crate::session::Config::load()
     };
 
     match config_result {

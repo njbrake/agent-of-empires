@@ -748,6 +748,11 @@ impl SettingsView {
                     h.on_destroy = None;
                 }
             }
+            // Web settings are server-global; no per-profile override to clear.
+            FieldKey::WebNotificationsEnabled
+            | FieldKey::WebNotifyOnWaiting
+            | FieldKey::WebNotifyOnIdle
+            | FieldKey::WebNotifyOnError => {}
         }
 
         // Sync repo_config when in Repo scope

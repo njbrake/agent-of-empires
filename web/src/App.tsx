@@ -6,6 +6,7 @@ import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
+import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
@@ -52,7 +53,7 @@ export default function App() {
   }
 
   if (loginRequired === null) {
-    return <div className="h-dvh bg-surface-900" />;
+    return <div className="h-dvh bg-surface-900 safe-area-inset" />;
   }
 
   return <AppContent loginRequired={loginRequired} onLogout={handleLogout} />;
@@ -253,100 +254,19 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setSidebarOpen((o) => !o);
   }, []);
 
-  useEffect(() => {
-    if (sidebarOpen) return;
-    const EDGE_PX = 24;
-    const THRESHOLD_PX = 60;
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (window.innerWidth >= 768 || e.touches.length !== 1) return;
-      const t = e.touches[0];
-      if (!t || t.clientX > EDGE_PX) return;
-      tracking = true;
-      startX = t.clientX;
-      startY = t.clientY;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!tracking) return;
-      const t = e.touches[0];
-      if (!t) return;
-      const dx = t.clientX - startX;
-      const dy = t.clientY - startY;
-      if (dx > THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
-        tracking = false;
-        // Dismiss the soft keyboard before opening the sidebar
-        if (document.activeElement instanceof HTMLElement) {
-          document.activeElement.blur();
-        }
-        setSidebarOpen(true);
-      } else if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) {
-        tracking = false;
-      }
-    };
-    const onTouchEnd = () => {
-      tracking = false;
-    };
-
-    window.addEventListener("touchstart", onTouchStart, { passive: true });
-    window.addEventListener("touchmove", onTouchMove, { passive: true });
-    window.addEventListener("touchend", onTouchEnd, { passive: true });
-    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    return () => {
-      window.removeEventListener("touchstart", onTouchStart);
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
-      window.removeEventListener("touchcancel", onTouchEnd);
-    };
-  }, [sidebarOpen]);
-
-  // Right-edge swipe to open the diff/shell panel (mirrors left-edge sidebar swipe)
-  useEffect(() => {
-    if (!diffCollapsed || !activeSessionId) return;
-    const EDGE_PX = 24;
-    const THRESHOLD_PX = 60;
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (window.innerWidth >= 768 || e.touches.length !== 1) return;
-      const t = e.touches[0];
-      if (!t || t.clientX < window.innerWidth - EDGE_PX) return;
-      tracking = true;
-      startX = t.clientX;
-      startY = t.clientY;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!tracking) return;
-      const t = e.touches[0];
-      if (!t) return;
-      const dx = startX - t.clientX;
-      const dy = t.clientY - startY;
-      if (dx > THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
-        tracking = false;
-        setDiffCollapsed(false);
-      } else if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) {
-        tracking = false;
-      }
-    };
-    const onTouchEnd = () => {
-      tracking = false;
-    };
-
-    window.addEventListener("touchstart", onTouchStart, { passive: true });
-    window.addEventListener("touchmove", onTouchMove, { passive: true });
-    window.addEventListener("touchend", onTouchEnd, { passive: true });
-    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    return () => {
-      window.removeEventListener("touchstart", onTouchStart);
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
-      window.removeEventListener("touchcancel", onTouchEnd);
-    };
-  }, [diffCollapsed, activeSessionId]);
+  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+  const openDiff = useCallback(() => setDiffCollapsed(false), []);
+  useEdgeSwipe({
+    edge: "left",
+    enabled: !sidebarOpen,
+    onSwipe: openSidebar,
+    blurOnSwipe: true,
+  });
+  useEdgeSwipe({
+    edge: "right",
+    enabled: diffCollapsed && !!activeSessionId,
+    onSwipe: openDiff,
+  });
 
   const handleNewSession = useCallback(() => {
     setWizardPrefill(undefined);
@@ -467,7 +387,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   };
 
   return (
-    <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden">
+    <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset">
       <TopBar
         activeWorkspace={activeWorkspace}
         activeSession={activeSession ?? null}
@@ -491,7 +411,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         <WorkspaceSidebar
           groups={groups}
           activeId={activeWorkspaceId}
-          creatingForProject={null}
           open={sidebarOpen}
           onToggle={() => setSidebarOpen(false)}
           onSelect={handleSelectWorkspace}

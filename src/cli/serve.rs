@@ -282,13 +282,21 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     })
     .await;
 
-    // Clean up PID and URL files on exit
+    // Clean up PID and URL files on exit, but only if the PID file
+    // still belongs to this process. A newer daemon spawn may have
+    // overwritten it; removing their file would orphan them.
     if let Ok(path) = pid_file_path() {
-        let _ = std::fs::remove_file(path);
-    }
-    if let Ok(dir) = crate::session::get_app_dir() {
-        let _ = std::fs::remove_file(dir.join("serve.url"));
-        let _ = std::fs::remove_file(dir.join("serve.mode"));
+        let is_ours = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .is_some_and(|pid| pid == std::process::id());
+        if is_ours {
+            let _ = std::fs::remove_file(&path);
+            if let Ok(dir) = crate::session::get_app_dir() {
+                let _ = std::fs::remove_file(dir.join("serve.url"));
+                let _ = std::fs::remove_file(dir.join("serve.mode"));
+            }
+        }
     }
 
     result
@@ -304,6 +312,19 @@ pub fn daemon_log_path() -> Result<PathBuf> {
 
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     use std::process::{Command, Stdio};
+
+    // Refuse to spawn if another daemon is already running. The TUI
+    // dialog checks daemon_pid() before reaching here, but a CLI user
+    // could call `aoe serve --daemon` twice, and a race between the
+    // TUI check and this function could overwrite the PID file and
+    // orphan the existing daemon.
+    if let Some(existing) = daemon_pid() {
+        bail!(
+            "A serve daemon is already running (PID {}). \
+             Stop it first with `aoe serve --stop`.",
+            existing
+        );
+    }
 
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
@@ -417,7 +438,30 @@ fn stop_daemon() -> Result<()> {
         nix::sys::signal::Signal::SIGTERM,
     ) {
         Ok(()) => {
-            std::fs::remove_file(&path)?;
+            // Wait for the process to actually exit so the port is
+            // released before a new daemon can be spawned. Without
+            // this, closing the dialog and immediately reopening
+            // races with the dying daemon and can orphan it.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+                    Err(nix::errno::Errno::ESRCH) => break,
+                    _ if std::time::Instant::now() >= deadline => {
+                        // Still alive after timeout; escalate.
+                        let _ = nix::sys::signal::kill(
+                            nix::unistd::Pid::from_raw(pid),
+                            nix::sys::signal::Signal::SIGKILL,
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            // The daemon's own cleanup may have already removed some
+            // of these; that's fine.
+            let _ = std::fs::remove_file(&path);
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
                 let _ = std::fs::remove_file(dir.join("serve.log"));

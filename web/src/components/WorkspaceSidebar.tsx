@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
-import { renameSession } from "../lib/api";
+import { renameSession, setSessionNotifications } from "../lib/api";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
 
@@ -11,10 +11,20 @@ const DEFAULT_WIDTH = 280;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
 
+// Module-level bus for closing any open SessionRow context menu when a
+// new one opens. Each SessionRow manages its own menu state; without
+// this bus, long-pressing a second session on mobile leaves the first
+// menu visible because document "click" listeners don't fire on
+// touchstart. Publishing on open + subscribing here keeps "one menu at
+// a time" without lifting state up to the parent.
+const menuBus = new EventTarget();
+function closeOtherContextMenus() {
+  menuBus.dispatchEvent(new Event("close"));
+}
+
 interface Props {
   groups: RepoGroup[];
   activeId: string | null;
-  creatingForProject: string | null;
   open: boolean;
   onToggle: () => void;
   onSelect: (workspaceId: string) => void;
@@ -35,6 +45,22 @@ function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string 
   if (error) return { status: "Error", createdAt: error.created_at };
   const first = ws.sessions[0];
   return { status: first?.status ?? "Unknown", createdAt: first?.created_at ?? null };
+}
+
+/** Derive which of the three context-menu presets best describes a
+ *  session's current per-event notification overrides. If the three
+ *  overrides aren't all the same value, the session is in a "custom"
+ *  mixed state, which the context menu renders as "Default" too
+ *  (selecting "Default" then resets it cleanly). */
+type NotifyPreset = "off" | "default" | "all";
+function detectNotifyPreset(
+  waiting: boolean | null | undefined,
+  idle: boolean | null | undefined,
+  error: boolean | null | undefined,
+): NotifyPreset {
+  if (waiting === false && idle === false && error === false) return "off";
+  if (waiting === true && idle === true && error === true) return "all";
+  return "default";
 }
 
 function loadSavedWidth(): number {
@@ -69,8 +95,20 @@ const SessionRow = memo(function SessionRow({
   const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
-  const sessionId = workspace.sessions[0]?.id;
+  const firstSession = workspace.sessions[0];
+  const sessionId = firstSession?.id;
   const isDeleting = sessionStatus === "Deleting";
+  const notifyPreset = detectNotifyPreset(
+    firstSession?.notify_on_waiting,
+    firstSession?.notify_on_idle,
+    firstSession?.notify_on_error,
+  );
+
+  const setNotifyPreset = async (preset: NotifyPreset) => {
+    setContextMenu(null);
+    if (!sessionId || preset === notifyPreset) return;
+    await setSessionNotifications(sessionId, preset);
+  };
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -97,16 +135,22 @@ const SessionRow = memo(function SessionRow({
       document.addEventListener("click", close);
       document.addEventListener("contextmenu", close);
     });
+    // Listen for the "close" broadcast from any sibling SessionRow
+    // that is opening its own menu. This is what fixes the long-press
+    // bug: touchstart doesn't propagate as "click" to document.
+    menuBus.addEventListener("close", close);
     return () => {
       cancelAnimationFrame(id);
       document.removeEventListener("click", close);
       document.removeEventListener("contextmenu", close);
+      menuBus.removeEventListener("close", close);
     };
   }, [contextMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     if (isDeleting) return;
     e.preventDefault();
+    closeOtherContextMenus();
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
 
@@ -127,6 +171,7 @@ const SessionRow = memo(function SessionRow({
     const ty = touch.clientY;
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true;
+      closeOtherContextMenus();
       setContextMenu({ x: tx, y: ty });
     }, 500);
   };
@@ -206,7 +251,7 @@ const SessionRow = memo(function SessionRow({
       </button>
       {contextMenu && createPortal(
         <div
-          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -215,6 +260,33 @@ const SessionRow = memo(function SessionRow({
           >
             Rename
           </button>
+          <div className="border-t border-surface-700/20 my-1" />
+          <div className="px-3 py-1 text-[11px] font-mono uppercase tracking-widest text-text-muted">
+            Notifications
+          </div>
+          {(["off", "default", "all"] as const).map((preset) => {
+            const label =
+              preset === "off"
+                ? "Off"
+                : preset === "default"
+                  ? "Default"
+                  : "All events";
+            const selected = notifyPreset === preset;
+            return (
+              <button
+                key={preset}
+                onClick={() => void setNotifyPreset(preset)}
+                className={`w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2 ${
+                  selected ? "text-text-primary" : "text-text-secondary"
+                }`}
+              >
+                <span className="w-3 text-brand-500">
+                  {selected ? "✓" : ""}
+                </span>
+                {label}
+              </button>
+            );
+          })}
           {!readOnly && (
             <>
               <div className="border-t border-surface-700/20 my-1" />
@@ -236,13 +308,11 @@ const SessionRow = memo(function SessionRow({
 const RepoGroupHeader = memo(function RepoGroupHeader({
   group,
   hasActiveChild,
-  creating,
   onClick,
   onNewSession,
 }: {
   group: RepoGroup;
   hasActiveChild: boolean;
-  creating: boolean;
   onClick: () => void;
   onNewSession: () => void;
 }) {
@@ -279,28 +349,16 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
           {group.displayName}
         </span>
       </button>
-      <Tooltip text={creating ? "Creating..." : "New session"}>
+      <Tooltip text="New session">
         <button
           onClick={onNewSession}
-          disabled={creating}
-          className={`w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors ${
-            creating
-              ? "text-text-dim cursor-not-allowed"
-              : "text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
-          }`}
+          className="w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
           aria-label={`New session in ${group.displayName}`}
         >
-          {creating ? (
-            <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          )}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
         </button>
       </Tooltip>
     </div>
@@ -330,7 +388,6 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 export function WorkspaceSidebar({
   groups,
   activeId,
-  creatingForProject,
   open,
   onToggle,
   onSelect,
@@ -520,7 +577,6 @@ export function WorkspaceSidebar({
                 <RepoGroupHeader
                   group={{ ...group, collapsed: !showExpanded }}
                   hasActiveChild={!showExpanded && hasActiveChild}
-                  creating={creatingForProject === group.repoPath}
                   onClick={() => !q && onToggleRepo(group.id)}
                   onNewSession={() => onCreateSession(group.repoPath)}
                 />

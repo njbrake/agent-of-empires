@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConnectedDevices } from "./ConnectedDevices";
+import { NotificationSettings } from "./NotificationSettings";
 import { SecuritySettings } from "./SecuritySettings";
 import { TerminalSettings } from "./TerminalSettings";
 import { getSettings, updateSettings } from "../lib/api";
@@ -108,6 +109,7 @@ export function SettingsView({ onClose }: Props) {
 
       <div className="flex-1 overflow-y-auto p-6 max-w-[600px] space-y-4">
         <SecuritySettings />
+        <NotificationSettings />
         <TerminalSettings />
 
         {settings && (

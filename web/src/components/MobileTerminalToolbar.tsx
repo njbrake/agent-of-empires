@@ -58,7 +58,7 @@ export function MobileTerminalToolbar({
     "flex-1 flex items-center justify-center h-11 rounded-md transition-colors duration-75 text-text-secondary select-none touch-manipulation relative active:bg-surface-700/50 active:scale-95";
 
   const strip =
-    "shrink-0 flex items-center gap-1 px-2 py-1.5 bg-surface-850 border-t border-surface-700/20 safe-area-bottom";
+    "shrink-0 flex items-center gap-1 px-2 py-1.5 bg-surface-850 border-t border-surface-700/20";
 
   // Parent (TerminalView) reserves paddingBottom for the keyboard, so the
   // strip naturally sits above it. env(keyboard-inset-height) covers iPadOS

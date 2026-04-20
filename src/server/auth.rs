@@ -193,16 +193,28 @@ enum TokenSource {
     Bearer,
 }
 
+/// Request extension carrying the SHA-256 hash of the bearer token that
+/// authenticated this request. Inserted by `auth_middleware` after a
+/// successful token match; absent in no-auth mode. Push handlers read
+/// this to filter subscriptions by owner.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthenticatedTokenHash(pub [u8; 32]);
+
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let client_ip = resolve_client_ip(addr, request.headers());
 
-    // No-auth mode: pass everything through
+    // No-auth mode: pass everything through. Insert a zeroed
+    // AuthenticatedTokenHash so handlers that extract the extension
+    // still succeed; all no-auth clients share the same "owner" value.
     if state.token_manager.is_no_auth().await {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedTokenHash([0u8; 32]));
         return next.run(request).await;
     }
 
@@ -226,12 +238,14 @@ pub async fn auth_middleware(
     // A stale cookie must not block a valid query param token.
     let mut matched_source = None;
     let mut needs_upgrade = false;
+    let mut matched_token_hash: Option<[u8; 32]> = None;
 
     for (token_value, source) in extract_tokens(&request) {
         let (valid, upgrade) = state.token_manager.validate(token_value).await;
         if valid {
             matched_source = Some(source);
             needs_upgrade = upgrade;
+            matched_token_hash = Some(super::push::sha256_token(token_value));
             break;
         }
     }
@@ -245,6 +259,7 @@ pub async fn auth_middleware(
             if valid {
                 matched_source = Some(TokenSource::WebSocketProtocol);
                 needs_upgrade = upgrade;
+                matched_token_hash = Some(super::push::sha256_token(&proto));
                 break;
             }
         }
@@ -253,6 +268,15 @@ pub async fn auth_middleware(
     if let Some(source) = matched_source {
         // Record success
         state.rate_limiter.record_success(client_ip).await;
+
+        // Propagate the matched token's SHA-256 hash as a request extension
+        // so downstream handlers (especially /api/push/*) can filter and
+        // attribute subscriptions by owner without re-extracting the token.
+        if let Some(hash) = matched_token_hash {
+            request
+                .extensions_mut()
+                .insert(AuthenticatedTokenHash(hash));
+        }
 
         let user_agent = request
             .headers()
