@@ -34,6 +34,34 @@ pub enum ServeMode {
     Tunnel,
 }
 
+/// Which HTTPS tunnel backend the user picked on the Confirm screen.
+/// Tunnel mode always has one of these; Local mode doesn't use them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelTransport {
+    Tailscale,
+    Cloudflare,
+}
+
+/// Per-transport readiness, evaluated when the Confirm screen opens.
+/// Drives the card styling and whether the user can select that card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportStatus {
+    /// Ready to spawn: CLI installed, logged in, and (for Tailscale)
+    /// the `funnel` nodeAttr is granted.
+    Ready,
+    /// CLI is missing on PATH.
+    NotInstalled,
+    /// Tailscale-only: CLI + login OK but the ACL doesn't grant Funnel.
+    /// User needs to visit login.tailscale.com/admin/acls/file.
+    FunnelNotEnabled,
+}
+
+impl TransportStatus {
+    fn is_ready(self) -> bool {
+        matches!(self, TransportStatus::Ready)
+    }
+}
+
 impl ServeMode {
     fn file_token(self) -> &'static str {
         match self {
@@ -99,25 +127,26 @@ pub enum ServeDialogState {
     /// dev env with only lo).
     ModePicker {
         selected: ServeMode,
+        /// Either tailscale OR cloudflared is available. Gate for the
+        /// Tunnel card; actual transport choice happens on Confirm.
         tunnel_available: bool,
-        /// True when a logged-in Tailscale is detected; used to label
-        /// the Tunnel card correctly ("Tailscale Funnel" vs "Cloudflare
-        /// tunnel") and mention the stable-origin advantage.
-        prefer_tailscale: bool,
-        /// True when the host has a Tailscale-range IP but the CLI is
-        /// missing or the daemon isn't logged in. Surfaces a small hint
-        /// on the Tunnel card pointing at the installation path.
-        suggest_tailscale_install: bool,
         local_available: bool,
         /// Transient flash message shown for ~1s after a rejected keypress
         /// (e.g., picking Tunnel when no tunnel tool is installed).
         flash: Option<(String, Instant)>,
     },
-    /// Tunnel-only: show the two-factor explanation and wait for the user
-    /// to confirm via Y/Enter/arrows. Local mode never enters Confirm —
-    /// it goes ModePicker → Starting directly.
+    /// Tunnel-only: risk explanation AND transport picker on one screen.
+    /// User sees security implications + chooses Tailscale vs Cloudflare
+    /// with up-front readiness info, no mid-spawn surprises. Local mode
+    /// never enters Confirm — it goes ModePicker → Starting directly.
     Confirm {
-        confirm_selected: bool,
+        /// Which transport card is currently highlighted.
+        selected: TunnelTransport,
+        /// Readiness evaluated when the screen opened; refreshable via [R].
+        tailscale: TransportStatus,
+        cloudflare: TransportStatus,
+        /// Transient message (e.g. "opened admin console").
+        flash: Option<(String, Instant)>,
     },
     /// We issued `aoe serve --daemon`; now polling `serve.url`.
     /// `passphrase` is Some only for Tunnel spawns from this TUI.
@@ -209,23 +238,12 @@ impl ServeDialog {
             }
         } else {
             // Tunnel mode is usable if EITHER a logged-in Tailscale or
-            // cloudflared is installed. Tailscale is preferred when both
-            // are available (stable URL, installable PWAs keep working).
+            // cloudflared is installed. Transport-specific readiness is
+            // re-evaluated when the user reaches the Confirm screen.
             let tailscale_ok = crate::server::tunnel::tailscale_available_sync();
             let cloudflared_ok = crate::server::tunnel::check_cloudflared().is_ok();
             let tunnel_available = tailscale_ok || cloudflared_ok;
-            let prefer_tailscale = tailscale_ok;
-            let tagged_ips = crate::server::discover_tagged_ips();
-            let local_available = !tagged_ips.is_empty();
-            // If the host has a Tailscale-range IP (100.64.0.0/10 CGNAT)
-            // but `tailscale` isn't on PATH or the daemon isn't running,
-            // the user is reachable over their tailnet and one short
-            // install/login away from the stable-URL Funnel flow. Worth
-            // surfacing as a one-liner on the Tunnel card.
-            let suggest_tailscale_install = !tailscale_ok
-                && tagged_ips
-                    .iter()
-                    .any(|(kind, _)| matches!(kind, crate::server::IpKind::Tailscale));
+            let local_available = !crate::server::discover_tagged_ips().is_empty();
             // Default highlight: the last mode the user successfully
             // launched (read from serve.last_mode). Fall back to Local as
             // safer first-time default. If Local isn't actually available,
@@ -242,8 +260,6 @@ impl ServeDialog {
                 state: ServeDialogState::ModePicker {
                     selected,
                     tunnel_available,
-                    prefer_tailscale,
-                    suggest_tailscale_install,
                     local_available,
                     flash: None,
                 },
@@ -252,13 +268,45 @@ impl ServeDialog {
         }
     }
 
+    /// Probe installed tunnel backends and return their readiness for
+    /// the Confirm screen. Called when entering Confirm and when the
+    /// user presses [R] to refresh after fixing an ACL.
+    fn assess_transports() -> (TransportStatus, TransportStatus) {
+        let tailscale = if !crate::server::tunnel::tailscale_available_sync() {
+            TransportStatus::NotInstalled
+        } else if !crate::server::tunnel::tailscale_funnel_cap_ready_sync() {
+            TransportStatus::FunnelNotEnabled
+        } else {
+            TransportStatus::Ready
+        };
+        let cloudflare = if crate::server::tunnel::check_cloudflared().is_ok() {
+            TransportStatus::Ready
+        } else {
+            TransportStatus::NotInstalled
+        };
+        (tailscale, cloudflare)
+    }
+
+    /// Pick the default-highlighted transport on Confirm: a Ready
+    /// Tailscale beats Cloudflare (stable URL wins by default); else
+    /// fall back to whichever is Ready; else default to Tailscale so
+    /// the user sees the fix instructions (they came here on purpose).
+    fn default_transport(
+        tailscale: TransportStatus,
+        cloudflare: TransportStatus,
+    ) -> TunnelTransport {
+        match (tailscale, cloudflare) {
+            (TransportStatus::Ready, _) => TunnelTransport::Tailscale,
+            (_, TransportStatus::Ready) => TunnelTransport::Cloudflare,
+            _ => TunnelTransport::Tailscale,
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
         match &mut self.state {
             ServeDialogState::ModePicker {
                 selected,
                 tunnel_available,
-                prefer_tailscale: _,
-                suggest_tailscale_install: _,
                 local_available,
                 flash,
             } => {
@@ -299,13 +347,18 @@ impl ServeDialog {
                             DialogResult::Continue
                         }
                         ServeMode::Tunnel => {
+                            let (tailscale, cloudflare) = ServeDialog::assess_transports();
+                            let selected = ServeDialog::default_transport(tailscale, cloudflare);
                             dialog.state = ServeDialogState::Confirm {
-                                confirm_selected: false,
+                                selected,
+                                tailscale,
+                                cloudflare,
+                                flash: None,
                             };
                             DialogResult::Continue
                         }
                         ServeMode::Local => {
-                            match spawn_daemon(ServeMode::Local, None) {
+                            match spawn_daemon(ServeMode::Local, None, None) {
                                 Ok(()) => {
                                     remember_last_mode(ServeMode::Local);
                                     dialog.state = ServeDialogState::Starting {
@@ -372,66 +425,113 @@ impl ServeDialog {
                     _ => DialogResult::Continue,
                 }
             }
-            ServeDialogState::Confirm { confirm_selected } => match key.code {
-                // Y always enables, regardless of which button is highlighted.
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    match spawn_daemon(ServeMode::Tunnel, Some(&self.pending_passphrase)) {
+            ServeDialogState::Confirm {
+                selected,
+                tailscale,
+                cloudflare,
+                flash,
+            } => {
+                // Expire stale flash on next key.
+                if flash
+                    .as_ref()
+                    .map(|(_, t)| t.elapsed() > Duration::from_millis(1500))
+                    .unwrap_or(false)
+                {
+                    *flash = None;
+                }
+
+                // Helper: commit the currently-selected transport. Rejects
+                // with a flash if the selected card isn't Ready (keeps the
+                // user on the Confirm screen where they can pivot to the
+                // other transport or hit [E]).
+                let commit = |dialog: &mut ServeDialog| -> DialogResult<()> {
+                    let ServeDialogState::Confirm {
+                        selected,
+                        tailscale,
+                        cloudflare,
+                        ..
+                    } = &dialog.state
+                    else {
+                        return DialogResult::Continue;
+                    };
+                    let pick = *selected;
+                    let status = match pick {
+                        TunnelTransport::Tailscale => *tailscale,
+                        TunnelTransport::Cloudflare => *cloudflare,
+                    };
+                    if !status.is_ready() {
+                        let msg = match (pick, status) {
+                            (TunnelTransport::Tailscale, TransportStatus::FunnelNotEnabled) => {
+                                "Tailscale Funnel isn't enabled for this node; pick Cloudflare or update your ACL."
+                            }
+                            (TunnelTransport::Tailscale, _) => {
+                                "Tailscale isn't installed; pick Cloudflare."
+                            }
+                            (TunnelTransport::Cloudflare, _) => {
+                                "cloudflared isn't installed; pick Tailscale."
+                            }
+                        };
+                        if let ServeDialogState::Confirm { flash, .. } = &mut dialog.state {
+                            *flash = Some((msg.to_string(), Instant::now()));
+                        }
+                        return DialogResult::Continue;
+                    }
+                    match spawn_daemon(
+                        ServeMode::Tunnel,
+                        Some(&dialog.pending_passphrase),
+                        Some(pick),
+                    ) {
                         Ok(()) => {
                             remember_last_mode(ServeMode::Tunnel);
-                            self.state = ServeDialogState::Starting {
+                            dialog.state = ServeDialogState::Starting {
                                 mode: ServeMode::Tunnel,
-                                passphrase: Some(self.pending_passphrase.clone()),
+                                passphrase: Some(dialog.pending_passphrase.clone()),
                                 started_at: Instant::now(),
                                 log_tail: initial_log_tail(),
                                 log_offset: log_file_size(),
                             };
                         }
-                        Err(e) => {
-                            self.state = ServeDialogState::Error(e);
-                        }
+                        Err(e) => dialog.state = ServeDialogState::Error(e),
                     }
                     DialogResult::Continue
-                }
-                // Enter picks whichever button is currently highlighted.
-                KeyCode::Enter => {
-                    if *confirm_selected {
-                        match spawn_daemon(ServeMode::Tunnel, Some(&self.pending_passphrase)) {
-                            Ok(()) => {
-                                remember_last_mode(ServeMode::Tunnel);
-                                self.state = ServeDialogState::Starting {
-                                    mode: ServeMode::Tunnel,
-                                    passphrase: Some(self.pending_passphrase.clone()),
-                                    started_at: Instant::now(),
-                                    log_tail: initial_log_tail(),
-                                    log_offset: log_file_size(),
-                                };
-                            }
-                            Err(e) => {
-                                self.state = ServeDialogState::Error(e);
-                            }
-                        }
+                };
+
+                match key.code {
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        *selected = TunnelTransport::Tailscale;
                         DialogResult::Continue
-                    } else {
-                        DialogResult::Cancel
                     }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        *selected = TunnelTransport::Cloudflare;
+                        DialogResult::Continue
+                    }
+                    KeyCode::Tab => {
+                        *selected = match *selected {
+                            TunnelTransport::Tailscale => TunnelTransport::Cloudflare,
+                            TunnelTransport::Cloudflare => TunnelTransport::Tailscale,
+                        };
+                        DialogResult::Continue
+                    }
+                    KeyCode::Char('t') | KeyCode::Char('T') => {
+                        *selected = TunnelTransport::Tailscale;
+                        commit(self)
+                    }
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        *selected = TunnelTransport::Cloudflare;
+                        commit(self)
+                    }
+                    KeyCode::Enter => commit(self),
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        let (new_ts, new_cf) = ServeDialog::assess_transports();
+                        *tailscale = new_ts;
+                        *cloudflare = new_cf;
+                        *flash = Some(("Refreshed.".to_string(), Instant::now()));
+                        DialogResult::Continue
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
+                    _ => DialogResult::Continue,
                 }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    *confirm_selected = true;
-                    DialogResult::Continue
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    *confirm_selected = false;
-                    DialogResult::Continue
-                }
-                KeyCode::Tab => {
-                    *confirm_selected = !*confirm_selected;
-                    DialogResult::Continue
-                }
-                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') => {
-                    DialogResult::Cancel
-                }
-                _ => DialogResult::Continue,
-            },
+            }
             ServeDialogState::Starting { .. } => match key.code {
                 // Esc just closes the dialog; the daemon keeps coming up.
                 KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
@@ -529,12 +629,13 @@ impl ServeDialog {
                 // (Tailscale iface went away), permission denied.
                 if crate::cli::serve::daemon_pid().is_none() {
                     let tail = initial_log_tail();
-                    let joined = tail.join("\n");
-                    let hint = diagnose_daemon_exit(&joined, mode);
-                    let detail = if joined.is_empty() {
+                    let raw_joined = tail.join("\n");
+                    let hint = diagnose_daemon_exit(&raw_joined, mode);
+                    let compact: Vec<String> = tail.iter().map(|l| compact_log_line(l)).collect();
+                    let detail = if compact.is_empty() {
                         String::new()
                     } else {
-                        format!("\n\nLast log lines:\n{}", joined)
+                        format!("\n\nLast log lines:\n{}", compact.join("\n"))
                     };
                     let prefix = match mode {
                         ServeMode::Tunnel => {
@@ -566,10 +667,11 @@ impl ServeDialog {
                         ),
                     };
                     let tail = initial_log_tail();
-                    let tail_detail = if tail.is_empty() {
+                    let compact: Vec<String> = tail.iter().map(|l| compact_log_line(l)).collect();
+                    let tail_detail = if compact.is_empty() {
                         String::new()
                     } else {
-                        format!("\n\nLast log lines:\n{}", tail.join("\n"))
+                        format!("\n\nLast log lines:\n{}", compact.join("\n"))
                     };
                     self.state = ServeDialogState::Error(format!(
                         "HTTPS tunnel did not announce a URL within {}s. \
@@ -598,8 +700,6 @@ impl ServeDialog {
             ServeDialogState::ModePicker {
                 selected,
                 tunnel_available,
-                prefer_tailscale,
-                suggest_tailscale_install,
                 local_available,
                 flash,
             } => render_mode_picker(
@@ -608,14 +708,23 @@ impl ServeDialog {
                 theme,
                 *selected,
                 *tunnel_available,
-                *prefer_tailscale,
-                *suggest_tailscale_install,
                 *local_available,
                 flash.as_ref().map(|(m, _)| m.as_str()),
             ),
-            ServeDialogState::Confirm { confirm_selected } => {
-                render_confirm(frame, area, theme, *confirm_selected)
-            }
+            ServeDialogState::Confirm {
+                selected,
+                tailscale,
+                cloudflare,
+                flash,
+            } => render_confirm(
+                frame,
+                area,
+                theme,
+                *selected,
+                *tailscale,
+                *cloudflare,
+                flash.as_ref().map(|(m, _)| m.as_str()),
+            ),
             ServeDialogState::Starting {
                 mode,
                 started_at,
@@ -647,8 +756,13 @@ impl ServeDialog {
 }
 
 /// Spawn the aoe serve daemon in the requested mode. Tunnel requires a
-/// passphrase (it's public-internet exposure); Local ignores it.
-fn spawn_daemon(mode: ServeMode, passphrase: Option<&str>) -> Result<(), String> {
+/// passphrase (it's public-internet exposure) and a transport choice;
+/// Local ignores both.
+fn spawn_daemon(
+    mode: ServeMode,
+    passphrase: Option<&str>,
+    transport: Option<TunnelTransport>,
+) -> Result<(), String> {
     use std::process::Command;
 
     // Guard: refuse to spawn if a daemon is already running. The dialog
@@ -685,6 +799,14 @@ fn spawn_daemon(mode: ServeMode, passphrase: Option<&str>) -> Result<(), String>
     match mode {
         ServeMode::Tunnel => {
             cmd.args(["--remote", "--host", "127.0.0.1"]);
+            // User explicitly picked a transport on the Confirm screen:
+            // Cloudflare → force --no-tailscale so the server skips the
+            // auto-detect (they may have tailscale installed but chose
+            // not to use it). Tailscale → no flag needed; auto-detect
+            // will find it.
+            if let Some(TunnelTransport::Cloudflare) = transport {
+                cmd.arg("--no-tailscale");
+            }
             if let Some(pp) = passphrase {
                 cmd.env("AOE_SERVE_PASSPHRASE", pp);
             }
@@ -957,8 +1079,6 @@ fn render_mode_picker(
     theme: &Theme,
     selected: ServeMode,
     tunnel_available: bool,
-    prefer_tailscale: bool,
-    suggest_tailscale_install: bool,
     local_available: bool,
     flash: Option<&str>,
 ) {
@@ -1073,37 +1193,21 @@ fn render_mode_picker(
         } else {
             (theme.border, theme.title, theme.text)
         };
-    let tunnel_title = if !tunnel_available {
-        " HTTPS tunnel "
-    } else if prefer_tailscale {
-        " Tailscale Funnel "
-    } else {
-        " Cloudflare tunnel "
-    };
     let tunnel_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(tunnel_border))
         .padding(Padding::horizontal(1))
         .title(Line::styled(
-            tunnel_title,
+            " Internet (HTTPS) ",
             Style::default().fg(tunnel_title_style).bold(),
         ));
     let tunnel_inner = tunnel_block.inner(cards[2]);
     frame.render_widget(tunnel_block, cards[2]);
-    let status_line = if !tunnel_available {
+    let status_line = if tunnel_available {
+        "reachable from your phone"
+    } else {
         "no tunnel tool installed"
-    } else if prefer_tailscale {
-        "stable HTTPS URL"
-    } else {
-        "public HTTPS URL (rotates)"
-    };
-    let secondary_line = if !tunnel_available {
-        ""
-    } else if prefer_tailscale {
-        "Installed PWAs stay working."
-    } else {
-        "URL changes on restart."
     };
     let tunnel_body = vec![
         Line::from(""),
@@ -1121,25 +1225,12 @@ fn render_mode_picker(
             Style::default().fg(tunnel_body_style),
         )),
         Line::from(Span::styled(
-            if secondary_line.is_empty() {
-                "Reachable from anywhere."
-            } else {
-                secondary_line
-            },
+            "Pick transport on next screen.",
             Style::default().fg(tunnel_body_style),
         )),
-        if suggest_tailscale_install {
-            // User has a Tailscale-range IP on an interface but the CLI
-            // is missing or logged out. One install+login away from the
-            // stable-URL Funnel flow; prioritized over the generic
-            // install hint because it's the specific, actionable path.
+        if !tunnel_available {
             Line::from(Span::styled(
-                "  Tailscale VPN detected: install the CLI for a stable URL",
-                Style::default().fg(theme.dimmed),
-            ))
-        } else if !tunnel_available {
-            Line::from(Span::styled(
-                "  (brew install cloudflared or tailscale up)",
+                "  (brew install tailscale or cloudflared)",
                 Style::default().fg(theme.dimmed),
             ))
         } else {
@@ -1169,125 +1260,210 @@ fn render_mode_picker(
     );
 }
 
-fn render_confirm(frame: &mut Frame, area: Rect, theme: &Theme, enable_selected: bool) {
-    let dialog = super::centered_rect(area, 70, 22);
+fn render_confirm(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    selected: TunnelTransport,
+    tailscale: TransportStatus,
+    cloudflare: TransportStatus,
+    flash: Option<&str>,
+) {
+    let dialog = super::centered_rect(area, 82, 24);
     frame.render_widget(Clear, dialog);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Line::styled(
-            " Enable HTTPS tunnel? ",
+            " Expose to Internet? ",
             Style::default().fg(theme.accent).bold(),
         ));
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
-    let chunks = Layout::default()
+    let rows = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(6), // risk explanation
+            Constraint::Length(1), // "Pick a transport:"
+            Constraint::Min(8),    // cards
+            Constraint::Length(1), // flash
+            Constraint::Length(1), // keybinds
+        ])
         .split(inner);
 
-    let body = vec![
+    // ── Risk explanation (compressed; picker below carries most of UI) ───
+    let risk = vec![
         Line::from(Span::styled(
-            "This lets you reach your agent sessions from your phone",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(Span::styled(
-            "(or any browser) via a public HTTPS URL.",
+            "Your sessions become reachable from anywhere over HTTPS.",
             Style::default().fg(theme.text),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "How it's protected:",
+            "Two factors required to log in:",
             Style::default().fg(theme.title).bold(),
         )),
         Line::from(vec![
             Span::styled("  \u{2022} ", Style::default().fg(theme.running)),
             Span::styled(
-                "HTTPS end-to-end via Tailscale or Cloudflare (encrypted).",
+                "token (in the URL / QR code)",
                 Style::default().fg(theme.text),
             ),
         ]),
         Line::from(vec![
             Span::styled("  \u{2022} ", Style::default().fg(theme.running)),
             Span::styled(
-                "Two factors required to log in: a token (in the URL /",
+                "passphrase (typed on the login page)",
                 Style::default().fg(theme.text),
             ),
         ]),
         Line::from(Span::styled(
-            "    QR code) AND a passphrase typed on a login page.",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(vec![
-            Span::styled("  \u{2022} ", Style::default().fg(theme.running)),
-            Span::styled(
-                "Knowing just the URL, or just the passphrase, is useless.",
-                Style::default().fg(theme.text),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "What to watch out for:",
-            Style::default().fg(theme.title).bold(),
-        )),
-        Line::from(Span::styled(
-            "  If someone gets BOTH the token and the passphrase, they",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(Span::styled(
-            "  can run commands as you. Don't post screenshots of the",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(Span::styled(
-            "  QR + passphrase together, and stop the tunnel when done.",
-            Style::default().fg(theme.text),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Runs as a background daemon. Survives TUI exit.",
-            Style::default().fg(theme.dimmed),
-        )),
-        Line::from(Span::styled(
-            "Requires tailscale (recommended) or cloudflared.",
-            Style::default().fg(theme.dimmed),
-        )),
-        Line::from(Span::styled(
-            "Stop anytime with [S] here or `aoe serve --stop`.",
+            "Don't share screenshots with BOTH. Stop with [S] when done.",
             Style::default().fg(theme.dimmed),
         )),
     ];
-    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), chunks[0]);
+    frame.render_widget(Paragraph::new(risk), rows[0]);
 
-    let enable_style = if enable_selected {
-        Style::default().fg(theme.running).bold()
-    } else {
-        Style::default().fg(theme.dimmed)
-    };
-    let cancel_style = if !enable_selected {
-        Style::default().fg(theme.accent).bold()
-    } else {
-        Style::default().fg(theme.dimmed)
-    };
-    // Enter activates whichever button is highlighted, so only show the
-    // hint on that one to avoid the "[Enter] Enable" lie when Cancel is
-    // selected.
-    let (enable_label, cancel_label) = if enable_selected {
-        ("[Enter/Y] Enable", "[Esc/N] Cancel")
-    } else {
-        ("[Y] Enable", "[Enter/Esc] Cancel")
-    };
-    let buttons = Line::from(vec![
-        Span::styled(enable_label, enable_style),
-        Span::raw("    "),
-        Span::styled(cancel_label, cancel_style),
-    ]);
     frame.render_widget(
-        Paragraph::new(buttons).alignment(Alignment::Center),
-        chunks[1],
+        Paragraph::new(Line::from(Span::styled(
+            "Pick a transport:",
+            Style::default().fg(theme.title).bold(),
+        ))),
+        rows[1],
     );
+
+    // ── Transport cards ──────────────────────────────────────────────────
+    let cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Length(1),
+            Constraint::Percentage(50),
+        ])
+        .split(rows[2]);
+
+    render_transport_card(
+        frame,
+        cards[0],
+        theme,
+        "Tailscale Funnel",
+        &[
+            "Stable URL across restarts",
+            "PWA-friendly on phones",
+            "https://<host>.<tailnet>.ts.net",
+        ],
+        tailscale,
+        selected == TunnelTransport::Tailscale,
+        /*is_tailscale=*/ true,
+    );
+    render_transport_card(
+        frame,
+        cards[2],
+        theme,
+        "Cloudflare Tunnel",
+        &[
+            "Works anywhere",
+            "URL rotates each restart",
+            "Not PWA-friendly",
+        ],
+        cloudflare,
+        selected == TunnelTransport::Cloudflare,
+        /*is_tailscale=*/ false,
+    );
+
+    // ── Flash ────────────────────────────────────────────────────────────
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            flash.unwrap_or(""),
+            Style::default().fg(theme.error).bold(),
+        )))
+        .alignment(Alignment::Center),
+        rows[3],
+    );
+
+    // ── Keybinds ─────────────────────────────────────────────────────────
+    let keybinds =
+        "[←/→] select  [T] Tailscale  [C] Cloudflare  [R] refresh  [Enter] confirm  [Esc] cancel";
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            keybinds,
+            Style::default().fg(theme.dimmed),
+        )))
+        .alignment(Alignment::Center),
+        rows[4],
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_transport_card(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    title: &str,
+    body_lines: &[&str],
+    status: TransportStatus,
+    is_selected: bool,
+    is_tailscale: bool,
+) {
+    let ready = status.is_ready();
+    let (border, title_color, body_color) = if is_selected && ready {
+        (theme.accent, theme.accent, theme.text)
+    } else if !ready {
+        (theme.dimmed, theme.dimmed, theme.dimmed)
+    } else {
+        (theme.border, theme.title, theme.text)
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .padding(Padding::horizontal(1))
+        .title(Line::styled(
+            format!(" {title} "),
+            Style::default().fg(title_color).bold(),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![Line::from("")];
+    for text in body_lines {
+        lines.push(Line::from(Span::styled(
+            *text,
+            Style::default().fg(body_color),
+        )));
+    }
+    lines.push(Line::from(""));
+
+    let (status_icon, status_text, status_style) = match status {
+        TransportStatus::Ready => (
+            "\u{2713}",
+            "Ready".to_string(),
+            Style::default().fg(theme.running).bold(),
+        ),
+        TransportStatus::NotInstalled => (
+            "\u{26A0}",
+            if is_tailscale {
+                "Not installed (tailscale up)".to_string()
+            } else {
+                "Not installed (brew install cloudflared)".to_string()
+            },
+            Style::default().fg(theme.dimmed),
+        ),
+        TransportStatus::FunnelNotEnabled => (
+            "\u{26A0}",
+            "Funnel not enabled for this node".to_string(),
+            Style::default().fg(theme.error).bold(),
+        ),
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("{status_icon} "), status_style),
+        Span::styled(status_text, status_style),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_starting(
@@ -1301,8 +1477,9 @@ fn render_starting(
     // Taller dialog so the daemon's serve.log can tail live underneath
     // the wait banner. On a cold Tailscale node, HTTPS-cert provisioning
     // can take 30-60s; a static "please wait" screen looks frozen.
-    // Showing the log makes real progress visible.
-    let dialog = super::centered_rect(area, 76, 18);
+    // Showing the log makes real progress visible. Wide enough to fit
+    // typical tunnel log lines after we strip the tracing prefix.
+    let dialog = super::centered_rect(area, 100, 22);
     frame.render_widget(Clear, dialog);
     let (title, wait_line1, wait_line2) = match mode {
         ServeMode::Tunnel => (
@@ -1355,7 +1532,8 @@ fn render_starting(
     let tail_inner = tail_block.inner(split[1]);
     frame.render_widget(tail_block, split[1]);
 
-    // Show the tail end of the log bounded to available rows.
+    // Show the tail end of the log bounded to available rows, with the
+    // tracing prefix stripped so the message itself gets the real estate.
     let rows = tail_inner.height as usize;
     let skip = log_tail.len().saturating_sub(rows);
     let lines: Vec<Line> = if log_tail.is_empty() {
@@ -1367,10 +1545,54 @@ fn render_starting(
         log_tail
             .iter()
             .skip(skip)
-            .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(theme.text))))
+            .map(|l| {
+                Line::from(Span::styled(
+                    compact_log_line(l),
+                    Style::default().fg(theme.text),
+                ))
+            })
             .collect()
     };
-    frame.render_widget(Paragraph::new(lines), tail_inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), tail_inner);
+}
+
+/// Shorten a tracing-formatted log line for the in-dialog tail pane.
+///
+/// Typical input:
+///   `2026-04-19T23:43:44.609396Z  INFO agent_of_empires::server::tunnel: Warning: ...`
+///
+/// Output:
+///   `INFO tunnel: Warning: ...`
+///
+/// Strips the ISO timestamp (the user can see the log is live), compresses
+/// the fully-qualified module path down to its last segment, and keeps the
+/// level so the user still sees WARN/ERROR when they matter. Leaves
+/// non-tracing lines (e.g. stray stdout from `tailscale funnel`) untouched.
+fn compact_log_line(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches('\n');
+    // Detect the tracing prefix: "<ISO8601Z>  LEVEL module::path: message".
+    // If the line doesn't start with a digit (not an ISO timestamp), pass
+    // through unchanged.
+    if !trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return trimmed.to_string();
+    }
+    // Split off the timestamp (up to the first space after 'Z ').
+    let rest = match trimmed.split_once("Z ") {
+        Some((_, r)) => r.trim_start(),
+        None => return trimmed.to_string(),
+    };
+    // Split level from the module::path: message remainder.
+    let Some((level, after_level)) = rest.split_once(' ') else {
+        return trimmed.to_string();
+    };
+    let after_level = after_level.trim_start();
+    // Split "module::path: message" at the ": " that separates path from msg.
+    let (path, message) = match after_level.split_once(": ") {
+        Some((p, m)) => (p, m),
+        None => return format!("{level} {after_level}"),
+    };
+    let short_path = path.rsplit("::").next().unwrap_or(path);
+    format!("{level} {short_path}: {message}")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1629,7 +1851,12 @@ fn render_active(
         .rev()
         .take(log_chunk.height.max(1) as usize)
         .rev()
-        .map(|l| Line::from(Span::styled(l.as_str(), Style::default().fg(theme.dimmed))))
+        .map(|l| {
+            Line::from(Span::styled(
+                compact_log_line(l),
+                Style::default().fg(theme.dimmed),
+            ))
+        })
         .collect();
     let log_block = Block::default()
         .borders(Borders::TOP)
@@ -1637,7 +1864,10 @@ fn render_active(
         .title(Line::styled(" Log ", Style::default().fg(theme.dimmed)));
     let log_inner = log_block.inner(log_chunk);
     frame.render_widget(log_block, log_chunk);
-    frame.render_widget(Paragraph::new(log_lines), log_inner);
+    frame.render_widget(
+        Paragraph::new(log_lines).wrap(Wrap { trim: false }),
+        log_inner,
+    );
     idx += 1;
 
     let footer = if urls.len() > 1 {
@@ -1680,7 +1910,11 @@ fn split_url_and_token(url: &str) -> (String, Option<&str>) {
 }
 
 fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
-    let dialog = super::centered_rect(area, 70, 15);
+    // Error copy can be long (multi-line tailscale output, stacked log
+    // tail, hints, plus remediation steps). Keep it wide + tall enough
+    // that the whole message fits without clipping the bottom. Wrap is
+    // still on for individual long lines.
+    let dialog = super::centered_rect(area, 100, 24);
     frame.render_widget(Clear, dialog);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1874,6 +2108,29 @@ mod tests {
                 w
             );
         }
+    }
+
+    #[test]
+    fn compact_log_line_strips_tracing_prefix() {
+        let input = "2026-04-19T23:43:44.609396Z  INFO agent_of_empires::server::tunnel: Warning: funnel=on for foo, but no serve config";
+        assert_eq!(
+            compact_log_line(input),
+            "INFO tunnel: Warning: funnel=on for foo, but no serve config"
+        );
+    }
+
+    #[test]
+    fn compact_log_line_preserves_passthrough() {
+        // Lines without a tracing-style leading timestamp (e.g. stray
+        // stdout from tailscale funnel) should pass through unchanged.
+        let raw = "Available on the internet: https://foo.ts.net";
+        assert_eq!(compact_log_line(raw), raw);
+    }
+
+    #[test]
+    fn compact_log_line_handles_levels() {
+        let error = "2026-04-19T23:43:44.669741Z ERROR agent_of_empires::server: boom";
+        assert_eq!(compact_log_line(error), "ERROR server: boom");
     }
 
     #[test]

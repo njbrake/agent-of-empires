@@ -195,7 +195,23 @@ impl TunnelHandle {
             "tailscale: spawn_tailscale starting"
         );
 
-        // Pre-flight: if Funnel is already configured on our chosen
+        // Pre-flight 1: confirm this node is allowed to use Funnel at
+        // all. Tailscale surfaces Funnel eligibility as the node cap
+        // `https://tailscale.com/cap/funnel-ports` in `status --json`;
+        // if it's missing, the ACL hasn't granted `funnel` to this
+        // node and the `tailscale funnel` command will fail with a
+        // generic error. Checking here lets us point the user at the
+        // admin console with a concrete fix instead.
+        if let Err(e) = check_funnel_capability().await {
+            debug!(reason = %e, "spawn_tailscale: funnel cap check failed");
+            anyhow::bail!(
+                "Tailscale Funnel is not enabled for this tailnet. \
+                 Enable it at https://login.tailscale.com/admin/acls/file \
+                 (add `funnel` to nodeAttrs), or pass --no-tailscale to use Cloudflare."
+            );
+        }
+
+        // Pre-flight 2: if Funnel is already configured on our chosen
         // HTTPS port (443) for a DIFFERENT backend, bail rather than
         // silently taking it over. Belt-and-suspenders; the modern
         // `tailscale funnel <port>` single-command syntax is mostly
@@ -222,7 +238,10 @@ impl TunnelHandle {
         // a black box for up to a minute.
         let funnel_arg = local_port.to_string();
         let funnel_args = ["funnel", "--bg", "--yes", &funnel_arg];
-        debug!(args = ?funnel_args, "tailscale: running `tailscale funnel`");
+        info!(
+            "Running `tailscale funnel --bg --yes {}` (first-time HTTPS cert provisioning can take 30-60s)",
+            local_port
+        );
 
         let mut child = Command::new("tailscale")
             .args(funnel_args)
@@ -248,11 +267,30 @@ impl TunnelHandle {
         // custom target like "tailscale_funnel" would not match that
         // prefix and every line would be silently dropped, which is
         // exactly how this used to fail.
+        //
+        // Also: scan each stderr line for the tailnet-level Funnel
+        // activation URL. When Funnel isn't enabled for the tailnet
+        // (distinct from the per-node ACL grant we already pre-flight),
+        // `tailscale funnel` prints something like:
+        //     Funnel is not enabled on your tailnet.
+        //     To enable, visit:
+        //              https://login.tailscale.com/f/funnel?node=XXXX
+        // and then hangs waiting for the user to click the link. We
+        // detect that URL, send it over a oneshot, kill the child, and
+        // bail with a crisp error instead of waiting for the 60s timeout.
+        let (activation_tx, mut activation_rx) = tokio::sync::oneshot::channel::<String>();
+        let activation_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(activation_tx)));
         if let Some(stderr) = stderr {
+            let activation_tx = activation_tx.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     info!(source = "tailscale funnel", "{}", line);
+                    if let Some(url) = extract_funnel_activation_url(&line) {
+                        if let Some(tx) = activation_tx.lock().ok().and_then(|mut g| g.take()) {
+                            let _ = tx.send(url);
+                        }
+                    }
                 }
             });
         }
@@ -265,26 +303,45 @@ impl TunnelHandle {
             });
         }
 
-        let status = tokio::time::timeout(STEP_TIMEOUT, child.wait())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "tailscale funnel timed out after {}s; your node may not have \
-                     HTTPS certs enabled or Funnel may not be enabled in your tailnet \
-                     ACL. Run `AGENT_OF_EMPIRES_DEBUG=1 aoe serve --remote` and \
-                     check debug.log for the live output, or try \
-                     `tailscale funnel --bg --yes {}` manually, or pass \
-                     --no-tailscale to skip.",
-                    STEP_TIMEOUT.as_secs(),
-                    local_port
-                )
-            })?
-            .map_err(|e| anyhow::anyhow!("failed to wait on tailscale funnel: {}", e))?;
+        let status = tokio::select! {
+            biased;
+            maybe_url = &mut activation_rx => {
+                // Tailscale told us exactly how to fix this. Kill the
+                // (hung) child and surface the URL verbatim.
+                let _ = child.kill().await;
+                let url = maybe_url.unwrap_or_else(|_| {
+                    "https://login.tailscale.com/admin/settings/features".to_string()
+                });
+                return Err(anyhow::anyhow!(
+                    "Tailscale Funnel is not enabled for this tailnet.\n\n\
+                     Enable it here (the link is specific to this node):\n  \
+                     {url}\n\n\
+                     After enabling, re-run `aoe serve --remote`. \
+                     Or pass --no-tailscale to use Cloudflare instead."
+                ));
+            }
+            res = tokio::time::timeout(STEP_TIMEOUT, child.wait()) => {
+                res
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "tailscale funnel timed out after {}s; your node may not have \
+                             HTTPS certs enabled or Funnel may not be enabled in your tailnet \
+                             ACL. Run `AGENT_OF_EMPIRES_DEBUG=1 aoe serve --remote` and \
+                             check debug.log for the live output, or try \
+                             `tailscale funnel --bg --yes {}` manually, or pass \
+                             --no-tailscale to skip.",
+                            STEP_TIMEOUT.as_secs(),
+                            local_port
+                        )
+                    })?
+                    .map_err(|e| anyhow::anyhow!("failed to wait on tailscale funnel: {}", e))?
+            }
+        };
 
-        debug!(
-            exit = ?status.code(),
-            success = status.success(),
-            "tailscale: `tailscale funnel` exited"
+        info!(
+            "`tailscale funnel` exited with status {:?} ({})",
+            status.code(),
+            if status.success() { "ok" } else { "error" }
         );
         if !status.success() {
             anyhow::bail!(
@@ -297,7 +354,7 @@ impl TunnelHandle {
         }
 
         // Read the stable funnel URL from `tailscale status`.
-        debug!("tailscale: reading stable URL via `tailscale status --json`");
+        info!("Reading stable URL from `tailscale status --json`...");
         let url = tokio::time::timeout(STEP_TIMEOUT, tailscale_funnel_url())
             .await
             .map_err(|_| {
@@ -525,16 +582,24 @@ async fn inspect_existing_funnel(local_port: u16) -> Option<String> {
     };
 
     // Walk the Web map looking for a port-443 handler whose target
-    // isn't our local port. Shape (from Tailscale's ServeConfig):
+    // isn't something we can safely replace. Shape (from Tailscale's
+    // ServeConfig):
     //   { "Web": { "${host}:443": { "Handlers": {
     //       "/": { "Proxy": "http://127.0.0.1:4999" },  // or:
     //       "/": { "Path":  "/var/www" },               // file server, or:
     //       "/": { "Text":  "hello" }                   // static text
     //   } } } }
-    // Proxy handlers get a substring match on the local port (our own
-    // same-target config is a no-op). Non-Proxy handlers are always a
-    // conflict because `tailscale funnel --bg <port>` installs a Proxy
-    // and would replace them.
+    //
+    // Rules:
+    // - Proxy to OUR local_port: idempotent, no-op.
+    // - Proxy to 127.0.0.1:<other-port> or localhost:*: stale aoe config
+    //   from a previous run (e.g. port changed across restarts).
+    //   `tailscale funnel --bg --yes <new>` will cleanly replace it; no
+    //   need to bail.
+    // - Proxy to anything else (tailnet IP, non-loopback): user has a
+    //   different service on 443 and we'd clobber it. Bail.
+    // - Non-Proxy (file server / static text): always a conflict; these
+    //   are explicitly user-configured.
     let web = parsed.get("Web")?.as_object()?;
     let expected_proxy_substring = format!("127.0.0.1:{}", local_port);
     for (vhost, cfg) in web.iter() {
@@ -544,15 +609,28 @@ async fn inspect_existing_funnel(local_port: u16) -> Option<String> {
         let handlers = cfg.get("Handlers").and_then(|h| h.as_object())?;
         for (path, handler) in handlers.iter() {
             if let Some(proxy) = handler.get("Proxy").and_then(|v| v.as_str()) {
-                if !proxy.contains(&expected_proxy_substring) {
+                if proxy.contains(&expected_proxy_substring) {
+                    continue;
+                }
+                // A different-port loopback backend looks like a prior
+                // aoe run (or another local dev server); overwriting it
+                // is the expected behavior, not a conflict.
+                if proxy_is_loopback(proxy) {
                     debug!(
                         vhost = %vhost,
                         path = %path,
                         proxy = %proxy,
-                        "inspect_existing_funnel: port 443 already held by different proxy backend"
+                        "inspect_existing_funnel: stale loopback proxy, will be replaced"
                     );
-                    return Some(format!("proxy {} -> {}", path, proxy));
+                    continue;
                 }
+                debug!(
+                    vhost = %vhost,
+                    path = %path,
+                    proxy = %proxy,
+                    "inspect_existing_funnel: port 443 already held by different proxy backend"
+                );
+                return Some(format!("proxy {} -> {}", path, proxy));
             } else if let Some(p) = handler.get("Path").and_then(|v| v.as_str()) {
                 debug!(
                     vhost = %vhost,
@@ -584,6 +662,52 @@ async fn inspect_existing_funnel(local_port: u16) -> Option<String> {
         "inspect_existing_funnel: port 443 free or already matches our local port"
     );
     None
+}
+
+/// Verify this node has the Funnel node-capability set in its ACL.
+///
+/// Tailscale surfaces Funnel eligibility as the cap key
+/// `https://tailscale.com/cap/funnel-ports` on `Self.CapMap` in
+/// `tailscale status --json`. Value is the list of allowed ports
+/// (default 443, 8443, 10000). We only care that the key exists;
+/// port 443 is always in the default grant when the cap is present.
+///
+/// Returns Err with a short reason on any missing/malformed field so
+/// the caller can surface an actionable message pointing at the ACL
+/// editor.
+async fn check_funnel_capability() -> anyhow::Result<()> {
+    // Tailscale emits the cap key with the allowed-port list appended as
+    // a query string, e.g. `?ports=443,8443,10000`. Match by prefix so
+    // future port-list changes don't break the check.
+    const FUNNEL_CAP_PREFIX: &str = "https://tailscale.com/cap/funnel-ports";
+    let out = Command::new("tailscale")
+        .args(["status", "--json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("could not run `tailscale status --json`: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "`tailscale status --json` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| anyhow::anyhow!("could not parse tailscale status JSON: {e}"))?;
+    let cap_map = parsed
+        .get("Self")
+        .and_then(|s| s.get("CapMap"))
+        .and_then(|m| m.as_object());
+    let has_cap = cap_map.is_some_and(|m| m.keys().any(|k| k.starts_with(FUNNEL_CAP_PREFIX)));
+    debug!(
+        has_funnel_cap = has_cap,
+        cap_count = cap_map.map(|m| m.len()).unwrap_or(0),
+        "check_funnel_capability: inspected Self.CapMap"
+    );
+    if !has_cap {
+        anyhow::bail!("this node is missing the `funnel` nodeAttr in the tailnet ACL");
+    }
+    Ok(())
 }
 
 async fn tailscale_funnel_url() -> anyhow::Result<String> {
@@ -629,6 +753,41 @@ async fn tailscale_funnel_url() -> anyhow::Result<String> {
     }
     debug!(host = %host, "tailscale_funnel_url: resolved stable hostname");
     Ok(format!("https://{}", host))
+}
+
+/// Does this ServeConfig proxy URL point at the local machine
+/// (127.0.0.1, localhost, or ::1)? Used to distinguish stale aoe
+/// configs (which we replace without complaint) from a user's legit
+/// tailnet-facing service (which we refuse to clobber).
+fn proxy_is_loopback(proxy: &str) -> bool {
+    let lower = proxy.to_ascii_lowercase();
+    let after_scheme = lower
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&lower);
+    // IPv6 is bracketed: `[::1]:8080`. Everything else separates host
+    // and port with the first ':' / '/' after the scheme.
+    if let Some(rest) = after_scheme.strip_prefix('[') {
+        return rest.starts_with("::1]");
+    }
+    let host = after_scheme
+        .split(['/', ':'])
+        .next()
+        .unwrap_or(after_scheme);
+    matches!(host, "127.0.0.1" | "localhost")
+}
+
+/// Parse a `https://login.tailscale.com/f/funnel?...` activation URL
+/// out of a `tailscale funnel` stderr line. Tailscale prints this when
+/// Funnel isn't enabled for the tailnet — the URL is node-specific
+/// (carries the current node id as a query param) so it jumps the user
+/// straight to the right approval flow.
+fn extract_funnel_activation_url(line: &str) -> Option<String> {
+    const PREFIX: &str = "https://login.tailscale.com/f/funnel";
+    let idx = line.find(PREFIX)?;
+    let rest = &line[idx..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some(rest[..end].to_string())
 }
 
 /// Extract a trycloudflare.com tunnel URL from a cloudflared stderr line.
@@ -734,6 +893,53 @@ pub fn tailscale_available_sync() -> bool {
     status_ok
 }
 
+/// Sync counterpart of `check_funnel_capability()`. Returns true when
+/// this node's ACL grants the `funnel` nodeAttr (i.e. Funnel is usable).
+/// Used by the TUI transport picker to show "Ready" vs "needs ACL grant"
+/// on the Tailscale Funnel card without requiring the user to commit and
+/// then see a spawn-time failure.
+///
+/// Conservative: any failure (daemon down, JSON parse error) returns
+/// false. Dumps the CapMap keys and Self.Tags at debug! so a user hitting
+/// a false negative can grep debug.log and see why the detection missed:
+/// most often the node is tagged and the ACL rule targets autogroup:member
+/// (which excludes tagged devices).
+pub fn tailscale_funnel_cap_ready_sync() -> bool {
+    // Tailscale emits the cap key with the allowed-port list appended as
+    // a query string, e.g. `?ports=443,8443,10000`. Match by prefix so
+    // future port-list changes don't break the check.
+    const FUNNEL_CAP_PREFIX: &str = "https://tailscale.com/cap/funnel-ports";
+    let out = std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .output();
+    let Ok(out) = out else {
+        debug!("tailscale_funnel_cap_ready_sync: spawn failed");
+        return false;
+    };
+    if !out.status.success() {
+        debug!(
+            exit = ?out.status.code(),
+            "tailscale_funnel_cap_ready_sync: tailscale status --json non-zero"
+        );
+        return false;
+    }
+    let Ok(parsed): Result<serde_json::Value, _> = serde_json::from_slice(&out.stdout) else {
+        debug!("tailscale_funnel_cap_ready_sync: JSON parse failed");
+        return false;
+    };
+    let self_obj = parsed.get("Self");
+    let cap_map = self_obj
+        .and_then(|s| s.get("CapMap"))
+        .and_then(|m| m.as_object());
+    let has_cap = cap_map.is_some_and(|m| m.keys().any(|k| k.starts_with(FUNNEL_CAP_PREFIX)));
+    debug!(
+        has_funnel_cap = has_cap,
+        cap_count = cap_map.map(|m| m.len()).unwrap_or(0),
+        "tailscale_funnel_cap_ready_sync: inspected Self.CapMap"
+    );
+    has_cap
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,6 +970,50 @@ mod tests {
             extract_tunnel_url(line),
             Some("https://abc-def.trycloudflare.com".to_string())
         );
+    }
+
+    #[test]
+    fn extract_funnel_activation_url_matches_indented_line() {
+        // Real tailscale funnel output: URL arrives on its own line
+        // after "To enable, visit:", indented with whitespace.
+        let line = "         https://login.tailscale.com/f/funnel?node=n6ADBuFYMT11CNTRL";
+        assert_eq!(
+            extract_funnel_activation_url(line),
+            Some("https://login.tailscale.com/f/funnel?node=n6ADBuFYMT11CNTRL".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_funnel_activation_url_strips_trailing_whitespace() {
+        let line = "         https://login.tailscale.com/f/funnel?node=abc   ";
+        assert_eq!(
+            extract_funnel_activation_url(line),
+            Some("https://login.tailscale.com/f/funnel?node=abc".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_funnel_activation_url_ignores_unrelated_urls() {
+        assert_eq!(
+            extract_funnel_activation_url("https://login.tailscale.com/admin"),
+            None
+        );
+        assert_eq!(extract_funnel_activation_url("no url here"), None);
+    }
+
+    #[test]
+    fn proxy_is_loopback_matches_local_forms() {
+        assert!(proxy_is_loopback("http://127.0.0.1:8080"));
+        assert!(proxy_is_loopback("http://localhost:3000"));
+        assert!(proxy_is_loopback("https://127.0.0.1"));
+        assert!(proxy_is_loopback("http://[::1]:8080"));
+    }
+
+    #[test]
+    fn proxy_is_loopback_rejects_remote_hosts() {
+        assert!(!proxy_is_loopback("http://100.64.0.1:8080"));
+        assert!(!proxy_is_loopback("http://example.com"));
+        assert!(!proxy_is_loopback("http://192.168.1.5:8080"));
     }
 
     #[test]
