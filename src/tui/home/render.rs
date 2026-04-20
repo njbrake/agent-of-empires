@@ -1,18 +1,48 @@
 //! Rendering for HomeView
 
+use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use rattles::presets::prelude as spinners;
 
 use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_STOPPED, ICON_UNKNOWN,
-    ICON_WAITING,
+    ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
+use crate::session::config::GroupByMode;
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
 use crate::tui::styles::Theme;
 use crate::update::UpdateInfo;
+
+/// Derive a frame offset from a session's creation timestamp so that
+/// sessions started at different times show visually distinct spinner positions.
+fn session_offset(created_at: &DateTime<Utc>) -> usize {
+    created_at.timestamp_millis() as usize
+}
+
+fn spinner_running(created_at: &DateTime<Utc>) -> &'static str {
+    spinners::dots()
+        .set_interval(Duration::from_millis(220))
+        .offset(session_offset(created_at))
+        .current_frame()
+}
+
+fn spinner_waiting(created_at: &DateTime<Utc>) -> &'static str {
+    spinners::orbit()
+        .set_interval(Duration::from_millis(400))
+        .offset(session_offset(created_at))
+        .current_frame()
+}
+
+fn spinner_starting(created_at: &DateTime<Utc>) -> &'static str {
+    spinners::breathe()
+        .set_interval(Duration::from_millis(180))
+        .offset(session_offset(created_at))
+        .current_frame()
+}
 
 impl HomeView {
     pub fn render(
@@ -133,12 +163,30 @@ impl HomeView {
         if let Some(dialog) = &self.send_message_dialog {
             dialog.render(frame, area, theme);
         }
+
+        #[cfg(feature = "serve")]
+        if let Some(dialog) = &self.serve_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let group_suffix = if self.group_by == GroupByMode::Project {
+            " (by project)"
+        } else {
+            ""
+        };
         let title = match self.view_mode {
-            ViewMode::Agent => format!(" Agent of Empires [{}] ", self.active_profile_display()),
-            ViewMode::Terminal => format!(" Terminals [{}] ", self.active_profile_display()),
+            ViewMode::Agent => format!(
+                " Agent of Empires [{}]{} ",
+                self.active_profile_display(),
+                group_suffix
+            ),
+            ViewMode::Terminal => format!(
+                " Terminals [{}]{} ",
+                self.active_profile_display(),
+                group_suffix
+            ),
         };
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
@@ -168,22 +216,58 @@ impl HomeView {
             return;
         }
 
-        let list_items: Vec<ListItem> = self
+        let visible_height = if self.search_active {
+            (inner.height as usize).saturating_sub(1)
+        } else {
+            inner.height as usize
+        };
+        let scroll = crate::tui::components::scroll::calculate_scroll(
+            self.flat_items.len(),
+            self.cursor,
+            visible_height,
+        );
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        if scroll.has_more_above {
+            lines.push(Line::from(Span::styled(
+                format!("  [{} more above]", scroll.scroll_offset),
+                Style::default().fg(theme.dimmed),
+            )));
+        }
+
+        for (i, item) in self
             .flat_items
             .iter()
+            .skip(scroll.scroll_offset)
+            .take(scroll.list_visible)
             .enumerate()
-            .map(|(idx, item)| {
-                let is_selected = idx == self.cursor;
-                let is_match =
-                    !self.search_matches.is_empty() && self.search_matches.contains(&idx);
-                self.render_item(item, is_selected, is_match, theme)
-            })
-            .collect();
+        {
+            let abs_idx = i + scroll.scroll_offset;
+            let is_selected = abs_idx == self.cursor;
+            let is_match =
+                !self.search_matches.is_empty() && self.search_matches.contains(&abs_idx);
+            let mut line = self.render_item_line(item, is_selected, is_match, theme);
+            if is_selected {
+                // Pad to full width so the selection background fills the entire row
+                let pad = (inner.width as usize).saturating_sub(line.width());
+                if pad > 0 {
+                    line.spans.push(Span::raw(" ".repeat(pad)));
+                }
+                line = line.style(Style::default().bg(theme.session_selection));
+            }
+            lines.push(line);
+        }
 
-        let list =
-            List::new(list_items).highlight_style(Style::default().bg(theme.session_selection));
+        if scroll.has_more_below {
+            let remaining = self.flat_items.len() - scroll.scroll_offset - scroll.list_visible;
+            lines.push(Line::from(Span::styled(
+                format!("  [{} more below]", remaining),
+                Style::default().fg(theme.dimmed),
+            )));
+        }
 
-        frame.render_widget(list, inner);
+        frame.render_widget(Paragraph::new(lines), inner);
 
         // Render search bar if active
         if self.search_active {
@@ -232,13 +316,13 @@ impl HomeView {
         }
     }
 
-    fn render_item(
+    fn render_item_line(
         &self,
         item: &Item,
         is_selected: bool,
         is_match: bool,
         theme: &Theme,
-    ) -> ListItem<'_> {
+    ) -> Line<'static> {
         let indent = get_indent(item.depth());
 
         use std::borrow::Cow;
@@ -264,14 +348,15 @@ impl HomeView {
                     match self.view_mode {
                         ViewMode::Agent => {
                             let icon = match inst.status {
-                                Status::Running => ICON_RUNNING,
-                                Status::Waiting => ICON_WAITING,
+                                Status::Running => spinner_running(&inst.created_at),
+                                Status::Waiting => spinner_waiting(&inst.created_at),
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
                                 Status::Error => ICON_ERROR,
-                                Status::Starting => ICON_STARTING,
+                                Status::Starting => spinner_starting(&inst.created_at),
                                 Status::Deleting => ICON_DELETING,
+                                Status::Creating => spinner_starting(&inst.created_at),
                             };
                             let color = match inst.status {
                                 Status::Running => theme.running,
@@ -282,9 +367,10 @@ impl HomeView {
                                 Status::Error => theme.error,
                                 Status::Starting => theme.dimmed,
                                 Status::Deleting => theme.waiting,
+                                Status::Creating => theme.accent,
                             };
                             let style = Style::default().fg(color);
-                            (icon, Cow::Borrowed(&inst.title), style)
+                            (icon, Cow::Owned(inst.title.clone()), style)
                         }
                         ViewMode::Terminal => {
                             // For sandboxed sessions, check the appropriate terminal based on mode
@@ -304,18 +390,18 @@ impl HomeView {
                                     .unwrap_or(false),
                             };
                             let (icon, color) = if terminal_running {
-                                (ICON_RUNNING, theme.terminal_active)
+                                (spinner_running(&inst.created_at), theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
                             };
                             let style = Style::default().fg(color);
-                            (icon, Cow::Borrowed(&inst.title), style)
+                            (icon, Cow::Owned(inst.title.clone()), style)
                         }
                     }
                 } else {
                     (
                         "?",
-                        Cow::Borrowed(id.as_str()),
+                        Cow::Owned(id.clone()),
                         Style::default().fg(theme.dimmed),
                     )
                 }
@@ -343,40 +429,25 @@ impl HomeView {
                         Style::default().fg(theme.branch),
                     ));
                 } else if let Some(wt_info) = &inst.worktree_info {
-                    line_spans.push(Span::styled(
-                        format!("  {}", wt_info.branch),
-                        Style::default().fg(theme.branch),
-                    ));
-                }
-                if inst.is_sandboxed() {
-                    match self.view_mode {
-                        ViewMode::Agent => {
-                            line_spans.push(Span::styled(
-                                " [sandbox]",
-                                Style::default().fg(theme.sandbox),
-                            ));
-                        }
-                        ViewMode::Terminal => {
-                            let mode = self.get_terminal_mode(id);
-                            let mode_text = match mode {
-                                TerminalMode::Container => " [container]",
-                                TerminalMode::Host => " [host]",
-                            };
-                            line_spans
-                                .push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
-                        }
+                    if wt_info.branch != inst.title {
+                        line_spans.push(Span::styled(
+                            format!("  {}", wt_info.branch),
+                            Style::default().fg(theme.branch),
+                        ));
                     }
+                }
+                if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
+                    let mode = self.get_terminal_mode(id);
+                    let mode_text = match mode {
+                        TerminalMode::Container => " [container]",
+                        TerminalMode::Host => " [host]",
+                    };
+                    line_spans.push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
                 }
             }
         }
 
-        let line = Line::from(line_spans);
-
-        if is_selected {
-            ListItem::new(line).style(Style::default().bg(theme.session_selection))
-        } else {
-            ListItem::new(line)
-        }
+        Line::from(line_spans)
     }
 
     /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)
@@ -496,24 +567,35 @@ impl HomeView {
 
         match self.view_mode {
             ViewMode::Agent => {
-                // Refresh cache before borrowing from instance_map to avoid borrow conflicts
-                self.refresh_preview_cache_if_needed(inner.width, inner.height);
+                // Check if selected session is being created (show hook progress)
+                let is_creating = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|id| self.get_instance(id))
+                    .is_some_and(|inst| inst.status == Status::Creating);
 
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        Preview::render_with_cache(
-                            frame,
-                            inner,
-                            inst,
-                            &self.preview_cache.content,
-                            theme,
-                        );
-                    }
+                if is_creating {
+                    self.render_creating_preview(frame, inner, theme);
                 } else {
-                    let hint = Paragraph::new("Select a session to preview")
-                        .style(Style::default().fg(theme.dimmed))
-                        .alignment(Alignment::Center);
-                    frame.render_widget(hint, inner);
+                    // Refresh cache before borrowing from instance_map to avoid borrow conflicts
+                    self.refresh_preview_cache_if_needed(inner.width, inner.height);
+
+                    if let Some(id) = &self.selected_session {
+                        if let Some(inst) = self.get_instance(id) {
+                            Preview::render_with_cache(
+                                frame,
+                                inner,
+                                inst,
+                                &self.preview_cache.content,
+                                theme,
+                            );
+                        }
+                    } else {
+                        let hint = Paragraph::new("Select a session to preview")
+                            .style(Style::default().fg(theme.dimmed))
+                            .alignment(Alignment::Center);
+                        frame.render_widget(hint, inner);
+                    }
                 }
             }
             ViewMode::Terminal => {
@@ -586,23 +668,146 @@ impl HomeView {
         }
     }
 
+    fn render_creating_preview(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let selected_id = match &self.selected_session {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        let inst = match self.get_instance(&selected_id) {
+            Some(inst) => inst,
+            None => return,
+        };
+
+        let spinner = spinners::orbit()
+            .set_interval(Duration::from_millis(400))
+            .current_frame();
+
+        // Info section (3 lines) + separator + hook output
+        let info_height: u16 = 4;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(info_height), Constraint::Min(1)])
+            .split(area);
+
+        // Info lines
+        let info_lines = vec![
+            Line::from(vec![
+                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
+                Span::styled(&inst.title, Style::default().fg(theme.text).bold()),
+            ]),
+            Line::from(vec![
+                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
+                Span::styled(&inst.project_path, Style::default().fg(theme.text)),
+            ]),
+            Line::from(vec![
+                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
+                Span::styled(
+                    format!("{} Creating...", spinner),
+                    Style::default().fg(theme.accent),
+                ),
+            ]),
+            Line::from(""),
+        ];
+        frame.render_widget(Paragraph::new(info_lines), chunks[0]);
+
+        // Hook output section
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .title(" Hook Output ")
+            .title_style(Style::default().fg(theme.dimmed));
+
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+
+        let progress = self.creating_hook_progress.get(&selected_id);
+        let inner_height = inner.height as usize;
+
+        if let Some(progress) = progress {
+            let mut lines: Vec<Line> = Vec::new();
+
+            // Current hook command
+            if let Some(ref cmd) = progress.current_hook {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", spinner),
+                        Style::default().fg(theme.accent).bold(),
+                    ),
+                    Span::styled(cmd.as_str(), Style::default().fg(theme.text)),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!(" {} Preparing...", spinner),
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+
+            // Show the last N lines of output that fit
+            let max_output = inner_height.saturating_sub(3);
+            let start = progress.hook_output.len().saturating_sub(max_output);
+            for line in &progress.hook_output[start..] {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+
+            // Pad and add cancel hint
+            let used = lines.len();
+            let available = inner_height.saturating_sub(1);
+            for _ in used..available {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(vec![
+                Span::styled(" Press ", Style::default().fg(theme.dimmed)),
+                Span::styled("Ctrl+C", Style::default().fg(theme.hint)),
+                Span::styled(" to cancel", Style::default().fg(theme.dimmed)),
+            ]));
+
+            frame.render_widget(Paragraph::new(lines), inner);
+        } else {
+            let hint = Paragraph::new(format!(" {} Setting up session...", spinner))
+                .style(Style::default().fg(theme.dimmed));
+            frame.render_widget(hint, inner);
+        }
+    }
+
     fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
 
-        let (mode_indicator, mode_color) = match self.view_mode {
-            ViewMode::Agent => ("[Agent]", theme.waiting),
-            ViewMode::Terminal => ("[Term]", theme.terminal_border),
-        };
-        let mode_style = Style::default().fg(mode_color).bold();
+        let mut spans: Vec<Span> = Vec::new();
 
-        let mut spans = vec![
-            Span::styled(format!(" {} ", mode_indicator), mode_style),
-            Span::styled("│", sep_style),
+        // Serve indicator: shown only when the `aoe serve` daemon is live.
+        // The TUI does not own the daemon, so we probe the PID file each
+        // render. Mode comes from a PID-keyed cache so we don't read the
+        // serve.mode file from disk on every frame; the cache invalidates
+        // whenever the daemon PID changes (restart / fresh spawn).
+        #[cfg(feature = "serve")]
+        {
+            let mode_label = crate::cli::serve::cached_serve_mode_label();
+            // cached_serve_mode_label() returns None both for "no daemon"
+            // and "daemon but mode unknown", so check the daemon PID to
+            // distinguish — only render the indicator when there's a
+            // daemon, with the mode tag if we have it.
+            if crate::cli::serve::daemon_pid().is_some() {
+                let label = match mode_label {
+                    Some(m) => format!(" \u{25CF} Serving ({}) ", m),
+                    None => " \u{25CF} Serving ".to_string(),
+                };
+                spans.extend([
+                    Span::styled(label, Style::default().fg(theme.running).bold()),
+                    Span::styled("│", sep_style),
+                ]);
+            }
+        }
+
+        spans.extend([
             Span::styled(" j/k", key_style),
             Span::styled(" Nav ", desc_style),
-        ];
+        ]);
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
             Some(Item::Group {
                 collapsed: true, ..
@@ -623,6 +828,9 @@ impl HomeView {
             Span::styled("│", sep_style),
             Span::styled(" t", key_style),
             Span::styled(" View ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" g", key_style),
+            Span::styled(" Group ", desc_style),
         ]);
 
         // Show c: container/host hint for sandboxed sessions in Terminal view

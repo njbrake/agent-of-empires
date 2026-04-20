@@ -3,8 +3,9 @@
   "type": "module",
   "scripts": {
     "copy-assets": "cp ../assets/logo.svg ../assets/logo.png ../assets/logo-youtube.png ../assets/social-preview.png public/assets/ && cp ../docs/assets/demo.gif public/assets/",
-    "dev": "npm run copy-assets && astro dev",
-    "build": "npm run copy-assets && astro build",
+    "sync-docs": "node scripts/sync-docs.mjs",
+    "dev": "npm run copy-assets && npm run sync-docs && astro dev",
+    "build": "npm run copy-assets && npm run sync-docs && astro build",
     "preview": "astro preview"
   },
   "dependencies": {

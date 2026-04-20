@@ -33,6 +33,7 @@ pub enum Status {
     Error,
     Starting,
     Deleting,
+    Creating,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +101,10 @@ pub struct Instance {
     pub extra_args: String,
     #[serde(default)]
     pub tool: String,
+    /// Built-in agent name used for status detection, resolved at build time from
+    /// config's agent_detect_as map. Avoids loading config during the polling hot path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detect_as: String,
     #[serde(default)]
     pub yolo_mode: bool,
     #[serde(default)]
@@ -128,6 +133,19 @@ pub struct Instance {
     #[serde(default, skip_serializing)]
     pub source_profile: String,
 
+    // Push-notification per-session overrides. None means "inherit the
+    // server-wide default for this event type" (WebConfig.notify_on_*).
+    // Some(true)/Some(false) is an explicit user toggle and takes
+    // precedence over the global. Because the overrides are per-event-
+    // type, a session can opt INTO an event that is globally off (e.g.,
+    // Running to Idle), not just opt out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_waiting: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_idle: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_error: Option<bool>,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -148,6 +166,7 @@ impl Instance {
             command: String::new(),
             extra_args: String::new(),
             tool: "claude".to_string(),
+            detect_as: String::new(),
             yolo_mode: false,
             status: Status::Idle,
             created_at: Utc::now(),
@@ -157,6 +176,9 @@ impl Instance {
             sandbox_info: None,
             terminal_info: None,
             source_profile: String::new(),
+            notify_on_waiting: None,
+            notify_on_idle: None,
+            notify_on_error: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,
@@ -179,10 +201,17 @@ impl Instance {
         self.yolo_mode
     }
 
-    fn has_custom_command(&self) -> bool {
+    pub fn has_custom_command(&self) -> bool {
         if !self.extra_args.is_empty() {
             return true;
         }
+        self.has_command_override()
+    }
+
+    /// True only when the launch command differs from the agent's default
+    /// binary (ignores extra_args). Use this for status-detection and
+    /// restart guards where only a wrapper script matters.
+    pub fn has_command_override(&self) -> bool {
         if self.command.is_empty() {
             return false;
         }
@@ -271,11 +300,11 @@ impl Instance {
         let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_args = build_docker_env_args(sandbox);
-        let env_part = if env_args.is_empty() {
+        let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+        let env_part = if env_info.docker_args.is_empty() {
             String::new()
         } else {
-            format!("{} ", env_args)
+            format!("{} ", env_info.docker_args)
         };
 
         // Get workspace path inside container (handles bare repo worktrees correctly)
@@ -286,10 +315,20 @@ impl Instance {
             "/bin/bash",
         );
 
+        // If there are secret env vars, prepend shell exports and use `exec`
+        // so the outer shell (whose argv briefly contains the export values)
+        // is replaced immediately, keeping secrets out of long-lived process argv.
+        let session_cmd = if env_info.exports.is_empty() {
+            cmd
+        } else {
+            let exports = env_info.exports.join("; ");
+            format!("{}; exec {}", exports, cmd)
+        };
+
         let session = self.container_terminal_tmux_session()?;
         let is_new = !session.exists();
         if is_new {
-            session.create_with_size(&self.project_path, Some(&cmd), size)?;
+            session.create_with_size(&self.project_path, Some(&session_cmd), size)?;
             self.apply_container_terminal_tmux_options();
         }
 
@@ -392,7 +431,12 @@ impl Instance {
             .map(|c| c.session.agent_status_hooks)
             .unwrap_or(true);
         if hooks_enabled {
-            if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
+            if self.tool == "settl" {
+                // settl uses TOML config, not JSON settings
+                if let Err(e) = crate::hooks::install_settl_hooks() {
+                    tracing::warn!("Failed to install settl hooks: {}", e);
+                }
+            } else if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
                 if self.is_sandboxed() {
                     // For sandboxed sessions, hooks are installed via build_container_config
                 } else {
@@ -455,13 +499,24 @@ impl Instance {
                 }
             }
 
-            let mut env_args = build_docker_env_args(sandbox);
-            // Pass AOE_INSTANCE_ID into the container
-            env_args = format!("{} -e AOE_INSTANCE_ID={}", env_args, self.id);
-            let env_part = format!("{} ", env_args);
-            Some(wrap_command_ignore_suspend(
-                &container.exec_command(Some(&env_part), &tool_cmd),
-            ))
+            let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+            // AOE_INSTANCE_ID is not secret, goes directly in docker args
+            let docker_args = format!("{} -e AOE_INSTANCE_ID={}", env_info.docker_args, self.id);
+            let env_part = format!("{} ", docker_args);
+            let wrapped =
+                wrap_command_ignore_suspend(&container.exec_command(Some(&env_part), &tool_cmd));
+            if env_info.exports.is_empty() {
+                Some(wrapped)
+            } else {
+                // Prepend shell exports for secret env vars. The outer shell
+                // runs the exports (builtins), then `exec` replaces it with
+                // the wrapped command. This keeps secret values out of all
+                // long-lived process argv: the outer shell's argv (which
+                // contains the export values) disappears in milliseconds
+                // when exec replaces the process image.
+                let exports = env_info.exports.join("; ");
+                Some(format!("{}; exec {}", exports, wrapped))
+            }
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
             if let Some(ref hook_cmds) = on_launch_hooks {
@@ -473,35 +528,36 @@ impl Instance {
             }
 
             // Prepend AOE_INSTANCE_ID env var if this agent supports hooks
-            let env_prefix = if agent.and_then(|a| a.hook_config.as_ref()).is_some() {
+            // (either JSON-based hook_config or settl's TOML hooks)
+            let has_hooks =
+                agent.and_then(|a| a.hook_config.as_ref()).is_some() || self.tool == "settl";
+            let env_prefix = if has_hooks {
                 format!("AOE_INSTANCE_ID={} ", self.id)
             } else {
                 String::new()
             };
 
             if self.command.is_empty() {
-                crate::agents::get_agent(&self.tool)
-                    .filter(|a| a.supports_host_launch)
-                    .map(|a| {
-                        let mut cmd = a.binary.to_string();
-                        if !self.extra_args.is_empty() {
-                            cmd = format!("{} {}", cmd, self.extra_args);
-                        }
-                        if self.is_yolo_mode() {
-                            if let Some(ref yolo) = a.yolo {
-                                match yolo {
-                                    crate::agents::YoloMode::CliFlag(flag) => {
-                                        cmd = format!("{} {}", cmd, flag);
-                                    }
-                                    crate::agents::YoloMode::EnvVar(key, value) => {
-                                        cmd = format_env_var_prefix(key, value, &cmd);
-                                    }
-                                    crate::agents::YoloMode::AlwaysYolo => {}
+                crate::agents::get_agent(&self.tool).map(|a| {
+                    let mut cmd = a.binary.to_string();
+                    if !self.extra_args.is_empty() {
+                        cmd = format!("{} {}", cmd, self.extra_args);
+                    }
+                    if self.is_yolo_mode() {
+                        if let Some(ref yolo) = a.yolo {
+                            match yolo {
+                                crate::agents::YoloMode::CliFlag(flag) => {
+                                    cmd = format!("{} {}", cmd, flag);
                                 }
+                                crate::agents::YoloMode::EnvVar(key, value) => {
+                                    cmd = format_env_var_prefix(key, value, &cmd);
+                                }
+                                crate::agents::YoloMode::AlwaysYolo => {}
                             }
                         }
-                        wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
-                    })
+                    }
+                    wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
+                })
             } else {
                 let mut cmd = self.command.clone();
                 if !self.extra_args.is_empty() {
@@ -527,7 +583,13 @@ impl Instance {
             }
         };
 
-        tracing::debug!("container cmd: {}", cmd.as_ref().map_or("none", |v| v));
+        tracing::debug!(
+            "container cmd: {}",
+            cmd.as_ref().map_or("none".to_string(), |v| {
+                super::environment::redact_env_values(v)
+            })
+        );
+
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
@@ -648,7 +710,10 @@ impl Instance {
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
-        if matches!(self.status, Status::Stopped | Status::Deleting) {
+        if matches!(
+            self.status,
+            Status::Stopped | Status::Deleting | Status::Creating
+        ) {
             return;
         }
 
@@ -670,14 +735,34 @@ impl Instance {
         let session = match self.tmux_session() {
             Ok(s) => s,
             Err(_) => {
+                tracing::trace!(
+                    "status '{}': tmux_session() failed, setting Error",
+                    self.title
+                );
                 self.status = Status::Error;
+                if self.last_error.is_none() {
+                    self.last_error = Some(
+                        "Could not reach tmux. Is tmux still running on the host?".to_string(),
+                    );
+                }
                 self.last_error_check = Some(std::time::Instant::now());
                 return;
             }
         };
 
         if !session.exists() {
+            tracing::trace!(
+                "status '{}': session.exists()=false (tmux name={}), setting Error",
+                self.title,
+                tmux::Session::generate_name(&self.id, &self.title)
+            );
             self.status = Status::Error;
+            if self.last_error.is_none() {
+                self.last_error = Some(
+                    "tmux session is gone. The agent process may have exited or been killed."
+                        .to_string(),
+                );
+            }
             self.last_error_check = Some(std::time::Instant::now());
             return;
         }
@@ -686,46 +771,117 @@ impl Instance {
             .map(|m| m.pane_dead)
             .unwrap_or_else(|| session.is_pane_dead());
 
+        let pane_cmd = metadata
+            .and_then(|m| m.pane_current_command.clone())
+            .or_else(|| {
+                let name = tmux::Session::generate_name(&self.id, &self.title);
+                tmux::utils::pane_current_command(&name)
+            });
+
+        tracing::trace!(
+            "status '{}': exists=true, is_dead={}, pane_cmd={:?}, tool={}, cmd_override={}",
+            self.title,
+            is_dead,
+            pane_cmd,
+            self.tool,
+            self.has_command_override()
+        );
+
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
-            tracing::trace!("hook status detection '{}': {:?}", self.title, hook_status);
-            self.status = if is_dead { Status::Error } else { hook_status };
-            self.last_error = None;
+            tracing::trace!(
+                "status '{}': hook detected {:?}, is_dead={}",
+                self.title,
+                hook_status,
+                is_dead
+            );
+            if is_dead {
+                self.status = Status::Error;
+                if self.last_error.is_none() {
+                    let pane_content = session.capture_pane(20).unwrap_or_default();
+                    self.last_error = Some(summarize_error_from_pane(&pane_content));
+                }
+            } else {
+                self.status = hook_status;
+                self.last_error = None;
+            }
             return;
         }
 
-        let detected = match session.detect_status(&self.tool) {
-            Ok(status) => status,
-            Err(_) => Status::Idle,
+        let pane_content = session.capture_pane(50).unwrap_or_default();
+        let detection_tool = if self.detect_as.is_empty() {
+            &self.tool
+        } else {
+            &self.detect_as
         };
+        let detected = tmux::detect_status_from_content(&pane_content, detection_tool);
         tracing::trace!(
-            "status detection '{}' (tool={}, custom_cmd={}): {:?}",
+            "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",
             self.title,
-            self.tool,
+            detected,
+            self.has_command_override(),
             self.has_custom_command(),
-            detected
         );
         let is_shell_stale = || {
-            if self.expects_shell() {
+            let expects = self.expects_shell();
+            if expects {
                 return false;
             }
-            metadata
+            let shell_check = metadata
                 .and_then(|m| m.pane_current_command.as_deref())
                 .map(tmux::utils::is_shell_command)
-                .unwrap_or_else(|| session.is_pane_running_shell())
+                .unwrap_or_else(|| session.is_pane_running_shell());
+            tracing::trace!(
+                "status '{}': is_shell_stale check: expects_shell={}, shell_check={}",
+                self.title,
+                expects,
+                shell_check,
+            );
+            shell_check
         };
         self.status = match detected {
-            Status::Idle if self.has_custom_command() => {
-                if is_dead || is_shell_stale() {
+            Status::Idle if self.has_command_override() => {
+                // Custom commands run agents through wrapper scripts that appear
+                // as shell processes to tmux. Only declare Error when the pane is
+                // actually dead; don't use is_shell_stale() since the shell IS
+                // the expected wrapper process.
+                if is_dead {
                     Status::Error
                 } else {
                     Status::Unknown
                 }
             }
-            Status::Idle if is_dead || is_shell_stale() => Status::Error,
+            Status::Idle if is_dead => Status::Error,
+            Status::Idle if is_shell_stale() => {
+                // A shell is the foreground process but the pane is alive.
+                // Check captured pane content: if it contains the agent's
+                // UI the agent is still alive; only declare Error when the
+                // content looks like a bare shell prompt.
+                if pane_has_agent_content(&pane_content, &self.tool) {
+                    tracing::trace!(
+                        "status '{}': shell stale but pane has agent content, staying Idle",
+                        self.title,
+                    );
+                    Status::Idle
+                } else {
+                    tracing::trace!(
+                        "status '{}': shell stale, no agent content, setting Error",
+                        self.title,
+                    );
+                    Status::Error
+                }
+            }
             other => other,
         };
 
-        self.last_error = None;
+        tracing::trace!("status '{}': final={:?}", self.title, self.status);
+
+        if self.status == Status::Error {
+            if self.last_error.is_none() {
+                self.last_error = Some(summarize_error_from_pane(&pane_content));
+            }
+        } else {
+            self.last_error = None;
+        }
     }
 
     pub fn update_status(&mut self) {
@@ -745,6 +901,66 @@ impl Instance {
 
 fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
+}
+
+/// Build a short human-readable hint for why a session transitioned to Error.
+///
+/// Called when we set Status::Error but don't already have a `last_error`
+/// populated (e.g. an agent process exited on its own). We grab the last few
+/// non-empty lines of the pane and pick something that looks like an error
+/// message; otherwise fall back to a generic "stopped responding" string so
+/// the UI never renders an Error state without any explanation.
+fn summarize_error_from_pane(pane_content: &str) -> String {
+    let cleaned = crate::tmux::utils::strip_ansi(pane_content);
+    let tail: Vec<&str> = cleaned
+        .lines()
+        .rev()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .take(12)
+        .collect();
+
+    for line in &tail {
+        let lower = line.to_lowercase();
+        if lower.contains("error")
+            || lower.contains("command not found")
+            || lower.contains("permission denied")
+            || lower.contains("cannot")
+            || lower.contains("failed")
+            || lower.contains("no such file")
+            || lower.contains("traceback")
+            || lower.contains("panic")
+        {
+            return truncate_error_line(line);
+        }
+    }
+
+    if let Some(last) = tail.first() {
+        return format!(
+            "Agent stopped responding. Last line: {}",
+            truncate_error_line(last)
+        );
+    }
+
+    "Agent stopped responding and the pane is empty.".to_string()
+}
+
+fn truncate_error_line(line: &str) -> String {
+    const MAX: usize = 200;
+    let trimmed = line.trim();
+    if trimmed.len() <= MAX {
+        trimmed.to_string()
+    } else {
+        let mut out = String::with_capacity(MAX + 1);
+        for (i, ch) in trimmed.char_indices() {
+            if i >= MAX {
+                break;
+            }
+            out.push(ch);
+        }
+        out.push('…');
+        out
+    }
 }
 
 /// Format an environment variable assignment as a shell-safe command prefix.
@@ -772,6 +988,51 @@ fn wrap_command_ignore_suspend(cmd: &str) -> String {
     let escaped = cmd.replace('\'', "'\\''");
     // Use login shell (-l) so version-manager PATHs (NVM, etc.) are available.
     format!("{} -lc 'stty susp undef; exec env {}'", shell, escaped)
+}
+
+/// Check whether captured pane content indicates a living agent rather than
+/// a bare shell prompt. Used to prevent `is_shell_stale()` from producing
+/// false `Error` status when the agent binary is a shell wrapper or spawns
+/// persistent child shell processes.
+fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
+    let clean = crate::tmux::utils::strip_ansi(raw_content);
+    let non_empty: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    if non_empty.is_empty() {
+        return false;
+    }
+
+    // If the last visible line looks like a shell prompt, the agent
+    // likely exited and the shell took over. This catches servers with
+    // verbose MOTD that would otherwise exceed the line-count threshold.
+    let last = non_empty.last().unwrap().trim();
+    if last.ends_with('$')
+        || last.ends_with('#')
+        || last.ends_with('%')
+        || last.ends_with('\u{276f}')
+    {
+        return false;
+    }
+
+    // Agent TUIs fill the screen with UI elements. A bare shell prompt
+    // (after MOTD) rarely exceeds this threshold once the prompt check
+    // above filters out typical shell endings.
+    if non_empty.len() > 5 {
+        return true;
+    }
+
+    // Use word-boundary matching so short names like "pi" don't produce
+    // false positives inside words like "api" or "pipeline".
+    let tool_lower = tool.to_lowercase();
+    let lower = clean.to_lowercase();
+    if lower
+        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+        .any(|word| word == tool_lower)
+    {
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -952,6 +1213,7 @@ mod tests {
             Status::Error,
             Status::Starting,
             Status::Deleting,
+            Status::Creating,
         ];
 
         for status in statuses {
@@ -1148,6 +1410,15 @@ mod tests {
     }
 
     #[test]
+    fn test_has_command_override_extra_args_only() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.extra_args = "--model opus".to_string();
+        assert!(!inst.has_command_override());
+        assert!(inst.has_custom_command());
+    }
+
+    #[test]
     fn test_expects_shell() {
         let mut inst = Instance::new("test", "/tmp/test");
         assert!(!inst.expects_shell());
@@ -1171,5 +1442,71 @@ mod tests {
         assert_eq!(json, "\"unknown\"");
         let deserialized: Status = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, Status::Unknown);
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_bare_shell() {
+        assert!(!pane_has_agent_content("$ ", "opencode"));
+        assert!(!pane_has_agent_content("user@host:~$ ", "opencode"));
+        assert!(!pane_has_agent_content("\n\n$ \n", "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_agent_ui() {
+        let opencode_idle = "ctrl+p commands \u{2022} OpenCode 1.3.13+650d0db";
+        assert!(pane_has_agent_content(opencode_idle, "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_substantial_output() {
+        let many_lines = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(pane_has_agent_content(&many_lines, "vibe"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_empty() {
+        assert!(!pane_has_agent_content("", "opencode"));
+        assert!(!pane_has_agent_content("   \n  \n  ", "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_shell_prompt_at_end() {
+        // Verbose MOTD followed by shell prompt should be detected as a
+        // bare shell, not agent content, even with >5 lines.
+        let motd_then_prompt = "Welcome to Ubuntu 22.04 LTS\n\
+            System load:  0.5\n\
+            Memory usage: 42%\n\
+            Disk usage:   67%\n\
+            Swap usage:   0%\n\
+            Temperature:  45C\n\
+            2 updates available\n\
+            user@host:~$ ";
+        assert!(!pane_has_agent_content(motd_then_prompt, "opencode"));
+
+        // Same with # prompt (root)
+        let root_prompt = "line1\nline2\nline3\nline4\nline5\nline6\n# ";
+        assert!(!pane_has_agent_content(root_prompt, "opencode"));
+
+        // Fish/zsh fancy prompt (❯)
+        let fancy_prompt = "line1\nline2\nline3\nline4\nline5\nline6\n\u{276f}";
+        assert!(!pane_has_agent_content(fancy_prompt, "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_short_tool_name() {
+        // Short tool names like "pi" should NOT match substrings in
+        // unrelated content (e.g., "api" contains "pi").
+        assert!(!pane_has_agent_content("api endpoint ready", "pi"));
+        assert!(!pane_has_agent_content("pipeline started", "pi"));
+
+        // But "pi" as a standalone word should match.
+        assert!(pane_has_agent_content("pi file saved", "pi"));
+        assert!(pane_has_agent_content("done\npi>", "pi"));
+
+        // Longer names like "opencode" should still match.
+        assert!(pane_has_agent_content("OpenCode v1.0", "opencode"));
     }
 }

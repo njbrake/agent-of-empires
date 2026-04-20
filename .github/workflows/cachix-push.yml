@@ -1,0 +1,60 @@
+name: Push to Cachix
+
+# Builds aoe-with-web (--features serve, web UI embedded) for Linux and macOS
+# and pushes the results to the Cachix binary cache so users can install
+# without compiling. Runs a matrix so both systems build in parallel.
+#
+# Requires two repository secrets:
+#   CACHIX_AUTH_TOKEN  - from cachix.org (Settings > Auth Tokens)
+#   CACHIX_CACHE_NAME  - your cache name (e.g. "agent-of-empires")
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      # web/** is intentionally excluded: web/package-lock.json changes
+      # trigger the "Update Nix npm Hash" workflow, which updates the
+      # npmDepsHash in flake.nix. Building here before that hash is
+      # committed races and fails with ENOTCACHED. The workflow_run
+      # trigger below chains the cachix build after the hash update.
+  workflow_run:
+    workflows: ["Update Nix npm Hash"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  cachix:
+    name: Build and push (${{ matrix.os }})
+    # Skip when triggered by a failed hash-update run.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+
+      - name: Set up Cachix
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
+        with:
+          name: ${{ secrets.CACHIX_CACHE_NAME }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build aoe-with-web
+        run: nix build .#aoe-with-web
+
+      - name: Push to Cachix
+        run: cachix push ${{ secrets.CACHIX_CACHE_NAME }} ./result

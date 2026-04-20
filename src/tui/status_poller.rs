@@ -30,7 +30,7 @@ fn polling_tier(status: Status) -> u64 {
         Status::Running | Status::Waiting | Status::Starting => TIER_HOT,
         Status::Idle | Status::Unknown => TIER_WARM,
         Status::Error => TIER_COLD,
-        Status::Stopped | Status::Deleting => 0,
+        Status::Stopped | Status::Deleting | Status::Creating => 0,
     }
 }
 
@@ -135,7 +135,10 @@ impl StatusPoller {
                     if inst.is_sandboxed()
                         && !matches!(
                             inst.status,
-                            Status::Stopped | Status::Deleting | Status::Starting
+                            Status::Stopped
+                                | Status::Deleting
+                                | Status::Starting
+                                | Status::Creating
                         )
                     {
                         if let Some(sandbox) = &inst.sandbox_info {

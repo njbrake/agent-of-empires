@@ -564,6 +564,12 @@ pub fn detect_droid_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+/// settl status is detected via hooks (TOML-based), not tmux pane parsing.
+/// This stub exists so the agent registry has a valid function pointer.
+pub fn detect_settl_status(_content: &str) -> Status {
+    Status::Idle
+}
+
 pub fn detect_gemini_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -938,5 +944,11 @@ mod tests {
     fn test_detect_droid_status_idle() {
         assert_eq!(detect_droid_status("file saved"), Status::Idle);
         assert_eq!(detect_droid_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_settl_status_is_stub() {
+        // settl uses hook-based detection; the stub always returns Idle
+        assert_eq!(detect_settl_status("anything"), Status::Idle);
     }
 }

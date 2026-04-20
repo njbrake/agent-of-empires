@@ -16,9 +16,9 @@ use super::DialogResult;
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::config::{DefaultTerminalMode, SandboxConfig};
 use crate::session::repo_config::HookProgress;
+use crate::session::resolve_config;
 #[cfg(test)]
 use crate::session::Config;
-use crate::session::{civilizations, resolve_config};
 use crate::tmux::AvailableTools;
 use crate::tui::components::{
     DirPicker, DirPickerResult, GroupGhostCompletion, ListPicker, ListPickerResult,
@@ -100,9 +100,6 @@ pub struct NewSessionData {
     pub command_override: String,
 }
 
-/// Spinner frames for loading animation
-pub(super) const SPINNER_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
-
 pub struct NewSessionDialog {
     pub(super) profile: String,
     pub(super) available_profiles: Vec<String>,
@@ -112,8 +109,7 @@ pub struct NewSessionDialog {
     pub(super) group: Input,
     pub(super) tool_index: usize,
     pub(super) focused_field: usize,
-    pub(super) available_tools: Vec<&'static str>,
-    pub(super) existing_titles: Vec<String>,
+    pub(super) available_tools: Vec<String>,
     pub(super) worktree_branch: Input,
     pub(super) create_new_branch: bool,
     pub(super) sandbox_enabled: bool,
@@ -170,7 +166,6 @@ pub struct NewSessionDialog {
     /// Whether the dialog is in loading state (creating session in background)
     pub(super) loading: bool,
     /// Spinner animation frame counter
-    pub(super) spinner_frame: usize,
     /// Whether hooks are being executed during loading
     pub(super) has_hooks: bool,
     /// The currently running hook command
@@ -303,7 +298,6 @@ fn build_inherited_settings(sandbox: &SandboxConfig) -> Vec<(String, String)> {
 impl NewSessionDialog {
     pub fn new(
         tools: AvailableTools,
-        existing_titles: Vec<String>,
         existing_groups: Vec<String>,
         profile: &str,
         available_profiles: Vec<String>,
@@ -312,31 +306,40 @@ impl NewSessionDialog {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let available_tools = tools.available_list();
+        let available_tools: Vec<String> = tools.available_list().to_vec();
         let docker_available = containers::get_container_runtime().is_available();
 
-        // Load resolved config (global merged with profile overrides)
-        let config = resolve_config(profile).unwrap_or_default();
+        // Load resolved config (global + profile + repo overrides from cwd)
+        let config = crate::session::repo_config::resolve_config_with_repo(
+            profile,
+            std::path::Path::new(&current_dir),
+        )
+        .unwrap_or_else(|_| resolve_config(profile).unwrap_or_default());
 
         // Determine default tool index based on config
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {
             available_tools
                 .iter()
-                .position(|&t| t == default_tool.as_str())
+                .position(|t| t == default_tool)
                 .unwrap_or(0)
         } else {
             0
         };
 
-        // Apply sandbox defaults from config
-        let sandbox_enabled = docker_available && config.sandbox.enabled_by_default;
+        // Apply sandbox defaults from config (disabled for host-only agents like settl)
+        let is_default_tool_host_only = available_tools
+            .get(tool_index)
+            .and_then(|t| crate::agents::get_agent(t))
+            .is_some_and(|a| a.host_only);
+        let sandbox_enabled =
+            docker_available && config.sandbox.enabled_by_default && !is_default_tool_host_only;
         let yolo_mode = config.session.yolo_mode_default;
 
         // Load extra args and command override for the default tool
         let selected_tool = available_tools
             .get(tool_index)
             .or_else(|| available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         let extra_args_value = config
             .session
@@ -344,12 +347,7 @@ impl NewSessionDialog {
             .get(selected_tool)
             .cloned()
             .unwrap_or_default();
-        let command_override_value = config
-            .session
-            .agent_command_override
-            .get(selected_tool)
-            .cloned()
-            .unwrap_or_default();
+        let command_override_value = config.session.resolve_tool_command(selected_tool);
 
         // Initialize env entries and inherited settings from config when sandbox is enabled
         let (extra_env, inherited_settings) = if sandbox_enabled {
@@ -374,7 +372,6 @@ impl NewSessionDialog {
             tool_index,
             focused_field: 0,
             available_tools,
-            existing_titles,
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -412,7 +409,6 @@ impl NewSessionDialog {
             error_message: None,
             show_help: false,
             loading: false,
-            spinner_frame: 0,
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
@@ -484,7 +480,8 @@ impl NewSessionDialog {
         let mut changed = false;
 
         if self.loading {
-            self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+            // Spinner frame is computed from elapsed time by rattles,
+            // so we just need to trigger a redraw
             changed = true;
         }
 
@@ -508,10 +505,16 @@ impl NewSessionDialog {
 
     /// Whether the currently selected tool is always in YOLO mode (no opt-in needed).
     fn selected_tool_always_yolo(&self) -> bool {
-        let tool_name = self.available_tools[self.tool_index];
+        let tool_name = &self.available_tools[self.tool_index];
         crate::agents::get_agent(tool_name)
             .and_then(|a| a.yolo.as_ref())
             .is_some_and(|y| matches!(y, crate::agents::YoloMode::AlwaysYolo))
+    }
+
+    /// Whether the currently selected tool can only run on the host (no sandbox/worktree).
+    fn selected_tool_host_only(&self) -> bool {
+        let tool_name = &self.available_tools[self.tool_index];
+        crate::agents::get_agent(tool_name).is_some_and(|a| a.host_only)
     }
 
     /// The field index of the path field (shifts based on whether profile picker is visible)
@@ -535,7 +538,7 @@ impl NewSessionDialog {
         self.tool_index = if let Some(ref default_tool) = config.session.default_tool {
             self.available_tools
                 .iter()
-                .position(|&t| t == default_tool.as_str())
+                .position(|t| t == default_tool)
                 .unwrap_or(0)
         } else {
             0
@@ -544,7 +547,9 @@ impl NewSessionDialog {
         // Reset sandbox/yolo defaults
         self.yolo_mode_default = config.session.yolo_mode_default;
         self.yolo_mode = self.yolo_mode_default;
-        self.sandbox_enabled = self.docker_available && config.sandbox.enabled_by_default;
+        self.sandbox_enabled = self.docker_available
+            && config.sandbox.enabled_by_default
+            && !self.selected_tool_host_only();
 
         // Reset sandbox image from resolved config (includes profile overrides)
         self.sandbox_image = Input::new(config.sandbox.default_image.clone());
@@ -563,7 +568,7 @@ impl NewSessionDialog {
             .available_tools
             .get(self.tool_index)
             .or_else(|| self.available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         self.extra_args = Input::new(
             config
@@ -573,14 +578,7 @@ impl NewSessionDialog {
                 .cloned()
                 .unwrap_or_default(),
         );
-        self.command_override = Input::new(
-            config
-                .session
-                .agent_command_override
-                .get(selected_tool)
-                .cloned()
-                .unwrap_or_default(),
-        );
+        self.command_override = Input::new(config.session.resolve_tool_command(selected_tool));
         self.tool_config_mode = false;
         self.tool_config_focused_field = 0;
 
@@ -592,12 +590,10 @@ impl NewSessionDialog {
     }
 
     #[cfg(test)]
-    pub(super) fn new_with_config(tools: Vec<&'static str>, path: String, config: Config) -> Self {
+    pub(super) fn new_with_config(tools: Vec<&str>, path: String, config: Config) -> Self {
+        let tools: Vec<String> = tools.iter().map(|s| s.to_string()).collect();
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {
-            tools
-                .iter()
-                .position(|&t| t == default_tool.as_str())
-                .unwrap_or(0)
+            tools.iter().position(|t| t == default_tool).unwrap_or(0)
         } else {
             0
         };
@@ -612,7 +608,6 @@ impl NewSessionDialog {
             tool_index,
             focused_field: 0,
             available_tools: tools,
-            existing_titles: Vec::new(),
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -650,7 +645,6 @@ impl NewSessionDialog {
             error_message: None,
             show_help: false,
             loading: false,
-            spinner_frame: 0,
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
@@ -662,7 +656,7 @@ impl NewSessionDialog {
     }
 
     #[cfg(test)]
-    pub(super) fn new_with_tools(tools: Vec<&'static str>, path: String) -> Self {
+    pub(super) fn new_with_tools(tools: Vec<&str>, path: String) -> Self {
         Self {
             profile: "default".to_string(),
             available_profiles: vec!["default".to_string()],
@@ -672,8 +666,7 @@ impl NewSessionDialog {
             group: Input::default(),
             tool_index: 0,
             focused_field: 0,
-            available_tools: tools,
-            existing_titles: Vec::new(),
+            available_tools: tools.iter().map(|s| s.to_string()).collect(),
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -711,7 +704,6 @@ impl NewSessionDialog {
             error_message: None,
             show_help: false,
             loading: false,
-            spinner_frame: 0,
             has_hooks: false,
             current_hook: None,
             hook_output: Vec::new(),
@@ -802,7 +794,8 @@ impl NewSessionDialog {
 
         let has_profile_selection = self.available_profiles.len() > 1;
         let has_tool_selection = self.available_tools.len() > 1;
-        let has_sandbox = self.docker_available;
+        let is_host_only = self.selected_tool_host_only();
+        let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
         // Field order: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
         // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
@@ -825,8 +818,13 @@ impl NewSessionDialog {
         } else {
             usize::MAX
         };
-        let worktree_field = fi;
-        fi += 1;
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if has_sandbox {
             let f = fi;
             fi += 1;
@@ -954,6 +952,10 @@ impl NewSessionDialog {
                 } else {
                     self.yolo_mode = self.yolo_mode_default;
                 }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_branch.reset();
+                }
                 self.reload_tool_config();
                 DialogResult::Continue
             }
@@ -963,6 +965,10 @@ impl NewSessionDialog {
                     self.yolo_mode = true;
                 } else {
                     self.yolo_mode = self.yolo_mode_default;
+                }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_branch.reset();
                 }
                 self.reload_tool_config();
                 DialogResult::Continue
@@ -1120,6 +1126,13 @@ impl NewSessionDialog {
         const WT_NEW_BRANCH: usize = 0;
         const WT_EXTRA_REPOS: usize = 1;
         const WT_MAX: usize = 2;
+
+        if self.branch_picker.is_active() {
+            if let ListPickerResult::Selected(value) = self.branch_picker.handle_key(key) {
+                self.worktree_branch = Input::new(value);
+            }
+            return DialogResult::Continue;
+        }
 
         // Handle workspace repos list editing when expanded
         if self.workspace_repos_expanded && self.worktree_config_focused_field == WT_EXTRA_REPOS {
@@ -1331,7 +1344,7 @@ impl NewSessionDialog {
             .available_tools
             .get(self.tool_index)
             .or_else(|| self.available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         self.extra_args = Input::new(
             config
@@ -1341,14 +1354,7 @@ impl NewSessionDialog {
                 .cloned()
                 .unwrap_or_default(),
         );
-        self.command_override = Input::new(
-            config
-                .session
-                .agent_command_override
-                .get(tool)
-                .cloned()
-                .unwrap_or_default(),
-        );
+        self.command_override = Input::new(config.session.resolve_tool_command(tool));
     }
 
     fn current_input_mut(&mut self) -> &mut Input {
@@ -1356,17 +1362,23 @@ impl NewSessionDialog {
         let has_yolo = !self.selected_tool_always_yolo();
         let base = if self.has_profile_selection() { 1 } else { 0 };
 
-        // Field layout: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
+        let is_host_only = self.selected_tool_host_only();
+        // Field layout: [profile], title, path, [tool], [yolo], [worktree], [sandbox], group
         let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
         if has_yolo {
             fi += 1;
         }
-        let worktree_field = fi;
-        let mut next = worktree_field + 1;
-        if self.docker_available {
-            next += 1; // sandbox checkbox
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        if self.docker_available && !is_host_only {
+            fi += 1; // sandbox checkbox
         }
-        let group_field = next;
+        let group_field = fi;
 
         let path_field = self.path_field();
         let title_field = if self.has_profile_selection() { 1 } else { 0 };
@@ -1379,14 +1391,33 @@ impl NewSessionDialog {
         }
     }
 
+    pub fn handle_paste(&mut self, text: &str) {
+        let sanitized: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+
+        // Route to the active sub-mode input if one is open
+        let target: &mut Input = if let Some(ref mut input) = self.env_editing_input {
+            input
+        } else if let Some(ref mut input) = self.workspace_repo_editing_input {
+            input
+        } else if self.tool_config_mode {
+            if self.tool_config_focused_field == 0 {
+                &mut self.command_override
+            } else {
+                &mut self.extra_args
+            }
+        } else if self.sandbox_config_mode && self.sandbox_focused_field == 0 {
+            &mut self.sandbox_image
+        } else {
+            self.current_input_mut()
+        };
+        for ch in sanitized.chars() {
+            target.handle(tui_input::InputRequest::InsertChar(ch));
+        }
+    }
+
     fn build_submit_result(&self) -> DialogResult<NewSessionData> {
         let title_value = self.title.value().trim();
-        let final_title = if title_value.is_empty() {
-            let refs: Vec<&str> = self.existing_titles.iter().map(|s| s.as_str()).collect();
-            civilizations::generate_random_title(&refs)
-        } else {
-            title_value.to_string()
-        };
+        let final_title = title_value.to_string();
         let worktree_value = self.worktree_branch.value().trim();
         let has_worktree_branch = !worktree_value.is_empty();
         let worktree_branch = if has_worktree_branch {
@@ -1399,7 +1430,7 @@ impl NewSessionDialog {
             title: final_title,
             path: self.path.value().trim().to_string(),
             group: self.group.value().trim().to_string(),
-            tool: self.available_tools[self.tool_index].to_string(),
+            tool: self.available_tools[self.tool_index].clone(),
             worktree_branch,
             create_new_branch: self.create_new_branch,
             extra_repo_paths: if has_worktree_branch {

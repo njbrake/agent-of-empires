@@ -3,7 +3,9 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH, SPINNER_FRAMES};
+use rattles::presets::prelude as spinners;
+
+use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
 use crate::tui::components::{render_text_field, render_text_field_with_ghost};
 use crate::tui::styles::Theme;
 
@@ -35,8 +37,9 @@ impl NewSessionDialog {
 
         let has_profile_selection = self.has_profile_selection();
         let has_tool_selection = self.available_tools.len() > 1;
-        let has_sandbox = self.docker_available;
-        let has_worktree = !self.worktree_branch.value().is_empty();
+        let is_host_only = self.selected_tool_host_only();
+        let has_sandbox = self.docker_available && !is_host_only;
+        let has_worktree = !is_host_only && !self.worktree_branch.value().is_empty();
         let has_yolo = !self.selected_tool_always_yolo();
         let dialog_width = 80;
 
@@ -53,7 +56,9 @@ impl NewSessionDialog {
         if has_yolo {
             constraints.push(Constraint::Length(2)); // YOLO mode checkbox
         }
-        constraints.push(Constraint::Length(2)); // Worktree Branch
+        if !is_host_only {
+            constraints.push(Constraint::Length(2)); // Worktree Branch
+        }
         if has_sandbox {
             constraints.push(Constraint::Length(2)); // Sandbox checkbox (summary only)
         }
@@ -116,8 +121,13 @@ impl NewSessionDialog {
         } else {
             usize::MAX
         };
-        let worktree_field = fi;
-        fi += 1;
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
         let sandbox_field = if has_sandbox {
             let f = fi;
             fi += 1;
@@ -178,7 +188,7 @@ impl NewSessionDialog {
                     tool_spans.push(Span::raw("  "));
                 }
                 tool_spans.push(Span::styled(if is_selected { "● " } else { "○ " }, style));
-                tool_spans.push(Span::styled(*tool_name, style));
+                tool_spans.push(Span::styled(tool_name.as_str(), style));
             }
 
             // Show Ctrl+P hint and summary of tool config
@@ -207,7 +217,10 @@ impl NewSessionDialog {
             let mut tool_spans = vec![
                 Span::styled("Tool:", tool_style),
                 Span::raw(" "),
-                Span::styled(self.available_tools[0], Style::default().fg(theme.accent)),
+                Span::styled(
+                    self.available_tools[0].as_str(),
+                    Style::default().fg(theme.accent),
+                ),
             ];
 
             let has_config =
@@ -256,8 +269,8 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Worktree Branch (with config summary)
-        {
+        // Worktree Branch (with config summary) -- hidden for host-only agents
+        if !is_host_only {
             let is_wt_focused = self.focused_field == worktree_field;
             let wt_value = self.worktree_branch.value();
 
@@ -694,7 +707,7 @@ impl NewSessionDialog {
             .available_tools
             .get(self.tool_index)
             .or_else(|| self.available_tools.first())
-            .copied()
+            .map(|s| s.as_str())
             .unwrap_or("claude");
         let title = format!(" Tool Configuration: {} ", selected_tool);
 
@@ -1272,7 +1285,9 @@ impl NewSessionDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let spinner = SPINNER_FRAMES[self.spinner_frame];
+        let spinner = spinners::orbit()
+            .set_interval(std::time::Duration::from_millis(400))
+            .current_frame();
 
         if show_hook_output {
             let mut lines = vec![];

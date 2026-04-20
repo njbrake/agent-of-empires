@@ -80,6 +80,12 @@ impl CustomInstructionDialog {
         }
     }
 
+    pub fn handle_paste(&mut self, text: &str) {
+        if self.focused_zone == 0 {
+            self.text_area.insert_str(text);
+        }
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = (area.width * 70 / 100).max(40).min(area.width);
         let dialog_height = (area.height * 60 / 100).max(10).min(area.height);

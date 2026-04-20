@@ -32,7 +32,8 @@ pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
         );
     }
 
-    tmux_session.send_keys(&args.message)?;
+    let delay = crate::agents::send_keys_enter_delay(&inst.tool);
+    tmux_session.send_keys_with_delay(&args.message, delay)?;
     println!("Sent message to '{}'", inst.title);
     Ok(())
 }

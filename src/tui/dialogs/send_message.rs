@@ -57,6 +57,10 @@ impl SendMessageDialog {
         }
     }
 
+    pub fn handle_paste(&mut self, text: &str) {
+        self.text_area.insert_str(text);
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // 2 for borders + 1 per content line, min 3 (single line), max 12
         let content_lines = self.text_area.lines().len() as u16;
@@ -169,5 +173,37 @@ mod tests {
         dialog.handle_key(key(KeyCode::Char('2')));
         let result = dialog.handle_key(key(KeyCode::Enter));
         assert!(matches!(result, DialogResult::Submit(ref s) if s == "l1\nl2"));
+    }
+
+    #[test]
+    fn test_paste_single_line() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_paste("hello world");
+        assert_eq!(dialog.get_text(), "hello world");
+    }
+
+    #[test]
+    fn test_paste_multiline() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_paste("line1\nline2\nline3");
+        assert_eq!(dialog.get_text(), "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn test_paste_then_submit() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_paste("pasted text");
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        assert!(matches!(result, DialogResult::Submit(ref s) if s == "pasted text"));
+    }
+
+    #[test]
+    fn test_paste_appends_to_existing() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('h')));
+        dialog.handle_key(key(KeyCode::Char('i')));
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        dialog.handle_paste("world");
+        assert_eq!(dialog.get_text(), "hi world");
     }
 }

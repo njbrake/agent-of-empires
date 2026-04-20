@@ -45,6 +45,9 @@ pub struct Config {
 
     #[serde(default)]
     pub app_state: AppStateConfig,
+
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 /// Session list sort order
@@ -87,6 +90,31 @@ impl SortOrder {
     }
 }
 
+/// Session list grouping mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupByMode {
+    #[default]
+    Manual,
+    Project,
+}
+
+impl GroupByMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            GroupByMode::Manual => GroupByMode::Project,
+            GroupByMode::Project => GroupByMode::Manual,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GroupByMode::Manual => "Manual",
+            GroupByMode::Project => "Project",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppStateConfig {
     #[serde(default)]
@@ -109,6 +137,9 @@ pub struct AppStateConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<SortOrder>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<GroupByMode>,
 }
 
 /// Session-related configuration defaults
@@ -136,6 +167,71 @@ pub struct SessionConfig {
     /// to tmux pane content parsing, which is less reliable.
     #[serde(default = "default_true")]
     pub agent_status_hooks: bool,
+
+    /// User-defined custom agents: name -> launch command
+    /// (e.g., "lenovo-claude" = "ssh -t lenovo claude").
+    /// Custom agent names appear in the TUI agent picker alongside built-in agents.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub custom_agents: HashMap<String, String>,
+
+    /// Status detection mapping: agent name -> built-in agent name
+    /// (e.g., "lenovo-claude" = "claude").
+    /// Maps a custom (or built-in) agent to another agent's status detection heuristics.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_detect_as: HashMap<String, String>,
+}
+
+impl SessionConfig {
+    /// Resolve the command override for a tool, checking agent_command_override first,
+    /// then falling back to custom_agents. Returns empty string if no override found.
+    pub fn resolve_tool_command(&self, tool: &str) -> String {
+        self.agent_command_override
+            .get(tool)
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.custom_agents.get(tool))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Log warnings for misconfigured custom agent entries.
+    /// Called after config load to surface TOML editing mistakes.
+    pub fn warn_custom_agent_issues(&self) {
+        for (name, command) in &self.custom_agents {
+            if name.is_empty() {
+                tracing::warn!("custom_agents: entry with empty name will be ignored");
+            }
+            if command.is_empty() {
+                tracing::warn!(
+                    "custom_agents: '{}' has an empty command, session will launch with no command",
+                    name
+                );
+            }
+            if crate::agents::get_agent(name).is_some() {
+                tracing::warn!(
+                    "custom_agents: '{}' shadows a built-in agent; use agent_command_override instead",
+                    name
+                );
+            }
+        }
+        for (name, target) in &self.agent_detect_as {
+            if name.is_empty() {
+                tracing::warn!("agent_detect_as: entry with empty agent name will be ignored");
+            }
+            if target.is_empty() {
+                tracing::warn!(
+                    "agent_detect_as: '{}' maps to an empty target, status detection will default to Idle",
+                    name
+                );
+            } else if crate::agents::get_agent(target).is_none() {
+                tracing::warn!(
+                    "agent_detect_as: '{}' maps to unknown agent '{}', status detection will default to Idle. Known agents: {}",
+                    name,
+                    target,
+                    crate::agents::agent_names().join(", ")
+                );
+            }
+        }
+    }
 }
 
 /// Diff view configuration
@@ -162,6 +258,44 @@ impl Default for DiffConfig {
 
 fn default_context_lines() -> usize {
     3
+}
+
+/// Web dashboard runtime configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Operator kill switch for browser push notifications. When false,
+    /// `/api/push/*` returns 404 and the status-change consumer drops
+    /// events without sending. Existing subscriptions persist across
+    /// flips, so toggling back to true resumes delivery without requiring
+    /// users to re-opt-in.
+    #[serde(default = "default_true")]
+    pub notifications_enabled: bool,
+
+    /// Server-wide default: fire a push on Running to Waiting transitions.
+    /// Sessions can override per-session via `Instance.notify_on_waiting`.
+    #[serde(default = "default_true")]
+    pub notify_on_waiting: bool,
+
+    /// Server-wide default: fire a push on Running to Idle transitions.
+    /// Off by default because Idle fires on every session completion and
+    /// gets spammy quickly. Sessions can opt in via `Instance.notify_on_idle`.
+    #[serde(default)]
+    pub notify_on_idle: bool,
+
+    /// Server-wide default: fire a push on Running to Error transitions.
+    #[serde(default = "default_true")]
+    pub notify_on_error: bool,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            notifications_enabled: true,
+            notify_on_waiting: true,
+            notify_on_idle: false,
+            notify_on_error: true,
+        }
+    }
 }
 
 fn default_profile() -> String {
@@ -278,10 +412,13 @@ pub struct SandboxConfig {
     #[serde(default = "default_sandbox_image")]
     pub default_image: String,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::serde_helpers::string_or_vec")]
     pub extra_volumes: Vec<String>,
 
-    #[serde(default = "default_sandbox_environment")]
+    #[serde(
+        default = "default_sandbox_environment",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
     pub environment: Vec<String>,
 
     #[serde(default = "default_true")]
@@ -293,7 +430,11 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit: Option<String>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
     pub port_mappings: Vec<String>,
 
     /// Default terminal mode for sandboxed sessions (host or container)
@@ -301,7 +442,7 @@ pub struct SandboxConfig {
     pub default_terminal_mode: DefaultTerminalMode,
 
     /// Relative directory paths to exclude from the host bind mount via anonymous volumes
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::serde_helpers::string_or_vec")]
     pub volume_ignores: Vec<String>,
 
     /// Mount ~/.ssh into sandbox containers (default: false)
@@ -684,6 +825,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sandbox_config_string_shorthand() {
+        // Regression test: all Vec<String> sandbox fields accept a plain string
+        let toml = r#"
+            environment = "ANTHROPIC_API_KEY"
+            extra_volumes = "/data:/data:ro"
+            volume_ignores = "node_modules"
+            port_mappings = "3000:3000"
+        "#;
+        let sb: SandboxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(sb.environment, vec!["ANTHROPIC_API_KEY"]);
+        assert_eq!(sb.extra_volumes, vec!["/data:/data:ro"]);
+        assert_eq!(sb.volume_ignores, vec!["node_modules"]);
+        assert_eq!(sb.port_mappings, vec!["3000:3000"]);
+    }
+
     // Tests for ClaudeConfig
     #[test]
     fn test_claude_config_default() {
@@ -965,6 +1122,72 @@ mod tests {
             deserialized.session.agent_extra_args.get("opencode"),
             Some(&"--port 8080".to_string()),
             "agent_extra_args should survive roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_command_prefers_command_override() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_command_override
+            .insert("my-agent".to_string(), "override-cmd".to_string());
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "custom-cmd".to_string());
+        assert_eq!(config.resolve_tool_command("my-agent"), "override-cmd");
+    }
+
+    #[test]
+    fn test_resolve_tool_command_falls_back_to_custom_agents() {
+        let mut config = SessionConfig::default();
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "ssh -t host claude".to_string());
+        assert_eq!(
+            config.resolve_tool_command("my-agent"),
+            "ssh -t host claude"
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_command_skips_empty_override() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_command_override
+            .insert("my-agent".to_string(), String::new());
+        config
+            .custom_agents
+            .insert("my-agent".to_string(), "custom-cmd".to_string());
+        assert_eq!(config.resolve_tool_command("my-agent"), "custom-cmd");
+    }
+
+    #[test]
+    fn test_resolve_tool_command_returns_empty_for_unknown() {
+        let config = SessionConfig::default();
+        assert_eq!(config.resolve_tool_command("nonexistent"), "");
+    }
+
+    #[test]
+    fn test_custom_agents_roundtrip() {
+        let mut config = Config::default();
+        config.session.custom_agents.insert(
+            "lenovo-claude".to_string(),
+            "ssh -t lenovo claude".to_string(),
+        );
+        config
+            .session
+            .agent_detect_as
+            .insert("lenovo-claude".to_string(), "claude".to_string());
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.session.custom_agents.get("lenovo-claude"),
+            Some(&"ssh -t lenovo claude".to_string()),
+        );
+        assert_eq!(
+            deserialized.session.agent_detect_as.get("lenovo-claude"),
+            Some(&"claude".to_string()),
         );
     }
 }

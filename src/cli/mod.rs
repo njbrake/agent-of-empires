@@ -8,9 +8,12 @@ pub mod list;
 pub mod profile;
 pub mod remove;
 pub mod send;
+#[cfg(feature = "serve")]
+pub mod serve;
 pub mod session;
 pub mod sounds;
 pub mod status;
+pub mod theme;
 pub mod tmux;
 pub mod uninstall;
 pub mod worktree;

@@ -21,6 +21,8 @@ pub struct DeleteOptions {
 pub struct DeleteDialogConfig {
     pub worktree_branch: Option<String>,
     pub has_sandbox: bool,
+    /// Project path used to load repo-level config overrides.
+    pub project_path: Option<String>,
 }
 
 /// Focus states for navigation
@@ -45,7 +47,17 @@ pub struct UnifiedDeleteDialog {
 
 impl UnifiedDeleteDialog {
     pub fn new(session_title: String, config: DeleteDialogConfig, profile: &str) -> Self {
-        let user_config = crate::session::resolve_config(profile).unwrap_or_default();
+        let user_config = config
+            .project_path
+            .as_ref()
+            .and_then(|p| {
+                crate::session::repo_config::resolve_config_with_repo(
+                    profile,
+                    std::path::Path::new(p),
+                )
+                .ok()
+            })
+            .unwrap_or_else(|| crate::session::resolve_config(profile).unwrap_or_default());
 
         let options = DeleteOptions {
             delete_worktree: config.worktree_branch.is_some() && user_config.worktree.auto_cleanup,
@@ -496,6 +508,7 @@ mod tests {
             DeleteDialogConfig {
                 worktree_branch: Some("feature-branch".to_string()),
                 has_sandbox: true,
+                project_path: None,
             },
             "default",
         )

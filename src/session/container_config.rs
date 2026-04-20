@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::containers::{ContainerConfig, VolumeMount};
+use crate::containers::{ContainerConfig, EnvEntry, VolumeMount};
 use crate::git::GitWorktree;
 
 use super::environment::collect_environment;
@@ -16,6 +16,14 @@ use super::instance::SandboxInfo;
 
 /// Subdirectory name inside each agent's config dir for the shared sandbox config.
 const SANDBOX_SUBDIR: &str = "sandbox";
+
+/// Content seeded into the Claude sandbox `.sandbox-gitconfig`. Scoped to github.com;
+/// the helper emits credentials only on `get` and only when GH_TOKEN is non-empty, so
+/// other remotes and sessions without a forwarded token fall through to normal git
+/// behavior.
+const SANDBOX_GITCONFIG_SEED: &str = r#"[credential "https://github.com"]
+	helper = "!f() { test \"$1\" = get || exit 0; test -n \"$GH_TOKEN\" || exit 0; echo username=x-access-token; echo \"password=$GH_TOKEN\"; }; f"
+"#;
 
 /// Declarative definition of an agent CLI's config directory for sandbox mounting.
 struct AgentConfigMount {
@@ -44,6 +52,10 @@ struct AgentConfigMount {
     /// sandbox. Protects credentials placed by the v002 migration or by in-container
     /// authentication from being overwritten by stale host copies.
     preserve_files: &'static [&'static str],
+    /// Files to delete from the sandbox dir before each launch. Prevents stale state
+    /// (e.g. SQLite databases from a previous opencode version) from causing failures
+    /// when the container image is updated.
+    clean_files: &'static [&'static str],
 }
 
 /// Agent config definitions. Each entry describes one agent CLI's config directory.
@@ -62,23 +74,39 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
         // state. Seeding hasCompletedOnboarding skips the first-run wizard.
         // Claude Code sets GIT_CONFIG_GLOBAL=/root/.sandbox-gitconfig when IS_SANDBOX=1;
-        // the file must exist or all git commands fail.
+        // the file must exist or all git commands fail. The seeded credential helper
+        // lets `git push` to github.com authenticate automatically when GH_TOKEN is
+        // forwarded via `sandbox.environment` (e.g. "GH_TOKEN=$GH_TOKEN"). Without a
+        // helper, git ignores GH_TOKEN and prompts for a username; `gh auth setup-git`
+        // can't fix it in-container because the gitconfig is a single-file bind mount
+        // that can't be rewritten via atomic rename.
         home_seed_files: &[
             (".claude.json", r#"{"hasCompletedOnboarding":true}"#),
-            (".sandbox-gitconfig", ""),
+            (".sandbox-gitconfig", SANDBOX_GITCONFIG_SEED),
         ],
         preserve_files: &[".credentials.json", "history.jsonl"],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "opencode",
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
-        skip_entries: &["sandbox"],
+        // Never copy or keep the SQLite database in the sandbox. Opencode must
+        // create its own fresh database on each launch -- a stale db from a
+        // previous opencode version (or copied from the host) causes drizzle
+        // migration failures.
+        skip_entries: &[
+            "sandbox",
+            "opencode.db",
+            "opencode.db-wal",
+            "opencode.db-shm",
+        ],
         seed_files: &[],
         copy_dirs: &[],
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
     },
     AgentConfigMount {
         tool_name: "opencode",
@@ -90,6 +118,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "codex",
@@ -101,6 +130,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "gemini",
@@ -112,6 +142,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "vibe",
@@ -123,6 +154,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "cursor",
@@ -134,6 +166,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "copilot",
@@ -145,6 +178,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "pi",
@@ -156,6 +190,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
     AgentConfigMount {
         tool_name: "droid",
@@ -167,6 +202,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],
+        clean_files: &[],
     },
 ];
 
@@ -259,6 +295,90 @@ fn sync_agent_config(
     }
 
     Ok(())
+}
+
+fn rewrite_claude_plugin_paths(sandbox_dir: &Path, host_home: &Path) -> Result<()> {
+    const CONTAINER_HOME: &str = "/root";
+
+    let plugins_dir = sandbox_dir.join("plugins");
+    if !plugins_dir.exists() {
+        return Ok(());
+    }
+
+    let host_home_str = host_home.to_string_lossy();
+    let targets = [
+        plugins_dir.join("known_marketplaces.json"),
+        plugins_dir.join("installed_plugins.json"),
+        plugins_dir
+            .join("marketplaces")
+            .join("known_marketplaces.json"),
+        plugins_dir
+            .join("marketplaces")
+            .join("installed_plugins.json"),
+    ];
+
+    for path in targets {
+        if !path.exists() {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to read {}: {}", path.display(), e);
+                continue;
+            }
+        };
+
+        let mut value: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to parse {}: {}", path.display(), e);
+                continue;
+            }
+        };
+
+        let mut changed = false;
+        rewrite_plugin_value_paths(&mut value, &host_home_str, CONTAINER_HOME, &mut changed);
+
+        if changed {
+            let serialized = serde_json::to_string(&value)?;
+            if let Err(e) = std::fs::write(&path, serialized) {
+                tracing::warn!("Failed to write {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn rewrite_plugin_value_paths(
+    value: &mut serde_json::Value,
+    host_home: &str,
+    container_home: &str,
+    changed: &mut bool,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                if key == "installLocation" || key == "installPath" {
+                    if let serde_json::Value::String(path) = val {
+                        if path.starts_with(host_home) {
+                            *path = format!("{}{}", container_home, &path[host_home.len()..]);
+                            *changed = true;
+                        }
+                    }
+                }
+                rewrite_plugin_value_paths(val, host_home, container_home, changed);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for val in values {
+                rewrite_plugin_value_paths(val, host_home, container_home, changed);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Recursively copy a directory tree, following symlinks.
@@ -389,6 +509,18 @@ fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::pat
     let host_dir = home.join(mount.host_rel);
     let sandbox_dir = home.join(mount.host_rel).join(SANDBOX_SUBDIR);
 
+    // Remove stale files before syncing. This prevents leftovers from a previous
+    // session (e.g. a SQLite database created by an older tool version) from
+    // causing failures when the container image is updated.
+    for &name in mount.clean_files {
+        let path = sandbox_dir.join(name);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!("Failed to clean {}: {}", path.display(), e);
+            }
+        }
+    }
+
     if host_dir.exists() {
         sync_agent_config(
             &host_dir,
@@ -398,6 +530,16 @@ fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::pat
             mount.copy_dirs,
             mount.preserve_files,
         )?;
+
+        if mount.tool_name == "claude" {
+            if let Err(e) = rewrite_claude_plugin_paths(&sandbox_dir, home) {
+                tracing::warn!(
+                    "Failed to rewrite Claude plugin paths in {}: {}",
+                    sandbox_dir.display(),
+                    e
+                );
+            }
+        }
 
         if let Some((service, filename)) = mount.keychain_credential {
             if let Err(e) = extract_keychain_credential(service, &sandbox_dir.join(filename)) {
@@ -646,11 +788,22 @@ pub(crate) fn build_container_config(
         compute_volume_paths(project_path, project_path_str)?
     };
 
+    // Collect all paths that should receive volume_ignores: the workspace_path
+    // (where builds happen) plus every project mount root (which may differ in
+    // bare-repo layouts where workspace_path is a subdirectory of the mount).
+    let mut volume_ignore_bases: Vec<String> = project_volumes
+        .iter()
+        .map(|v| v.container_path.clone())
+        .collect();
+    if !volume_ignore_bases.contains(&workspace_path) {
+        volume_ignore_bases.push(workspace_path.clone());
+    }
+
     let mut volumes = project_volumes;
 
     let sandbox_config = {
         let profile = super::config::resolve_default_profile();
-        match super::profile_config::resolve_config(&profile) {
+        match super::repo_config::resolve_config_with_repo(&profile, project_path) {
             Ok(c) => {
                 tracing::debug!(
                     "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
@@ -774,15 +927,21 @@ pub(crate) fn build_container_config(
         }
     }
 
-    let mut environment: Vec<(String, String)> = collect_environment(&sandbox_config, sandbox_info);
+    let mut environment = collect_environment(&sandbox_config, sandbox_info);
 
     if let Some(agent) = crate::agents::get_agent(tool) {
         for &(key, value) in agent.container_env {
-            environment.push((key.to_string(), value.to_string()));
+            environment.push(EnvEntry::Literal {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
         }
         if is_yolo_mode {
             if let Some(crate::agents::YoloMode::EnvVar(key, value)) = &agent.yolo {
-                environment.push((key.to_string(), value.to_string()));
+                environment.push(EnvEntry::Literal {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                });
             }
         }
     }
@@ -821,10 +980,14 @@ pub(crate) fn build_container_config(
     //   - Exact match: both point to same path
     //   - Anonymous volume is parent of extra_volume (would shadow the mount)
     //   - Anonymous volume is inside extra_volume (redundant/conflicting)
-    let anonymous_volumes: Vec<String> = sandbox_config
-        .volume_ignores
+    let anonymous_volumes: Vec<String> = volume_ignore_bases
         .iter()
-        .map(|ignore| format!("{}/{}", workspace_path, ignore))
+        .flat_map(|base_path| {
+            sandbox_config
+                .volume_ignores
+                .iter()
+                .map(move |ignore| format!("{}/{}", base_path, ignore))
+        })
         .filter(|anon_path| {
             !extra_volume_container_paths.iter().any(|extra_path| {
                 anon_path == extra_path
@@ -1384,6 +1547,43 @@ mod tests {
     }
 
     #[test]
+    fn test_rewrites_claude_plugin_paths_to_container_home() {
+        let dir = TempDir::new().unwrap();
+        let host_home = dir.path().join("home");
+        let host = host_home.join(".claude");
+        fs::create_dir_all(host.join("plugins")).unwrap();
+
+        let known = format!(
+            r#"{{"installLocation":"{}/.claude/plugins/marketplaces/claude-plugins-official"}}"#,
+            host_home.display()
+        );
+        fs::write(host.join("plugins/known_marketplaces.json"), known).unwrap();
+
+        let installed = format!(
+            r#"{{"rust-analyzer-lsp":{{"installPath":"{}/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0"}}}}"#,
+            host_home.display()
+        );
+        fs::write(host.join("plugins/installed_plugins.json"), installed).unwrap();
+
+        let sandbox = dir.path().join("sandbox");
+        sync_agent_config(&host, &sandbox, &[], &[], &["plugins"], &[]).unwrap();
+        rewrite_claude_plugin_paths(&sandbox, &host_home).unwrap();
+
+        let host_prefix = host_home.to_string_lossy();
+        let known_out =
+            fs::read_to_string(sandbox.join("plugins/known_marketplaces.json")).unwrap();
+        assert!(known_out.contains("/root/.claude/plugins/marketplaces/claude-plugins-official"));
+        assert!(!known_out.contains(host_prefix.as_ref()));
+
+        let installed_out =
+            fs::read_to_string(sandbox.join("plugins/installed_plugins.json")).unwrap();
+        assert!(installed_out.contains(
+            "/root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0"
+        ));
+        assert!(!installed_out.contains(host_prefix.as_ref()));
+    }
+
+    #[test]
     fn test_agent_config_mounts_have_valid_entries() {
         for mount in AGENT_CONFIG_MOUNTS {
             assert!(!mount.tool_name.is_empty());
@@ -1451,6 +1651,38 @@ mod tests {
                 mount.tool_name
             );
         }
+    }
+
+    #[test]
+    fn test_sandbox_gitconfig_seed_is_valid_gitconfig() {
+        let dir = TempDir::new().unwrap();
+        let gitconfig = dir.path().join("gitconfig");
+        fs::write(&gitconfig, SANDBOX_GITCONFIG_SEED).unwrap();
+
+        let out = std::process::Command::new("git")
+            .args([
+                "config",
+                "--file",
+                gitconfig.to_str().unwrap(),
+                "--get",
+                "credential.https://github.com.helper",
+            ])
+            .output();
+        let Ok(out) = out else {
+            eprintln!("skipping: git not available");
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "git failed to parse seeded gitconfig: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let helper = String::from_utf8_lossy(&out.stdout);
+        assert!(helper.starts_with('!'), "helper must be a shell snippet");
+        assert!(
+            helper.contains("$GH_TOKEN"),
+            "helper must read GH_TOKEN at runtime"
+        );
     }
 
     #[test]
@@ -1581,6 +1813,55 @@ mod tests {
             .exists());
         // "subdir" is NOT in copy_dirs, so still skipped.
         assert!(!sandbox.join("subdir").exists());
+    }
+
+    #[test]
+    fn test_rewrite_claude_plugin_paths() {
+        let dir = TempDir::new().unwrap();
+        let host_home = dir.path().join("home");
+        fs::create_dir_all(&host_home).unwrap();
+
+        let sandbox = dir.path().join("sandbox");
+        let marketplaces = sandbox.join("plugins").join("marketplaces");
+        fs::create_dir_all(&marketplaces).unwrap();
+
+        let host_marketplace = format!(
+            "{}/.claude/plugins/marketplaces/claude-plugins-official",
+            host_home.display()
+        );
+        let known = format!(
+            r#"{{"marketplaces":[{{"installLocation":"{}"}}]}}"#,
+            host_marketplace
+        );
+        fs::write(marketplaces.join("known_marketplaces.json"), known).unwrap();
+
+        let host_install = format!(
+            "{}/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
+            host_home.display()
+        );
+        let installed = format!(r#"{{"plugins":[{{"installPath":"{}"}}]}}"#, host_install);
+        fs::write(
+            sandbox.join("plugins").join("installed_plugins.json"),
+            installed,
+        )
+        .unwrap();
+
+        rewrite_claude_plugin_paths(&sandbox, &host_home).unwrap();
+
+        let known = fs::read_to_string(marketplaces.join("known_marketplaces.json")).unwrap();
+        let known_json: serde_json::Value = serde_json::from_str(&known).unwrap();
+        assert_eq!(
+            known_json["marketplaces"][0]["installLocation"],
+            "/root/.claude/plugins/marketplaces/claude-plugins-official"
+        );
+
+        let installed =
+            fs::read_to_string(sandbox.join("plugins").join("installed_plugins.json")).unwrap();
+        let installed_json: serde_json::Value = serde_json::from_str(&installed).unwrap();
+        assert_eq!(
+            installed_json["plugins"][0]["installPath"],
+            "/root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0"
+        );
     }
 
     #[test]
@@ -1848,5 +2129,387 @@ mod tests {
     fn test_should_overwrite_when_only_keychain_parseable() {
         let keychain = r#"{"claudeAiOauth":{"expiresAt":1000}}"#;
         assert!(should_overwrite_credential("not-json", keychain));
+    }
+
+    /// End-to-end test: repo-level sandbox config (environment, volume_ignores,
+    /// extra_volumes) flows through build_container_config into the final ContainerConfig.
+    /// Regression test for #557.
+    #[test]
+    #[serial_test::serial]
+    fn test_build_container_config_includes_repo_sandbox_settings() {
+        // Isolate HOME so global/profile config doesn't interfere
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        // Create a project directory with repo config
+        let project_dir = TempDir::new().unwrap();
+        let config_dir = project_dir.path().join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+environment = ["MY_VAR=hello", "CI=true"]
+volume_ignores = [".venv", "node_modules"]
+extra_volumes = ["/host/data:/container/data:ro"]
+"#,
+        )
+        .unwrap();
+
+        // Initialize a git repo so compute_volume_paths works
+        git2::Repository::init(project_dir.path()).unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let project_path_str = project_dir.path().to_str().unwrap();
+        let config = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+        )
+        .unwrap();
+
+        // Verify environment variables from repo config are present
+        let env_keys: Vec<&str> = config.environment.iter().map(|e| e.key()).collect();
+        assert!(
+            env_keys.contains(&"MY_VAR"),
+            "MY_VAR should be in environment, got: {:?}",
+            config.environment
+        );
+        assert!(
+            env_keys.contains(&"CI"),
+            "CI should be in environment, got: {:?}",
+            config.environment
+        );
+
+        // Verify volume_ignores became anonymous volumes
+        let dir_name = project_dir.path().file_name().unwrap().to_string_lossy();
+        let expected_venv = format!("/workspace/{}/.venv", dir_name);
+        let expected_node = format!("/workspace/{}/node_modules", dir_name);
+        assert!(
+            config.anonymous_volumes.contains(&expected_venv),
+            "anonymous_volumes should contain .venv path, got: {:?}",
+            config.anonymous_volumes
+        );
+        assert!(
+            config.anonymous_volumes.contains(&expected_node),
+            "anonymous_volumes should contain node_modules path, got: {:?}",
+            config.anonymous_volumes
+        );
+
+        // Verify extra_volumes from repo config are present
+        let volume_pairs: Vec<(&str, &str)> = config
+            .volumes
+            .iter()
+            .map(|v| (v.host_path.as_str(), v.container_path.as_str()))
+            .collect();
+        assert!(
+            volume_pairs.contains(&("/host/data", "/container/data")),
+            "extra_volumes should include /host/data:/container/data, got: {:?}",
+            volume_pairs
+        );
+    }
+
+    /// Regression test for #597: volume_ignores must apply to the parent repo
+    /// mount as well as the worktree mount in sibling-worktree sessions.
+    #[test]
+    #[serial_test::serial]
+    fn test_volume_ignores_applied_to_parent_repo_mount() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        let (_dir, repo_path) = setup_regular_repo();
+
+        // Create a sibling worktree (non-bare layout)
+        let worktree_path = repo_path.parent().unwrap().join("my-worktree");
+        let head = git2::Repository::open(&repo_path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
+            .unwrap();
+        drop(repo);
+
+        let output = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "wt-branch",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            return; // git not available, skip
+        }
+
+        // Write repo-level config with volume_ignores
+        let config_dir = worktree_path.join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+volume_ignores = ["target", "node_modules"]
+"#,
+        )
+        .unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let project_path_str = worktree_path.to_str().unwrap();
+        let config = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+        )
+        .unwrap();
+
+        // Verify volume_ignores are applied to the worktree mount
+        assert!(
+            config
+                .anonymous_volumes
+                .iter()
+                .any(|v| v.ends_with("/my-worktree/target")),
+            "anonymous_volumes should contain worktree target, got: {:?}",
+            config.anonymous_volumes
+        );
+        assert!(
+            config
+                .anonymous_volumes
+                .iter()
+                .any(|v| v.ends_with("/my-worktree/node_modules")),
+            "anonymous_volumes should contain worktree node_modules, got: {:?}",
+            config.anonymous_volumes
+        );
+
+        // Verify volume_ignores are also applied to the parent repo mount (the fix for #597)
+        let repo_name = repo_path
+            .canonicalize()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let expected_repo_target = format!("/workspace/{}/target", repo_name);
+        let expected_repo_node = format!("/workspace/{}/node_modules", repo_name);
+        assert!(
+            config.anonymous_volumes.contains(&expected_repo_target),
+            "anonymous_volumes should contain parent repo target ({}), got: {:?}",
+            expected_repo_target,
+            config.anonymous_volumes
+        );
+        assert!(
+            config.anonymous_volumes.contains(&expected_repo_node),
+            "anonymous_volumes should contain parent repo node_modules ({}), got: {:?}",
+            expected_repo_node,
+            config.anonymous_volumes
+        );
+    }
+
+    /// Regression test: volume_ignores must still apply to the workspace_path
+    /// in bare-repo layouts where workspace_path is a subdirectory of the mount.
+    #[test]
+    #[serial_test::serial]
+    fn test_volume_ignores_applied_to_bare_repo_worktree() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        let (_dir, main_repo_path, worktree_path) = setup_bare_repo_with_worktree();
+
+        if !worktree_path.exists() {
+            return; // git worktree add failed, skip
+        }
+
+        // Write repo-level config with volume_ignores
+        let config_dir = worktree_path.join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+volume_ignores = ["target"]
+"#,
+        )
+        .unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            created_at: None,
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let project_path_str = worktree_path.to_str().unwrap();
+        let config = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+        )
+        .unwrap();
+
+        // In bare-repo layout, workspace_path is a subdirectory of the single mount.
+        // volume_ignores must apply to the workspace_path (where builds run), not
+        // just the mount root.
+        let main_name = main_repo_path
+            .canonicalize()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let expected_wt_target = format!("/workspace/{}/main/target", main_name);
+        assert!(
+            config.anonymous_volumes.contains(&expected_wt_target),
+            "anonymous_volumes should contain worktree target ({}), got: {:?}",
+            expected_wt_target,
+            config.anonymous_volumes
+        );
+    }
+
+    // --- prepare_sandbox_dir / clean_files tests ---
+
+    #[test]
+    fn test_clean_files_deletes_stale_database() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        let sandbox_dir = host_dir.join("sandbox");
+        fs::create_dir_all(&sandbox_dir).unwrap();
+
+        // Simulate stale database files left by a previous sandbox session
+        fs::write(sandbox_dir.join("opencode.db"), "stale").unwrap();
+        fs::write(sandbox_dir.join("opencode.db-wal"), "stale-wal").unwrap();
+        fs::write(sandbox_dir.join("opencode.db-shm"), "stale-shm").unwrap();
+
+        // Create a minimal host dir so sync_agent_config doesn't error
+        fs::create_dir_all(&host_dir).unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &[
+                "sandbox",
+                "opencode.db",
+                "opencode.db-wal",
+                "opencode.db-shm",
+            ],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
+        };
+
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
+
+        assert!(!sandbox_dir.join("opencode.db").exists());
+        assert!(!sandbox_dir.join("opencode.db-wal").exists());
+        assert!(!sandbox_dir.join("opencode.db-shm").exists());
+    }
+
+    #[test]
+    fn test_skip_entries_prevents_host_db_copy() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        let sandbox_dir = host_dir.join("sandbox");
+        fs::create_dir_all(&host_dir).unwrap();
+
+        // Host has a database that should NOT be copied
+        fs::write(host_dir.join("opencode.db"), "host-db").unwrap();
+        // Host also has a config file that SHOULD be copied
+        fs::write(host_dir.join("some-config.txt"), "config").unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &[
+                "sandbox",
+                "opencode.db",
+                "opencode.db-wal",
+                "opencode.db-shm",
+            ],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &[],
+        };
+
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
+
+        assert!(
+            !sandbox_dir.join("opencode.db").exists(),
+            "Host database should not be copied to sandbox"
+        );
+        assert!(
+            sandbox_dir.join("some-config.txt").exists(),
+            "Non-skipped files should still be copied"
+        );
+    }
+
+    #[test]
+    fn test_clean_files_noop_when_no_stale_files() {
+        let home = TempDir::new().unwrap();
+        let host_dir = home.path().join(".local/share/opencode");
+        fs::create_dir_all(&host_dir).unwrap();
+
+        let mount = AgentConfigMount {
+            tool_name: "opencode",
+            host_rel: ".local/share/opencode",
+            container_suffix: ".local/share/opencode",
+            skip_entries: &["sandbox"],
+            seed_files: &[],
+            copy_dirs: &[],
+            keychain_credential: None,
+            home_seed_files: &[],
+            preserve_files: &[],
+            clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
+        };
+
+        // Should not panic or error when files don't exist
+        prepare_sandbox_dir(&mount, home.path()).unwrap();
     }
 }

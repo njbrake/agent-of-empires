@@ -43,6 +43,8 @@ pub struct RenameDialog {
     existing_groups: Vec<String>,
     group_picker: ListPicker,
     group_ghost: Option<GroupGhostCompletion>,
+    /// Inline validation error shown in Group mode when a duplicate name is entered.
+    validation_error: Option<String>,
 }
 
 impl RenameDialog {
@@ -75,6 +77,7 @@ impl RenameDialog {
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
             group_ghost: None,
+            validation_error: None,
         }
     }
 
@@ -102,6 +105,7 @@ impl RenameDialog {
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
             group_ghost: None,
+            validation_error: None,
         }
     }
 
@@ -221,6 +225,19 @@ impl RenameDialog {
                     return DialogResult::Cancel;
                 }
 
+                // Validate that the new group name does not already exist
+                if self.mode == RenameMode::Group
+                    && !group_value.is_empty()
+                    && group_value != self.current_group
+                    && self.existing_groups.iter().any(|g| g == group_value)
+                {
+                    self.validation_error = Some(
+                        "A group with this name already exists.\nEnter a different name."
+                            .to_string(),
+                    );
+                    return DialogResult::Continue;
+                }
+
                 // Determine the group value:
                 // - Same as current means keep current group (None)
                 // - Empty (and was non-empty) means remove from group (Some(""))
@@ -297,8 +314,18 @@ impl RenameDialog {
                 }
                 if self.is_group_field() {
                     self.recompute_group_ghost();
+                    self.validation_error = None;
                 }
                 DialogResult::Continue
+            }
+        }
+    }
+
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Some(input) = self.focused_input() {
+            let sanitized: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            for ch in sanitized.chars() {
+                input.handle(tui_input::InputRequest::InsertChar(ch));
             }
         }
     }
@@ -383,31 +410,38 @@ impl RenameDialog {
 
     fn render_group(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = 50;
-        let dialog_area = super::centered_rect(area, dialog_width, 13);
+        let has_error = self.validation_error.is_some();
+        let dialog_height = if has_error { 16 } else { 13 };
+        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
 
         frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
-            .title(" Edit Group ")
+            .title(" Rename Group ")
             .title_style(Style::default().fg(theme.title).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
+        let mut constraints = vec![
+            Constraint::Length(1), // Current group
+            Constraint::Length(1), // Current profile
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // New group field
+            Constraint::Length(1), // Profile selector
+            Constraint::Length(1), // Spacer
+            Constraint::Min(1),    // Hint
+        ];
+        if has_error {
+            constraints.insert(5, Constraint::Length(2)); // Validation error (2 lines)
+        }
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
-            .constraints([
-                Constraint::Length(1), // Current group
-                Constraint::Length(1), // Current profile
-                Constraint::Length(1), // Spacer
-                Constraint::Length(1), // New group field
-                Constraint::Length(1), // Profile selector
-                Constraint::Length(1), // Spacer
-                Constraint::Min(1),    // Hint
-            ])
+            .constraints(constraints)
             .split(inner);
 
         // Current group
@@ -422,8 +456,27 @@ impl RenameDialog {
         // Profile selector
         self.render_profile_selector(frame, chunks[4], theme);
 
-        // Hint
-        self.render_hints(frame, chunks[6], theme);
+        if has_error {
+            // Validation error (two lines, one sentence each)
+            let error_text: Vec<Line> = self
+                .validation_error
+                .as_deref()
+                .unwrap_or("")
+                .lines()
+                .map(|l| {
+                    Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default().fg(theme.error),
+                    ))
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(error_text), chunks[5]);
+            // Hint is shifted one index further
+            self.render_hints(frame, chunks[7], theme);
+        } else {
+            // Hint
+            self.render_hints(frame, chunks[6], theme);
+        }
 
         // Render group picker overlay
         if self.group_picker.is_active() {
@@ -1299,5 +1352,114 @@ mod tests {
         dialog.handle_key(key(KeyCode::Enter)); // Select "work"
         assert!(dialog.group_ghost_text().is_none());
         assert_eq!(dialog.new_group.value(), "work");
+    }
+
+    // --- Group rename duplicate validation tests ---
+
+    fn existing_groups_with_personal() -> Vec<String> {
+        vec![
+            "work".to_string(),
+            "personal".to_string(),
+            "work/frontend".to_string(),
+        ]
+    }
+
+    #[test]
+    fn test_group_rename_duplicate_shows_error() {
+        let mut dialog = RenameDialog::new_for_group(
+            "work",
+            "default",
+            default_profiles(),
+            existing_groups_with_personal(),
+        );
+
+        // Clear the pre-filled group name and type an existing group name
+        for _ in 0..4 {
+            dialog.handle_key(key(KeyCode::Backspace));
+        }
+        for ch in "personal".chars() {
+            dialog.handle_key(key(KeyCode::Char(ch)));
+        }
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(result, DialogResult::Continue),
+            "should not submit when duplicate name"
+        );
+        assert!(
+            dialog.validation_error.is_some(),
+            "validation_error should be set"
+        );
+    }
+
+    #[test]
+    fn test_group_rename_error_clears_on_edit() {
+        let mut dialog = RenameDialog::new_for_group(
+            "work",
+            "default",
+            default_profiles(),
+            existing_groups_with_personal(),
+        );
+
+        for _ in 0..4 {
+            dialog.handle_key(key(KeyCode::Backspace));
+        }
+        for ch in "personal".chars() {
+            dialog.handle_key(key(KeyCode::Char(ch)));
+        }
+        dialog.handle_key(key(KeyCode::Enter));
+        assert!(dialog.validation_error.is_some());
+
+        // Any keystroke on the group field should clear the error
+        dialog.handle_key(key(KeyCode::Backspace));
+        assert!(
+            dialog.validation_error.is_none(),
+            "validation_error should clear on edit"
+        );
+    }
+
+    #[test]
+    fn test_group_rename_allows_own_name() {
+        let mut dialog = RenameDialog::new_for_group(
+            "work",
+            "default",
+            default_profiles(),
+            existing_groups_with_personal(),
+        );
+
+        // Submitting the unchanged name should cancel (nothing changed), not error
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(result, DialogResult::Cancel),
+            "unchanged name should cancel, not show duplicate error"
+        );
+        assert!(
+            dialog.validation_error.is_none(),
+            "no validation error for own name"
+        );
+    }
+
+    #[test]
+    fn test_group_rename_submit_new_unique_name() {
+        let mut dialog = RenameDialog::new_for_group(
+            "work",
+            "default",
+            default_profiles(),
+            existing_groups_with_personal(),
+        );
+
+        for _ in 0..4 {
+            dialog.handle_key(key(KeyCode::Backspace));
+        }
+        for ch in "projects".chars() {
+            dialog.handle_key(key(KeyCode::Char(ch)));
+        }
+
+        let result = dialog.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(result, DialogResult::Submit(_)),
+            "unique name should submit"
+        );
+        assert!(dialog.validation_error.is_none());
     }
 }

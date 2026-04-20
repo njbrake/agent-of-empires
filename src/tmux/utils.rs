@@ -71,6 +71,21 @@ pub fn append_pane_base_index_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
+/// Append `; set-option -t <target> mouse on` to an in-flight tmux argument
+/// list so that mouse/wheel events are forwarded into tmux copy-mode.
+/// Required for the web dashboard's two-finger scroll on mobile, which
+/// emits SGR mouse-wheel escape sequences that tmux must interpret.
+pub fn append_mouse_on_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "mouse".to_string(),
+        "on".to_string(),
+    ]);
+}
+
 pub fn is_pane_dead(session_name: &str) -> bool {
     // Use `^.0` to target the first window's first pane regardless of
     // base-index or which pane is active, so the check always hits the
@@ -86,7 +101,7 @@ pub fn is_pane_dead(session_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn pane_current_command(session_name: &str) -> Option<String> {
+pub(crate) fn pane_current_command(session_name: &str) -> Option<String> {
     // Use `^.0` to target the first window's first pane regardless of
     // base-index or which pane is active.  See #435, #488.
     let target = format!("{session_name}:^.0");

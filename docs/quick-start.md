@@ -83,8 +83,23 @@ In the TUI, select the tool from the dropdown in the new session dialog.
 | `q` | Quit |
 | `Ctrl+b d` | Detach from tmux session |
 
+## Use the Web Dashboard
+
+Prefer a browser? Run `aoe serve` to start the web dashboard:
+
+```bash
+aoe serve                         # localhost only
+aoe serve --host 0.0.0.0          # accessible from other devices (use with VPN)
+aoe serve --daemon                # run in background
+```
+
+Open the printed URL in any browser -- your phone, tablet, or another computer. You get the same session list, live terminal streaming, and session controls. Install it as a PWA for an app-like experience.
+
+See the [Web Dashboard Guide](guides/web-dashboard.md) for details.
+
 ## Next Steps
 
+- [Web Dashboard](guides/web-dashboard.md) -- access sessions from any browser
 - [Workflow Guide](guides/workflow.md) -- recommended setup with bare repos and parallel agents
 - [Docker Sandbox](guides/sandbox.md) -- container configuration and custom images
 - [Repo Config & Hooks](guides/repo-config.md) -- per-project settings

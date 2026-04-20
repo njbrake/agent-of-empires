@@ -49,18 +49,12 @@ fn test_esc_cancels() {
 }
 
 #[test]
-fn test_enter_submits_with_auto_title() {
-    use crate::session::civilizations;
-
+fn test_enter_submits_with_empty_title_for_builder() {
     let mut dialog = single_tool_dialog();
     let result = dialog.handle_key(key(KeyCode::Enter));
     match result {
         DialogResult::Submit(data) => {
-            assert!(
-                civilizations::CIVILIZATIONS.contains(&data.title.as_str()),
-                "Expected a civilization name, got: {}",
-                data.title
-            );
+            assert_eq!(data.title, "", "Empty title should pass through to builder");
             assert_eq!(data.path, TEST_PATH);
             assert_eq!(data.group, "");
             assert_eq!(data.tool, "claude");

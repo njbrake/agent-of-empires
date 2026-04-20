@@ -50,7 +50,7 @@ fn test_repo_hooks_override_global_per_field() -> Result<()> {
     let repo = RepoConfig {
         hooks: Some(HooksConfig {
             on_create: vec!["repo_create".to_string()],
-            on_launch: vec![],
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -82,6 +82,7 @@ fn test_repo_hooks_override_both_fields() -> Result<()> {
         hooks: Some(HooksConfig {
             on_create: vec!["repo_create".to_string()],
             on_launch: vec!["repo_launch".to_string()],
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -94,7 +95,7 @@ fn test_repo_hooks_override_both_fields() -> Result<()> {
 }
 
 // T016: Global/profile hooks are NOT subject to trust checking.
-// This is a design invariant: check_hook_trust() only reads .aoe/config.toml,
+// This is a design invariant: check_hook_trust() only reads .agent-of-empires/config.toml,
 // so global/profile hooks never enter the trust pipeline. We verify that
 // resolve_config returns hooks without any trust gate.
 #[test]
@@ -141,7 +142,7 @@ fn test_profile_overrides_on_create_only() -> Result<()> {
     let profile = ProfileConfig {
         hooks: Some(HooksConfigOverride {
             on_create: Some(vec!["profile_create".to_string()]),
-            on_launch: None,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -170,6 +171,7 @@ fn test_clearing_profile_hooks_restores_global() -> Result<()> {
         hooks: Some(HooksConfigOverride {
             on_create: Some(vec!["profile_create".to_string()]),
             on_launch: Some(vec!["profile_launch".to_string()]),
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -209,7 +211,7 @@ fn test_three_level_resolution() -> Result<()> {
     let profile = ProfileConfig {
         hooks: Some(HooksConfigOverride {
             on_create: Some(vec!["profile_create".to_string()]),
-            on_launch: None,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -222,8 +224,8 @@ fn test_three_level_resolution() -> Result<()> {
     // Repo: only overrides on_launch
     let repo = RepoConfig {
         hooks: Some(HooksConfig {
-            on_create: vec![],
             on_launch: vec!["repo_launch".to_string()],
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -250,7 +252,7 @@ fn test_merge_configs_hooks_override() -> Result<()> {
     let profile = ProfileConfig {
         hooks: Some(HooksConfigOverride {
             on_create: Some(vec!["p1".to_string()]),
-            on_launch: None,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -258,6 +260,103 @@ fn test_merge_configs_hooks_override() -> Result<()> {
     let merged = merge_configs(global, &profile);
     assert_eq!(merged.hooks.on_create, vec!["p1"]);
     assert_eq!(merged.hooks.on_launch, vec!["gl"]);
+
+    Ok(())
+}
+
+// on_destroy: global hooks resolve
+#[test]
+#[serial]
+fn test_global_on_destroy_hooks_resolve() -> Result<()> {
+    let _temp = setup_temp_home();
+
+    let mut global = Config::default();
+    global.hooks.on_destroy = vec!["docker-compose down".to_string()];
+    save_config(&global)?;
+
+    let resolved = resolve_config("default")?;
+    assert_eq!(resolved.hooks.on_destroy, vec!["docker-compose down"]);
+
+    Ok(())
+}
+
+// on_destroy: profile override replaces global
+#[test]
+#[serial]
+fn test_profile_on_destroy_override() -> Result<()> {
+    let _temp = setup_temp_home();
+
+    let mut global = Config::default();
+    global.hooks.on_destroy = vec!["global_cleanup".to_string()];
+    save_config(&global)?;
+
+    let profile = ProfileConfig {
+        hooks: Some(HooksConfigOverride {
+            on_destroy: Some(vec!["profile_cleanup".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    save_profile_config("default", &profile)?;
+
+    let resolved = resolve_config("default")?;
+    assert_eq!(resolved.hooks.on_destroy, vec!["profile_cleanup"]);
+
+    Ok(())
+}
+
+// on_destroy: repo override replaces global/profile
+#[test]
+#[serial]
+fn test_repo_on_destroy_override() -> Result<()> {
+    let _temp = setup_temp_home();
+
+    let mut global = Config::default();
+    global.hooks.on_destroy = vec!["global_cleanup".to_string()];
+    save_config(&global)?;
+
+    let resolved = resolve_config("default")?;
+
+    let repo = RepoConfig {
+        hooks: Some(HooksConfig {
+            on_destroy: vec!["repo_cleanup".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let merged = merge_repo_config(resolved, &repo);
+    assert_eq!(merged.hooks.on_destroy, vec!["repo_cleanup"]);
+    // Global on_destroy should be overridden by repo
+    Ok(())
+}
+
+// on_destroy: clearing profile override restores global
+#[test]
+#[serial]
+fn test_clearing_profile_on_destroy_restores_global() -> Result<()> {
+    let _temp = setup_temp_home();
+
+    let mut global = Config::default();
+    global.hooks.on_destroy = vec!["global_cleanup".to_string()];
+    save_config(&global)?;
+
+    let profile = ProfileConfig {
+        hooks: Some(HooksConfigOverride {
+            on_destroy: Some(vec!["profile_cleanup".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    save_profile_config("default", &profile)?;
+
+    let resolved = resolve_config("default")?;
+    assert_eq!(resolved.hooks.on_destroy, vec!["profile_cleanup"]);
+
+    // Clear override
+    save_profile_config("default", &ProfileConfig::default())?;
+    let resolved = resolve_config("default")?;
+    assert_eq!(resolved.hooks.on_destroy, vec!["global_cleanup"]);
 
     Ok(())
 }

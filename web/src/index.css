@@ -1,0 +1,178 @@
+/* Geist Sans */
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('/fonts/Geist-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('/fonts/Geist-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Sans';
+  src: url('/fonts/Geist-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Geist Mono */
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@import "tailwindcss";
+
+@theme {
+  /* Brand -- Amber/Copper (used sparingly) */
+  --color-brand-400: #fbbf24;
+  --color-brand-500: #f59e0b;
+  --color-brand-600: #d97706;
+  --color-brand-700: #b45309;
+
+  /* Accent -- Muted Teal (used sparingly) */
+  --color-accent-500: #14b8a6;
+  --color-accent-600: #0d9488;
+  --color-accent-700: #0f766e;
+
+  /* Surfaces -- neutral zinc */
+  --color-surface-700: #3f3f46;
+  --color-surface-800: #2c2c30;
+  --color-surface-850: #262629;
+  --color-surface-900: #1c1c1f;
+  --color-surface-950: #141416;
+
+  /* Semantic Text */
+  --color-text-primary: #e4e4e7;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
+  --color-text-dim: #52525b;
+  --color-text-bright: #fafafa;
+
+  /* Semantic Status */
+  --color-status-running: #22c55e;
+  --color-status-waiting: #fbbf24;
+  --color-status-idle: #71717a;
+  --color-status-error: #ef4444;
+  --color-status-starting: #f59e0b;
+  --color-status-stopped: #52525b;
+
+  /* Typography */
+  --font-sans: 'Geist Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  /* Layout widths */
+  --width-sidebar: 280px;
+  --width-sidebar-sm: 220px;
+  --min-width-sidebar: 280px;
+  --min-width-sidebar-sm: 220px;
+  --width-dialog: 400px;
+  --width-panel: 420px;
+  --width-content-max: 600px;
+}
+
+html {
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  /* safe-area insets are handled by the App root, not html, to avoid
+     making the document taller than the viewport (which lets iOS scroll
+     the page when the keyboard opens, breaking keyboard-height math). */
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+body {
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  background: var(--color-surface-900);
+  color: var(--color-text-primary);
+  overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-700);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-dim);
+}
+
+/* Dialog/panel entrance animation */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+.animate-slide-up {
+  animation: slide-up 0.2s ease-out;
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out;
+}
+
+/* Focus indicators for keyboard navigation */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
+
+/* wterm overrides: strip default chrome for embedded use. */
+.wterm {
+  padding: 4px 8px;
+  border-radius: 0;
+  box-shadow: none;
+  overflow-y: auto;
+  --term-row-height: calc(var(--term-font-size) * var(--term-line-height));
+}
+
+.wterm ::selection {
+  background: rgba(161, 161, 170, 0.2);
+}
+
+.safe-area-inset {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+

@@ -103,13 +103,25 @@ pub struct SandboxConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_image: Option<String>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub extra_volumes: Option<Vec<String>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub port_mappings: Option<Vec<String>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub environment: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,7 +136,11 @@ pub struct SandboxConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_terminal_mode: Option<DefaultTerminalMode>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub volume_ignores: Option<Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -162,15 +178,36 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_status_hooks: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_agents: Option<HashMap<String, String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_detect_as: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfigOverride {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub on_create: Option<Vec<String>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
     pub on_launch: Option<Vec<String>>,
+
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::serde_helpers::option_string_or_vec"
+    )]
+    pub on_destroy: Option<Vec<String>>,
 }
 
 /// Load profile-specific config. Returns empty config if file doesn't exist.
@@ -305,6 +342,9 @@ pub fn apply_hooks_overrides(
     if let Some(ref on_launch) = source.on_launch {
         target.on_launch = on_launch.clone();
     }
+    if let Some(ref on_destroy) = source.on_destroy {
+        target.on_destroy = on_destroy.clone();
+    }
 }
 
 /// Apply session config overrides to a target config.
@@ -326,6 +366,12 @@ pub fn apply_session_overrides(
     }
     if let Some(agent_status_hooks) = source.agent_status_hooks {
         target.agent_status_hooks = agent_status_hooks;
+    }
+    if let Some(ref custom_agents) = source.custom_agents {
+        target.custom_agents = custom_agents.clone();
+    }
+    if let Some(ref detect_as) = source.agent_detect_as {
+        target.agent_detect_as = detect_as.clone();
     }
 }
 
@@ -749,5 +795,37 @@ mod tests {
         let profile = ProfileConfig::default();
         let merged = merge_configs(global, &profile);
         assert_eq!(merged.theme.name, "catppuccin-latte");
+    }
+
+    #[test]
+    fn test_sandbox_override_string_shorthand() {
+        // Regression test: all Option<Vec<String>> sandbox fields accept a plain string
+        let toml = r#"
+            [sandbox]
+            environment = "ANTHROPIC_API_KEY"
+            extra_volumes = "/data:/data:ro"
+            volume_ignores = "node_modules"
+            port_mappings = "3000:3000"
+        "#;
+        let config: ProfileConfig = toml::from_str(toml).unwrap();
+        let sb = config.sandbox.unwrap();
+        assert_eq!(sb.environment, Some(vec!["ANTHROPIC_API_KEY".to_string()]));
+        assert_eq!(sb.extra_volumes, Some(vec!["/data:/data:ro".to_string()]));
+        assert_eq!(sb.volume_ignores, Some(vec!["node_modules".to_string()]));
+        assert_eq!(sb.port_mappings, Some(vec!["3000:3000".to_string()]));
+    }
+
+    #[test]
+    fn test_hooks_override_string_shorthand() {
+        // Regression test: HooksConfigOverride accepts a plain string
+        let toml = r#"
+            [hooks]
+            on_create = "npm install"
+            on_launch = "npm start"
+        "#;
+        let config: ProfileConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(hooks.on_create, Some(vec!["npm install".to_string()]));
+        assert_eq!(hooks.on_launch, Some(vec!["npm start".to_string()]));
     }
 }

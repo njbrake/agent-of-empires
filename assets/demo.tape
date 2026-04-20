@@ -1,188 +1,122 @@
-# Agent of Empires Demo
+# Agent of Empires demo: create a Claude session, enable Local remote
+# access, then add a second agent (OpenCode) while the server is up.
+# Regenerate with: vhs assets/demo.tape
+
 Output docs/assets/demo.gif
 
+Set Shell "bash"
 Set FontSize 16
 Set Width 1200
-Set Height 700
+Set Height 720
 Set Padding 20
+Set TypingSpeed 30ms
 
-# Launch aoe with demo profile
-Set TypingSpeed 1ms
-Type "./target/release/aoe -p demo"
-Set TypingSpeed 50ms
+# Clean slate: wipe the demo profile and any stale tmux sessions.
+Hide
+Type "rm -rf ~/.config/agent-of-empires/profiles/demo ~/demo-projects"
 Enter
-Sleep 3000ms
+Type "mkdir -p ~/demo-projects/api-server ~/demo-projects/web-app"
+Enter
+Type "for d in ~/demo-projects/api-server ~/demo-projects/web-app; do (cd $d && git init -q && touch README.md && git add . && git commit -q -m init); done"
+Enter
+Type "tmux kill-server 2>/dev/null; clear"
+Enter
+Sleep 400ms
+Show
 
+# Launch aoe in the demo profile.
+Type "./target/release/aoe -p demo"
+Enter
+Sleep 2000ms
 
-# === Create first session with opencode ===
-# Open new session dialog
+# Dismiss the first-run welcome dialog.
+Enter
+Sleep 900ms
+
+# === Session 1: API Server with Claude Code ===
+# Boring part (filling the dialog): crank the typing speed and cut sleeps
+# so we can get to the interesting stuff.
 Type "n"
-Sleep 500ms
+Sleep 400ms
 
-# Enter title as "API Server"
+Set TypingSpeed 5ms
+Tab
 Type "API Server"
 Tab
-Sleep 100ms
+Backspace 80
+Type "/root/demo-projects/api-server"
+Tab@20ms
+Tab@20ms
+Tab@20ms
+Tab@20ms
+Set TypingSpeed 30ms
 
-# Enter project path (clear default first)
-Set TypingSpeed 1ms
-Backspace 100
-Type "/Users/nbrake/demo-projects/api-server"
-Set TypingSpeed 50ms
-Sleep 1000ms
+Enter
+Sleep 2200ms
 
-# Skip group field
-Tab
-Sleep 100ms
-
-# Tool field - move right to select OpenCode
-Tab
-Sleep 100ms
-Space
-Sleep 2000ms
-
-# Submit
+# Accept Claude Code's trust-folder dialog.
 Enter
 Sleep 2500ms
-Enter
-Sleep 1000ms
 
-# Type a prompt
-Set TypingSpeed 10ms
-Type "Write me a short story about age of empires 2."
-Set TypingSpeed 50ms
+# Give Claude something to do so the preview has motion.
+Type "Write me a 1000 word story about Age of Empires"
+Sleep 400ms
 Enter
-Sleep 1000ms
+Sleep 3500ms
 
-# Detach from tmux (Ctrl+b d)
+# Detach back to the TUI; Claude keeps writing in the background.
 Ctrl+b
-Sleep 50ms
+Sleep 80ms
 Type "d"
-Sleep 1000ms
+Sleep 1200ms
 
+# === Remote access: press R, pick Local, dialog goes Active ===
+Type "R"
+Sleep 1600ms
 
-# ==== Showcase terminal view ====
-Type "t"
-Sleep 1000ms
+# Local is selected by default (Cloudflare Tunnel is dimmed without
+# cloudflared installed). Enter starts the local daemon; the dialog
+# flips to Active with a QR code and the LAN URL.
 Enter
-Sleep 1000ms
-Type "pwd"
-Enter
-Sleep 1000ms
-Ctrl+b
-Sleep 50ms
-Type "d"
-Sleep 1000ms
-Type "t"
-Sleep 500ms
+Sleep 3000ms
 
-# === Create second session with claude code and worktree ===
-# Open new session dialog
+# Show the URL cycling (Tab rotates LAN / loopback when both exist).
+Tab
+Sleep 1400ms
+
+# Esc closes the dialog but leaves the daemon running — the status bar
+# keeps the serving indicator lit.
+Escape
+Sleep 1200ms
+
+# === Session 2: Web App with OpenCode, server still running ===
 Type "n"
-Sleep 1000ms
+Sleep 400ms
 
-# Enter title
+Set TypingSpeed 5ms
+Tab
 Type "Web App"
-Sleep 1000ms
-
-# Move to path field
 Tab
-Sleep 1000ms
-
-# Enter project path (clear default first)
-Set TypingSpeed 1ms
-Backspace 100
-Type "/Users/nbrake/demo-projects/web-app"
-Sleep 1000ms
-
-# Move to worktree field
+Backspace 80
+Type "/root/demo-projects/web-app"
 Tab
-Tab
-Tab
-Sleep 1000ms
+# Tool: right-arrow from Claude to OpenCode.
+Right
+Tab@20ms
+Tab@20ms
+Tab@20ms
+Set TypingSpeed 30ms
 
-# Enter worktree branch name
-Type "feature-demo"
-Set TypingSpeed 50ms
-Sleep 1000ms
-
-# Submit
 Enter
-Sleep 1000ms
-Enter
-Sleep 1000ms
+Sleep 2500ms
 
-# Type a prompt
-Set TypingSpeed 10ms
-Type "Quick! Ask me a multi choice question about age of empires 2, use your tool"
-Set TypingSpeed 50ms
-Enter
-Sleep 1000ms
-
-# Detach from tmux (Ctrl+b d)
+# Detach back to the TUI.
 Ctrl+b
-Sleep 50ms
+Sleep 80ms
 Type "d"
-Sleep 1000ms
+Sleep 1600ms
 
-# === Create third session with sandbox enabled ===
-# Open new session dialog
-Type "n"
-Sleep 1000ms
-
-# Enter title
-Set TypingSpeed 1ms
-Type "Chat App"
-Sleep 1000ms
-
-# Move to path field
-Tab
-Set TypingSpeed 50ms
-Sleep 1000ms
-
-# Skip group field, tool field, worktree field to reach sandbox
-Tab
-Tab
-Space
-Space
-Tab
-Tab
-Sleep 500ms
-
-# Toggle sandbox ON (space to toggle)
-Space
-Sleep 500ms
-Tab # skip custom image
-Tab
-Sleep 100ms
-Space
-Sleep 100ms
-
-# Submit
-Enter
-Sleep 2000ms
-
-# accept warning dialogue if any
-Enter
-Sleep 1500ms
-
-# Type a prompt
-Set TypingSpeed 10ms
-Type "Write me a poem about sandboxes and containers."
-Set TypingSpeed 50ms
-Enter
-Sleep 500ms
-
-# Detach from tmux (Ctrl+b d)
-Ctrl+b
-Sleep 50ms
-Type "d"
-Sleep 3000ms
-Type "k"
-Sleep 3000ms
-Type "k"
-Sleep 3000ms
-
-# Exit aoe
-
+# Hide the final q so tmux-detach shell noise doesn't land in the GIF.
+Hide
 Type "q"
+Sleep 400ms

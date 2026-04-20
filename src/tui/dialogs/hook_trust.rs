@@ -110,6 +110,19 @@ impl HookTrustDialog {
             for cmd in &self.hooks.on_launch {
                 lines.push(Line::from(format!("  {}", cmd)));
             }
+            if !self.hooks.on_destroy.is_empty() {
+                lines.push(Line::from(""));
+            }
+        }
+
+        if !self.hooks.on_destroy.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "on_destroy:",
+                Style::default().bold(),
+            )));
+            for cmd in &self.hooks.on_destroy {
+                lines.push(Line::from(format!("  {}", cmd)));
+            }
         }
 
         lines
@@ -146,7 +159,7 @@ impl HookTrustDialog {
 
         // Header
         let header = Paragraph::new(
-            "This repo has hooks defined in .aoe/config.toml.\nAllow these commands to run?",
+            "This repo has hooks defined in .agent-of-empires/config.toml.\nAllow these commands to run?",
         )
         .style(Style::default().fg(theme.text))
         .wrap(Wrap { trim: true });
@@ -208,6 +221,7 @@ mod tests {
             HooksConfig {
                 on_create: vec!["npm install".to_string()],
                 on_launch: vec!["echo start".to_string()],
+                ..Default::default()
             },
             "abc123".to_string(),
             "/home/user/project".to_string(),

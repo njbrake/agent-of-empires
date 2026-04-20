@@ -1,4 +1,4 @@
-//! Repository-level configuration (`.aoe/config.toml`)
+//! Repository-level configuration (`.agent-of-empires/config.toml`)
 //!
 //! Allows repos to define hooks and override session/sandbox/worktree settings.
 //! Settings that are personal/global (theme, updates, tmux, claude config_dir) are
@@ -26,7 +26,7 @@ use super::profile_config::{
     TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
 
-/// Repository-level configuration loaded from `.aoe/config.toml`.
+/// Repository-level configuration loaded from `.agent-of-empires/config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,32 +58,72 @@ pub struct RepoConfig {
 /// - `on_launch`: failures are logged as warnings but do not prevent the session
 ///   from starting, since blocking an existing session on a transient hook failure
 ///   would be disruptive.
+/// - `on_destroy`: failures are logged as warnings but do not prevent session
+///   deletion. Runs before worktree/sandbox cleanup so resources are still
+///   available for teardown commands (e.g. `docker-compose down`).
+///
+/// All fields accept either a single string or an array of strings in TOML:
+///   `on_launch = "npm start"`  or  `on_launch = ["npm install", "npm start"]`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfig {
     /// Commands run once when a session is first created.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
     pub on_create: Vec<String>,
 
     /// Commands run every time a session starts (failures are non-fatal).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
     pub on_launch: Vec<String>,
+
+    /// Commands run when a session is deleted (failures are non-fatal).
+    /// Executed before worktree and sandbox cleanup.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
+    pub on_destroy: Vec<String>,
 }
 
 impl HooksConfig {
     pub fn is_empty(&self) -> bool {
-        self.on_create.is_empty() && self.on_launch.is_empty()
+        self.on_create.is_empty() && self.on_launch.is_empty() && self.on_destroy.is_empty()
     }
 }
 
 /// Path to the repo config file relative to the project root.
-const REPO_CONFIG_PATH: &str = ".aoe/config.toml";
+const REPO_CONFIG_PATH: &str = ".agent-of-empires/config.toml";
 
-/// Load repo config from `<project_path>/.aoe/config.toml`.
-/// Returns `None` if the file doesn't exist.
+/// Legacy path (pre-1.1) for backwards compatibility.
+const LEGACY_REPO_CONFIG_PATH: &str = ".aoe/config.toml";
+
+/// Load repo config from `<project_path>/.agent-of-empires/config.toml`.
+/// Falls back to the legacy `.aoe/config.toml` path with a deprecation warning.
+/// Returns `None` if neither file exists.
 pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
     let config_path = project_path.join(REPO_CONFIG_PATH);
-    if !config_path.exists() {
-        return Ok(None);
+    let (config_path, is_legacy) = if config_path.exists() {
+        (config_path, false)
+    } else {
+        let legacy_path = project_path.join(LEGACY_REPO_CONFIG_PATH);
+        if legacy_path.exists() {
+            (legacy_path, true)
+        } else {
+            return Ok(None);
+        }
+    };
+
+    if is_legacy {
+        tracing::warn!(
+            "Found repo config at legacy path .aoe/config.toml -- please rename to .agent-of-empires/config.toml"
+        );
     }
 
     let content = fs::read_to_string(&config_path)
@@ -99,14 +139,14 @@ pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
     Ok(Some(config))
 }
 
-/// Save repo config to `<project_path>/.aoe/config.toml`.
-/// Creates the `.aoe/` directory if it does not exist.
+/// Save repo config to `<project_path>/.agent-of-empires/config.toml`.
+/// Creates the `.agent-of-empires/` directory if it does not exist.
+/// If a legacy `.aoe/config.toml` exists, it is removed after a successful save
+/// to prevent stale config from silently reactivating.
 pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> {
-    let aoe_dir = project_path.join(".aoe");
-    if !aoe_dir.exists() {
-        fs::create_dir_all(&aoe_dir)
-            .with_context(|| format!("Failed to create {}", aoe_dir.display()))?;
-    }
+    let config_dir = project_path.join(".agent-of-empires");
+    fs::create_dir_all(&config_dir)
+        .with_context(|| format!("Failed to create {}", config_dir.display()))?;
 
     let config_path = project_path.join(REPO_CONFIG_PATH);
     let content = toml::to_string_pretty(config)
@@ -114,6 +154,21 @@ pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> 
 
     fs::write(&config_path, content)
         .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+    // Clean up legacy .aoe/config.toml to prevent stale config from reactivating
+    let legacy_config = project_path.join(LEGACY_REPO_CONFIG_PATH);
+    if legacy_config.exists() {
+        if let Err(e) = fs::remove_file(&legacy_config) {
+            tracing::warn!("Failed to remove legacy {}: {}", legacy_config.display(), e);
+        } else {
+            tracing::info!("Removed legacy .aoe/config.toml after migrating to .agent-of-empires/");
+        }
+        // Also remove the .aoe/ directory if it's now empty
+        let legacy_dir = project_path.join(".aoe");
+        if legacy_dir.exists() {
+            let _ = fs::remove_dir(&legacy_dir); // only succeeds if empty
+        }
+    }
 
     Ok(())
 }
@@ -143,6 +198,9 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
         }
         if !hooks.on_launch.is_empty() {
             config.hooks.on_launch = hooks.on_launch.clone();
+        }
+        if !hooks.on_destroy.is_empty() {
+            config.hooks.on_destroy = hooks.on_destroy.clone();
         }
     }
 
@@ -194,6 +252,11 @@ pub fn repo_config_to_profile(repo: &RepoConfig) -> ProfileConfig {
             } else {
                 Some(h.on_launch.clone())
             },
+            on_destroy: if h.on_destroy.is_empty() {
+                None
+            } else {
+                Some(h.on_destroy.clone())
+            },
         }),
         ..Default::default()
     }
@@ -205,6 +268,7 @@ pub fn profile_to_repo_config(profile: &ProfileConfig) -> RepoConfig {
         hooks: profile.hooks.as_ref().map(|h| HooksConfig {
             on_create: h.on_create.clone().unwrap_or_default(),
             on_launch: h.on_launch.clone().unwrap_or_default(),
+            on_destroy: h.on_destroy.clone().unwrap_or_default(),
         }),
         session: profile.session.clone(),
         sandbox: profile.sandbox.clone(),
@@ -257,7 +321,16 @@ pub fn compute_hooks_hash(hooks: &HooksConfig) -> String {
         hasher.update(cmd.as_bytes());
         hasher.update(b"\n");
     }
-    format!("{:x}", hasher.finalize())
+    for cmd in &hooks.on_destroy {
+        hasher.update(b"on_destroy:");
+        hasher.update(cmd.as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }
 
 /// Path to the global trust store. Trust decisions are shared across all
@@ -384,6 +457,43 @@ pub fn check_hook_trust(project_path: &Path) -> Result<HookTrustStatus> {
         Ok(HookTrustStatus::Trusted(hooks))
     } else {
         Ok(HookTrustStatus::NeedsTrust { hooks, hooks_hash })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hook resolution helpers (shared by CLI and TUI)
+// ---------------------------------------------------------------------------
+
+/// Resolve hooks from global+profile config when no repo hooks are defined.
+/// Returns `None` if no on_create or on_launch hooks are configured.
+pub fn resolve_global_profile_hooks(profile: &str) -> Option<HooksConfig> {
+    let config = super::profile_config::resolve_config(profile).ok()?;
+    if config.hooks.on_create.is_empty() && config.hooks.on_launch.is_empty() {
+        None
+    } else {
+        Some(config.hooks)
+    }
+}
+
+/// Merge trusted repo hooks onto the global+profile base config.
+/// Repo hooks override (not append) global hooks per-field.
+/// Returns `None` if the merged result has no on_create or on_launch hooks.
+pub fn merge_hooks_with_config(profile: &str, repo_hooks: HooksConfig) -> Option<HooksConfig> {
+    let mut base = super::profile_config::resolve_config(profile)
+        .map(|c| c.hooks)
+        .unwrap_or_default();
+
+    if !repo_hooks.on_create.is_empty() {
+        base.on_create = repo_hooks.on_create;
+    }
+    if !repo_hooks.on_launch.is_empty() {
+        base.on_launch = repo_hooks.on_launch;
+    }
+
+    if base.on_create.is_empty() && base.on_launch.is_empty() {
+        None
+    } else {
+        Some(base)
     }
 }
 
@@ -561,6 +671,75 @@ pub fn execute_hooks_in_container(
     )
 }
 
+/// Execute hooks with best-effort semantics: all commands are attempted even if
+/// some fail. Returns collected error messages. Designed for teardown hooks
+/// (on_destroy) where partial cleanup is better than aborting on first failure.
+fn run_hooks_best_effort(commands: &[String], target: &HookTarget) -> Vec<String> {
+    let in_container = matches!(target, HookTarget::Container { .. });
+    let mut errors = Vec::new();
+
+    for cmd in commands {
+        tracing::info!("Running hook (best-effort): {}", cmd);
+        let mut command = build_hook_command(cmd, target, false);
+        match command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+        {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let err = format_hook_error(
+                        cmd,
+                        output.status.code(),
+                        &stderr,
+                        &stdout,
+                        in_container,
+                    );
+                    tracing::warn!("{}", err);
+                    errors.push(err);
+                } else {
+                    tracing::debug!(
+                        "Hook completed: {} (stdout: {} bytes, stderr: {} bytes)",
+                        cmd,
+                        output.stdout.len(),
+                        output.stderr.len()
+                    );
+                }
+            }
+            Err(e) => {
+                let err = format!("Failed to execute hook: {}: {}", cmd, e);
+                tracing::warn!("{}", err);
+                errors.push(err);
+            }
+        }
+    }
+    errors
+}
+
+/// Execute hooks locally with best-effort semantics (all commands attempted).
+/// Returns a list of error messages for any hooks that failed.
+pub fn execute_hooks_best_effort(commands: &[String], project_path: &Path) -> Vec<String> {
+    run_hooks_best_effort(commands, &HookTarget::Local { project_path })
+}
+
+/// Execute hooks in a container with best-effort semantics (all commands attempted).
+/// Returns a list of error messages for any hooks that failed.
+pub fn execute_hooks_in_container_best_effort(
+    commands: &[String],
+    container_name: &str,
+    workdir: &str,
+) -> Vec<String> {
+    run_hooks_best_effort(
+        commands,
+        &HookTarget::Container {
+            container_name,
+            workdir,
+        },
+    )
+}
+
 /// Execute a list of hook commands with streamed output.
 pub fn execute_hooks_streamed(
     commands: &[String],
@@ -597,6 +776,8 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 # on_create = ["npm install", "cp .env.example .env"]
 # Commands run every time a session starts
 # on_launch = ["npm install"]
+# Commands run when a session is deleted (before cleanup)
+# on_destroy = ["docker-compose down"]
 
 # [session]
 # default_tool = "claude"
@@ -636,7 +817,16 @@ mod tests {
     fn test_hooks_config_not_empty() {
         let hooks = HooksConfig {
             on_create: vec!["npm install".to_string()],
-            on_launch: vec![],
+            ..Default::default()
+        };
+        assert!(!hooks.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_config_not_empty_on_destroy() {
+        let hooks = HooksConfig {
+            on_destroy: vec!["docker-compose down".to_string()],
+            ..Default::default()
         };
         assert!(!hooks.is_empty());
     }
@@ -646,6 +836,7 @@ mod tests {
         let hooks = HooksConfig {
             on_create: vec!["npm install".to_string()],
             on_launch: vec!["echo hello".to_string()],
+            ..Default::default()
         };
         let hash1 = compute_hooks_hash(&hooks);
         let hash2 = compute_hooks_hash(&hooks);
@@ -656,11 +847,11 @@ mod tests {
     fn test_compute_hooks_hash_differs_on_change() {
         let hooks1 = HooksConfig {
             on_create: vec!["npm install".to_string()],
-            on_launch: vec![],
+            ..Default::default()
         };
         let hooks2 = HooksConfig {
             on_create: vec!["yarn install".to_string()],
-            on_launch: vec![],
+            ..Default::default()
         };
         assert_ne!(compute_hooks_hash(&hooks1), compute_hooks_hash(&hooks2));
     }
@@ -669,12 +860,22 @@ mod tests {
     fn test_compute_hooks_hash_distinguishes_hook_types() {
         let hooks1 = HooksConfig {
             on_create: vec!["echo hello".to_string()],
-            on_launch: vec![],
+            ..Default::default()
         };
         let hooks2 = HooksConfig {
-            on_create: vec![],
             on_launch: vec!["echo hello".to_string()],
+            ..Default::default()
         };
+        assert_ne!(compute_hooks_hash(&hooks1), compute_hooks_hash(&hooks2));
+    }
+
+    #[test]
+    fn test_compute_hooks_hash_includes_on_destroy() {
+        let hooks1 = HooksConfig {
+            on_destroy: vec!["cleanup".to_string()],
+            ..Default::default()
+        };
+        let hooks2 = HooksConfig::default();
         assert_ne!(compute_hooks_hash(&hooks1), compute_hooks_hash(&hooks2));
     }
 
@@ -706,6 +907,96 @@ mod tests {
         );
         assert_eq!(config.sandbox.unwrap().enabled_by_default, Some(true));
         assert_eq!(config.worktree.unwrap().enabled, Some(true));
+    }
+
+    #[test]
+    fn test_hooks_string_instead_of_array_parses_ok() {
+        // Regression test for #561: user writes on_launch as a plain string
+        // instead of an array. Previously this caused the entire RepoConfig to
+        // fail deserialization, silently dropping all settings including sandbox
+        // env vars. Now string_or_vec accepts both formats.
+        let toml = r#"
+            [sandbox]
+            environment = ["ANTHROPIC_API_KEY", "UV_LINK_MODE=copy", "CI=true"]
+
+            [hooks]
+            on_launch = "uv python install 3.11 && uv venv /opt/venv --python 3.11"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(
+            hooks.on_launch,
+            vec!["uv python install 3.11 && uv venv /opt/venv --python 3.11"]
+        );
+        assert!(hooks.on_create.is_empty());
+
+        // Verify the sandbox config is also preserved
+        let sandbox = config.sandbox.unwrap();
+        assert_eq!(
+            sandbox.environment,
+            Some(vec![
+                "ANTHROPIC_API_KEY".to_string(),
+                "UV_LINK_MODE=copy".to_string(),
+                "CI=true".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_hooks_on_create_string_parses_ok() {
+        let toml = r#"
+            [hooks]
+            on_create = "npm install"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(hooks.on_create, vec!["npm install"]);
+        assert!(hooks.on_launch.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_on_destroy_string_parses_ok() {
+        let toml = r#"
+            [hooks]
+            on_destroy = "docker-compose down"
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(hooks.on_destroy, vec!["docker-compose down"]);
+        assert!(hooks.on_create.is_empty());
+        assert!(hooks.on_launch.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_on_destroy_array_parses_ok() {
+        let toml = r#"
+            [hooks]
+            on_destroy = ["docker-compose down", "rm -rf /tmp/cache"]
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(
+            hooks.on_destroy,
+            vec!["docker-compose down", "rm -rf /tmp/cache"]
+        );
+    }
+
+    #[test]
+    fn test_hooks_array_still_works() {
+        let toml = r#"
+            [hooks]
+            on_create = ["npm install", "cp .env.example .env"]
+            on_launch = ["npm start"]
+        "#;
+
+        let config: RepoConfig = toml::from_str(toml).unwrap();
+        let hooks = config.hooks.unwrap();
+        assert_eq!(hooks.on_create, vec!["npm install", "cp .env.example .env"]);
+        assert_eq!(hooks.on_launch, vec!["npm start"]);
     }
 
     #[test]

@@ -30,6 +30,7 @@ fn test_delete_dialog_respects_worktree_auto_cleanup_true() {
         DeleteDialogConfig {
             worktree_branch: Some("main".to_string()),
             has_sandbox: false,
+            project_path: None,
         },
         "default",
     );
@@ -53,6 +54,7 @@ fn test_delete_dialog_respects_worktree_auto_cleanup_false() {
         DeleteDialogConfig {
             worktree_branch: Some("main".to_string()),
             has_sandbox: false,
+            project_path: None,
         },
         "default",
     );
@@ -76,6 +78,7 @@ fn test_delete_dialog_respects_sandbox_auto_cleanup_true() {
         DeleteDialogConfig {
             worktree_branch: None,
             has_sandbox: true,
+            project_path: None,
         },
         "default",
     );
@@ -99,6 +102,7 @@ fn test_delete_dialog_respects_sandbox_auto_cleanup_false() {
         DeleteDialogConfig {
             worktree_branch: None,
             has_sandbox: true,
+            project_path: None,
         },
         "default",
     );

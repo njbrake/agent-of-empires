@@ -64,13 +64,61 @@
               mainProgram = "aoe";
             };
           });
+
+          # Build the React frontend as a standalone derivation (Forgejo/ntfy-sh pattern).
+          # This separates the npm build from the Rust build cleanly.
+          #
+          # Update npmDepsHash whenever web/package-lock.json changes:
+          #   nix-update aoe-with-web
+          # or manually: set npmDepsHash to lib.fakeHash, build, copy the got: hash.
+          webFrontend = pkgs.buildNpmPackage {
+            pname = "agent-of-empires-web";
+            version = "0";
+            src = ./web;
+            npmDepsHash = "sha256-xk+Tob7yptWVaorn86xVgVtTYz2h0moPJDMe1kXt1Bs=";
+            # tsc -b && vite build; output goes to web/dist
+            installPhase = ''
+              mkdir $out
+              cp -r dist $out/
+            '';
+          };
+
+          # Base args for the web-enabled build. No npm tooling needed here since
+          # build.rs respects AOE_WEB_DIST to use the pre-built frontend.
+          # buildDepsOnly uses a dummy crate source so AOE_WEB_DIST is irrelevant there.
+          commonArgsWithWeb = commonArgs // {
+            cargoExtraArgs = "--package agent-of-empires --features serve";
+          };
+
+          # Rust dep cache compiled with --features serve (no npm involved).
+          cargoArtifactsWithWeb = craneLib.buildDepsOnly commonArgsWithWeb;
+
+          aoeWithWeb = craneLib.buildPackage (commonArgsWithWeb // {
+            cargoArtifacts = cargoArtifactsWithWeb;
+            doCheck = false;
+            # Point build.rs at the pre-built frontend; it will copy dist/ into
+            # place and skip running npm entirely (see build.rs AOE_WEB_DIST handling).
+            AOE_WEB_DIST = "${webFrontend}/dist";
+            postInstall = ''
+              installShellCompletion --cmd aoe \
+                --bash <($out/bin/aoe completion bash) \
+                --fish <($out/bin/aoe completion fish) \
+                --zsh <($out/bin/aoe completion zsh)
+            '';
+            meta = aoe.meta;
+            # Expose npmDeps so `nix-update` can automatically recompute the
+            # npmDepsHash in webFrontend when web/package-lock.json changes.
+            passthru.npmDeps = webFrontend.npmDeps;
+          });
         in
         {
           packages.default = aoe;
+          packages.aoe-with-web = aoeWithWeb;
 
           checks = {
-            # Build the package as a check too
+            # Build the packages as checks too
             inherit aoe;
+            inherit aoeWithWeb;
 
             aoe-clippy = craneLib.cargoClippy (commonArgs // {
               inherit cargoArtifacts;
@@ -94,6 +142,7 @@
             packages = with pkgs; [
               rust-analyzer
               tmux
+              nodejs # for web frontend development (--features serve)
             ];
           };
         };

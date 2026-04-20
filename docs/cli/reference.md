@@ -41,6 +41,11 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe sounds install`↴](#aoe-sounds-install)
 * [`aoe sounds list`↴](#aoe-sounds-list)
 * [`aoe sounds test`↴](#aoe-sounds-test)
+* [`aoe theme`↴](#aoe-theme)
+* [`aoe theme list`↴](#aoe-theme-list)
+* [`aoe theme export`↴](#aoe-theme-export)
+* [`aoe theme dir`↴](#aoe-theme-dir)
+* [`aoe serve`↴](#aoe-serve)
 * [`aoe uninstall`↴](#aoe-uninstall)
 * [`aoe completion`↴](#aoe-completion)
 
@@ -55,7 +60,7 @@ Run without arguments to launch the TUI dashboard.
 ###### **Subcommands:**
 
 * `add` — Add a new session
-* `init` — Initialize .aoe/config.toml in a repository
+* `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
 * `remove` — Remove a session
 * `send` — Send a message to a running agent session
@@ -66,6 +71,8 @@ Run without arguments to launch the TUI dashboard.
 * `worktree` — Manage git worktrees for parallel development
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
+* `theme` — Manage color themes (list, export, customize)
+* `serve` — Start a web dashboard for remote session access
 * `uninstall` — Uninstall Agent of Empires
 * `completion` — Generate shell completions
 
@@ -108,7 +115,7 @@ Add a new session
 
 ## `aoe init`
 
-Initialize .aoe/config.toml in a repository
+Initialize .agent-of-empires/config.toml in a repository
 
 **Usage:** `aoe init [PATH]`
 
@@ -570,6 +577,77 @@ Test a sound by playing it
 ###### **Arguments:**
 
 * `<NAME>` — Sound file name (without extension)
+
+
+
+## `aoe theme`
+
+Manage color themes (list, export, customize)
+
+**Usage:** `aoe theme <COMMAND>`
+
+###### **Subcommands:**
+
+* `list` — List all available themes (built-in and custom)
+* `export` — Export a built-in theme as a TOML file for customization
+* `dir` — Show the custom themes directory path
+
+
+
+## `aoe theme list`
+
+List all available themes (built-in and custom)
+
+**Usage:** `aoe theme list`
+
+
+
+## `aoe theme export`
+
+Export a built-in theme as a TOML file for customization
+
+**Usage:** `aoe theme export [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — Theme name to export
+
+###### **Options:**
+
+* `-o`, `--output <OUTPUT>` — Output file path (defaults to <name>.toml in the themes directory)
+
+
+
+## `aoe theme dir`
+
+Show the custom themes directory path
+
+**Usage:** `aoe theme dir`
+
+
+
+## `aoe serve`
+
+Start a web dashboard for remote session access
+
+**Usage:** `aoe serve [OPTIONS]`
+
+###### **Options:**
+
+* `--port <PORT>` — Port to listen on
+
+  Default value: `8080`
+* `--host <HOST>` — Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)
+
+  Default value: `127.0.0.1`
+* `--no-auth` — Disable authentication (only allowed with localhost binding)
+* `--read-only` — Read-only mode: view terminals but cannot send keystrokes
+* `--remote` — Expose via Cloudflare Tunnel for secure remote access
+* `--tunnel-name <TUNNEL_NAME>` — Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+* `--tunnel-url <TUNNEL_URL>` — Hostname for a named tunnel (e.g., aoe.example.com)
+* `--daemon` — Run as a background daemon (detach from terminal)
+* `--stop` — Stop a running daemon
+* `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
 
 
 

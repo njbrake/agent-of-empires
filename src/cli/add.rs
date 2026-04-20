@@ -2,12 +2,12 @@
 
 use anyhow::{bail, Result};
 use clap::Args;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::builder;
 use crate::session::repo_config;
-use crate::session::{civilizations, resolve_config, GroupTree, Instance, SandboxInfo, Storage};
+use crate::session::{civilizations, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -87,7 +87,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("--repo requires --worktree to specify a branch\nTip: aoe add /path --repo /other -w branch-name");
     }
 
-    let config = resolve_config(profile).unwrap_or_default();
+    let config = repo_config::resolve_config_with_repo(profile, &path).unwrap_or_default();
+
+    // Preserve the original project path for hook trust checking.
+    // `path` gets reassigned to the worktree/workspace directory below,
+    // but hooks are defined in the original repo's `.agent-of-empires/config.toml`.
+    let original_project_path = path.clone();
 
     let mut worktree_info_opt = None;
     let mut workspace_info_opt = None;
@@ -180,7 +185,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         None
     };
 
-    // Generate title
+    // Generate title: use provided title, or branch name for worktree sessions, or random civ
     let final_title = if let Some(title) = &args.title {
         let trimmed_title = title.trim();
         if is_duplicate_session(&instances, trimmed_title, path.to_str().unwrap_or("")) {
@@ -191,6 +196,16 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             return Ok(());
         }
         trimmed_title.to_string()
+    } else if let Some(ref branch) = args.worktree_branch {
+        let branch_title = branch.trim().to_string();
+        if is_duplicate_session(&instances, &branch_title, path.to_str().unwrap_or("")) {
+            println!(
+                "Session already exists with same title and path: {}",
+                branch_title
+            );
+            return Ok(());
+        }
+        branch_title
     } else {
         let existing_titles: Vec<&str> = instances.iter().map(|i| i.title.as_str()).collect();
         civilizations::generate_random_title(&existing_titles)
@@ -216,17 +231,34 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             instance.command = cmd.clone();
         }
     } else {
-        // Use default_tool from resolved config, then first available tool, then "claude"
+        // Use default_tool from resolved config, then first available tool, then "claude".
+        // Check custom_agents first (exact match) before resolve_tool_name (substring match),
+        // so names like "lenovo-claude" resolve as the custom agent, not built-in "claude".
         let available_tools = crate::tmux::AvailableTools::detect();
+        let tools_list = available_tools.available_list();
         instance.tool = config
             .session
             .default_tool
             .as_deref()
-            .and_then(crate::agents::resolve_tool_name)
-            .or_else(|| available_tools.available_list().first().copied())
+            .and_then(|name| {
+                if config.session.custom_agents.contains_key(name) {
+                    Some(name)
+                } else {
+                    crate::agents::resolve_tool_name(name)
+                }
+            })
+            .or_else(|| tools_list.first().map(|s| s.as_str()))
             .unwrap_or("claude")
             .to_string();
     }
+
+    // Set detect_as for status detection (resolved once, avoids config load in poll loop)
+    instance.detect_as = config
+        .session
+        .agent_detect_as
+        .get(&instance.tool)
+        .cloned()
+        .unwrap_or_default();
 
     // Apply set_default_command for agents that need it (e.g., opencode, codex)
     if instance.command.is_empty() {
@@ -257,9 +289,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(ref cmd) = args.cmd_override {
         instance.command = cmd.clone();
-    } else if let Some(cmd_override) = config.session.agent_command_override.get(&instance.tool) {
-        if !cmd_override.is_empty() {
-            instance.command = cmd_override.clone();
+    } else {
+        let resolved = config.session.resolve_tool_command(&instance.tool);
+        if !resolved.is_empty() {
+            instance.command = resolved;
         }
     }
 
@@ -296,50 +329,63 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         }
     }
 
-    // Check for repository hooks
+    // Check for repository hooks.
+    // Use the original project path for trust checking (not the worktree/workspace
+    // path, which won't contain `.agent-of-empires/config.toml`).
     let hook_result: Result<()> = (|| {
-        match repo_config::check_hook_trust(&path) {
-            Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
-                let should_trust = if args.trust_hooks {
-                    true
-                } else {
-                    println!("\nRepository hooks detected in .aoe/config.toml:");
-                    if !hooks.on_create.is_empty() {
-                        println!("  on_create:");
-                        for cmd in &hooks.on_create {
-                            println!("    {}", cmd);
+        let resolved_hooks: Option<crate::session::HooksConfig> =
+            match repo_config::check_hook_trust(&original_project_path) {
+                Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
+                    let should_trust = if args.trust_hooks {
+                        true
+                    } else {
+                        println!("\nRepository hooks detected in .agent-of-empires/config.toml:");
+                        if !hooks.on_create.is_empty() {
+                            println!("  on_create:");
+                            for cmd in &hooks.on_create {
+                                println!("    {}", cmd);
+                            }
                         }
-                    }
-                    if !hooks.on_launch.is_empty() {
-                        println!("  on_launch:");
-                        for cmd in &hooks.on_launch {
-                            println!("    {}", cmd);
+                        if !hooks.on_launch.is_empty() {
+                            println!("  on_launch:");
+                            for cmd in &hooks.on_launch {
+                                println!("    {}", cmd);
+                            }
                         }
-                    }
-                    print!("\nTrust and run these hooks? [y/N] ");
-                    use std::io::Write;
-                    std::io::stdout().flush()?;
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    input.trim().eq_ignore_ascii_case("y")
-                };
+                        print!("\nTrust and run these hooks? [y/N] ");
+                        use std::io::Write;
+                        std::io::stdout().flush()?;
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        input.trim().eq_ignore_ascii_case("y")
+                    };
 
-                if should_trust {
-                    trust_and_run_on_create(&path, &hooks_hash, &hooks)?;
-                } else {
-                    println!("Hooks skipped (session created without running hooks)");
+                    if should_trust {
+                        repo_config::trust_repo(&original_project_path, &hooks_hash)?;
+                        println!("✓ Repository hooks trusted");
+                        repo_config::merge_hooks_with_config(profile, hooks)
+                    } else {
+                        println!("Hooks skipped (session created without running hooks)");
+                        None
+                    }
                 }
-            }
-            Ok(repo_config::HookTrustStatus::Trusted(hooks)) => {
-                if !hooks.on_create.is_empty() {
-                    println!("Running on_create hooks...");
-                    repo_config::execute_hooks(&hooks.on_create, &path)?;
-                    println!("✓ on_create hooks completed");
+                Ok(repo_config::HookTrustStatus::Trusted(repo_hooks)) => {
+                    repo_config::merge_hooks_with_config(profile, repo_hooks)
                 }
-            }
-            Ok(repo_config::HookTrustStatus::NoHooks) => {}
-            Err(e) => {
-                tracing::warn!("Failed to check repo hooks: {}", e);
+                Ok(repo_config::HookTrustStatus::NoHooks) => {
+                    repo_config::resolve_global_profile_hooks(profile)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check repo hooks: {}", e);
+                    repo_config::resolve_global_profile_hooks(profile)
+                }
+            };
+
+        if let Some(hooks) = resolved_hooks {
+            if !hooks.on_create.is_empty() {
+                println!("Running on_create hooks...");
+                repo_config::execute_hooks(&hooks.on_create, &path)?;
+                println!("✓ on_create hooks completed");
             }
         }
         Ok(())
@@ -435,21 +481,6 @@ pub fn is_duplicate_session(instances: &[Instance], title: &str, path: &str) -> 
         let existing_path = inst.project_path.trim_end_matches('/');
         existing_path == normalized_path && inst.title == title
     })
-}
-
-fn trust_and_run_on_create(
-    project_path: &Path,
-    hooks_hash: &str,
-    hooks: &crate::session::HooksConfig,
-) -> Result<()> {
-    repo_config::trust_repo(project_path, hooks_hash)?;
-    println!("✓ Repository hooks trusted");
-    if !hooks.on_create.is_empty() {
-        println!("Running on_create hooks...");
-        repo_config::execute_hooks(&hooks.on_create, project_path)?;
-        println!("✓ on_create hooks completed");
-    }
-    Ok(())
 }
 
 fn detect_tool(cmd: &str) -> Result<String> {

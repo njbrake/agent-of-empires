@@ -60,8 +60,6 @@ pub struct AgentDef {
     pub instruction_flag: Option<&'static str>,
     /// If true, `builder.rs` sets `instance.command = binary` for this agent.
     pub set_default_command: bool,
-    /// If true, the agent can be launched directly on the host (non-sandboxed).
-    pub supports_host_launch: bool,
     /// Status detection function pointer. Takes raw (non-lowercased) pane content.
     pub detect_status: fn(&str) -> Status,
     /// Environment variables always injected into the container for this agent.
@@ -70,6 +68,15 @@ pub struct AgentDef {
     /// hooks into the agent's settings file so status is written to a file instead
     /// of being parsed from tmux pane content.
     pub hook_config: Option<AgentHookConfig>,
+    /// If true, this agent can only run on the host (no sandbox/worktree support).
+    /// The new-session dialog hides sandbox and worktree options for these agents.
+    pub host_only: bool,
+    /// Milliseconds to wait between sending literal text and the final Enter key.
+    /// Agents with paste-burst detection (e.g. Codex, 120ms window) swallow Enter
+    /// keys that arrive too quickly after a stream of characters, treating them as
+    /// newlines within a paste rather than as "submit". A delay longer than the
+    /// agent's burst window lets the suppression expire before Enter arrives.
+    pub send_keys_enter_delay_ms: u64,
 }
 
 /// Hook events shared by Claude Code and Cursor CLI.
@@ -110,13 +117,14 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--dangerously-skip-permissions")),
         instruction_flag: Some("--append-system-prompt {}"),
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_claude_status,
         container_env: &[("CLAUDE_CONFIG_DIR", "/root/.claude")],
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".claude/settings.json",
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "opencode",
@@ -126,10 +134,11 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::EnvVar("OPENCODE_PERMISSION", r#"{"*":"allow"}"#)),
         instruction_flag: None,
         set_default_command: true,
-        supports_host_launch: false,
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "vibe",
@@ -139,10 +148,11 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--agent auto-approve")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_vibe_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "codex",
@@ -154,10 +164,14 @@ pub const AGENTS: &[AgentDef] = &[
         )),
         instruction_flag: Some("--config developer_instructions={}"),
         set_default_command: true,
-        supports_host_launch: true,
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
+        // Codex has paste-burst detection with a 120ms Enter-suppression window;
+        // Enter keys arriving within that window after a character stream are
+        // swallowed as newlines instead of triggering submit. 150ms > 120ms.
+        send_keys_enter_delay_ms: 150,
     },
     AgentDef {
         name: "gemini",
@@ -167,7 +181,6 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--approval-mode yolo")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_gemini_status,
         container_env: &[],
         hook_config: Some(AgentHookConfig {
@@ -195,6 +208,8 @@ pub const AGENTS: &[AgentDef] = &[
                 },
             ],
         }),
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "cursor",
@@ -204,13 +219,14 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_cursor_status,
         container_env: &[("CURSOR_CONFIG_DIR", "/root/.cursor")],
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".cursor/settings.json",
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "copilot",
@@ -220,10 +236,11 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_copilot_status,
         container_env: &[("COPILOT_CONFIG_DIR", "/root/.copilot")],
         hook_config: None,
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "pi",
@@ -234,10 +251,11 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::AlwaysYolo),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_pi_status,
         container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
         hook_config: None,
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "droid",
@@ -247,16 +265,39 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--skip-permissions-unsafe")),
         instruction_flag: None,
         set_default_command: false,
-        supports_host_launch: true,
         detect_status: status_detection::detect_droid_status,
         container_env: &[],
         hook_config: None,
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
+    },
+    AgentDef {
+        name: "settl",
+        binary: "settl",
+        aliases: &["settlers", "catan"],
+        detection: DetectionMethod::Which("settl"),
+        yolo: Some(YoloMode::AlwaysYolo),
+        instruction_flag: None,
+        set_default_command: false,
+        detect_status: status_detection::detect_settl_status,
+        container_env: &[],
+        hook_config: None,
+        host_only: true,
+        send_keys_enter_delay_ms: 0,
     },
 ];
 
 /// Look up an agent by canonical name.
 pub fn get_agent(name: &str) -> Option<&'static AgentDef> {
     AGENTS.iter().find(|a| a.name == name)
+}
+
+/// Returns the delay (in ms) to insert before the submit-Enter for this agent.
+/// Non-zero for agents with paste-burst detection that swallows fast Enters.
+pub fn send_keys_enter_delay(tool: &str) -> u64 {
+    get_agent(tool)
+        .map(|a| a.send_keys_enter_delay_ms)
+        .unwrap_or(0)
 }
 
 /// All canonical agent names in registry order.
@@ -320,6 +361,7 @@ mod tests {
         assert_eq!(get_agent("copilot").unwrap().binary, "copilot");
         assert_eq!(get_agent("pi").unwrap().binary, "pi");
         assert_eq!(get_agent("droid").unwrap().binary, "droid");
+        assert_eq!(get_agent("settl").unwrap().binary, "settl");
     }
 
     #[test]
@@ -333,7 +375,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi", "droid"
+                "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi",
+                "droid", "settl"
             ]
         );
     }
@@ -351,6 +394,9 @@ mod tests {
         assert_eq!(resolve_tool_name("pi"), Some("pi"));
         assert_eq!(resolve_tool_name("droid"), Some("droid"));
         assert_eq!(resolve_tool_name("factory-droid"), Some("droid"));
+        assert_eq!(resolve_tool_name("settl"), Some("settl"));
+        assert_eq!(resolve_tool_name("settlers"), Some("settl"));
+        assert_eq!(resolve_tool_name("catan"), Some("settl"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -365,6 +411,7 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("copilot")), 7);
         assert_eq!(settings_index_from_name(Some("pi")), 8);
         assert_eq!(settings_index_from_name(Some("droid")), 9);
+        assert_eq!(settings_index_from_name(Some("settl")), 10);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
@@ -373,6 +420,7 @@ mod tests {
         assert_eq!(name_from_settings_index(7), Some("copilot"));
         assert_eq!(name_from_settings_index(8), Some("pi"));
         assert_eq!(name_from_settings_index(9), Some("droid"));
+        assert_eq!(name_from_settings_index(10), Some("settl"));
         assert_eq!(name_from_settings_index(99), None);
     }
 
@@ -385,5 +433,15 @@ mod tests {
                 agent.name
             );
         }
+    }
+
+    #[test]
+    fn test_send_keys_enter_delay() {
+        // Codex needs a delay to outlast its 120ms paste-burst suppression window
+        assert!(send_keys_enter_delay("codex") >= 150);
+        // Other agents should not delay
+        assert_eq!(send_keys_enter_delay("claude"), 0);
+        assert_eq!(send_keys_enter_delay("opencode"), 0);
+        assert_eq!(send_keys_enter_delay("unknown_agent"), 0);
     }
 }
