@@ -165,6 +165,7 @@ impl DiffView {
                     FileStatus::Renamed => theme.diff_header,
                     FileStatus::Copied => theme.diff_header,
                     FileStatus::Untracked => theme.dimmed,
+                    FileStatus::Conflicted => theme.diff_modified,
                 };
 
                 let style = if is_selected {

@@ -17,6 +17,7 @@ const STATUS_LABELS: Record<string, string> = {
   renamed: "Renamed",
   copied: "Copied",
   untracked: "Untracked",
+  conflicted: "Conflicted",
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -26,6 +27,7 @@ const STATUS_COLORS: Record<string, string> = {
   renamed: "text-accent-600",
   copied: "text-accent-600",
   untracked: "text-text-muted",
+  conflicted: "text-status-waiting",
 };
 
 function DiffLine({ line }: { line: RichDiffLine }) {
