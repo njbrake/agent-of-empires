@@ -57,8 +57,12 @@ export function useWebSettings() {
   const update = useCallback((patch: Partial<WebSettings>) => {
     const current = getSnapshot();
     const next = { ...current, ...patch };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    cachedRaw = null; // invalidate cache
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch (err) {
+      console.warn("aoe-web-settings: failed to persist", err);
+    }
+    cachedRaw = null;
     emitChange();
   }, []);
 

@@ -68,6 +68,13 @@ const PAGES = [
     description:
       "Git worktree commands and configuration reference for Agent of Empires.",
   },
+  {
+    source: "docs/guides/agent-override.md",
+    dest: "guides/agent-override.md",
+    title: "Agent Command Overrides",
+    description:
+      "Override agent commands with custom scripts or sandboxed wrappers in Agent of Empires.",
+  },
 
   // --- Docs pages (docs/ → pages/docs/) ---
   {
@@ -138,6 +145,7 @@ const URL_MAP = {
   "docs/guides/web-dashboard.md": "/guides/web-dashboard/",
   "docs/guides/remote-phone-access.md": "/guides/remote-phone-access/",
   "docs/guides/worktrees.md": "/guides/worktrees/",
+  "docs/guides/agent-override.md": "/guides/agent-override/",
 };
 
 const GITHUB_BASE =
@@ -194,8 +202,9 @@ function rewriteLinks(content, sourceDir) {
   // `../assets/foo.png` (used by guides at docs/guides/foo.md) map to
   // the same place, so normalize both to `/assets/`. This catches
   // markdown links, markdown images (![alt](..) contains ](..)), and
-  // HTML-less references alike.
-  content = content.replace(/\]\((?:\.\.\/)?assets\//g, "](/assets/");
+  // HTML-less references alike. `(?:\.\.\/)*` handles any depth of
+  // parent-directory hops so deeper-nested docs future-proof through.
+  content = content.replace(/\]\((?:\.\.\/)*assets\//g, "](/assets/");
 
   return content;
 }

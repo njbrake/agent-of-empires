@@ -88,12 +88,18 @@
 }
 
 html {
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  height: 100dvh;
+  overflow: hidden;
   overscroll-behavior: none;
+  /* safe-area insets are handled by the App root, not html, to avoid
+     making the document taller than the viewport (which lets iOS scroll
+     the page when the keyboard opens, breaking keyboard-height math). */
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 body {
+  height: 100%;
+  overflow: hidden;
   font-family: var(--font-sans);
   background: var(--color-surface-900);
   color: var(--color-text-primary);
@@ -165,8 +171,8 @@ select:focus-visible,
   background: rgba(161, 161, 170, 0.2);
 }
 
-@media (max-width: 768px) {
-  .safe-area-bottom {
-    padding-bottom: env(safe-area-inset-bottom);
-  }
+.safe-area-inset {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
+

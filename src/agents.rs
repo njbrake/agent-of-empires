@@ -71,6 +71,12 @@ pub struct AgentDef {
     /// If true, this agent can only run on the host (no sandbox/worktree support).
     /// The new-session dialog hides sandbox and worktree options for these agents.
     pub host_only: bool,
+    /// Milliseconds to wait between sending literal text and the final Enter key.
+    /// Agents with paste-burst detection (e.g. Codex, 120ms window) swallow Enter
+    /// keys that arrive too quickly after a stream of characters, treating them as
+    /// newlines within a paste rather than as "submit". A delay longer than the
+    /// agent's burst window lets the suppression expire before Enter arrives.
+    pub send_keys_enter_delay_ms: u64,
 }
 
 /// Hook events shared by Claude Code and Cursor CLI.
@@ -118,6 +124,7 @@ pub const AGENTS: &[AgentDef] = &[
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "opencode",
@@ -131,6 +138,7 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[],
         hook_config: None,
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "vibe",
@@ -144,6 +152,7 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[],
         hook_config: None,
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "codex",
@@ -159,6 +168,10 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[],
         hook_config: None,
         host_only: false,
+        // Codex has paste-burst detection with a 120ms Enter-suppression window;
+        // Enter keys arriving within that window after a character stream are
+        // swallowed as newlines instead of triggering submit. 150ms > 120ms.
+        send_keys_enter_delay_ms: 150,
     },
     AgentDef {
         name: "gemini",
@@ -196,6 +209,7 @@ pub const AGENTS: &[AgentDef] = &[
             ],
         }),
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "cursor",
@@ -212,6 +226,7 @@ pub const AGENTS: &[AgentDef] = &[
             events: CLAUDE_CURSOR_HOOK_EVENTS,
         }),
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "copilot",
@@ -225,6 +240,7 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[("COPILOT_CONFIG_DIR", "/root/.copilot")],
         hook_config: None,
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "pi",
@@ -239,6 +255,7 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
         hook_config: None,
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "droid",
@@ -252,6 +269,7 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[],
         hook_config: None,
         host_only: false,
+        send_keys_enter_delay_ms: 0,
     },
     AgentDef {
         name: "settl",
@@ -265,12 +283,21 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[],
         hook_config: None,
         host_only: true,
+        send_keys_enter_delay_ms: 0,
     },
 ];
 
 /// Look up an agent by canonical name.
 pub fn get_agent(name: &str) -> Option<&'static AgentDef> {
     AGENTS.iter().find(|a| a.name == name)
+}
+
+/// Returns the delay (in ms) to insert before the submit-Enter for this agent.
+/// Non-zero for agents with paste-burst detection that swallows fast Enters.
+pub fn send_keys_enter_delay(tool: &str) -> u64 {
+    get_agent(tool)
+        .map(|a| a.send_keys_enter_delay_ms)
+        .unwrap_or(0)
 }
 
 /// All canonical agent names in registry order.
@@ -406,5 +433,15 @@ mod tests {
                 agent.name
             );
         }
+    }
+
+    #[test]
+    fn test_send_keys_enter_delay() {
+        // Codex needs a delay to outlast its 120ms paste-burst suppression window
+        assert!(send_keys_enter_delay("codex") >= 150);
+        // Other agents should not delay
+        assert_eq!(send_keys_enter_delay("claude"), 0);
+        assert_eq!(send_keys_enter_delay("opencode"), 0);
+        assert_eq!(send_keys_enter_delay("unknown_agent"), 0);
     }
 }

@@ -452,7 +452,10 @@ impl HomeView {
                         if let Some(inst) = self.get_instance(&session_id) {
                             match crate::tmux::Session::new(&inst.id, &inst.title) {
                                 Ok(tmux_session) => {
-                                    if let Err(e) = tmux_session.send_keys(&message) {
+                                    let delay = crate::agents::send_keys_enter_delay(&inst.tool);
+                                    if let Err(e) =
+                                        tmux_session.send_keys_with_delay(&message, delay)
+                                    {
                                         self.info_dialog = Some(InfoDialog::new(
                                             "Send Failed",
                                             &format!("Failed to send message: {}", e),
