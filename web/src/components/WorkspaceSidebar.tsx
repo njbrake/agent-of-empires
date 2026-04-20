@@ -116,6 +116,8 @@ const SessionRow = memo(function SessionRow({
   const renameRef = useRef<HTMLInputElement>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
+  const touchOpenedAt = useRef(0);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     return () => {
@@ -130,18 +132,27 @@ const SessionRow = memo(function SessionRow({
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
+    const onDocClick = (e: MouseEvent) => {
+      // Clicks inside the menu should be handled by item onClick
+      // handlers, not by this dismiss listener.
+      if (menuRef.current?.contains(e.target as Node)) return;
+      // On mobile, lifting the finger after a long-press dispatches a
+      // synthetic click even when touchend called preventDefault().
+      // Ignore clicks that arrive shortly after a touch-triggered open.
+      if (Date.now() - touchOpenedAt.current < 500) return;
+      close();
+    };
     // Defer so the event that opened the menu finishes bubbling first
     const id = requestAnimationFrame(() => {
-      document.addEventListener("click", close);
+      document.addEventListener("click", onDocClick);
       document.addEventListener("contextmenu", close);
     });
     // Listen for the "close" broadcast from any sibling SessionRow
-    // that is opening its own menu. This is what fixes the long-press
-    // bug: touchstart doesn't propagate as "click" to document.
+    // that is opening its own menu.
     menuBus.addEventListener("close", close);
     return () => {
       cancelAnimationFrame(id);
-      document.removeEventListener("click", close);
+      document.removeEventListener("click", onDocClick);
       document.removeEventListener("contextmenu", close);
       menuBus.removeEventListener("close", close);
     };
@@ -171,6 +182,7 @@ const SessionRow = memo(function SessionRow({
     const ty = touch.clientY;
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true;
+      touchOpenedAt.current = Date.now();
       closeOtherContextMenus();
       setContextMenu({ x: tx, y: ty });
     }, 500);
@@ -251,6 +263,7 @@ const SessionRow = memo(function SessionRow({
       </button>
       {contextMenu && createPortal(
         <div
+          ref={menuRef}
           className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
