@@ -59,7 +59,7 @@ const PAGES = [
     dest: "guides/remote-phone-access.md",
     title: "Remote Access from Your Phone",
     description:
-      "Access your Agent of Empires sessions from your phone via a one-keystroke Cloudflare Tunnel with QR pairing.",
+      "Access your Agent of Empires sessions from your phone via Tailscale Funnel or Cloudflare Tunnel with QR pairing.",
   },
   {
     source: "docs/guides/worktrees.md",

@@ -1,6 +1,7 @@
 //! Public-HTTPS tunnel integration for secure remote access.
 //!
-//! Supports three transports, auto-picked in `prefer_tailscale_then_cloudflare`:
+//! Supports three transports, auto-picked by `server::start_server` in
+//! this preference order:
 //! 1. Tailscale Funnel: preferred when `tailscale` is installed and logged in.
 //!    Gives a stable `https://<machine>.<tailnet>.ts.net` URL, so installed
 //!    PWAs survive server restarts. No child process to manage; the Tailscale
@@ -307,15 +308,21 @@ impl TunnelHandle {
             biased;
             maybe_url = &mut activation_rx => {
                 // Tailscale told us exactly how to fix this. Kill the
-                // (hung) child and surface the URL verbatim.
+                // (hung) child and surface the URL verbatim. If the
+                // oneshot closed without a URL (buffering quirk, etc.),
+                // fall back to generic guidance rather than guessing at
+                // a URL that may not match this tailnet.
                 let _ = child.kill().await;
-                let url = maybe_url.unwrap_or_else(|_| {
-                    "https://login.tailscale.com/admin/settings/features".to_string()
-                });
+                let detail = match maybe_url {
+                    Ok(url) => format!(
+                        "Enable it here (the link is specific to this node):\n  {url}"
+                    ),
+                    Err(_) => "Enable it from your tailnet admin console under \
+                              Settings > Features > Funnel.".to_string(),
+                };
                 return Err(anyhow::anyhow!(
                     "Tailscale Funnel is not enabled for this tailnet.\n\n\
-                     Enable it here (the link is specific to this node):\n  \
-                     {url}\n\n\
+                     {detail}\n\n\
                      After enabling, re-run `aoe serve --remote`. \
                      Or pass --no-tailscale to use Cloudflare instead."
                 ));

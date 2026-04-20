@@ -4,12 +4,17 @@ The web dashboard can send browser push notifications when an agent is waiting f
 
 ## What triggers a notification
 
-Currently one trigger: when a session's status transitions from `Running` to `Waiting` and stays that way for at least five seconds. This covers the most common pattern ("agent paused to ask me something"). A 60-second post-send cooldown per session prevents rapid re-buzzing.
+Three event types, each independently toggleable in Settings:
 
-Not yet triggering (planned):
-- `Running` to `Error` when a session crashes.
-- `Running` to `Idle` when a long-running session finishes.
-- Per-session opt-in ("only notify me for this session").
+- **Waiting** — session transitions to `Waiting` and stays that way for at least five seconds (the most common pattern: agent paused to ask you something). Longer dwell because Claude sometimes pauses briefly before resolving.
+- **Idle** — session finishes a long-running job and settles into `Idle`.
+- **Error** — session crashes into `Error`.
+
+A shared 60-second post-send cooldown per session prevents rapid re-buzzing when a session flickers between states.
+
+Each session also has per-session overrides that beat the server-wide defaults: you can enable `Idle` notifications only on the one long-running session you care about, for example, without flooding yourself every time any session finishes.
+
+Notifications only fire when the dashboard is NOT currently focused in the foreground — if you're actively watching the app, we suppress the push and show an in-app toast instead.
 
 ## Stable HTTPS for persistent PWA installs (read this first if using mobile)
 
@@ -19,7 +24,7 @@ Push requires HTTPS. An installed PWA is bound to the exact origin it was instal
 
 aoe picks a stable transport automatically when it can:
 
-1. **Tailscale Funnel (preferred).** If `tailscale` is installed on the host and logged in, aoe runs `tailscale serve` + `tailscale funnel` at startup and uses the resulting `https://<machine>.<tailnet>.ts.net` URL. That URL is stable across restarts, so a PWA installed from it keeps working forever. No domain or Cloudflare account needed. Enable Funnel once at [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file) (or in your tailnet ACL), then `tailscale up` on the host, and `aoe serve --remote` does the rest.
+1. **Tailscale Funnel (preferred).** If `tailscale` is installed on the host and logged in, aoe runs `tailscale funnel --bg --yes <port>` at startup (the Tailscale 1.52+ single-command Funnel syntax) and uses the resulting `https://<machine>.<tailnet>.ts.net` URL. That URL is stable across restarts, so a PWA installed from it keeps working forever. No domain or Cloudflare account needed. Two one-time steps: enable Funnel for your tailnet at [login.tailscale.com/f/funnel](https://login.tailscale.com/f/funnel) (tailnet-wide feature switch), and grant the `funnel` nodeAttr to this node in the tailnet ACL at [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file). Then `tailscale up` on the host and `aoe serve --remote` does the rest.
 
 2. **Named Cloudflare tunnel.** Pass `--tunnel-name <name> --tunnel-url <hostname>` to aoe. Requires a Cloudflare account and a one-time `cloudflared tunnel create` + DNS setup. Stable hostname on your own domain.
 

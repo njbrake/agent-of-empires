@@ -58,15 +58,16 @@ aoe picks a transport automatically in this order:
 
 ### 1. Tailscale Funnel (preferred when available)
 
-If `tailscale` is on the host's PATH and the daemon is logged in, aoe runs `tailscale serve` + `tailscale funnel` and exposes the dashboard at your stable `https://<machine>.<tailnet>.ts.net` URL. No domain, no Cloudflare account, no rotating URLs. **This is the only option where a PWA installed on your phone keeps working across server restarts** (the URL is stable).
+If `tailscale` is on the host's PATH and the daemon is logged in, aoe runs `tailscale funnel --bg --yes <port>` (the Tailscale 1.52+ single-command Funnel syntax) and exposes the dashboard at your stable `https://<machine>.<tailnet>.ts.net` URL. No domain, no Cloudflare account, no rotating URLs. **This is the only option where a PWA installed on your phone keeps working across server restarts** (the URL is stable).
 
-Setup:
+Setup (two one-time gates; aoe surfaces the fix if either is missing):
 1. Install Tailscale on the host ([tailscale.com/download](https://tailscale.com/download))
 2. `tailscale up`
-3. Enable Funnel once in the admin console or tailnet ACL: [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file)
-4. `aoe serve --remote`
+3. **Enable the Funnel feature for your tailnet** (tailnet-wide switch): [login.tailscale.com/f/funnel](https://login.tailscale.com/f/funnel). When this isn't enabled, `tailscale funnel` prints a node-specific activation URL; aoe detects that URL in stderr and bails in seconds with the link instead of timing out.
+4. **Grant the `funnel` nodeAttr to this node** in your tailnet ACL: [login.tailscale.com/admin/acls/file](https://login.tailscale.com/admin/acls/file). A default rule like `{ "target": ["autogroup:member"], "attr": ["funnel"] }` works for personal tailnets; if your node is tagged, target the tag instead (`autogroup:member` excludes tagged devices).
+5. `aoe serve --remote`
 
-Caveat: `aoe serve --remote` runs `tailscale funnel --bg --yes <port>` (the Tailscale 1.52+ single-command syntax), which configures port 443 to proxy to the dashboard. If you already have a different service on port 443 of this node's Funnel config (your own webapp, a dev server), aoe will detect the conflict via `tailscale funnel status` and refuse to start rather than silently replace it. Clear the conflicting config with `tailscale funnel reset` and re-run, or pass `--no-tailscale` to use Cloudflare instead.
+Caveat: `aoe serve --remote` runs `tailscale funnel --bg --yes <port>`, which configures port 443 to proxy to the dashboard. If you already have a non-loopback service on port 443 of this node's Funnel config (your own webapp pointing at a tailnet IP, a remote service), aoe refuses to start rather than silently replace it. A stale loopback config from a prior aoe run is fine, aoe overwrites that cleanly. Clear any conflict with `tailscale funnel reset` (the Error dialog offers this as `[R]`) and re-run, or pass `--no-tailscale` to use Cloudflare instead.
 
 ### 2. Named Cloudflare tunnel
 
@@ -167,6 +168,7 @@ aoe serve --daemon
 - **Mobile-responsive** layout (sidebar collapses on small screens)
 - **Multi-profile** support (shows sessions from all profiles)
 - **Connected Devices** view in Settings > Security
+- **Push notifications** on Waiting / Idle / Error transitions, with per-session overrides ([guide](push-notifications.md))
 
 ## Architecture
 

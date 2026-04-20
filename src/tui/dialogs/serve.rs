@@ -567,13 +567,34 @@ impl ServeDialog {
                 KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
                 _ => DialogResult::Continue,
             },
-            ServeDialogState::Error(_) => match key.code {
+            ServeDialogState::Error(msg) => match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     // Best-effort stop for a daemon that may still be
                     // lingering. Ignore the result — if there's no daemon
                     // to stop, that's the desired state anyway.
                     let _ = stop_daemon();
                     DialogResult::Cancel
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') if error_mentions_tailscale(msg) => {
+                    // Tailscale-related error: offer one-shot recovery
+                    // via `tailscale funnel reset`. Common triggers are a
+                    // stale non-loopback funnel config blocking port 443,
+                    // or a half-configured funnel the user wants to wipe.
+                    // Reset is safe even when the funnel isn't configured.
+                    let result = run_tailscale_funnel_reset();
+                    self.state = match result {
+                        Ok(()) => ServeDialogState::Error(
+                            "Ran `tailscale funnel reset`. The existing funnel \
+                             config (if any) has been cleared.\n\n\
+                             Close this dialog and press R to retry."
+                                .to_string(),
+                        ),
+                        Err(e) => ServeDialogState::Error(format!(
+                            "`tailscale funnel reset` failed: {e}\n\n\
+                             Try running it manually from a shell, then retry."
+                        )),
+                    };
+                    DialogResult::Continue
                 }
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('q') => {
                     DialogResult::Cancel
@@ -1571,9 +1592,10 @@ fn render_starting(
 fn compact_log_line(raw: &str) -> String {
     let trimmed = raw.trim_end_matches('\n');
     // Detect the tracing prefix: "<ISO8601Z>  LEVEL module::path: message".
-    // If the line doesn't start with a digit (not an ISO timestamp), pass
-    // through unchanged.
-    if !trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+    // Require a YYYY-MM-DD-looking prefix rather than "first char is a
+    // digit", so stray lines like "200 OK ..." pass through verbatim
+    // instead of getting mis-parsed.
+    if !looks_like_iso_year(trimmed) {
         return trimmed.to_string();
     }
     // Split off the timestamp (up to the first space after 'Z ').
@@ -1593,6 +1615,18 @@ fn compact_log_line(raw: &str) -> String {
     };
     let short_path = path.rsplit("::").next().unwrap_or(path);
     format!("{level} {short_path}: {message}")
+}
+
+/// Does `s` start with `YYYY-MM-DD`? Fast path for tracing-formatted
+/// lines without pulling in a full datetime parser.
+fn looks_like_iso_year(s: &str) -> bool {
+    let mut iter = s.chars();
+    for _ in 0..4 {
+        if !iter.next().is_some_and(|c| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    matches!(iter.next(), Some('-'))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1939,14 +1973,47 @@ fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
             .style(Style::default().fg(theme.text)),
         chunks[0],
     );
+    let keybinds = if error_mentions_tailscale(msg) {
+        "[S] Force-stop daemon    [R] Reset tailscale funnel    [Enter] Close"
+    } else {
+        "[S] Force-stop daemon    [Enter] Close"
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "[S] Force-stop daemon    [Enter] Close",
+            keybinds,
             Style::default().fg(theme.dimmed),
         )))
         .alignment(Alignment::Center),
         chunks[1],
     );
+}
+
+/// Heuristic: does this error message relate to a tailscale/funnel issue
+/// that `tailscale funnel reset` could plausibly unstick? Used to decide
+/// whether to offer the [R] reset keybind on the Error dialog.
+fn error_mentions_tailscale(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("tailscale") || lower.contains("funnel")
+}
+
+/// Run `tailscale funnel reset` synchronously from the TUI thread.
+/// Returns a short error string on failure so the Error dialog can show it.
+fn run_tailscale_funnel_reset() -> Result<(), String> {
+    let output = std::process::Command::new("tailscale")
+        .args(["funnel", "reset"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("could not spawn tailscale: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("exited with status {:?}", output.status.code())
+        } else {
+            stderr
+        })
+    }
 }
 
 fn format_elapsed(d: Duration) -> String {
@@ -2131,6 +2198,14 @@ mod tests {
     fn compact_log_line_handles_levels() {
         let error = "2026-04-19T23:43:44.669741Z ERROR agent_of_empires::server: boom";
         assert_eq!(compact_log_line(error), "ERROR server: boom");
+    }
+
+    #[test]
+    fn compact_log_line_leaves_digit_prefixed_non_tracing_alone() {
+        // Regression: earlier heuristic flagged anything starting with a
+        // digit as a tracing line, mangling lines like HTTP status codes.
+        let line = "200 OK received";
+        assert_eq!(compact_log_line(line), "200 OK received");
     }
 
     #[test]

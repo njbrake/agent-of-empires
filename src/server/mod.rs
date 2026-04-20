@@ -361,6 +361,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         );
         available
     } else {
+        if remote && no_tailscale {
+            tracing::debug!("tunnel: --no-tailscale set, skipping Tailscale auto-detection");
+        }
         false
     };
 
