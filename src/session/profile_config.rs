@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use super::config::{
-    Config, ContainerRuntimeName, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMode,
+    ColorMode, Config, ContainerRuntimeName, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMode,
 };
 use super::get_profile_dir;
 
@@ -48,6 +48,8 @@ pub struct ProfileConfig {
 pub struct ThemeConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_mode: Option<ColorMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -391,6 +393,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         if let Some(ref name) = theme_override.name {
             global.theme.name = name.clone();
         }
+        if let Some(ref color_mode) = theme_override.color_mode {
+            global.theme.color_mode = color_mode.clone();
+        }
     }
 
     if let Some(ref claude_override) = profile.claude {
@@ -609,6 +614,7 @@ mod tests {
         let with_override = ProfileConfig {
             theme: Some(ThemeConfigOverride {
                 name: Some("dark".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -780,6 +786,7 @@ mod tests {
         let profile = ProfileConfig {
             theme: Some(ThemeConfigOverride {
                 name: Some("tokyo-night".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };
