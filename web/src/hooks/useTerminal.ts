@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WTerm } from "@wterm/dom";
-import type { ActivateMessage, ResizeMessage } from "../lib/types";
+import type { ActivateMessage, PrimaryStatusMessage, ResizeMessage } from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
@@ -18,12 +18,14 @@ const DEFAULT_FONT_SIZE = 14;
 const MOBILE_BREAKPOINT_PX = 768;
 const WHEEL_ZOOM_SENSITIVITY = 0.05;
 const WHEEL_PERSIST_DEBOUNCE_MS = 400;
+const RESIZE_DEBOUNCE_MS = 50;
 
 export interface TerminalState {
   connected: boolean;
   reconnecting: boolean;
   retryCount: number;
   retryCountdown: number;
+  isPrimary: boolean;
 }
 
 /**
@@ -53,6 +55,7 @@ export function useTerminal(
     reconnecting: false,
     retryCount: 0,
     retryCountdown: 0,
+    isPrimary: true,
   });
 
   useEffect(() => {
@@ -114,16 +117,23 @@ export function useTerminal(
     termEl.style.setProperty("--term-font-size", `${fontSize}px`);
 
     // wterm's autoResize uses ResizeObserver to fit the terminal element.
+    // Debounce resize messages to avoid SIGWINCH storms during keyboard
+    // animation (ResizeObserver fires multiple times with intermediate
+    // sizes). 50ms settles after the animation ends.
+    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     const term = new WTerm(termEl, {
       autoResize: true,
       cursorBlink: true,
       onResize: (cols: number, rows: number) => {
-        // Relay resize to the PTY backend
-        const ws = wsRef.current;
-        if (ws?.readyState === WebSocket.OPEN) {
-          const msg: ResizeMessage = { type: "resize", cols, rows };
-          ws.send(JSON.stringify(msg));
-        }
+        if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = setTimeout(() => {
+          resizeDebounceTimer = null;
+          const ws = wsRef.current;
+          if (ws?.readyState === WebSocket.OPEN) {
+            const msg: ResizeMessage = { type: "resize", cols, rows };
+            ws.send(JSON.stringify(msg));
+          }
+        }, RESIZE_DEBOUNCE_MS);
       },
     });
 
@@ -221,6 +231,7 @@ export function useTerminal(
           reconnecting: false,
           retryCount: 0,
           retryCountdown: 0,
+          isPrimary: true,
         });
         term.focus();
         // Claim primary immediately so this client's resize is applied.
@@ -260,8 +271,19 @@ export function useTerminal(
       ws.onmessage = (event: MessageEvent) => {
         if (event.data instanceof ArrayBuffer) {
           term.write(new Uint8Array(event.data));
-        } else {
-          term.write(event.data as string);
+        } else if (typeof event.data === "string") {
+          // Check for server control messages before writing to terminal
+          try {
+            const msg = JSON.parse(event.data) as { type?: string };
+            if (msg.type === "primary_status") {
+              const status = msg as PrimaryStatusMessage;
+              setState((prev) => ({ ...prev, isPrimary: status.is_primary }));
+              return;
+            }
+          } catch {
+            // Not JSON, treat as terminal text
+          }
+          term.write(event.data);
         }
       };
 
@@ -273,12 +295,13 @@ export function useTerminal(
           const delayMs = retryDelayMs(count);
           let countdown = Math.ceil(delayMs / 1000);
 
-          setState({
+          setState((prev) => ({
+            ...prev,
             connected: false,
             reconnecting: true,
             retryCount: count,
             retryCountdown: countdown,
-          });
+          }));
 
           term.write(
             `\r\n\x1b[33m[Disconnected, reconnecting in ${countdown}s... (${count}/${MAX_RETRIES})]\x1b[0m\r\n`,
@@ -299,12 +322,13 @@ export function useTerminal(
           term.write(
             "\r\n\x1b[31m[Connection lost. Click retry or press Enter to reconnect.]\x1b[0m\r\n",
           );
-          setState({
+          setState((prev) => ({
+            ...prev,
             connected: false,
             reconnecting: false,
             retryCount: retryCountRef.current,
             retryCountdown: 0,
-          });
+          }));
         }
       };
 
@@ -663,6 +687,7 @@ export function useTerminal(
       viewport.removeEventListener("click", onClickCapture, true);
       viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
       wsRef.current?.close();
       term.destroy();
@@ -693,12 +718,13 @@ export function useTerminal(
 
   const manualReconnect = () => {
     retryCountRef.current = 0;
-    setState({
+    setState((prev) => ({
+      ...prev,
       connected: false,
       reconnecting: true,
       retryCount: 0,
       retryCountdown: 0,
-    });
+    }));
     wsRef.current?.close();
   };
 

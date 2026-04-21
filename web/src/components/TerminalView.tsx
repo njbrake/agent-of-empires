@@ -217,6 +217,17 @@ export function TerminalView({ session }: Props) {
       <div className="flex-1 overflow-hidden bg-surface-950 relative">
         <div ref={containerRef} className="absolute inset-0" onPointerDown={activate} />
 
+        {state.connected && !state.isPrimary && (
+          <div
+            aria-hidden="true"
+            className="absolute left-0 right-0 top-3 flex justify-center pointer-events-none z-10"
+          >
+            <span className="font-mono text-[11px] text-text-dim bg-surface-800/80 border border-surface-700/50 rounded-md px-2.5 py-1 backdrop-blur-sm">
+              Viewing from another device. Tap to take over.
+            </span>
+          </div>
+        )}
+
         {showScrollHint && (
           <div
             aria-hidden="true"

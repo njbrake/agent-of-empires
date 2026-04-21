@@ -206,6 +206,8 @@ async fn handle_terminal_ws(
 
     // Use tokio channels to bridge sync PTY I/O with async WebSocket
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    // Control channel: server -> client JSON messages (primary status, etc.)
+    let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel::<String>(8);
 
     // Task 1: PTY stdout -> channel (blocking read in dedicated thread)
     tokio::task::spawn_blocking(move || {
@@ -223,11 +225,30 @@ async fn handle_terminal_ws(
         }
     });
 
-    // Task 2: channel -> WebSocket sender
+    // Task 2: PTY output + control messages -> WebSocket sender
     let send_handle = tokio::spawn(async move {
-        while let Some(data) = output_rx.recv().await {
-            if ws_sender.send(Message::Binary(data.into())).await.is_err() {
-                break; // WebSocket closed
+        loop {
+            tokio::select! {
+                data = output_rx.recv() => {
+                    match data {
+                        Some(data) => {
+                            if ws_sender.send(Message::Binary(data.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                msg = ctrl_rx.recv() => {
+                    match msg {
+                        Some(text) => {
+                            if ws_sender.send(Message::Text(text.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
             }
         }
         let _ = ws_sender.send(Message::Close(None)).await;
@@ -239,6 +260,7 @@ async fn handle_terminal_ws(
     let primaries_for_recv = primaries.clone();
     let client_id_for_recv = client_id.clone();
     let tmux_name_for_recv = tmux_name.clone();
+    let ctrl_tx_for_recv = ctrl_tx.clone();
 
     let recv_handle = tokio::spawn(async move {
         // Track the last resize the browser requested so we can apply it
@@ -265,6 +287,9 @@ async fn handle_terminal_ws(
                         if let Some((cols, rows)) = pending_size {
                             resize_pty(&master_for_resize, cols, rows).await;
                         }
+                        let _ = ctrl_tx_for_recv
+                            .send(r#"{"type":"primary_status","is_primary":true}"#.into())
+                            .await;
                     }
 
                     let writer = writer_for_input.clone();
@@ -277,7 +302,7 @@ async fn handle_terminal_ws(
                     .await;
                 }
                 Message::Text(text) => {
-                    // JSON control messages (resize) are always allowed
+                    // JSON control messages (resize, activate) are always allowed
                     if let Ok(control) = serde_json::from_str::<ControlMessage>(&text) {
                         match control {
                             ControlMessage::Resize { cols, rows }
@@ -293,11 +318,20 @@ async fn handle_terminal_ws(
                                 .await;
                                 if dominated {
                                     resize_pty(&master_for_resize, cols, rows).await;
+                                } else {
+                                    let _ = ctrl_tx_for_recv
+                                        .send(r#"{"type":"primary_status","is_primary":false}"#.into())
+                                        .await;
                                 }
                             }
                             // Ignore zero-dimension resize (buggy client)
                             ControlMessage::Resize { .. } => {}
                             ControlMessage::Activate => {
+                                // In read-only mode, don't claim primary. All
+                                // viewers get independent resize (vacant state).
+                                if read_only {
+                                    continue;
+                                }
                                 let became_primary = claim_primary(
                                     &primaries_for_recv,
                                     &tmux_name_for_recv,
@@ -308,6 +342,9 @@ async fn handle_terminal_ws(
                                     if let Some((cols, rows)) = pending_size {
                                         resize_pty(&master_for_resize, cols, rows).await;
                                     }
+                                    let _ = ctrl_tx_for_recv
+                                        .send(r#"{"type":"primary_status","is_primary":true}"#.into())
+                                        .await;
                                 }
                             }
                         }
@@ -324,6 +361,9 @@ async fn handle_terminal_ws(
                             if let Some((cols, rows)) = pending_size {
                                 resize_pty(&master_for_resize, cols, rows).await;
                             }
+                            let _ = ctrl_tx_for_recv
+                                .send(r#"{"type":"primary_status","is_primary":true}"#.into())
+                                .await;
                         }
 
                         let writer = writer_for_input.clone();
