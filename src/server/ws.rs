@@ -280,7 +280,9 @@ async fn handle_terminal_ws(
                     // JSON control messages (resize) are always allowed
                     if let Ok(control) = serde_json::from_str::<ControlMessage>(&text) {
                         match control {
-                            ControlMessage::Resize { cols, rows } => {
+                            ControlMessage::Resize { cols, rows }
+                                if cols > 0 && rows > 0 =>
+                            {
                                 pending_size = Some((cols, rows));
 
                                 let dominated = is_primary_or_vacant(
@@ -293,6 +295,8 @@ async fn handle_terminal_ws(
                                     resize_pty(&master_for_resize, cols, rows).await;
                                 }
                             }
+                            // Ignore zero-dimension resize (buggy client)
+                            ControlMessage::Resize { .. } => {}
                         }
                     } else if !read_only {
                         // Plain text input -> PTY stdin (blocked in read-only mode).
@@ -404,4 +408,87 @@ async fn resize_pty(
 enum ControlMessage {
     #[serde(rename = "resize")]
     Resize { cols: u16, rows: u16 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_primaries() -> SessionPrimaries {
+        Arc::new(RwLock::new(std::collections::HashMap::new()))
+    }
+
+    #[tokio::test]
+    async fn claim_primary_vacant_returns_true() {
+        let p = make_primaries();
+        assert!(claim_primary(&p, "session-1", "ws-0").await);
+        assert_eq!(p.read().await.get("session-1").unwrap(), "ws-0");
+    }
+
+    #[tokio::test]
+    async fn claim_primary_already_primary_returns_false() {
+        let p = make_primaries();
+        assert!(claim_primary(&p, "session-1", "ws-0").await);
+        assert!(!claim_primary(&p, "session-1", "ws-0").await);
+    }
+
+    #[tokio::test]
+    async fn claim_primary_steals_from_other_client() {
+        let p = make_primaries();
+        assert!(claim_primary(&p, "session-1", "ws-0").await);
+        assert!(claim_primary(&p, "session-1", "ws-1").await);
+        assert_eq!(p.read().await.get("session-1").unwrap(), "ws-1");
+    }
+
+    #[tokio::test]
+    async fn is_primary_or_vacant_when_vacant() {
+        let p = make_primaries();
+        assert!(is_primary_or_vacant(&p, "session-1", "ws-0").await);
+    }
+
+    #[tokio::test]
+    async fn is_primary_or_vacant_when_primary() {
+        let p = make_primaries();
+        claim_primary(&p, "session-1", "ws-0").await;
+        assert!(is_primary_or_vacant(&p, "session-1", "ws-0").await);
+    }
+
+    #[tokio::test]
+    async fn is_primary_or_vacant_when_not_primary() {
+        let p = make_primaries();
+        claim_primary(&p, "session-1", "ws-0").await;
+        assert!(!is_primary_or_vacant(&p, "session-1", "ws-1").await);
+    }
+
+    #[tokio::test]
+    async fn release_primary_clears_entry() {
+        let p = make_primaries();
+        claim_primary(&p, "session-1", "ws-0").await;
+        release_primary(&p, "session-1", "ws-0").await;
+        assert!(p.read().await.get("session-1").is_none());
+    }
+
+    #[tokio::test]
+    async fn release_primary_noop_for_different_client() {
+        let p = make_primaries();
+        claim_primary(&p, "session-1", "ws-0").await;
+        release_primary(&p, "session-1", "ws-1").await;
+        assert_eq!(p.read().await.get("session-1").unwrap(), "ws-0");
+    }
+
+    #[tokio::test]
+    async fn release_primary_noop_on_empty_map() {
+        let p = make_primaries();
+        release_primary(&p, "session-1", "ws-0").await;
+        assert!(p.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn independent_sessions_dont_interfere() {
+        let p = make_primaries();
+        claim_primary(&p, "session-1", "ws-0").await;
+        claim_primary(&p, "session-2", "ws-1").await;
+        assert_eq!(p.read().await.get("session-1").unwrap(), "ws-0");
+        assert_eq!(p.read().await.get("session-2").unwrap(), "ws-1");
+    }
 }
