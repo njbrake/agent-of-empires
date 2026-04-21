@@ -18,7 +18,7 @@ export function TerminalView({ session }: Props) {
     "pending",
   );
   const [ensureError, setEnsureError] = useState<string | null>(null);
-  const { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef } =
+  const { containerRef, termRef, state, manualReconnect, sendData, activate, ctrlActiveRef, clearCtrlRef } =
     useTerminal(ensureState === "ready" ? session.id : null);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
@@ -99,8 +99,10 @@ export function TerminalView({ session }: Props) {
   }, [isMobile, state.connected, termRef]);
 
   // Toggle keyboard: focus/blur synchronously in the click handler so iOS
-  // honors the user-gesture context.
+  // honors the user-gesture context. Also claims primary so the PTY
+  // resizes to this client's viewport.
   const toggleKeyboard = useCallback(() => {
+    activate();
     const term = termRef.current;
     if (!term) return;
     const ta = term.element.querySelector("textarea");
@@ -109,7 +111,7 @@ export function TerminalView({ session }: Props) {
     } else if (ta instanceof HTMLElement) {
       ta.focus();
     }
-  }, [termRef, keyboardOpen]);
+  }, [termRef, keyboardOpen, activate]);
 
   // Dismiss scroll hint on first touch or timeout.
   useEffect(() => {
@@ -185,7 +187,7 @@ export function TerminalView({ session }: Props) {
         </div>
       )}
 
-      <div className="flex-1 overflow-hidden bg-surface-950 relative">
+      <div className="flex-1 overflow-hidden bg-surface-950 relative" onPointerDown={activate}>
         <div ref={containerRef} className="absolute inset-0" />
 
         {showScrollHint && (

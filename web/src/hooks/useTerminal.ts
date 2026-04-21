@@ -223,6 +223,10 @@ export function useTerminal(
           retryCountdown: 0,
         });
         term.focus();
+        // Claim primary immediately so this client's resize is applied.
+        // Without this, the first resize lands in "vacant" state (which
+        // works) but a race with focus/visibility events could delay it.
+        ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
         // Send initial PTY dimensions from the already-autoresized terminal.
         if (
           term.cols > 0 &&
@@ -704,5 +708,11 @@ export function useTerminal(
     }
   }, []);
 
-  return { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef };
+  const activate = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "activate" } as ActivateMessage));
+    }
+  }, []);
+
+  return { containerRef, termRef, state, manualReconnect, sendData, activate, ctrlActiveRef, clearCtrlRef };
 }
