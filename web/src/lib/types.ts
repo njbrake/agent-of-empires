@@ -49,11 +49,28 @@ export interface ResizeMessage {
   rows: number;
 }
 
+export interface ActivateMessage {
+  type: "activate";
+}
+
+/** Server → client control message indicating primary status */
+export interface PrimaryStatusMessage {
+  type: "primary_status";
+  is_primary: boolean;
+}
+
 /** Rich diff file info with addition/deletion stats */
 export interface RichDiffFile {
   path: string;
   old_path: string | null;
-  status: "added" | "modified" | "deleted" | "renamed" | "copied" | "untracked" | "conflicted";
+  status:
+    | "added"
+    | "modified"
+    | "deleted"
+    | "renamed"
+    | "copied"
+    | "untracked"
+    | "conflicted";
   additions: number;
   deletions: number;
 }

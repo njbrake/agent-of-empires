@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WTerm } from "@wterm/dom";
-import type { ResizeMessage } from "../lib/types";
+import type {
+  ActivateMessage,
+  PrimaryStatusMessage,
+  ResizeMessage,
+} from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
@@ -18,22 +22,21 @@ const DEFAULT_FONT_SIZE = 14;
 const MOBILE_BREAKPOINT_PX = 768;
 const WHEEL_ZOOM_SENSITIVITY = 0.05;
 const WHEEL_PERSIST_DEBOUNCE_MS = 400;
+const RESIZE_DEBOUNCE_MS = 50;
 
 export interface TerminalState {
   connected: boolean;
   reconnecting: boolean;
   retryCount: number;
   retryCountdown: number;
+  isPrimary: boolean;
 }
 
 /**
  * Manages a wterm terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
  */
-export function useTerminal(
-  sessionId: string | null,
-  wsPath: string = "ws",
-) {
+export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<WTerm | null>(null);
@@ -53,6 +56,7 @@ export function useTerminal(
     reconnecting: false,
     retryCount: 0,
     retryCountdown: 0,
+    isPrimary: true,
   });
 
   useEffect(() => {
@@ -114,16 +118,23 @@ export function useTerminal(
     termEl.style.setProperty("--term-font-size", `${fontSize}px`);
 
     // wterm's autoResize uses ResizeObserver to fit the terminal element.
+    // Debounce resize messages to avoid SIGWINCH storms during keyboard
+    // animation (ResizeObserver fires multiple times with intermediate
+    // sizes). 50ms settles after the animation ends.
+    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     const term = new WTerm(termEl, {
       autoResize: true,
       cursorBlink: true,
       onResize: (cols: number, rows: number) => {
-        // Relay resize to the PTY backend
-        const ws = wsRef.current;
-        if (ws?.readyState === WebSocket.OPEN) {
-          const msg: ResizeMessage = { type: "resize", cols, rows };
-          ws.send(JSON.stringify(msg));
-        }
+        if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = setTimeout(() => {
+          resizeDebounceTimer = null;
+          const ws = wsRef.current;
+          if (ws?.readyState === WebSocket.OPEN) {
+            const msg: ResizeMessage = { type: "resize", cols, rows };
+            ws.send(JSON.stringify(msg));
+          }
+        }, RESIZE_DEBOUNCE_MS);
       },
     });
 
@@ -168,10 +179,14 @@ export function useTerminal(
       // Capture-phase: block wterm's preventDefault on Backspace so iOS
       // can enter its key-repeat loop. Don't send \x7f here; the native
       // deletion fires a deleteContentBackward input event which handles it.
-      wtermTextarea.addEventListener("keydown", (e: KeyboardEvent) => {
-        if (e.key !== "Backspace") return;
-        e.stopImmediatePropagation();
-      }, true);
+      wtermTextarea.addEventListener(
+        "keydown",
+        (e: KeyboardEvent) => {
+          if (e.key !== "Backspace") return;
+          e.stopImmediatePropagation();
+        },
+        true,
+      );
 
       // All backspace handling (first press + iOS repeat) comes through
       // here as deleteContentBackward input events. Send \x7f and re-seed.
@@ -221,8 +236,13 @@ export function useTerminal(
           reconnecting: false,
           retryCount: 0,
           retryCountdown: 0,
+          isPrimary: true,
         });
         term.focus();
+        // Claim primary immediately so this client's resize is applied.
+        // Without this, the first resize lands in "vacant" state (which
+        // works) but a race with focus/visibility events could delay it.
+        ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
         // Send initial PTY dimensions from the already-autoresized terminal.
         if (
           term.cols > 0 &&
@@ -256,8 +276,19 @@ export function useTerminal(
       ws.onmessage = (event: MessageEvent) => {
         if (event.data instanceof ArrayBuffer) {
           term.write(new Uint8Array(event.data));
-        } else {
-          term.write(event.data as string);
+        } else if (typeof event.data === "string") {
+          // Check for server control messages before writing to terminal
+          try {
+            const msg = JSON.parse(event.data) as { type?: string };
+            if (msg.type === "primary_status") {
+              const status = msg as PrimaryStatusMessage;
+              setState((prev) => ({ ...prev, isPrimary: status.is_primary }));
+              return;
+            }
+          } catch {
+            // Not JSON, treat as terminal text
+          }
+          term.write(event.data);
         }
       };
 
@@ -269,12 +300,13 @@ export function useTerminal(
           const delayMs = retryDelayMs(count);
           let countdown = Math.ceil(delayMs / 1000);
 
-          setState({
+          setState((prev) => ({
+            ...prev,
             connected: false,
             reconnecting: true,
             retryCount: count,
             retryCountdown: countdown,
-          });
+          }));
 
           term.write(
             `\r\n\x1b[33m[Disconnected, reconnecting in ${countdown}s... (${count}/${MAX_RETRIES})]\x1b[0m\r\n`,
@@ -295,12 +327,13 @@ export function useTerminal(
           term.write(
             "\r\n\x1b[31m[Connection lost. Click retry or press Enter to reconnect.]\x1b[0m\r\n",
           );
-          setState({
+          setState((prev) => ({
+            ...prev,
             connected: false,
             reconnecting: false,
             retryCount: retryCountRef.current,
             retryCountdown: 0,
-          });
+          }));
         }
       };
 
@@ -367,7 +400,9 @@ export function useTerminal(
       Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
     const cellHeight = () => {
       const cs = getComputedStyle(term.element);
-      return parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE;
+      return (
+        parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE
+      );
     };
     const pxPerWheel = () => cellHeight() * LINES_PER_WHEEL;
     const prefersReducedMotion = () =>
@@ -395,7 +430,9 @@ export function useTerminal(
     let fontSizeRaf: number | null = null;
     const currentFontSize = (): number => {
       const cs = getComputedStyle(term.element);
-      return parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE;
+      return (
+        parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE
+      );
     };
     const applyFontSize = (size: number) => {
       const next = clampFont(Math.round(size));
@@ -427,8 +464,7 @@ export function useTerminal(
         pendingFontSize = null;
       }
     };
-    const currentPendingOrLiveSize = () =>
-      pendingFontSize ?? currentFontSize();
+    const currentPendingOrLiveSize = () => pendingFontSize ?? currentFontSize();
 
     const cancelMomentum = () => {
       if (momentumRaf !== null) {
@@ -467,7 +503,10 @@ export function useTerminal(
 
     const onTouchMove = (e: TouchEvent) => {
       // Single-finger scroll
-      if (e.touches.length === 1 && (gestureMode === null || gestureMode === "single-scroll")) {
+      if (
+        e.touches.length === 1 &&
+        (gestureMode === null || gestureMode === "single-scroll")
+      ) {
         const t = e.touches[0]!;
         const y = t.clientY;
         const now = performance.now();
@@ -490,7 +529,10 @@ export function useTerminal(
         singleAccum += dy;
         const step = pxPerWheel();
         const rawWheels = Math.trunc(singleAccum / step);
-        const wheels = Math.max(-MAX_WHEELS_PER_FRAME, Math.min(MAX_WHEELS_PER_FRAME, rawWheels));
+        const wheels = Math.max(
+          -MAX_WHEELS_PER_FRAME,
+          Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
+        );
         if (wheels !== 0) {
           sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
           singleAccum -= wheels * step;
@@ -554,7 +596,8 @@ export function useTerminal(
         velocity = 0;
         return;
       }
-      const wasScrolling = gestureMode === "single-scroll" || gestureMode === "scroll";
+      const wasScrolling =
+        gestureMode === "single-scroll" || gestureMode === "scroll";
       gestureMode = null;
       if (wasScrolling) suppressNextClick = true;
       if (prefersReducedMotion() || Math.abs(velocity) < 0.05) {
@@ -632,9 +675,26 @@ export function useTerminal(
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
 
+    // When the user switches to this tab/window, tell the server so it
+    // can claim primary and resize the PTY to match this viewport.
+    const sendActivate = () => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        const msg: ActivateMessage = { type: "activate" };
+        ws.send(JSON.stringify(msg));
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") sendActivate();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", sendActivate);
+
     return () => {
       connectOnReady = false;
       cancelMomentum();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", sendActivate);
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
@@ -642,6 +702,7 @@ export function useTerminal(
       viewport.removeEventListener("click", onClickCapture, true);
       viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
       wsRef.current?.close();
       term.destroy();
@@ -672,12 +733,13 @@ export function useTerminal(
 
   const manualReconnect = () => {
     retryCountRef.current = 0;
-    setState({
+    setState((prev) => ({
+      ...prev,
       connected: false,
       reconnecting: true,
       retryCount: 0,
       retryCountdown: 0,
-    });
+    }));
     wsRef.current?.close();
   };
 
@@ -687,5 +749,22 @@ export function useTerminal(
     }
   }, []);
 
-  return { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef };
+  const activate = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({ type: "activate" } as ActivateMessage),
+      );
+    }
+  }, []);
+
+  return {
+    containerRef,
+    termRef,
+    state,
+    manualReconnect,
+    sendData,
+    activate,
+    ctrlActiveRef,
+    clearCtrlRef,
+  };
 }

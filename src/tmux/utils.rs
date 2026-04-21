@@ -86,6 +86,22 @@ pub fn append_mouse_on_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
+/// Append `; set-option -t <target> window-size latest` so the tmux window
+/// follows the most recently active client. Required for the primary-client
+/// resize model: without this, a user's `~/.tmux.conf` could set
+/// `window-size smallest`, which would shrink the window to the smallest
+/// attached PTY regardless of which client is primary.
+pub fn append_window_size_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "window-size".to_string(),
+        "latest".to_string(),
+    ]);
+}
+
 pub fn is_pane_dead(session_name: &str) -> bool {
     // Use `^.0` to target the first window's first pane regardless of
     // base-index or which pane is active, so the check always hits the
