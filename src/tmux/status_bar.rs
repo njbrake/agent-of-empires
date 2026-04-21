@@ -115,6 +115,9 @@ pub fn apply_all_tmux_options(
         } else {
             &config.theme.name
         };
+        // Always use truecolor here: tmux receives hex color values (#rrggbb)
+        // and manages its own escape-sequence rendering via TERM/terminfo.
+        // Palette mode only affects the TUI's direct terminal output.
         let theme = load_theme(theme_name);
 
         if let Err(e) = apply_status_bar(session_name, title, branch, sandbox, &theme) {

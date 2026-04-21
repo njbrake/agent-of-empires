@@ -63,6 +63,7 @@ fn test_merge_inherits_unset_fields() -> Result<()> {
     let profile = ProfileConfig {
         theme: Some(ThemeConfigOverride {
             name: Some("dark".to_string()),
+            ..Default::default()
         }),
         ..Default::default()
     };
