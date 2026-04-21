@@ -297,6 +297,19 @@ async fn handle_terminal_ws(
                             }
                             // Ignore zero-dimension resize (buggy client)
                             ControlMessage::Resize { .. } => {}
+                            ControlMessage::Activate => {
+                                let became_primary = claim_primary(
+                                    &primaries_for_recv,
+                                    &tmux_name_for_recv,
+                                    &client_id_for_recv,
+                                )
+                                .await;
+                                if became_primary {
+                                    if let Some((cols, rows)) = pending_size {
+                                        resize_pty(&master_for_resize, cols, rows).await;
+                                    }
+                                }
+                            }
                         }
                     } else if !read_only {
                         // Plain text input -> PTY stdin (blocked in read-only mode).
@@ -408,6 +421,11 @@ async fn resize_pty(
 enum ControlMessage {
     #[serde(rename = "resize")]
     Resize { cols: u16, rows: u16 },
+    /// Sent by the browser when the terminal tab/window gains focus.
+    /// Claims primary and applies the pending resize so the pane
+    /// snaps to this client's viewport without requiring a keystroke.
+    #[serde(rename = "activate")]
+    Activate,
 }
 
 #[cfg(test)]

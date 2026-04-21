@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WTerm } from "@wterm/dom";
-import type { ResizeMessage } from "../lib/types";
+import type { ActivateMessage, ResizeMessage } from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
@@ -632,9 +632,26 @@ export function useTerminal(
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
 
+    // When the user switches to this tab/window, tell the server so it
+    // can claim primary and resize the PTY to match this viewport.
+    const sendActivate = () => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        const msg: ActivateMessage = { type: "activate" };
+        ws.send(JSON.stringify(msg));
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") sendActivate();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", sendActivate);
+
     return () => {
       connectOnReady = false;
       cancelMomentum();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", sendActivate);
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);

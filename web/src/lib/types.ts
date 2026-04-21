@@ -49,6 +49,10 @@ export interface ResizeMessage {
   rows: number;
 }
 
+export interface ActivateMessage {
+  type: "activate";
+}
+
 /** Rich diff file info with addition/deletion stats */
 export interface RichDiffFile {
   path: string;
