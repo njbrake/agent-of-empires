@@ -338,24 +338,23 @@ impl GitWorktree {
         // For new branches, fetch the default branch (main/master) to use as
         // the base. For existing branches, fetch that specific branch.
         // Fails silently on network errors, falling back to local refs.
-        if create_branch {
-            let default_branch = self
+        let default_branch = if create_branch {
+            let db = self
                 .detect_default_branch()
                 .unwrap_or_else(|_| "main".to_string());
-            self.fetch_branch("origin", &default_branch)?;
+            self.fetch_branch("origin", &db)?;
+            Some(db)
         } else {
             self.fetch_branch("origin", branch)?;
-        }
+            None
+        };
 
         let repo = open_repo_at(&self.repo_path)?;
 
-        if create_branch {
+        if let Some(default_branch) = default_branch {
             // Branch from origin/<default> so new branches start from the
             // latest remote state. Falls back to local HEAD if no remote
             // exists, then to any local branch (bare repo with broken HEAD).
-            let default_branch = self
-                .detect_default_branch()
-                .unwrap_or_else(|_| "main".to_string());
             let remote_ref = format!("origin/{default_branch}");
             let commit_oid = repo
                 .find_branch(&remote_ref, git2::BranchType::Remote)
