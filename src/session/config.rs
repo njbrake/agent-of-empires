@@ -185,6 +185,8 @@ pub struct SessionConfig {
     /// focus, or stray keystrokes. Navigation keys (h/j/k/l, arrows, Enter, Esc), punctuation
     /// (/, ?), and numeric modifiers stay unshifted. Previously-uppercase bindings
     /// (P, R, T, N, D, G) relocate to Ctrl+letter so nothing is lost.
+    /// Note: Ctrl+D (diff view) may conflict with terminal EOF in some tmux configs;
+    /// if so, rebind tmux's send-prefix or use the `D` key from the help overlay.
     /// Off by default — existing users keep the legacy single-letter UX.
     #[serde(default)]
     pub strict_hotkeys: bool,
