@@ -16,6 +16,7 @@ use axum::{
     response::IntoResponse,
 };
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use tokio::sync::RwLock;
 
 use super::AppState;
 
@@ -33,6 +34,7 @@ pub async fn paired_terminal_ws(
     drop(instances);
 
     let read_only = state.read_only;
+    let primaries = Arc::clone(&state.session_primaries);
 
     match session_info {
         // Accept the "aoe-auth" subprotocol so the browser's handshake
@@ -42,7 +44,9 @@ pub async fn paired_terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
+            .on_upgrade(move |socket| {
+                handle_terminal_ws(socket, tmux_name, read_only, primaries)
+            })
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -62,6 +66,7 @@ pub async fn container_terminal_ws(
     drop(instances);
 
     let read_only = state.read_only;
+    let primaries = Arc::clone(&state.session_primaries);
 
     match session_info {
         // Accept the "aoe-auth" subprotocol so the browser's handshake
@@ -71,7 +76,9 @@ pub async fn container_terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
+            .on_upgrade(move |socket| {
+                handle_terminal_ws(socket, tmux_name, read_only, primaries)
+            })
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -92,6 +99,7 @@ pub async fn terminal_ws(
     drop(instances);
 
     let read_only = state.read_only;
+    let primaries = Arc::clone(&state.session_primaries);
 
     match session_info {
         // Accept the "aoe-auth" subprotocol so the browser's handshake
@@ -101,14 +109,42 @@ pub async fn terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only))
+            .on_upgrade(move |socket| {
+                handle_terminal_ws(socket, tmux_name, read_only, primaries)
+            })
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
 }
 
-async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: bool) {
+/// Unique client ID counter for primary-client tracking.
+static CLIENT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Per-tmux-session map tracking which WebSocket client "owns" resizing.
+///
+/// Only the primary client's resize messages are applied to its PTY. This
+/// prevents multiple browser viewports (phone, desktop, tablet) from
+/// fighting over the tmux window size. The primary is whichever client
+/// most recently sent keyboard input, since aoe is single-user: if
+/// you're typing on your phone you want phone-sized output.
+///
+/// When no client is primary (all have disconnected, or nobody has typed
+/// yet), any client's resize is applied so the initial connection still
+/// sets up the PTY dimensions from the default 80x24.
+type SessionPrimaries = Arc<RwLock<std::collections::HashMap<String, String>>>;
+
+async fn handle_terminal_ws(
+    socket: WebSocket,
+    tmux_name: String,
+    read_only: bool,
+    primaries: SessionPrimaries,
+) {
     use futures_util::{SinkExt, StreamExt};
+
+    let client_id = format!(
+        "ws-{}",
+        CLIENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
 
     // Spawn tmux attach inside a PTY
     let pty_system = NativePtySystem::default();
@@ -200,8 +236,15 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: boo
     // Task 3: WebSocket receiver -> PTY stdin (and resize)
     let writer_for_input = writer.clone();
     let master_for_resize = master.clone();
+    let primaries_for_recv = primaries.clone();
+    let client_id_for_recv = client_id.clone();
+    let tmux_name_for_recv = tmux_name.clone();
 
     let recv_handle = tokio::spawn(async move {
+        // Track the last resize the browser requested so we can apply it
+        // when this client becomes primary.
+        let mut pending_size: Option<(u16, u16)> = None;
+
         while let Some(Ok(msg)) = ws_receiver.next().await {
             match msg {
                 Message::Binary(data) => {
@@ -209,6 +252,21 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: boo
                     if read_only {
                         continue;
                     }
+
+                    // Claim primary on input. If we just became primary,
+                    // apply our pending resize so the PTY matches our viewport.
+                    let became_primary = claim_primary(
+                        &primaries_for_recv,
+                        &tmux_name_for_recv,
+                        &client_id_for_recv,
+                    )
+                    .await;
+                    if became_primary {
+                        if let Some((cols, rows)) = pending_size {
+                            resize_pty(&master_for_resize, cols, rows).await;
+                        }
+                    }
+
                     let writer = writer_for_input.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(mut w) = writer.lock() {
@@ -223,22 +281,34 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: boo
                     if let Ok(control) = serde_json::from_str::<ControlMessage>(&text) {
                         match control {
                             ControlMessage::Resize { cols, rows } => {
-                                let master = master_for_resize.clone();
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    if let Ok(m) = master.lock() {
-                                        let _ = m.resize(PtySize {
-                                            rows,
-                                            cols,
-                                            pixel_width: 0,
-                                            pixel_height: 0,
-                                        });
-                                    }
-                                })
+                                pending_size = Some((cols, rows));
+
+                                let dominated = is_primary_or_vacant(
+                                    &primaries_for_recv,
+                                    &tmux_name_for_recv,
+                                    &client_id_for_recv,
+                                )
                                 .await;
+                                if dominated {
+                                    resize_pty(&master_for_resize, cols, rows).await;
+                                }
                             }
                         }
                     } else if !read_only {
-                        // Plain text input -> PTY stdin (blocked in read-only mode)
+                        // Plain text input -> PTY stdin (blocked in read-only mode).
+                        // Also claims primary, same as binary input.
+                        let became_primary = claim_primary(
+                            &primaries_for_recv,
+                            &tmux_name_for_recv,
+                            &client_id_for_recv,
+                        )
+                        .await;
+                        if became_primary {
+                            if let Some((cols, rows)) = pending_size {
+                                resize_pty(&master_for_resize, cols, rows).await;
+                            }
+                        }
+
                         let writer = writer_for_input.clone();
                         let bytes: Vec<u8> = text.as_bytes().to_vec();
                         let _ = tokio::task::spawn_blocking(move || {
@@ -262,9 +332,71 @@ async fn handle_terminal_ws(socket: WebSocket, tmux_name: String, read_only: boo
         _ = recv_handle => {},
     }
 
+    // Release primary if this client held it, so the next client can take over.
+    release_primary(&primaries, &tmux_name, &client_id).await;
+
     // Clean up: kill the tmux attach process
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Claim primary for this client. Returns `true` if the client was NOT
+/// already primary (i.e. it just became primary and should apply its
+/// pending resize).
+async fn claim_primary(
+    primaries: &SessionPrimaries,
+    session: &str,
+    client_id: &str,
+) -> bool {
+    let mut map = primaries.write().await;
+    let current = map.get(session);
+    if current.is_some_and(|id| id == client_id) {
+        return false; // already primary
+    }
+    map.insert(session.to_string(), client_id.to_string());
+    true
+}
+
+/// Check whether this client is primary, or no client is primary for
+/// this session (vacant). In either case the caller is allowed to resize.
+async fn is_primary_or_vacant(
+    primaries: &SessionPrimaries,
+    session: &str,
+    client_id: &str,
+) -> bool {
+    let map = primaries.read().await;
+    match map.get(session) {
+        None => true,
+        Some(id) => id == client_id,
+    }
+}
+
+/// Release primary if this client currently holds it.
+async fn release_primary(primaries: &SessionPrimaries, session: &str, client_id: &str) {
+    let mut map = primaries.write().await;
+    if map.get(session).is_some_and(|id| id == client_id) {
+        map.remove(session);
+    }
+}
+
+/// Resize the PTY master to the given dimensions.
+async fn resize_pty(
+    master: &Arc<std::sync::Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    cols: u16,
+    rows: u16,
+) {
+    let master = master.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(m) = master.lock() {
+            let _ = m.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+    })
+    .await;
 }
 
 #[derive(serde::Deserialize)]
