@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
@@ -18,8 +24,16 @@ export function TerminalView({ session }: Props) {
     "pending",
   );
   const [ensureError, setEnsureError] = useState<string | null>(null);
-  const { containerRef, termRef, state, manualReconnect, sendData, activate, ctrlActiveRef, clearCtrlRef } =
-    useTerminal(ensureState === "ready" ? session.id : null);
+  const {
+    containerRef,
+    termRef,
+    state,
+    manualReconnect,
+    sendData,
+    activate,
+    ctrlActiveRef,
+    clearCtrlRef,
+  } = useTerminal(ensureState === "ready" ? session.id : null);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
 
@@ -201,9 +215,7 @@ export function TerminalView({ session }: Props) {
       )}
       {!state.connected && !state.reconnecting && state.retryCount >= 3 && (
         <div className="bg-status-error/10 border-b border-status-error/30 px-4 py-1.5 flex items-center gap-2 shrink-0">
-          <span className="text-xs text-status-error">
-            Connection lost
-          </span>
+          <span className="text-xs text-status-error">Connection lost</span>
           <button
             onClick={manualReconnect}
             className="text-xs text-brand-500 hover:text-brand-400 cursor-pointer underline"
@@ -214,7 +226,11 @@ export function TerminalView({ session }: Props) {
       )}
 
       <div className="flex-1 overflow-hidden bg-surface-950 relative">
-        <div ref={containerRef} className="absolute inset-0" onPointerDown={activate} />
+        <div
+          ref={containerRef}
+          className="absolute inset-0"
+          onPointerDown={activate}
+        />
 
         {state.connected && !state.isPrimary && (
           <div
@@ -249,14 +265,34 @@ export function TerminalView({ session }: Props) {
             className="absolute right-3 bottom-3 z-10 w-10 h-10 rounded-full bg-surface-800/90 border border-surface-700/30 text-text-secondary flex items-center justify-center shadow-lg backdrop-blur-sm active:scale-95"
           >
             {keyboardOpen ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
                 <rect x="1" y="1" width="22" height="16" rx="2" />
                 <line x1="5" y1="13" x2="19" y2="13" />
                 <line x1="8" y1="20" x2="16" y2="20" />
                 <line x1="12" y1="17" x2="12" y2="20" />
               </svg>
             ) : (
-              <svg width="18" height="14" viewBox="0 0 24 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg
+                width="18"
+                height="14"
+                viewBox="0 0 24 18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
                 <rect x="1" y="1" width="22" height="16" rx="2" />
                 <line x1="5" y1="13" x2="19" y2="13" />
                 <line x1="5" y1="9" x2="5.01" y2="9" />

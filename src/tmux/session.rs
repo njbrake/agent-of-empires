@@ -7,8 +7,7 @@ use super::{
     refresh_session_cache, session_exists_from_cache,
     utils::{
         append_mouse_on_args, append_pane_base_index_args, append_remain_on_exit_args,
-        append_window_size_args,
-        is_pane_dead, is_pane_running_shell,
+        append_window_size_args, is_pane_dead, is_pane_running_shell,
     },
     SESSION_PREFIX,
 };

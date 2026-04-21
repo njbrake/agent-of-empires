@@ -44,9 +44,7 @@ pub async fn paired_terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries)
-            })
+            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only, primaries))
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -76,9 +74,7 @@ pub async fn container_terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries)
-            })
+            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only, primaries))
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -109,9 +105,7 @@ pub async fn terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries)
-            })
+            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only, primaries))
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -305,9 +299,7 @@ async fn handle_terminal_ws(
                     // JSON control messages (resize, activate) are always allowed
                     if let Ok(control) = serde_json::from_str::<ControlMessage>(&text) {
                         match control {
-                            ControlMessage::Resize { cols, rows }
-                                if cols > 0 && rows > 0 =>
-                            {
+                            ControlMessage::Resize { cols, rows } if cols > 0 && rows > 0 => {
                                 pending_size = Some((cols, rows));
 
                                 let dominated = is_primary_or_vacant(
@@ -320,7 +312,10 @@ async fn handle_terminal_ws(
                                     resize_pty(&master_for_resize, cols, rows).await;
                                 } else {
                                     let _ = ctrl_tx_for_recv
-                                        .send(r#"{"type":"primary_status","is_primary":false}"#.into())
+                                        .send(
+                                            r#"{"type":"primary_status","is_primary":false}"#
+                                                .into(),
+                                        )
                                         .await;
                                 }
                             }
@@ -343,7 +338,9 @@ async fn handle_terminal_ws(
                                         resize_pty(&master_for_resize, cols, rows).await;
                                     }
                                     let _ = ctrl_tx_for_recv
-                                        .send(r#"{"type":"primary_status","is_primary":true}"#.into())
+                                        .send(
+                                            r#"{"type":"primary_status","is_primary":true}"#.into(),
+                                        )
                                         .await;
                                 }
                             }
@@ -400,11 +397,7 @@ async fn handle_terminal_ws(
 /// Claim primary for this client. Returns `true` if the client was NOT
 /// already primary (i.e. it just became primary and should apply its
 /// pending resize).
-async fn claim_primary(
-    primaries: &SessionPrimaries,
-    session: &str,
-    client_id: &str,
-) -> bool {
+async fn claim_primary(primaries: &SessionPrimaries, session: &str, client_id: &str) -> bool {
     let mut map = primaries.write().await;
     let current = map.get(session);
     if current.is_some_and(|id| id == client_id) {

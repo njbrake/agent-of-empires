@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WTerm } from "@wterm/dom";
-import type { ActivateMessage, PrimaryStatusMessage, ResizeMessage } from "../lib/types";
+import type {
+  ActivateMessage,
+  PrimaryStatusMessage,
+  ResizeMessage,
+} from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
@@ -32,10 +36,7 @@ export interface TerminalState {
  * Manages a wterm terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
  */
-export function useTerminal(
-  sessionId: string | null,
-  wsPath: string = "ws",
-) {
+export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<WTerm | null>(null);
@@ -178,10 +179,14 @@ export function useTerminal(
       // Capture-phase: block wterm's preventDefault on Backspace so iOS
       // can enter its key-repeat loop. Don't send \x7f here; the native
       // deletion fires a deleteContentBackward input event which handles it.
-      wtermTextarea.addEventListener("keydown", (e: KeyboardEvent) => {
-        if (e.key !== "Backspace") return;
-        e.stopImmediatePropagation();
-      }, true);
+      wtermTextarea.addEventListener(
+        "keydown",
+        (e: KeyboardEvent) => {
+          if (e.key !== "Backspace") return;
+          e.stopImmediatePropagation();
+        },
+        true,
+      );
 
       // All backspace handling (first press + iOS repeat) comes through
       // here as deleteContentBackward input events. Send \x7f and re-seed.
@@ -395,7 +400,9 @@ export function useTerminal(
       Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
     const cellHeight = () => {
       const cs = getComputedStyle(term.element);
-      return parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE;
+      return (
+        parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE
+      );
     };
     const pxPerWheel = () => cellHeight() * LINES_PER_WHEEL;
     const prefersReducedMotion = () =>
@@ -423,7 +430,9 @@ export function useTerminal(
     let fontSizeRaf: number | null = null;
     const currentFontSize = (): number => {
       const cs = getComputedStyle(term.element);
-      return parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE;
+      return (
+        parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE
+      );
     };
     const applyFontSize = (size: number) => {
       const next = clampFont(Math.round(size));
@@ -455,8 +464,7 @@ export function useTerminal(
         pendingFontSize = null;
       }
     };
-    const currentPendingOrLiveSize = () =>
-      pendingFontSize ?? currentFontSize();
+    const currentPendingOrLiveSize = () => pendingFontSize ?? currentFontSize();
 
     const cancelMomentum = () => {
       if (momentumRaf !== null) {
@@ -495,7 +503,10 @@ export function useTerminal(
 
     const onTouchMove = (e: TouchEvent) => {
       // Single-finger scroll
-      if (e.touches.length === 1 && (gestureMode === null || gestureMode === "single-scroll")) {
+      if (
+        e.touches.length === 1 &&
+        (gestureMode === null || gestureMode === "single-scroll")
+      ) {
         const t = e.touches[0]!;
         const y = t.clientY;
         const now = performance.now();
@@ -518,7 +529,10 @@ export function useTerminal(
         singleAccum += dy;
         const step = pxPerWheel();
         const rawWheels = Math.trunc(singleAccum / step);
-        const wheels = Math.max(-MAX_WHEELS_PER_FRAME, Math.min(MAX_WHEELS_PER_FRAME, rawWheels));
+        const wheels = Math.max(
+          -MAX_WHEELS_PER_FRAME,
+          Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
+        );
         if (wheels !== 0) {
           sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
           singleAccum -= wheels * step;
@@ -582,7 +596,8 @@ export function useTerminal(
         velocity = 0;
         return;
       }
-      const wasScrolling = gestureMode === "single-scroll" || gestureMode === "scroll";
+      const wasScrolling =
+        gestureMode === "single-scroll" || gestureMode === "scroll";
       gestureMode = null;
       if (wasScrolling) suppressNextClick = true;
       if (prefersReducedMotion() || Math.abs(velocity) < 0.05) {
@@ -736,9 +751,20 @@ export function useTerminal(
 
   const activate = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "activate" } as ActivateMessage));
+      wsRef.current.send(
+        JSON.stringify({ type: "activate" } as ActivateMessage),
+      );
     }
   }, []);
 
-  return { containerRef, termRef, state, manualReconnect, sendData, activate, ctrlActiveRef, clearCtrlRef };
+  return {
+    containerRef,
+    termRef,
+    state,
+    manualReconnect,
+    sendData,
+    activate,
+    ctrlActiveRef,
+    clearCtrlRef,
+  };
 }
