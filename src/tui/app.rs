@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
-use super::styles::load_theme;
 use super::styles::Theme;
 use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
@@ -144,7 +143,17 @@ impl App {
     }
 
     pub fn set_theme(&mut self, name: &str) {
-        self.theme = load_theme(name);
+        let palette_mode = load_config()
+            .ok()
+            .flatten()
+            .map(|c| {
+                matches!(
+                    c.theme.color_mode,
+                    crate::session::config::ColorMode::Palette
+                )
+            })
+            .unwrap_or(false);
+        self.theme = crate::tui::styles::load_theme_with_mode(name, palette_mode);
         self.needs_redraw = true;
     }
 

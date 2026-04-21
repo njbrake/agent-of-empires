@@ -548,23 +548,54 @@ mod tests {
 
     #[test]
     fn downsample_to_palette_converts_all_fields() {
+        // Structural guard: serialize Theme to count its fields, then verify
+        // downsample_to_palette touches every one. If a new Color field is
+        // added to Theme but not to downsample_to_palette, this test fails.
+        let value: toml::Value = toml::Value::try_from(Theme::empire()).unwrap();
+        let total_fields = value.as_table().unwrap().len();
+
         let mut theme = Theme::empire();
         theme.downsample_to_palette();
-        // Every Color in the theme should now be Indexed (or Reset/named), none Rgb.
-        let any_rgb = [
+
+        let all_colors = [
             theme.background,
             theme.border,
             theme.terminal_border,
+            theme.selection,
+            theme.session_selection,
             theme.title,
             theme.text,
+            theme.dimmed,
+            theme.hint,
             theme.running,
+            theme.waiting,
+            theme.idle,
+            theme.error,
+            theme.terminal_active,
+            theme.group,
+            theme.search,
             theme.accent,
+            theme.diff_add,
+            theme.diff_delete,
+            theme.diff_modified,
+            theme.diff_header,
+            theme.help_key,
             theme.branch,
             theme.sandbox,
-        ]
-        .iter()
-        .any(|c| matches!(c, Color::Rgb(_, _, _)));
-        assert!(!any_rgb, "Rgb still present after downsample");
+        ];
+
+        assert_eq!(
+            all_colors.len(),
+            total_fields,
+            "Theme has {} fields but downsample test checks {}; update downsample_to_palette and this test",
+            total_fields,
+            all_colors.len()
+        );
+
+        assert!(
+            all_colors.iter().all(|c| !matches!(c, Color::Rgb(_, _, _))),
+            "Rgb still present after downsample"
+        );
     }
 
     #[test]
