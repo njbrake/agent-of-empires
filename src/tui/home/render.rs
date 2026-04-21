@@ -155,53 +155,35 @@ impl HomeView {
             HelpOverlay::render(frame, area, theme, self.sort_order, self.strict_hotkeys);
         }
 
-        if let Some(dialog) = &self.new_dialog {
-            dialog.render(frame, area, theme);
+        // Each Option<Dialog> field on HomeView gets the same render dispatch:
+        // if present, call render(frame, area, theme). Macro-collapsed to keep
+        // the list of active dialog types in one place — adding a new dialog
+        // means adding one line here, not stamping out another five-line
+        // if-let block.
+        macro_rules! render_dialogs {
+            ($($field:ident),* $(,)?) => {
+                $(
+                    if let Some(dialog) = &self.$field {
+                        dialog.render(frame, area, theme);
+                    }
+                )*
+            };
         }
 
-        if let Some(dialog) = &self.confirm_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.unified_delete_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.group_delete_options_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.rename_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.hooks_install_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.hook_trust_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.welcome_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.changelog_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.info_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.profile_picker_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.send_message_dialog {
-            dialog.render(frame, area, theme);
-        }
+        render_dialogs!(
+            new_dialog,
+            confirm_dialog,
+            unified_delete_dialog,
+            group_delete_options_dialog,
+            rename_dialog,
+            hooks_install_dialog,
+            hook_trust_dialog,
+            welcome_dialog,
+            changelog_dialog,
+            info_dialog,
+            profile_picker_dialog,
+            send_message_dialog,
+        );
 
         #[cfg(feature = "serve")]
         if let Some(dialog) = &self.serve_dialog {
