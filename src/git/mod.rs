@@ -268,10 +268,7 @@ impl GitWorktree {
                         if let Some(mut stderr) = child.stderr.take() {
                             let mut msg = String::new();
                             let _ = std::io::Read::read_to_string(&mut stderr, &mut msg);
-                            tracing::warn!(
-                                "git fetch {remote}/{branch} failed: {}",
-                                msg.trim()
-                            );
+                            tracing::warn!("git fetch {remote}/{branch} failed: {}", msg.trim());
                         }
                     }
                     return Ok(());
@@ -378,9 +375,7 @@ impl GitWorktree {
                         })
                 })
                 .ok_or_else(|| {
-                    GitError::WorktreeCommandFailed(
-                        "No commits found to branch from".to_string(),
-                    )
+                    GitError::WorktreeCommandFailed("No commits found to branch from".to_string())
                 })?;
             let commit = repo.find_commit(commit_oid)?;
             repo.branch(branch, &commit, false)?;
