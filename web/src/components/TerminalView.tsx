@@ -213,8 +213,8 @@ export function TerminalView({ session }: Props) {
         </div>
       )}
 
-      <div className="flex-1 overflow-hidden bg-surface-950 relative" onPointerDown={activate}>
-        <div ref={containerRef} className="absolute inset-0" />
+      <div className="flex-1 overflow-hidden bg-surface-950 relative">
+        <div ref={containerRef} className="absolute inset-0" onPointerDown={activate} />
 
         {showScrollHint && (
           <div
