@@ -124,11 +124,11 @@ export function TerminalView({ session }: Props) {
     return () => timers.forEach(clearTimeout);
   }, [isMobile, state.connected, termRef]);
 
-  // Toggle keyboard: focus/blur synchronously in the click handler so iOS
-  // honors the user-gesture context. Also claims primary so the PTY
-  // resizes to this client's viewport.
+  // Toggle keyboard: focus/blur MUST be the first thing in this handler
+  // so iOS considers it part of the user-gesture chain. Anything before
+  // focus() (even a synchronous ws.send) can break iOS keyboard display.
+  // Claim primary after the focus so the PTY resizes to this viewport.
   const toggleKeyboard = useCallback(() => {
-    activate();
     const term = termRef.current;
     if (!term) return;
     const ta = term.element.querySelector("textarea");
@@ -137,6 +137,7 @@ export function TerminalView({ session }: Props) {
     } else if (ta instanceof HTMLElement) {
       ta.focus();
     }
+    activate();
   }, [termRef, keyboardOpen, activate]);
 
   // Dismiss scroll hint on first touch or timeout.
