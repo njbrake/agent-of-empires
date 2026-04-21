@@ -710,6 +710,14 @@ impl Instance {
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
+        let prev_status = self.status;
+        self.update_status_with_metadata_inner(metadata);
+        if self.status != prev_status {
+            self.last_accessed_at = Some(Utc::now());
+        }
+    }
+
+    fn update_status_with_metadata_inner(&mut self, metadata: Option<&tmux::PaneMetadata>) {
         if matches!(
             self.status,
             Status::Stopped | Status::Deleting | Status::Creating
