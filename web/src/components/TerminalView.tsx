@@ -69,18 +69,44 @@ export function TerminalView({ session }: Props) {
   });
   const showScrollHint = isMobile && state.connected && !hintDismissed;
 
-  // Debounce terminal resize when keyboard height changes.
+  // When the keyboard opens (keyboardHeight goes from 0 → positive), the
+  // terminal container shrinks. wterm's ResizeObserver fires and checks
+  // _isScrolledToBottom() BEFORE the DOM has reflowed, sees the reduced
+  // clientHeight while scrollTop/scrollHeight are stale, and concludes "not
+  // at bottom." This makes it skip _scrollToBottom() after the resize,
+  // leaving the cursor off-screen.
+  //
+  // Fix: force a scroll-to-bottom via double-rAF (fires after wterm's own
+  // rAF render) on every keyboardHeight change, plus a debounced final
+  // scroll after the animation settles.
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollRafRef = useRef(0);
   useLayoutEffect(() => {
     if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+
+    // Immediate: double-rAF ensures we fire AFTER wterm's scheduled render
+    // (which also uses rAF). This keeps the cursor visible during the
+    // keyboard animation, not just after it settles.
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = requestAnimationFrame(() => {
+        const el = termRef.current?.element;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    });
+
+    // Debounced: final correction after the keyboard animation fully settles.
     resizeTimerRef.current = setTimeout(() => {
       resizeTimerRef.current = null;
       window.dispatchEvent(new Event("resize"));
+      const el = termRef.current?.element;
+      if (el) el.scrollTop = el.scrollHeight;
     }, 150);
     return () => {
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      cancelAnimationFrame(scrollRafRef.current);
     };
-  }, [keyboardHeight]);
+  }, [keyboardHeight, termRef]);
 
   // On initial connect, auto-open the keyboard.
   useEffect(() => {
