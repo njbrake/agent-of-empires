@@ -107,7 +107,7 @@ export function TerminalView({ session }: Props) {
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       cancelAnimationFrame(scrollRafRef.current);
     };
-  }, [keyboardHeight, termRef]);
+  }, [keyboardHeight, keyboardOpen, termRef]);
 
   // On initial connect, auto-open the keyboard.
   useEffect(() => {
