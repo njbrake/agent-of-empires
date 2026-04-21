@@ -184,6 +184,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_detect_as: Option<HashMap<String, String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_hotkeys: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -372,6 +375,9 @@ pub fn apply_session_overrides(
     }
     if let Some(ref detect_as) = source.agent_detect_as {
         target.agent_detect_as = detect_as.clone();
+    }
+    if let Some(strict_hotkeys) = source.strict_hotkeys {
+        target.strict_hotkeys = strict_hotkeys;
     }
 }
 

@@ -76,6 +76,7 @@ pub enum FieldKey {
     Mouse,
     // Session
     DefaultTool,
+    StrictHotkeys,
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
@@ -872,6 +873,12 @@ fn build_session_fields(
         session.and_then(|s| s.yolo_mode_default),
     );
 
+    let (strict_hotkeys, strict_hotkeys_override) = resolve_value(
+        scope,
+        global.session.strict_hotkeys,
+        session.and_then(|s| s.strict_hotkeys),
+    );
+
     let (agent_status_hooks, status_hooks_override) = resolve_value(
         scope,
         global.session.agent_status_hooks,
@@ -1011,6 +1018,19 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 yolo_override,
                 FieldValue::Bool(global.session.yolo_mode_default),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StrictHotkeys,
+            label: "Strict Hotkeys",
+            description:
+                "Require Shift/Ctrl for action hotkeys (guards against dictation/stray input)",
+            value: FieldValue::Bool(strict_hotkeys),
+            category: SettingsCategory::Session,
+            has_override: strict_hotkeys_override,
+            inherited_display: inherited_if(
+                strict_hotkeys_override,
+                FieldValue::Bool(global.session.strict_hotkeys),
             ),
         },
         SettingField {
@@ -1356,6 +1376,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.sandbox.enabled_by_default = *v
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
+        (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => config.session.strict_hotkeys = *v,
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
@@ -1617,6 +1638,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| s.yolo_mode_default = val);
+        }
+        (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.session, |s, val| s.strict_hotkeys = val);
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {

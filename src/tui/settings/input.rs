@@ -621,6 +621,11 @@ impl SettingsView {
                     s.yolo_mode_default = None;
                 }
             }
+            FieldKey::StrictHotkeys => {
+                if let Some(ref mut s) = config.session {
+                    s.strict_hotkeys = None;
+                }
+            }
             FieldKey::AgentExtraArgs => {
                 if let Some(ref mut s) = config.session {
                     s.agent_extra_args = None;
