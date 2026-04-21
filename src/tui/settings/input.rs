@@ -536,6 +536,11 @@ impl SettingsView {
                     t.name = None;
                 }
             }
+            FieldKey::ThemeColorMode => {
+                if let Some(ref mut t) = config.theme {
+                    t.color_mode = None;
+                }
+            }
             // Updates
             FieldKey::CheckEnabled => {
                 if let Some(ref mut u) = config.updates {

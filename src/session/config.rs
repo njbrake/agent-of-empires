@@ -302,10 +302,29 @@ fn default_profile() -> String {
     "default".to_string()
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// Emit 24-bit RGB escapes (\e[38;2;R;G;Bm). Default — best fidelity on
+    /// modern terminals and SSH sessions that pass RGB correctly.
+    #[default]
+    Truecolor,
+    /// Emit 256-palette escapes (\e[38;5;<idx>m) by converting every theme
+    /// Rgb(r,g,b) to the nearest xterm-256 index. Use this when the transport
+    /// (notably some mosh clients) mishandles 24-bit RGB — preview panes in
+    /// aoe already use 256-palette via ansi-to-tui, so palette mode renders
+    /// chrome through the same escape path and survives the same transports.
+    Palette,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThemeConfig {
     #[serde(default)]
     pub name: String,
+    /// How theme colors are emitted at the escape-sequence level.
+    /// See `ColorMode` for the truecolor vs palette trade-off.
+    #[serde(default)]
+    pub color_mode: ColorMode,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
