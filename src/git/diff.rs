@@ -534,26 +534,12 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
     Ok(branches)
 }
 
-/// Get the default branch name (main or master)
+/// Get the default branch name (main or master).
+/// Delegates to `GitWorktree::detect_default_branch` which also checks
+/// remote tracking refs as a fallback.
 pub fn get_default_branch(repo_path: &Path) -> Result<String> {
-    let repo = super::open_repo_at(repo_path)?;
-
-    // Try to find main first, then master
-    for name in &["main", "master"] {
-        if repo.find_branch(name, git2::BranchType::Local).is_ok() {
-            return Ok(name.to_string());
-        }
-    }
-
-    // Fall back to first branch
-    if let Some(branch) = repo.branches(Some(git2::BranchType::Local))?.next() {
-        let (branch, _) = branch?;
-        if let Some(name) = branch.name()? {
-            return Ok(name.to_string());
-        }
-    }
-
-    Err(GitError::BranchNotFound("No branches found".to_string()))
+    let git_wt = super::GitWorktree::new(repo_path.to_path_buf())?;
+    git_wt.detect_default_branch()
 }
 
 #[cfg(test)]

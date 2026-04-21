@@ -11,6 +11,11 @@ pub mod template;
 use error::{GitError, Result};
 use template::{resolve_template, TemplateVars};
 
+/// Default remote name used for fetch-before-worktree-create.
+/// Hardcoded for now; if multi-remote support is needed (e.g., "upstream"
+/// vs personal fork), this is the place to parameterize.
+const FETCH_REMOTE: &str = "origin";
+
 /// Open a git repository at the given path without searching parent directories.
 /// Unlike `git2::Repository::discover`, this does not walk up the directory tree,
 /// preventing unrelated ancestor repos (e.g., a dotfile-managed home directory)
@@ -301,8 +306,9 @@ impl GitWorktree {
     }
 
     /// Detect the default branch name by checking local branches and remote
-    /// tracking refs for "main" or "master".
-    fn detect_default_branch(&self) -> Result<String> {
+    /// tracking refs for "main" or "master". Falls back to the first local
+    /// branch if neither exists.
+    pub fn detect_default_branch(&self) -> Result<String> {
         let repo = open_repo_at(&self.repo_path)?;
 
         for name in &["main", "master"] {
@@ -312,7 +318,7 @@ impl GitWorktree {
         }
 
         for name in &["main", "master"] {
-            let remote_ref = format!("origin/{name}");
+            let remote_ref = format!("{FETCH_REMOTE}/{name}");
             if repo
                 .find_branch(&remote_ref, git2::BranchType::Remote)
                 .is_ok()
@@ -349,10 +355,10 @@ impl GitWorktree {
             let db = self
                 .detect_default_branch()
                 .unwrap_or_else(|_| "main".to_string());
-            self.fetch_branch("origin", &db)?;
+            self.fetch_branch(FETCH_REMOTE, &db)?;
             Some(db)
         } else {
-            self.fetch_branch("origin", branch)?;
+            self.fetch_branch(FETCH_REMOTE, branch)?;
             None
         };
 
@@ -362,7 +368,7 @@ impl GitWorktree {
             // Branch from origin/<default> so new branches start from the
             // latest remote state. Falls back to local HEAD if no remote
             // exists, then to any local branch (bare repo with broken HEAD).
-            let remote_ref = format!("origin/{default_branch}");
+            let remote_ref = format!("{FETCH_REMOTE}/{default_branch}");
             let commit_oid = repo
                 .find_branch(&remote_ref, git2::BranchType::Remote)
                 .ok()
