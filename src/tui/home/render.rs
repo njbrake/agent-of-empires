@@ -44,6 +44,42 @@ fn spinner_starting(created_at: &DateTime<Utc>) -> &'static str {
         .current_frame()
 }
 
+/// Format a timestamp as a compact relative age (e.g. `3m`, `2h`, `4d`, `2mo`).
+/// Returns an empty string for `None` so callers can unconditionally substitute
+/// the result without guarding for absence.
+fn format_relative_age(ts: Option<DateTime<Utc>>) -> String {
+    let Some(ts) = ts else {
+        return String::new();
+    };
+    let now = Utc::now();
+    let secs = (now - ts).num_seconds();
+    if secs < 60 {
+        return "<1m".to_string();
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{}m", mins);
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{}h", hours);
+    }
+    let days = hours / 24;
+    if days < 30 {
+        return format!("{}d", days);
+    }
+    let months = days / 30;
+    format!("{}mo", months)
+}
+
+/// Minimum column width required to render the last-activity column.
+/// When the session list is narrower than this, the column is hidden entirely.
+const LAST_ACTIVITY_MIN_WIDTH: u16 = 50;
+
+/// Width reserved for the right-aligned last-activity column:
+/// 5 chars for the label (e.g. `"<1m"`, `"30mo"`) + 1 char left padding.
+const LAST_ACTIVITY_SLOT: usize = 6;
+
 impl HomeView {
     pub fn render(
         &mut self,
@@ -247,7 +283,7 @@ impl HomeView {
             let is_selected = abs_idx == self.cursor;
             let is_match =
                 !self.search_matches.is_empty() && self.search_matches.contains(&abs_idx);
-            let mut line = self.render_item_line(item, is_selected, is_match, theme);
+            let mut line = self.render_item_line(item, is_selected, is_match, theme, inner.width);
             if is_selected {
                 // Pad to full width so the selection background fills the entire row
                 let pad = (inner.width as usize).saturating_sub(line.width());
@@ -322,6 +358,7 @@ impl HomeView {
         is_selected: bool,
         is_match: bool,
         theme: &Theme,
+        list_width: u16,
     ) -> Line<'static> {
         let indent = get_indent(item.depth());
 
@@ -436,6 +473,21 @@ impl HomeView {
                         ));
                     }
                 }
+
+                // Last-activity column: right-aligned, fixed-width slot just
+                // before the terminal-mode/status badge. Hidden when the list
+                // pane is too narrow to justify spending the horizontal budget.
+                if list_width >= LAST_ACTIVITY_MIN_WIDTH {
+                    let age = format_relative_age(inst.last_accessed_at);
+                    // Reserve LAST_ACTIVITY_SLOT cells; right-align inside the
+                    // slot so columns line up across rows of varying title
+                    // length. Empty `age` still reserves space — keeping the
+                    // column aligned is why we don't conditionally skip per
+                    // row.
+                    let padded = format!("{:>width$}", age, width = LAST_ACTIVITY_SLOT);
+                    line_spans.push(Span::styled(padded, Style::default().fg(theme.dimmed)));
+                }
+
                 if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
                     let mode = self.get_terminal_mode(id);
                     let mode_text = match mode {
