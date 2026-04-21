@@ -249,13 +249,20 @@ impl GitWorktree {
     /// Stdin is piped to null to prevent SSH passphrase prompts from hanging.
     /// Times out after 10 seconds.
     pub fn fetch_branch(&self, remote: &str, branch: &str) -> Result<()> {
-        let mut child = std::process::Command::new("git")
+        let mut child = match std::process::Command::new("git")
             .args(["fetch", remote, branch])
             .current_dir(&self.repo_path)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
-            .spawn()?;
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                tracing::warn!("git fetch {remote}/{branch} spawn failed: {e}");
+                return Ok(());
+            }
+        };
 
         let timeout = std::time::Duration::from_secs(10);
         let start = std::time::Instant::now();
