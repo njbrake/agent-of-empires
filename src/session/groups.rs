@@ -418,13 +418,23 @@ pub fn flatten_tree_all_profiles(
         }
     }
 
-    sort_groups(
-        &mut all_roots,
-        sort_order,
-        instances,
-        |(_, g, _)| &*g.name,
-        |(_, g, _)| &*g.path,
-    );
+    // Sort using the per-profile instances stored in each tuple (element 2),
+    // not the global instances slice, so groups from different profiles with
+    // the same name get sort keys scoped to their own profile's sessions.
+    match sort_order {
+        SortOrder::Oldest => {
+            all_roots.sort_by_key(|(_, g, insts)| min_created_at_in_group(&g.path, insts));
+        }
+        SortOrder::Newest => {
+            all_roots.sort_by_key(|(_, g, insts)| Reverse(max_created_at_in_group(&g.path, insts)));
+        }
+        SortOrder::LastActivity => {
+            all_roots.sort_by_key(|(_, g, insts)| last_activity_group_key(&g.path, insts));
+        }
+        SortOrder::AZ | SortOrder::ZA => {
+            sort_by_name(&mut all_roots, sort_order, |(_, g, _)| &*g.name)
+        }
+    }
 
     for (profile_name, root, profile_instances) in &all_roots {
         flatten_group(
