@@ -2166,7 +2166,6 @@ extra_volumes = ["/host/data:/container/data:ro"]
             container_id: None,
             image: "test:latest".to_string(),
             container_name: "test-container".to_string(),
-            created_at: None,
             extra_env: None,
             custom_instruction: None,
         };
@@ -2280,7 +2279,6 @@ volume_ignores = ["target", "node_modules"]
             container_id: None,
             image: "test:latest".to_string(),
             container_name: "test-container".to_string(),
-            created_at: None,
             extra_env: None,
             custom_instruction: None,
         };
@@ -2371,7 +2369,6 @@ volume_ignores = ["target"]
             container_id: None,
             image: "test:latest".to_string(),
             container_name: "test-container".to_string(),
-            created_at: None,
             extra_env: None,
             custom_instruction: None,
         };

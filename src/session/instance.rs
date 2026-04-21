@@ -17,8 +17,6 @@ use super::environment::{build_docker_env_args, shell_escape};
 pub struct TerminalInfo {
     #[serde(default)]
     pub created: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -75,8 +73,6 @@ pub struct SandboxInfo {
     pub container_id: Option<String>,
     pub image: String,
     pub container_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
     /// Additional environment entries (session-specific).
     /// `KEY` = pass through from host, `KEY=VALUE` = set explicitly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +181,13 @@ impl Instance {
         }
     }
 
+    /// Stamp `last_accessed_at` to the current time. Call this on
+    /// user-initiated interactions (attach, send keys, etc.) so the
+    /// timestamp reflects actual activity, not just status transitions.
+    pub fn touch_last_accessed(&mut self) {
+        self.last_accessed_at = Some(Utc::now());
+    }
+
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
     }
@@ -266,10 +269,7 @@ impl Instance {
             self.apply_terminal_tmux_options();
         }
 
-        self.terminal_info = Some(TerminalInfo {
-            created: true,
-            created_at: Some(Utc::now()),
-        });
+        self.terminal_info = Some(TerminalInfo { created: true });
 
         Ok(())
     }
@@ -640,7 +640,6 @@ impl Instance {
 
         if let Some(ref mut sandbox) = self.sandbox_info {
             sandbox.container_id = Some(container_id);
-            sandbox.created_at = Some(Utc::now());
         }
 
         Ok(container)
@@ -1235,7 +1234,6 @@ mod tests {
             container_id: None,
             image: "test-image".to_string(),
             container_name: "test".to_string(),
-            created_at: None,
             extra_env: None,
             custom_instruction: None,
         });
@@ -1250,7 +1248,6 @@ mod tests {
             container_id: None,
             image: "test-image".to_string(),
             container_name: "test".to_string(),
-            created_at: None,
             extra_env: None,
             custom_instruction: None,
         });
@@ -1355,7 +1352,6 @@ mod tests {
             container_id: Some("abc123".to_string()),
             image: "myimage:latest".to_string(),
             container_name: "test_container".to_string(),
-            created_at: Some(Utc::now()),
             extra_env: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
             custom_instruction: None,
         };
@@ -1380,7 +1376,6 @@ mod tests {
         assert_eq!(info.image, "test-image");
         assert_eq!(info.container_name, "test");
         assert!(info.container_id.is_none());
-        assert!(info.created_at.is_none());
     }
 
     // Tests for Instance serialization
@@ -1461,10 +1456,7 @@ mod tests {
     #[test]
     fn test_has_terminal_true_when_created() {
         let mut inst = Instance::new("test", "/tmp/test");
-        inst.terminal_info = Some(TerminalInfo {
-            created: true,
-            created_at: Some(Utc::now()),
-        });
+        inst.terminal_info = Some(TerminalInfo { created: true });
         assert!(inst.has_terminal());
     }
 
@@ -1478,10 +1470,7 @@ mod tests {
     #[test]
     fn test_terminal_info_created_false_means_no_terminal() {
         let mut inst = Instance::new("test", "/tmp/test");
-        inst.terminal_info = Some(TerminalInfo {
-            created: false,
-            created_at: None,
-        });
+        inst.terminal_info = Some(TerminalInfo { created: false });
         assert!(!inst.has_terminal());
     }
 

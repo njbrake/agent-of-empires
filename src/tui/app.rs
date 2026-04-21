@@ -596,6 +596,7 @@ impl App {
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
+        self.home.stamp_last_accessed(session_id);
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {

@@ -957,7 +957,6 @@ fn create_test_env_with_group_sessions() -> TestEnv {
         container_id: None,
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });
@@ -1030,7 +1029,6 @@ fn test_group_has_containers() {
         container_id: None,
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });
@@ -1223,7 +1221,6 @@ fn test_delete_group_with_sessions_respects_container_option() {
         container_id: None,
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });

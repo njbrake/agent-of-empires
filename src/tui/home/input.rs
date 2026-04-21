@@ -460,6 +460,8 @@ impl HomeView {
                                             "Send Failed",
                                             &format!("Failed to send message: {}", e),
                                         ));
+                                    } else {
+                                        self.stamp_last_accessed(&session_id);
                                     }
                                 }
                                 Err(e) => {

@@ -322,7 +322,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 container_id: None,
                 image,
                 container_name,
-                created_at: None,
                 extra_env: None,
                 custom_instruction: config.sandbox.custom_instruction.clone(),
             });

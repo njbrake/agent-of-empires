@@ -16,13 +16,16 @@ pub struct SendArgs {
 
 pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (instances, _) = storage.load_with_groups()?;
+    let (mut instances, _) = storage.load_with_groups()?;
 
     if args.message.trim().is_empty() {
         bail!("Message cannot be empty");
     }
 
     let inst = super::resolve_session(&args.identifier, &instances)?;
+    let session_id = inst.id.clone();
+    let session_title = inst.title.clone();
+    let tool = inst.tool.clone();
     let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
 
     if !tmux_session.exists() {
@@ -32,8 +35,15 @@ pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
         );
     }
 
-    let delay = crate::agents::send_keys_enter_delay(&inst.tool);
+    let delay = crate::agents::send_keys_enter_delay(&tool);
     tmux_session.send_keys_with_delay(&args.message, delay)?;
-    println!("Sent message to '{}'", inst.title);
+
+    // Stamp last_accessed_at so the "last activity" column reflects user interaction
+    if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
+        inst.touch_last_accessed();
+    }
+    storage.save(&instances)?;
+
+    println!("Sent message to '{}'", session_title);
     Ok(())
 }

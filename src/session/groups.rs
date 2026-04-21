@@ -285,6 +285,42 @@ where
     }
 }
 
+/// Sort a slice of session references by `sort_order`.
+fn sort_sessions(sessions: &mut [&Instance], sort_order: SortOrder) {
+    match sort_order {
+        SortOrder::Oldest => sessions.sort_by_key(|i| i.created_at),
+        SortOrder::Newest => sessions.sort_by_key(|i| Reverse(i.created_at)),
+        SortOrder::LastActivity => sessions.sort_by_key(|i| last_activity_session_key(i)),
+        SortOrder::AZ | SortOrder::ZA => sort_by_name(sessions, sort_order, |i| &i.title),
+    }
+}
+
+/// Sort a slice of group references by `sort_order`, using `instances` for
+/// timestamp-based orderings.
+fn sort_groups<T, N, P>(
+    items: &mut [T],
+    sort_order: SortOrder,
+    instances: &[Instance],
+    name: N,
+    path: P,
+) where
+    N: Fn(&T) -> &str,
+    P: Fn(&T) -> &str,
+{
+    match sort_order {
+        SortOrder::Oldest => {
+            items.sort_by_key(|g| min_created_at_in_group(path(g), instances));
+        }
+        SortOrder::Newest => {
+            items.sort_by_key(|g| Reverse(max_created_at_in_group(path(g), instances)));
+        }
+        SortOrder::LastActivity => {
+            items.sort_by_key(|g| last_activity_group_key(path(g), instances));
+        }
+        SortOrder::AZ | SortOrder::ZA => sort_by_name(items, sort_order, name),
+    }
+}
+
 /// Get the most recent created_at among all sessions (direct and nested) in a group.
 /// Returns DateTime::MIN_UTC if the group has no sessions.
 fn max_created_at_in_group(path: &str, instances: &[Instance]) -> DateTime<Utc> {
@@ -360,12 +396,7 @@ pub fn flatten_tree_all_profiles(
         .filter(|i| i.group_path.is_empty())
         .collect();
 
-    match sort_order {
-        SortOrder::Oldest => ungrouped.sort_by_key(|i| i.created_at),
-        SortOrder::Newest => ungrouped.sort_by_key(|i| Reverse(i.created_at)),
-        SortOrder::LastActivity => ungrouped.sort_by_key(|i| last_activity_session_key(i)),
-        SortOrder::AZ | SortOrder::ZA => sort_by_name(&mut ungrouped, sort_order, |i| &i.title),
-    }
+    sort_sessions(&mut ungrouped, sort_order);
 
     for inst in ungrouped {
         items.push(Item::Session {
@@ -387,21 +418,13 @@ pub fn flatten_tree_all_profiles(
         }
     }
 
-    match sort_order {
-        SortOrder::Oldest => {
-            all_roots.sort_by_key(|(_, g, insts)| min_created_at_in_group(&g.path, insts));
-        }
-        SortOrder::Newest => {
-            all_roots.sort_by_key(|(_, g, insts)| Reverse(max_created_at_in_group(&g.path, insts)));
-        }
-        SortOrder::LastActivity => {
-            all_roots.sort_by_key(|(_, g, insts)| last_activity_group_key(&g.path, insts));
-        }
-        SortOrder::AZ | SortOrder::ZA => all_roots.sort_by_key(|(_, g, _)| g.name.to_lowercase()),
-    }
-    if matches!(sort_order, SortOrder::ZA) {
-        all_roots.reverse();
-    }
+    sort_groups(
+        &mut all_roots,
+        sort_order,
+        instances,
+        |(_, g, _)| &*g.name,
+        |(_, g, _)| &*g.path,
+    );
 
     for (profile_name, root, profile_instances) in &all_roots {
         flatten_group(
@@ -430,12 +453,7 @@ pub fn flatten_tree(
         .filter(|i| i.group_path.is_empty())
         .collect();
 
-    match sort_order {
-        SortOrder::Oldest => ungrouped.sort_by_key(|i| i.created_at),
-        SortOrder::Newest => ungrouped.sort_by_key(|i| Reverse(i.created_at)),
-        SortOrder::LastActivity => ungrouped.sort_by_key(|i| last_activity_session_key(i)),
-        SortOrder::AZ | SortOrder::ZA => sort_by_name(&mut ungrouped, sort_order, |i| &i.title),
-    }
+    sort_sessions(&mut ungrouped, sort_order);
 
     for inst in ungrouped {
         items.push(Item::Session {
@@ -447,20 +465,13 @@ pub fn flatten_tree(
     // Add groups and their sessions
     let roots = group_tree.get_roots();
     let mut roots_to_iterate: Vec<&Group> = roots.iter().collect();
-    match sort_order {
-        SortOrder::Oldest => {
-            roots_to_iterate.sort_by_key(|g| min_created_at_in_group(&g.path, instances));
-        }
-        SortOrder::Newest => {
-            roots_to_iterate.sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
-        }
-        SortOrder::LastActivity => {
-            roots_to_iterate.sort_by_key(|g| last_activity_group_key(&g.path, instances));
-        }
-        SortOrder::AZ | SortOrder::ZA => {
-            sort_by_name(&mut roots_to_iterate, sort_order, |g| &g.name)
-        }
-    }
+    sort_groups(
+        &mut roots_to_iterate,
+        sort_order,
+        instances,
+        |g| &g.name,
+        |g| &g.path,
+    );
 
     for root in roots_to_iterate {
         flatten_group(root, instances, &mut items, 0, sort_order, None);
@@ -498,14 +509,7 @@ fn flatten_group(
         .filter(|i| i.group_path == group.path)
         .collect();
 
-    match sort_order {
-        SortOrder::Oldest => group_sessions.sort_by_key(|i| i.created_at),
-        SortOrder::Newest => group_sessions.sort_by_key(|i| Reverse(i.created_at)),
-        SortOrder::LastActivity => group_sessions.sort_by_key(|i| last_activity_session_key(i)),
-        SortOrder::AZ | SortOrder::ZA => {
-            sort_by_name(&mut group_sessions, sort_order, |i| &i.title)
-        }
-    }
+    sort_sessions(&mut group_sessions, sort_order);
 
     for inst in group_sessions {
         items.push(Item::Session {
@@ -516,21 +520,13 @@ fn flatten_group(
 
     // Recursively add child groups (sort them if needed)
     let mut children_to_iterate: Vec<&Group> = group.children.iter().collect();
-    match sort_order {
-        SortOrder::Oldest => {
-            children_to_iterate.sort_by_key(|g| min_created_at_in_group(&g.path, instances));
-        }
-        SortOrder::Newest => {
-            children_to_iterate
-                .sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
-        }
-        SortOrder::LastActivity => {
-            children_to_iterate.sort_by_key(|g| last_activity_group_key(&g.path, instances));
-        }
-        SortOrder::AZ | SortOrder::ZA => {
-            sort_by_name(&mut children_to_iterate, sort_order, |g| &g.name)
-        }
-    }
+    sort_groups(
+        &mut children_to_iterate,
+        sort_order,
+        instances,
+        |g| &g.name,
+        |g| &g.path,
+    );
 
     for child in children_to_iterate {
         flatten_group(child, instances, items, depth + 1, sort_order, profile);

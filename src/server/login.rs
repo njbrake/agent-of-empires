@@ -242,10 +242,13 @@ pub async fn login_handler(
     if state.login_manager.verify_passphrase(&login_req.passphrase) {
         state.rate_limiter.record_success(client_ip).await;
 
-        let user_agent = addr.to_string();
+        let user_agent = headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
         let session_id = state
             .login_manager
-            .create_session(client_ip, &user_agent)
+            .create_session(client_ip, user_agent)
             .await;
 
         tracing::info!(ip = %client_ip, "Login successful");

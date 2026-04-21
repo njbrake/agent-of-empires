@@ -1107,6 +1107,11 @@ impl HomeView {
         self.mutate_instance(id, |inst| inst.status = status);
     }
 
+    /// Stamp `last_accessed_at` on a session (user-initiated interaction).
+    pub fn stamp_last_accessed(&mut self, id: &str) {
+        self.mutate_instance(id, |inst| inst.touch_last_accessed());
+    }
+
     pub fn save(&self) -> anyhow::Result<()> {
         for (profile_name, storage) in &self.storages {
             let profile_instances: Vec<Instance> = self

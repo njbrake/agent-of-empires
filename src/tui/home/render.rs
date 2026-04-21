@@ -53,6 +53,9 @@ fn format_relative_age(ts: Option<DateTime<Utc>>) -> String {
     };
     let now = Utc::now();
     let secs = (now - ts).num_seconds();
+    if secs <= 0 {
+        return "<1m".to_string();
+    }
     if secs < 60 {
         return "<1m".to_string();
     }
@@ -951,5 +954,51 @@ impl HomeView {
         let bar = Paragraph::new(Line::from(Span::styled(text, update_style)))
             .style(Style::default().bg(theme.selection));
         frame.render_widget(bar, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_relative_age_none_returns_empty() {
+        assert_eq!(format_relative_age(None), "");
+    }
+
+    #[test]
+    fn format_relative_age_future_timestamp_returns_less_than_1m() {
+        let future = Utc::now() + chrono::Duration::hours(1);
+        assert_eq!(format_relative_age(Some(future)), "<1m");
+    }
+
+    #[test]
+    fn format_relative_age_recent_returns_less_than_1m() {
+        let recent = Utc::now() - chrono::Duration::seconds(30);
+        assert_eq!(format_relative_age(Some(recent)), "<1m");
+    }
+
+    #[test]
+    fn format_relative_age_minutes() {
+        let ts = Utc::now() - chrono::Duration::minutes(5);
+        assert_eq!(format_relative_age(Some(ts)), "5m");
+    }
+
+    #[test]
+    fn format_relative_age_hours() {
+        let ts = Utc::now() - chrono::Duration::hours(3);
+        assert_eq!(format_relative_age(Some(ts)), "3h");
+    }
+
+    #[test]
+    fn format_relative_age_days() {
+        let ts = Utc::now() - chrono::Duration::days(7);
+        assert_eq!(format_relative_age(Some(ts)), "7d");
+    }
+
+    #[test]
+    fn format_relative_age_months() {
+        let ts = Utc::now() - chrono::Duration::days(60);
+        assert_eq!(format_relative_age(Some(ts)), "2mo");
     }
 }
