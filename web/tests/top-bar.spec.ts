@@ -15,7 +15,7 @@ test.describe("Top bar", () => {
     await page.goto("/");
     await page.getByRole("button", { name: "More options" }).click();
     await expect(page.getByRole("menuitem", { name: "Settings" })).toBeVisible();
-    await expect(page.getByRole("menuitem", { name: "Keyboard shortcuts" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Help" })).toBeVisible();
   });
 
   test("overflow menu closes on outside click", async ({ page }) => {
@@ -35,12 +35,12 @@ test.describe("Top bar", () => {
     await expect(page.getByRole("button", { name: /Back/i })).toBeVisible();
   });
 
-  test("overflow Keyboard shortcuts opens help overlay", async ({ page }) => {
+  test("overflow Help opens help overlay", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.getByRole("button", { name: "More options" }).click();
-    await page.getByRole("menuitem", { name: "Keyboard shortcuts" }).click();
-    await expect(page.getByRole("heading", { name: "Keyboard Shortcuts" })).toBeVisible();
+    await page.getByRole("menuitem", { name: "Help" }).click();
+    await expect(page.getByRole("heading", { name: "Help" })).toBeVisible();
   });
 
   test("overflow About opens About modal with links", async ({ page }) => {

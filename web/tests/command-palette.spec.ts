@@ -89,9 +89,9 @@ test.describe("Command palette", () => {
   test("opens from within a focused input", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    await page.getByRole("button", { name: "Add project" }).first().click();
+    await page.getByLabel("Add project").first().click();
     await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
-    await page.getByPlaceholder("/path/to/your/project").click();
+    await page.getByPlaceholder("Type to filter...").click();
     await page.keyboard.press("Control+k");
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).toBeVisible();
   });
