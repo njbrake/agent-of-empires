@@ -14,10 +14,8 @@ test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false });
 
 test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
   async function openSession(page: Page) {
-    await page
-      .getByRole("button", { name: /pinch-test claude/ })
-      .first()
-      .click();
+    // First match is the group header; second is the session row.
+    await page.locator('button:has-text("pinch-test")').nth(1).click();
     await page
       .locator(".wterm")
       .first()

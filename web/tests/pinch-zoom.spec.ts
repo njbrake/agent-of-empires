@@ -11,10 +11,14 @@ test.use({ ...devices["iPhone 13"] });
 
 test.describe("Terminal pinch zoom (mobile)", () => {
   async function openSession(page: Page) {
-    await page
-      .getByRole("button", { name: /pinch-test claude/ })
-      .first()
-      .click();
+    // On mobile the sidebar is collapsed; open it first.
+    const sidebarToggle = page.getByRole("button", { name: "Toggle sidebar" });
+    if (await sidebarToggle.isVisible()) {
+      await sidebarToggle.click();
+      await page.waitForTimeout(300);
+    }
+    // First match is the group header; second is the session row.
+    await page.locator('button:has-text("pinch-test")').nth(1).click();
     await page.locator(".wterm").waitFor({ state: "visible", timeout: 10_000 });
   }
 
