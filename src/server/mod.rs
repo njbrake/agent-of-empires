@@ -211,6 +211,11 @@ pub struct AppState {
     /// Snapshot of the resolved WebConfig at startup. Consumed by the
     /// push consumer task to evaluate per-event-type defaults.
     pub web_config: crate::session::config::WebConfig,
+    /// Per-tmux-session primary WebSocket client. Maps tmux session name
+    /// to the client ID that most recently sent keyboard input. Only the
+    /// primary client's resize messages are applied to its PTY, preventing
+    /// multiple browser viewports from fighting over the tmux window size.
+    pub session_primaries: Arc<RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -332,6 +337,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             entries: std::collections::HashMap::new(),
         }),
         remote_owner_cache: RwLock::new(std::collections::HashMap::new()),
+        session_primaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
         status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
         push: push_state,
         push_enabled,
