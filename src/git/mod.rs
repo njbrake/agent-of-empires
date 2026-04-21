@@ -1714,11 +1714,8 @@ mod tests {
 
         // Clone to get a local repo with an "origin" remote
         let local_dir = TempDir::new().unwrap();
-        let _local = git2::Repository::clone(
-            remote_dir.path().to_str().unwrap(),
-            local_dir.path(),
-        )
-        .unwrap();
+        let _local =
+            git2::Repository::clone(remote_dir.path().to_str().unwrap(), local_dir.path()).unwrap();
 
         let git_wt = GitWorktree::new(local_dir.path().to_path_buf()).unwrap();
         // Fetching a branch that doesn't exist on the remote should succeed silently
