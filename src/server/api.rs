@@ -1071,10 +1071,7 @@ pub async fn ensure_terminal(
             // Update in-memory cache
             let mut instances = state.instances.write().await;
             if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
-                inst.terminal_info = Some(crate::session::TerminalInfo {
-                    created: true,
-                    created_at: Some(chrono::Utc::now()),
-                });
+                inst.terminal_info = Some(crate::session::TerminalInfo { created: true });
             }
             (
                 StatusCode::CREATED,
