@@ -244,6 +244,90 @@ impl GitWorktree {
         Some(git_or_bare_dir.to_path_buf())
     }
 
+    /// Fetch a specific branch from a remote. Fails silently on network errors
+    /// or missing remotes (logs a warning), so callers can fall back to local state.
+    /// Stdin is piped to null to prevent SSH passphrase prompts from hanging.
+    /// Times out after 10 seconds.
+    pub fn fetch_branch(&self, remote: &str, branch: &str) -> Result<()> {
+        let mut child = std::process::Command::new("git")
+            .args(["fetch", remote, branch])
+            .current_dir(&self.repo_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+
+        let timeout = std::time::Duration::from_secs(10);
+        let start = std::time::Instant::now();
+        let poll_interval = std::time::Duration::from_millis(100);
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        if let Some(mut stderr) = child.stderr.take() {
+                            let mut msg = String::new();
+                            let _ = std::io::Read::read_to_string(&mut stderr, &mut msg);
+                            tracing::warn!(
+                                "git fetch {remote}/{branch} failed: {}",
+                                msg.trim()
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+                Ok(None) => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        tracing::warn!(
+                            "git fetch {remote}/{branch} timed out after {}s",
+                            timeout.as_secs()
+                        );
+                        return Ok(());
+                    }
+                    std::thread::sleep(poll_interval);
+                }
+                Err(e) => {
+                    tracing::warn!("git fetch {remote}/{branch} error: {e}");
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// Detect the default branch name by checking local branches and remote
+    /// tracking refs for "main" or "master".
+    fn detect_default_branch(&self) -> Result<String> {
+        let repo = open_repo_at(&self.repo_path)?;
+
+        for name in &["main", "master"] {
+            if repo.find_branch(name, git2::BranchType::Local).is_ok() {
+                return Ok(name.to_string());
+            }
+        }
+
+        for name in &["main", "master"] {
+            let remote_ref = format!("origin/{name}");
+            if repo
+                .find_branch(&remote_ref, git2::BranchType::Remote)
+                .is_ok()
+            {
+                return Ok(name.to_string());
+            }
+        }
+
+        if let Some(Ok((branch, _))) = repo.branches(Some(git2::BranchType::Local))?.next() {
+            if let Ok(Some(name)) = branch.name() {
+                return Ok(name.to_string());
+            }
+        }
+
+        Err(GitError::BranchNotFound(
+            "No default branch found".to_string(),
+        ))
+    }
+
     pub fn create_worktree(&self, branch: &str, path: &Path, create_branch: bool) -> Result<()> {
         if path.exists() {
             return Err(GitError::WorktreeAlreadyExists(path.to_path_buf()));
@@ -253,25 +337,51 @@ impl GitWorktree {
         // previously used by a now-deleted worktree directory.
         self.prune_worktrees()?;
 
+        // Fetch from remote so the worktree starts from the latest state.
+        // For new branches, fetch the default branch (main/master) to use as
+        // the base. For existing branches, fetch that specific branch.
+        // Fails silently on network errors, falling back to local refs.
+        if create_branch {
+            let default_branch = self
+                .detect_default_branch()
+                .unwrap_or_else(|_| "main".to_string());
+            self.fetch_branch("origin", &default_branch)?;
+        } else {
+            self.fetch_branch("origin", branch)?;
+        }
+
         let repo = open_repo_at(&self.repo_path)?;
 
         if create_branch {
-            // Find a commit to branch from. Try HEAD first, fall back to any
-            // existing branch. Bare repos often have HEAD pointing to a
-            // non-existent default branch (e.g., HEAD -> master but only main
-            // exists), so the fallback is necessary.
-            let commit_oid = if let Ok(head) = repo.head() {
-                head.peel_to_commit()?.id()
-            } else {
-                repo.branches(Some(git2::BranchType::Local))?
-                    .filter_map(|b| b.ok())
-                    .find_map(|(b, _)| b.get().target())
-                    .ok_or_else(|| {
-                        GitError::WorktreeCommandFailed(
-                            "No commits found to branch from".to_string(),
-                        )
-                    })?
-            };
+            // Branch from origin/<default> so new branches start from the
+            // latest remote state. Falls back to local HEAD if no remote
+            // exists, then to any local branch (bare repo with broken HEAD).
+            let default_branch = self
+                .detect_default_branch()
+                .unwrap_or_else(|_| "main".to_string());
+            let remote_ref = format!("origin/{default_branch}");
+            let commit_oid = repo
+                .find_branch(&remote_ref, git2::BranchType::Remote)
+                .ok()
+                .and_then(|b| b.get().target())
+                .or_else(|| {
+                    repo.head()
+                        .ok()
+                        .and_then(|h| h.peel_to_commit().ok())
+                        .map(|c| c.id())
+                })
+                .or_else(|| {
+                    repo.branches(Some(git2::BranchType::Local))
+                        .ok()
+                        .and_then(|mut branches| {
+                            branches.find_map(|b| b.ok().and_then(|(b, _)| b.get().target()))
+                        })
+                })
+                .ok_or_else(|| {
+                    GitError::WorktreeCommandFailed(
+                        "No commits found to branch from".to_string(),
+                    )
+                })?;
             let commit = repo.find_commit(commit_oid)?;
             repo.branch(branch, &commit, false)?;
         } else {
