@@ -4,13 +4,8 @@ use agent_of_empires::session::{GroupTree, Instance, Storage};
 use anyhow::Result;
 use serial_test::serial;
 
-fn setup_temp_home() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
-    #[cfg(target_os = "linux")]
-    std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
-    temp
-}
+mod common;
+use common::setup_temp_home;
 
 #[test]
 #[serial]
