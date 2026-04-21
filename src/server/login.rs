@@ -31,8 +31,6 @@ const MIN_PASSPHRASE_LENGTH: usize = 8;
 struct LoginSession {
     expires_at: Instant,
     ip: IpAddr,
-    #[allow(dead_code)]
-    user_agent: String,
 }
 
 /// Manages passphrase verification and login session lifecycle.
@@ -89,12 +87,11 @@ impl LoginManager {
     }
 
     /// Create a new login session. Returns the session ID (64-char hex).
-    pub async fn create_session(&self, ip: IpAddr, user_agent: &str) -> String {
+    pub async fn create_session(&self, ip: IpAddr) -> String {
         let session_id = super::generate_token();
         let session = LoginSession {
             expires_at: Instant::now() + SESSION_LIFETIME,
             ip,
-            user_agent: user_agent.to_string(),
         };
 
         let mut sessions = self.sessions.write().await;
@@ -242,14 +239,7 @@ pub async fn login_handler(
     if state.login_manager.verify_passphrase(&login_req.passphrase) {
         state.rate_limiter.record_success(client_ip).await;
 
-        let user_agent = headers
-            .get(header::USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let session_id = state
-            .login_manager
-            .create_session(client_ip, user_agent)
-            .await;
+        let session_id = state.login_manager.create_session(client_ip).await;
 
         tracing::info!(ip = %client_ip, "Login successful");
 
@@ -403,7 +393,7 @@ mod tests {
     async fn create_and_validate_session() {
         let mgr = LoginManager::new(Some("test"));
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
-        let session_id = mgr.create_session(ip, "test-agent").await;
+        let session_id = mgr.create_session(ip).await;
 
         assert!(mgr.validate_session(&session_id, ip).await);
     }
@@ -413,7 +403,7 @@ mod tests {
         let mgr = LoginManager::new(Some("test"));
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
         let other_ip: IpAddr = "5.6.7.8".parse().unwrap();
-        let session_id = mgr.create_session(ip, "test-agent").await;
+        let session_id = mgr.create_session(ip).await;
 
         assert!(!mgr.validate_session(&session_id, other_ip).await);
     }
@@ -438,7 +428,7 @@ mod tests {
     async fn invalidate_session_removes_it() {
         let mgr = LoginManager::new(Some("test"));
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
-        let session_id = mgr.create_session(ip, "test-agent").await;
+        let session_id = mgr.create_session(ip).await;
 
         mgr.invalidate_session(&session_id).await;
         assert!(!mgr.validate_session(&session_id, ip).await);
@@ -458,7 +448,7 @@ mod tests {
 
         let mut first_id = String::new();
         for i in 0..MAX_SESSIONS {
-            let id = mgr.create_session(ip, &format!("agent-{}", i)).await;
+            let id = mgr.create_session(ip).await;
             if i == 0 {
                 first_id = id;
             }
@@ -469,7 +459,7 @@ mod tests {
 
         // Adding one more should evict the oldest (which is now the second one,
         // since first_id just had its expiry refreshed by validate_session above)
-        let _new_id = mgr.create_session(ip, "agent-overflow").await;
+        let _new_id = mgr.create_session(ip).await;
         let sessions = mgr.sessions.read().await;
         assert_eq!(sessions.len(), MAX_SESSIONS);
     }
@@ -478,7 +468,7 @@ mod tests {
     async fn cleanup_expired_removes_stale() {
         let mgr = LoginManager::new(Some("test"));
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
-        let session_id = mgr.create_session(ip, "test-agent").await;
+        let session_id = mgr.create_session(ip).await;
 
         // Manually expire the session
         {

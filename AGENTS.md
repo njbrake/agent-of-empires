@@ -50,6 +50,7 @@ Every configurable field must be editable in the settings TUI. When adding one t
 ## Coding Style & Naming Conventions
 
 - Let `cargo fmt` + `cargo clippy` decide; fix warnings.
+- **No dead code.** Never add `#[allow(dead_code)]` or write fields/functions that nothing reads. If a field isn't used yet, don't add it; if it stops being used, remove it.
 - **No emdashes or `--`** as separators in docs/comments; use commas, semicolons, or rephrase.
 - Rust naming: `snake_case` modules/functions, `CamelCase` types, `SCREAMING_SNAKE_CASE` constants.
 - Keep OS-specific logic in `src/process/{macos,linux}.rs`, not sprinkled `cfg` checks.
