@@ -5,6 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::DialogResult;
+use crate::tui::components::checkbox::{checkbox_line, CheckboxStyle};
 use crate::tui::styles::Theme;
 
 /// Options for what to clean up when deleting a session
@@ -367,37 +368,16 @@ impl UnifiedDeleteDialog {
         checked: bool,
         focused: bool,
     ) {
-        let checkbox = if checked { "[x]" } else { "[ ]" };
-
-        let checkbox_style = if focused {
-            Style::default().fg(theme.accent).bold()
-        } else if checked {
-            Style::default().fg(theme.error).bold()
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-
-        let label_style = if focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        let mut spans = vec![
-            Span::styled(checkbox, checkbox_style),
-            Span::raw(" "),
-            Span::styled(label, label_style),
-        ];
-
-        if let Some(detail_text) = detail {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                format!("({})", detail_text),
-                Style::default().fg(theme.dimmed),
-            ));
-        }
-
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        let line = checkbox_line(
+            theme,
+            label,
+            detail,
+            0,
+            checked,
+            focused,
+            CheckboxStyle::delete_session(theme),
+        );
+        frame.render_widget(Paragraph::new(line), area);
     }
 
     fn render_indented_checkbox(
@@ -409,30 +389,16 @@ impl UnifiedDeleteDialog {
         checked: bool,
         focused: bool,
     ) {
-        let checkbox = if checked { "[x]" } else { "[ ]" };
-
-        let checkbox_style = if focused {
-            Style::default().fg(theme.accent).bold()
-        } else if checked {
-            Style::default().fg(theme.error).bold()
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-
-        let label_style = if focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        let spans = vec![
-            Span::raw("    "),
-            Span::styled(checkbox, checkbox_style),
-            Span::raw(" "),
-            Span::styled(label, label_style),
-        ];
-
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        let line = checkbox_line(
+            theme,
+            label,
+            None,
+            4,
+            checked,
+            focused,
+            CheckboxStyle::delete_session(theme),
+        );
+        frame.render_widget(Paragraph::new(line), area);
     }
 
     fn render_buttons(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
