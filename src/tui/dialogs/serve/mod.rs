@@ -2029,7 +2029,6 @@ fn format_elapsed(d: Duration) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2064,7 +2063,6 @@ mod tests {
         let line = "200 OK received";
         assert_eq!(compact_log_line(line), "200 OK received");
     }
-
 
     #[test]
     fn format_elapsed_shows_units() {

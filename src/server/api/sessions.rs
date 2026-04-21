@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::{Instance, Status, Storage};
 
-use super::AppState;
 use super::validate_no_shell_injection;
+use super::AppState;
 
 #[derive(Serialize)]
 pub struct SessionResponse {
@@ -1301,7 +1301,6 @@ pub async fn session_diff_file(
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

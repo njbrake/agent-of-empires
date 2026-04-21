@@ -248,7 +248,6 @@ impl Instance {
         tmux::Session::new(&self.id, &self.title)
     }
 
-
     fn sandbox_display(&self) -> Option<crate::tmux::status_bar::SandboxDisplay> {
         self.sandbox_info.as_ref().and_then(|s| {
             if s.enabled {
@@ -276,7 +275,6 @@ impl Instance {
             sandbox.as_ref(),
         );
     }
-
 
     pub fn start(&mut self) -> Result<()> {
         self.start_with_size(None)
@@ -507,7 +505,6 @@ impl Instance {
         let name = tmux::Session::generate_name(&self.id, &self.title);
         self.apply_session_tmux_options(&name, &self.title);
     }
-
 
     pub fn restart(&mut self) -> Result<()> {
         self.restart_with_size(None)

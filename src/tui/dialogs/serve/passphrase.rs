@@ -139,7 +139,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn passphrase_words_are_from_the_wordlist() {
         let pw = generate_passphrase();

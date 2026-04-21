@@ -2,12 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
@@ -244,7 +239,6 @@ pub async fn list_branches(
             .into_response(),
     }
 }
-
 
 #[cfg(test)]
 mod tests {

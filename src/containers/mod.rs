@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use crate::cli::truncate_id;
 use crate::session::{Config, ContainerRuntimeName};
 pub use container_interface::{ContainerConfig, ContainerRuntimeInterface, EnvEntry, VolumeMount};
-pub use runtime::ContainerRuntime;
 use error::Result;
+pub use runtime::ContainerRuntime;
 
 /// Returns the CLI binary name for the configured container runtime.
 pub fn runtime_binary() -> &'static str {
