@@ -983,6 +983,12 @@ fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
 /// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
 /// Single quotes in `cmd` are escaped with the `'\''` technique to prevent
 /// breaking out of the outer single-quoted wrapper.
+///
+/// The leading `exec` ensures the tmux default shell (which may be fish, nu,
+/// etc.) replaces itself with the POSIX wrapper. Without it, fish stays as the
+/// pane process because fish does not exec the last command in `-c` mode. That
+/// causes `#{pane_current_command}` to report "fish", which triggers a false
+/// restart on reattach. See #757.
 fn wrap_command_ignore_suspend(cmd: &str) -> String {
     let user = super::environment::user_shell();
     let posix = super::environment::user_posix_shell();
@@ -992,7 +998,10 @@ fn wrap_command_ignore_suspend(cmd: &str) -> String {
     // pwsh): bash's login scripts won't contain the user's PATH setup and -l
     // may reset the inherited PATH that already has the correct entries.
     let flag = if user == posix { "-lc" } else { "-c" };
-    format!("{} {} 'stty susp undef; exec env {}'", posix, flag, escaped)
+    format!(
+        "exec {} {} 'stty susp undef; exec env {}'",
+        posix, flag, escaped
+    )
 }
 
 /// Check whether captured pane content indicates a living agent rather than
@@ -1121,6 +1130,31 @@ mod tests {
 
     #[test]
     #[serial_test::serial(shell_env)]
+    fn test_wrap_command_starts_with_exec() {
+        // All wrapped commands must start with `exec` so that the tmux
+        // default shell (which may be fish/nu) replaces itself with the
+        // POSIX wrapper. Without this, fish stays as the pane process and
+        // #{pane_current_command} reports "fish", triggering false restarts
+        // on reattach. See #757.
+        let original = std::env::var("SHELL").ok();
+        for shell in &["/bin/bash", "/bin/zsh", "/usr/bin/fish", "/usr/bin/nu"] {
+            std::env::set_var("SHELL", shell);
+            let wrapped = wrap_command_ignore_suspend("claude");
+            assert!(
+                wrapped.starts_with("exec "),
+                "SHELL={}: wrapped command must start with 'exec': {}",
+                shell,
+                wrapped,
+            );
+        }
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
     fn test_wrap_command_posix_shell_uses_login() {
         let original = std::env::var("SHELL").ok();
         std::env::set_var("SHELL", "/bin/zsh");
@@ -1146,8 +1180,8 @@ mod tests {
         // Fish: should use -c (no -l) because bash's login scripts
         // won't have fish's PATH setup.
         assert!(
-            wrapped.starts_with("bash -c "),
-            "fish shell should fall back to bash -c (no login): {}",
+            wrapped.starts_with("exec bash -c "),
+            "fish shell should produce 'exec bash -c ...': {}",
             wrapped,
         );
         assert!(
@@ -1168,8 +1202,8 @@ mod tests {
         std::env::set_var("SHELL", "/usr/bin/nu");
         let wrapped = wrap_command_ignore_suspend("claude");
         assert!(
-            wrapped.starts_with("bash -c "),
-            "nu shell should fall back to bash -c (no login): {}",
+            wrapped.starts_with("exec bash -c "),
+            "nu shell should produce 'exec bash -c ...': {}",
             wrapped,
         );
         match original {
