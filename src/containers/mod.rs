@@ -1,30 +1,15 @@
-mod apple_container;
 pub mod container_interface;
-mod docker;
 pub mod error;
+mod runtime;
 pub(crate) mod runtime_base;
 
 use std::collections::HashMap;
 
 use crate::cli::truncate_id;
 use crate::session::{Config, ContainerRuntimeName};
-use apple_container::AppleContainer;
 pub use container_interface::{ContainerConfig, ContainerRuntimeInterface, EnvEntry, VolumeMount};
-use docker::Docker;
-use enum_dispatch::enum_dispatch;
+pub use runtime::ContainerRuntime;
 use error::Result;
-
-#[enum_dispatch(ContainerRuntimeInterface)]
-pub enum ContainerRuntime {
-    AppleContainer,
-    Docker,
-}
-
-impl Default for ContainerRuntime {
-    fn default() -> Self {
-        Docker::default().into()
-    }
-}
 
 /// Returns the CLI binary name for the configured container runtime.
 pub fn runtime_binary() -> &'static str {
@@ -41,8 +26,8 @@ pub fn runtime_binary() -> &'static str {
 pub fn get_container_runtime() -> ContainerRuntime {
     if let Ok(cfg) = Config::load() {
         match cfg.sandbox.container_runtime {
-            ContainerRuntimeName::AppleContainer => AppleContainer::default().into(),
-            ContainerRuntimeName::Docker => Docker::default().into(),
+            ContainerRuntimeName::AppleContainer => ContainerRuntime::apple_container(),
+            ContainerRuntimeName::Docker => ContainerRuntime::docker(),
         }
     } else {
         ContainerRuntime::default()
