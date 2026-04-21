@@ -10,11 +10,8 @@ use agent_of_empires::session::{save_config, Config, SandboxConfig, WorktreeConf
 use agent_of_empires::tui::dialogs::{DeleteDialogConfig, UnifiedDeleteDialog};
 use serial_test::serial;
 
-fn setup_temp_home() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
-    temp
-}
+mod common;
+use common::setup_temp_home;
 
 #[test]
 #[serial]

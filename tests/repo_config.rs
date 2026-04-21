@@ -2,19 +2,10 @@
 
 use serial_test::serial;
 use std::fs;
-use std::path::Path;
 use tempfile::TempDir;
 
-/// Set HOME and XDG_CONFIG_HOME to a temp directory for test isolation.
-///
-/// # Safety caveat
-/// `set_var` is not thread-safe. Tests calling this must use `#[serial]` to
-/// ensure no concurrent test is reading the environment at the same time.
-fn setup_temp_home(temp: &Path) {
-    std::env::set_var("HOME", temp);
-    #[cfg(target_os = "linux")]
-    std::env::set_var("XDG_CONFIG_HOME", temp.join(".config"));
-}
+mod common;
+use common::set_temp_home as setup_temp_home;
 
 /// Helper to set up a temp dir with `.agent-of-empires/config.toml`.
 fn setup_repo_config(content: &str) -> TempDir {
