@@ -5,6 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::DialogResult;
+use crate::tui::components::buttons::render_yes_no;
 use crate::tui::styles::Theme;
 
 pub struct ConfirmDialog {
@@ -82,29 +83,7 @@ impl ConfirmDialog {
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
-        // Buttons
-        let yes_style = if self.selected {
-            Style::default().fg(theme.error).bold()
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-        let no_style = if !self.selected {
-            Style::default().fg(theme.running).bold()
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-
-        let buttons = Line::from(vec![
-            Span::raw("  "),
-            Span::styled("[Yes]", yes_style),
-            Span::raw("    "),
-            Span::styled("[No]", no_style),
-        ]);
-
-        frame.render_widget(
-            Paragraph::new(buttons).alignment(Alignment::Center),
-            chunks[1],
-        );
+        render_yes_no(frame, chunks[1], theme, self.selected);
     }
 }
 

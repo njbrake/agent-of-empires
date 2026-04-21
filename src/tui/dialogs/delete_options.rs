@@ -5,6 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::DialogResult;
+use crate::tui::components::buttons::render_yes_no;
 use crate::tui::components::checkbox::{checkbox_line, CheckboxStyle};
 use crate::tui::styles::Theme;
 
@@ -402,29 +403,7 @@ impl UnifiedDeleteDialog {
     }
 
     fn render_buttons(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let yes_focused = self.focus == FocusElement::YesButton;
-        let no_focused = self.focus == FocusElement::NoButton;
-
-        let yes_style = if yes_focused {
-            Style::default().fg(theme.error).bold()
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-
-        let no_style = if no_focused {
-            Style::default().fg(theme.running).bold()
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-
-        let buttons = Line::from(vec![
-            Span::raw("  "),
-            Span::styled("[Yes]", yes_style),
-            Span::raw("    "),
-            Span::styled("[No]", no_style),
-        ]);
-
-        frame.render_widget(Paragraph::new(buttons).alignment(Alignment::Center), area);
+        render_yes_no(frame, area, theme, self.focus == FocusElement::YesButton);
     }
 
     fn render_hints(&self, frame: &mut Frame, area: Rect, theme: &Theme, has_checkboxes: bool) {
