@@ -1,4 +1,17 @@
-//! Setting field definitions and config mapping
+//! Setting field definitions and config mapping.
+//!
+//! ## Future direction (deferred)
+//!
+//! Adding one configurable setting today requires touching ~5 files in
+//! lockstep (this file's FieldKey enum + `build_*_fields()`,
+//! `apply_field_to_global()` and `apply_field_to_profile()` in
+//! `input.rs`, the matching `*ConfigOverride` struct in
+//! `session/profile_config.rs`, and `merge_configs()`). The intended
+//! consolidation is a `define_field!` declarative macro that emits all
+//! of these from a single per-field invocation, but the macro spans
+//! module boundaries and warrants its own PR with thorough behavioral
+//! testing of the settings persistence path. Tracked as a follow-up to
+//! the rest of this code-quality cleanup.
 
 use crate::session::{
     validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
