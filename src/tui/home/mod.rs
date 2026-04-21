@@ -216,6 +216,10 @@ pub struct HomeView {
     // Sound config for state transition sounds
     pub(super) sound_config: crate::sound::SoundConfig,
 
+    // When true, letter-based action hotkeys require SHIFT (guard against
+    // dictation / stray keystrokes triggering destructive actions).
+    pub(super) strict_hotkeys: bool,
+
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
@@ -275,6 +279,10 @@ impl HomeView {
             .as_ref()
             .map(|config| config.sound.clone())
             .unwrap_or_default();
+        let strict_hotkeys = resolved
+            .as_ref()
+            .map(|config| config.session.strict_hotkeys)
+            .unwrap_or(false);
         let user_config = load_config().ok().flatten();
         let sort_order = user_config
             .as_ref()
@@ -353,6 +361,7 @@ impl HomeView {
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
+            strict_hotkeys,
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -1266,6 +1275,9 @@ impl HomeView {
 
             // Refresh sound config
             self.sound_config = config.sound.clone();
+
+            // Refresh strict-hotkeys mode
+            self.strict_hotkeys = config.session.strict_hotkeys;
         }
     }
 

@@ -179,6 +179,17 @@ pub struct SessionConfig {
     /// Maps a custom (or built-in) agent to another agent's status detection heuristics.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_detect_as: HashMap<String, String>,
+
+    /// Require SHIFT on letter-based TUI hotkeys (e.g. SHIFT+N for New, SHIFT+D for Delete).
+    /// Guards against accidental destructive actions from dictation software, a forgotten
+    /// focus, or stray keystrokes. Navigation keys (h/j/k/l, arrows, Enter, Esc), punctuation
+    /// (/, ?), and numeric modifiers stay unshifted. Previously-uppercase bindings
+    /// (P, R, T, N, D, G) relocate to Ctrl+letter so nothing is lost.
+    /// Note: Ctrl+D (diff view) may conflict with terminal EOF in some tmux configs;
+    /// if so, rebind tmux's send-prefix or use the `D` key from the help overlay.
+    /// Off by default — existing users keep the legacy single-letter UX.
+    #[serde(default)]
+    pub strict_hotkeys: bool,
 }
 
 impl SessionConfig {
@@ -302,10 +313,29 @@ fn default_profile() -> String {
     "default".to_string()
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// Emit 24-bit RGB escapes (\e[38;2;R;G;Bm). Default — best fidelity on
+    /// modern terminals and SSH sessions that pass RGB correctly.
+    #[default]
+    Truecolor,
+    /// Emit 256-palette escapes (\e[38;5;<idx>m) by converting every theme
+    /// Rgb(r,g,b) to the nearest xterm-256 index. Use this when the transport
+    /// (notably some mosh clients) mishandles 24-bit RGB — preview panes in
+    /// aoe already use 256-palette via ansi-to-tui, so palette mode renders
+    /// chrome through the same escape path and survives the same transports.
+    Palette,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThemeConfig {
     #[serde(default)]
     pub name: String,
+    /// How theme colors are emitted at the escape-sequence level.
+    /// See `ColorMode` for the truecolor vs palette trade-off.
+    #[serde(default)]
+    pub color_mode: ColorMode,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -500,6 +500,21 @@ impl HomeView {
             return None;
         }
 
+        // In strict_hotkeys mode, normalize shifted/ctrl keys to their standard
+        // equivalents so the match block below doesn't need duplication.
+        //
+        // Mapping (strict mode only):
+        //   Shift+letter actions -> lowercase: N->n, X->x, D->d, R->r, S->s, M->m, T->t, C->c, Q->q, O->o
+        //   Ctrl+letter relocated bindings -> uppercase: Ctrl+T->T, Ctrl+D->D, Ctrl+R->R, Ctrl+P->P, Ctrl+N->N
+        //   Ctrl+G -> g (group toggle was lowercase)
+        //   Bare lowercase action letters -> blocked (return None)
+        let key = if self.strict_hotkeys {
+            self.normalize_strict_key(key)
+        } else {
+            Some(key)
+        };
+        let key = key?;
+
         // Normal mode keybindings
         match key.code {
             KeyCode::Esc if !self.search_matches.is_empty() => {
@@ -1257,6 +1272,67 @@ impl HomeView {
                 }
                 None
             }
+        }
+    }
+
+    /// In strict_hotkeys mode, normalize key events so the main match block
+    /// doesn't need per-key duplication. Returns `None` to swallow bare
+    /// lowercase action letters that would otherwise fire destructive actions.
+    fn normalize_strict_key(&self, key: KeyEvent) -> Option<KeyEvent> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let bare = key.modifiers == KeyModifiers::NONE;
+        let shift_only = key.modifiers == KeyModifiers::SHIFT;
+        let has_search = !self.search_matches.is_empty();
+
+        // n/N are dual-purpose: search next/prev AND new session/new-from-selection.
+        // When search matches exist, let them through unchanged for vi-style navigation.
+        if has_search {
+            match key.code {
+                KeyCode::Char('n') if bare => return Some(key),
+                KeyCode::Char('N') if bare || shift_only => return Some(key),
+                _ => {}
+            }
+        }
+
+        match key.code {
+            // Ctrl+letter relocations: map to the uppercase letter they replace
+            // Ctrl+T -> T (attach terminal), Ctrl+D -> D (diff view),
+            // Ctrl+R -> R (serve), Ctrl+P -> P (profiles), Ctrl+N -> N (new from selection)
+            KeyCode::Char(c @ ('t' | 'd' | 'r' | 'p' | 'n')) if ctrl => Some(KeyEvent::new(
+                KeyCode::Char(c.to_ascii_uppercase()),
+                KeyModifiers::NONE,
+            )),
+            // Ctrl+G -> g (toggle group by)
+            KeyCode::Char('g') if ctrl => {
+                Some(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            }
+            // Ctrl+O stays as-is (cycle sort backward, already handled by its own arm)
+            KeyCode::Char('o') if ctrl => Some(key),
+            // Shifted action letters: map to lowercase equivalents
+            // N->n (new), X->x (stop), S->s (settings), M->m (message),
+            // T->t (toggle view), C->c (container toggle), Q->q (quit), O->o (sort)
+            KeyCode::Char(c @ ('N' | 'X' | 'S' | 'M' | 'T' | 'C' | 'Q' | 'O'))
+                if bare || shift_only =>
+            {
+                Some(KeyEvent::new(
+                    KeyCode::Char(c.to_ascii_lowercase()),
+                    KeyModifiers::NONE,
+                ))
+            }
+            // D -> d (delete) and R -> r (rename) in strict mode
+            // (the original uppercase D=diff and R=serve are now behind Ctrl)
+            KeyCode::Char(c @ ('D' | 'R')) if bare || shift_only => Some(KeyEvent::new(
+                KeyCode::Char(c.to_ascii_lowercase()),
+                KeyModifiers::NONE,
+            )),
+            // Block bare lowercase action letters that would fire without a modifier
+            KeyCode::Char('q' | 'n' | 't' | 'c' | 's' | 'd' | 'x' | 'r' | 'm' | 'o' | 'g')
+                if bare =>
+            {
+                None
+            }
+            // Everything else passes through unchanged (navigation, ?, /, Enter, etc.)
+            _ => Some(key),
         }
     }
 }

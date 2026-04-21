@@ -46,6 +46,7 @@ impl SettingsCategory {
 pub enum FieldKey {
     // Theme
     ThemeName,
+    ThemeColorMode,
     // Updates
     CheckEnabled,
     CheckIntervalHours,
@@ -76,6 +77,7 @@ pub enum FieldKey {
     Mouse,
     // Session
     DefaultTool,
+    StrictHotkeys,
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
@@ -341,15 +343,51 @@ fn build_theme_fields(
         },
     );
 
-    vec![SettingField {
-        key: FieldKey::ThemeName,
-        label: "Theme",
-        description: "Color theme for the TUI",
-        value: FieldValue::Select { selected, options },
-        category: SettingsCategory::Theme,
-        has_override,
-        inherited_display: inherited,
-    }]
+    let color_mode_options: Vec<String> = vec!["truecolor".to_string(), "palette".to_string()];
+    let (color_mode_val, cm_has_override) = resolve_value(
+        scope,
+        global.theme.color_mode.clone(),
+        theme.and_then(|t| t.color_mode.clone()),
+    );
+    let cm_selected = match color_mode_val {
+        crate::session::config::ColorMode::Truecolor => 0,
+        crate::session::config::ColorMode::Palette => 1,
+    };
+    let global_cm_selected = match global.theme.color_mode {
+        crate::session::config::ColorMode::Truecolor => 0,
+        crate::session::config::ColorMode::Palette => 1,
+    };
+    let cm_inherited = inherited_if(
+        cm_has_override,
+        FieldValue::Select {
+            selected: global_cm_selected,
+            options: color_mode_options.clone(),
+        },
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::ThemeName,
+            label: "Theme",
+            description: "Color theme for the TUI",
+            value: FieldValue::Select { selected, options },
+            category: SettingsCategory::Theme,
+            has_override,
+            inherited_display: inherited,
+        },
+        SettingField {
+            key: FieldKey::ThemeColorMode,
+            label: "Color Mode",
+            description: "Truecolor (24-bit RGB) or palette (xterm-256). Use palette if your terminal mangles RGB escapes.",
+            value: FieldValue::Select {
+                selected: cm_selected,
+                options: color_mode_options,
+            },
+            category: SettingsCategory::Theme,
+            has_override: cm_has_override,
+            inherited_display: cm_inherited,
+        },
+    ]
 }
 
 fn build_updates_fields(
@@ -872,6 +910,12 @@ fn build_session_fields(
         session.and_then(|s| s.yolo_mode_default),
     );
 
+    let (strict_hotkeys, strict_hotkeys_override) = resolve_value(
+        scope,
+        global.session.strict_hotkeys,
+        session.and_then(|s| s.strict_hotkeys),
+    );
+
     let (agent_status_hooks, status_hooks_override) = resolve_value(
         scope,
         global.session.agent_status_hooks,
@@ -1011,6 +1055,19 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 yolo_override,
                 FieldValue::Bool(global.session.yolo_mode_default),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StrictHotkeys,
+            label: "Strict Hotkeys",
+            description:
+                "Require Shift/Ctrl for action hotkeys (guards against dictation/stray input)",
+            value: FieldValue::Bool(strict_hotkeys),
+            category: SettingsCategory::Session,
+            has_override: strict_hotkeys_override,
+            inherited_display: inherited_if(
+                strict_hotkeys_override,
+                FieldValue::Bool(global.session.strict_hotkeys),
             ),
         },
         SettingField {
@@ -1333,6 +1390,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::ThemeName, FieldValue::Select { selected, options }) => {
             config.theme.name = options.get(*selected).cloned().unwrap_or_default();
         }
+        (FieldKey::ThemeColorMode, FieldValue::Select { selected, .. }) => {
+            config.theme.color_mode = match selected {
+                1 => crate::session::config::ColorMode::Palette,
+                _ => crate::session::config::ColorMode::Truecolor,
+            };
+        }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
@@ -1356,6 +1419,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.sandbox.enabled_by_default = *v
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
+        (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => config.session.strict_hotkeys = *v,
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
@@ -1480,6 +1544,16 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .theme
                 .get_or_insert_with(ThemeConfigOverride::default);
             t.name = Some(name);
+        }
+        (FieldKey::ThemeColorMode, FieldValue::Select { selected, .. }) => {
+            use crate::session::ThemeConfigOverride;
+            let t = config
+                .theme
+                .get_or_insert_with(ThemeConfigOverride::default);
+            t.color_mode = Some(match selected {
+                1 => crate::session::config::ColorMode::Palette,
+                _ => crate::session::config::ColorMode::Truecolor,
+            });
         }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
@@ -1617,6 +1691,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| s.yolo_mode_default = val);
+        }
+        (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.session, |s, val| s.strict_hotkeys = val);
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {
