@@ -82,6 +82,7 @@ export function TerminalView({ session }: Props) {
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRafRef = useRef(0);
   useLayoutEffect(() => {
+    console.debug("[aoe:keyboard] keyboardHeight changed", { keyboardHeight, keyboardOpen });
     if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
 
     // Immediate: double-rAF ensures we fire AFTER wterm's scheduled render
@@ -129,6 +130,7 @@ export function TerminalView({ session }: Props) {
   // focus() (even a synchronous ws.send) can break iOS keyboard display.
   // Claim primary after the focus so the PTY resizes to this viewport.
   const toggleKeyboard = useCallback(() => {
+    console.debug("[aoe:keyboard] toggleKeyboard", { keyboardOpen });
     const term = termRef.current;
     if (!term) return;
     const ta = term.element.querySelector("textarea");
@@ -187,6 +189,7 @@ export function TerminalView({ session }: Props) {
   const rootStyle = {
     paddingBottom: keyboardHeight > 0 ? keyboardHeight : undefined,
   } as const;
+  console.debug("[aoe:layout] rootStyle", rootStyle, { keyboardHeight, keyboardOpen });
 
   return (
     <div

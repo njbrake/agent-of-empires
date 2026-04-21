@@ -125,12 +125,14 @@ export function useTerminal(
       autoResize: true,
       cursorBlink: true,
       onResize: (cols: number, rows: number) => {
+        console.debug("[aoe:resize] onResize fired", { cols, rows });
         if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
         resizeDebounceTimer = setTimeout(() => {
           resizeDebounceTimer = null;
           const ws = wsRef.current;
           if (ws?.readyState === WebSocket.OPEN) {
             const msg: ResizeMessage = { type: "resize", cols, rows };
+            console.debug("[aoe:resize] sending debounced resize", msg);
             ws.send(JSON.stringify(msg));
           }
         }, RESIZE_DEBOUNCE_MS);
@@ -277,6 +279,7 @@ export function useTerminal(
             const msg = JSON.parse(event.data) as { type?: string };
             if (msg.type === "primary_status") {
               const status = msg as PrimaryStatusMessage;
+              console.debug("[aoe:primary]", status);
               setState((prev) => ({ ...prev, isPrimary: status.is_primary }));
               return;
             }
@@ -736,6 +739,7 @@ export function useTerminal(
 
   const activate = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.debug("[aoe:activate] sending activate");
       wsRef.current.send(JSON.stringify({ type: "activate" } as ActivateMessage));
     }
   }, []);
