@@ -12,6 +12,15 @@ use ratatui::prelude::*;
 
 use crate::tui::styles::Theme;
 
+/// Which part of a focused checkbox row receives the `underlined()` modifier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UnderlineScope {
+    /// Only the label text is underlined.
+    Label,
+    /// Both the box glyph and the label are underlined.
+    Row,
+}
+
 /// How a focused/checked checkbox should be styled. Each dialog picks its
 /// own combination so neither has to change.
 #[derive(Clone, Copy)]
@@ -20,12 +29,10 @@ pub struct CheckboxStyle {
     pub focused_color: Color,
     /// Color for the box glyph when checked but not focused.
     pub checked_color: Color,
-    /// `bold()` the box glyph (used by `delete_options`).
+    /// `bold()` the box glyph.
     pub focused_glyph_bold: bool,
-    /// `underlined()` the label (used by both, slightly different scope).
-    pub focused_label_underlined: bool,
-    /// `underlined()` the entire row when focused (used by group dialog).
-    pub focused_row_underlined: bool,
+    /// Where the underline highlight goes, if anywhere.
+    pub focused_underline: Option<UnderlineScope>,
 }
 
 impl CheckboxStyle {
@@ -35,8 +42,7 @@ impl CheckboxStyle {
             focused_color: theme.accent,
             checked_color: theme.error,
             focused_glyph_bold: true,
-            focused_label_underlined: true,
-            focused_row_underlined: false,
+            focused_underline: Some(UnderlineScope::Label),
         }
     }
 
@@ -46,8 +52,7 @@ impl CheckboxStyle {
             focused_color: theme.error,
             checked_color: theme.error,
             focused_glyph_bold: false,
-            focused_label_underlined: false,
-            focused_row_underlined: true,
+            focused_underline: Some(UnderlineScope::Row),
         }
     }
 }
@@ -77,7 +82,7 @@ pub fn checkbox_line(
     if focused && style.focused_glyph_bold {
         box_style = box_style.bold();
     }
-    if focused && style.focused_row_underlined {
+    if focused && style.focused_underline == Some(UnderlineScope::Row) {
         box_style = box_style.underlined();
     }
 
@@ -88,10 +93,7 @@ pub fn checkbox_line(
     } else {
         Style::default().fg(theme.text)
     };
-    if focused && style.focused_label_underlined {
-        label_style = label_style.underlined();
-    }
-    if focused && style.focused_row_underlined {
+    if focused && style.focused_underline.is_some() {
         label_style = label_style.underlined();
     }
 

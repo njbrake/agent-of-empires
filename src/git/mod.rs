@@ -1,6 +1,6 @@
 //! Git worktree operations module.
 //!
-//! This was a single 1,797-line file; the split is:
+//! Layout:
 //!   - `remote`   — repo cloning, origin-URL parsing
 //!   - `worktree` — `GitWorktree` lifecycle, branch ops, template paths
 //!   - `diff`     — diff rendering for the UI
@@ -8,6 +8,9 @@
 //!   - `template` — path-template expansion
 //!   - this file  — module declarations, re-exports, and the shared
 //!     `open_repo_at` helper used by sibling submodules.
+//!
+//! `remote` and `worktree` were extracted from a single 1,797-line `mod.rs`;
+//! `diff`, `cleanup`, and `template` predate the split.
 
 use std::ffi::OsStr;
 use std::path::Path;
