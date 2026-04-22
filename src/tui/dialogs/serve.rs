@@ -2031,45 +2031,56 @@ fn render_active(
     let full_url_len = url_prefix.chars().count() + full_url.chars().count();
     let (split_url, split_token) = split_url_and_token(full_url);
 
-    // Full-page layout
+    // Full-page layout: header / content / footer, matching Settings/Diff.
     frame.render_widget(Clear, area);
 
+    let page = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // header
+            Constraint::Min(10),   // content
+            Constraint::Length(3), // footer
+        ])
+        .split(area);
+
+    // ── Header ───────────────────────────────────────────────────────────
     let eight_hours = Duration::from_secs(8 * 3600);
-    let base_title = match mode {
-        ServeMode::Local => " Serving (local) ",
-        ServeMode::Tunnel => " Serving (tunnel) ",
-    };
-    let reminder = if elapsed >= eight_hours {
-        format!(
-            " Serving ({}) open {}h; still need it? ",
-            match mode {
-                ServeMode::Local => "local",
-                ServeMode::Tunnel => "tunnel",
-            },
-            elapsed.as_secs() / 3600
-        )
-    } else {
-        base_title.to_string()
-    };
     let title_color = if elapsed >= eight_hours {
         theme.waiting
     } else {
         theme.title
     };
+    let header_block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(theme.border));
+    let header_inner = header_block.inner(page[0]);
+    frame.render_widget(header_block, page[0]);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border))
-        .title(Line::styled(
-            reminder,
+    let mode_label = match mode {
+        ServeMode::Local => "local",
+        ServeMode::Tunnel => "tunnel",
+    };
+    let mut header_spans = vec![
+        Span::styled(
+            format!(" Remote Access ({mode_label})"),
             Style::default().fg(title_color).bold(),
+        ),
+        Span::styled(
+            format!("  open {}", format_elapsed(elapsed)),
+            Style::default().fg(theme.dimmed),
+        ),
+    ];
+    if elapsed >= eight_hours {
+        header_spans.push(Span::styled(
+            "  still need it?",
+            Style::default().fg(theme.waiting),
         ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    }
+    frame.render_widget(Paragraph::new(Line::from(header_spans)), header_inner);
 
-    // Inner width available for content rows.
-    let url_inner_width = inner.width.saturating_sub(2).max(1) as usize;
+    // ── Content ──────────────────────────────────────────────────────────
+    let content_area = page[1];
+    let url_inner_width = content_area.width.saturating_sub(2).max(1) as usize;
     let url_fits_one_line = full_url_len <= url_inner_width;
 
     let show_passphrase = matches!(mode, ServeMode::Tunnel);
@@ -2077,22 +2088,19 @@ fn render_active(
     let show_split_token = !url_fits_one_line && split_token.is_some();
     let is_editing = editing_passphrase.is_some();
 
-    // Calculate the total content height so we can center it vertically.
-    let mut content_height: u16 = qr_height + 1 /* spacer */ + 1 /* url */ + 1 /* elapsed */ + 1 /* footer */;
+    // Calculate total content height for vertical centering.
+    let mut inner_height: u16 = qr_height + 1 /* spacer */ + 1 /* url */;
     if show_kind_label {
-        content_height += 1;
+        inner_height += 1;
     }
     if show_split_token {
-        content_height += 1;
+        inner_height += 1;
     }
     if show_passphrase {
-        content_height += 1;
-    }
-    if is_editing {
-        content_height += 1;
+        inner_height += 1;
     }
 
-    let v_pad = inner.height.saturating_sub(content_height) / 2;
+    let v_pad = content_area.height.saturating_sub(inner_height) / 2;
 
     let mut constraints = vec![Constraint::Length(v_pad)]; // top padding
     constraints.push(Constraint::Length(qr_height));
@@ -2107,17 +2115,12 @@ fn render_active(
     if show_passphrase {
         constraints.push(Constraint::Length(1));
     }
-    if is_editing {
-        constraints.push(Constraint::Length(1)); // edit hint
-    }
-    constraints.push(Constraint::Length(1)); // elapsed
-    constraints.push(Constraint::Min(0)); // bottom spacer
-    constraints.push(Constraint::Length(1)); // footer
+    constraints.push(Constraint::Min(0)); // bottom padding
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
+        .horizontal_margin(1)
         .constraints(constraints)
-        .split(inner);
+        .split(content_area);
 
     // Skip the top padding chunk
     let mut idx: usize = 0;
@@ -2234,71 +2237,73 @@ fn render_active(
                 chunks[idx],
             );
         }
-        idx += 1;
     }
 
-    // Edit hint row
-    if is_editing {
+    // Edit hint is shown in the footer instead of inline.
+
+    // ── Footer ────────────────────────────────────────────────────────
+    let footer_block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(theme.border));
+    let footer_inner = footer_block.inner(page[2]);
+    frame.render_widget(footer_block, page[2]);
+
+    let key_style = Style::default().fg(theme.accent);
+    let desc_style = Style::default().fg(theme.dimmed);
+
+    let footer_line: Line = if is_editing {
         let hint = if editing_passphrase.map(|i| i.value().len()).unwrap_or(0) < 8 {
-            "[Enter] save (min 8 chars)   [Esc] cancel"
+            ": save (min 8 chars)  "
         } else {
-            "[Enter] save & restart   [Esc] cancel"
+            ": save & restart  "
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                hint,
-                Style::default().fg(theme.dimmed),
-            )))
-            .alignment(Alignment::Center),
-            chunks[idx],
-        );
-        idx += 1;
-    }
-
-    // Elapsed
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("Open for {}", format_elapsed(elapsed)),
-            Style::default().fg(theme.dimmed),
-        )))
-        .alignment(Alignment::Center),
-        chunks[idx],
-    );
-    idx += 1;
-
-    // Bottom spacer
-    idx += 1;
-
-    // Footer keybinds: show confirmation prompts for destructive actions,
-    // or the standard keybinds.
-    let footer: String = if is_editing {
-        String::new() // edit hint already shown above
+        Line::from(vec![
+            Span::styled("Enter", key_style),
+            Span::styled(hint, desc_style),
+            Span::styled("Esc", key_style),
+            Span::styled(": cancel", desc_style),
+        ])
     } else if let Some(confirm) = pending_confirm {
+        let warn_style = Style::default().fg(theme.waiting).bold();
         match confirm {
-            PendingConfirm::NewPassphrase => {
-                "Press [G] again to confirm new random passphrase (clients will need it). Any other key cancels.".to_string()
-            }
-            PendingConfirm::Restart => {
-                "Press [R] again to confirm restart (all clients will be logged out). Any other key cancels.".to_string()
-            }
+            PendingConfirm::NewPassphrase => Line::from(Span::styled(
+                "Press G again to confirm new random passphrase (clients will need it). Any other key cancels.",
+                warn_style,
+            )),
+            PendingConfirm::Restart => Line::from(Span::styled(
+                "Press R again to confirm restart (all clients will be logged out). Any other key cancels.",
+                warn_style,
+            )),
         }
     } else {
-        let tab = if urls.len() > 1 { "[Tab] URL  " } else { "" };
-        let pass_keys = if matches!(mode, ServeMode::Tunnel) {
-            "[E] Edit pass  [G] New pass  "
-        } else {
-            ""
-        };
-        format!("{tab}{pass_keys}[R] Restart  [S] Stop  [Esc] Close")
-    };
-    let footer_style = if pending_confirm.is_some() {
-        Style::default().fg(theme.waiting).bold()
-    } else {
-        Style::default().fg(theme.dimmed)
+        let mut spans: Vec<Span> = Vec::new();
+        if urls.len() > 1 {
+            spans.extend([
+                Span::styled("Tab", key_style),
+                Span::styled(": URL  ", desc_style),
+            ]);
+        }
+        if matches!(mode, ServeMode::Tunnel) {
+            spans.extend([
+                Span::styled("E", key_style),
+                Span::styled(": edit pass  ", desc_style),
+                Span::styled("G", key_style),
+                Span::styled(": new pass  ", desc_style),
+            ]);
+        }
+        spans.extend([
+            Span::styled("R", key_style),
+            Span::styled(": restart  ", desc_style),
+            Span::styled("S", key_style),
+            Span::styled(": stop  ", desc_style),
+            Span::styled("Esc", key_style),
+            Span::styled(": close", desc_style),
+        ]);
+        Line::from(spans)
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, footer_style))).alignment(Alignment::Center),
-        chunks[idx],
+        Paragraph::new(footer_line).alignment(Alignment::Center),
+        footer_inner,
     );
 }
 
