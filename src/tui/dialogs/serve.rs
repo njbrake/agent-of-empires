@@ -22,9 +22,6 @@ use rand::RngExt;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use tui_input::backend::crossterm::EventHandler;
-use tui_input::Input;
-
 use crate::tui::styles::Theme;
 
 /// Actions returned by [`ServeView::handle_key`], following the
@@ -293,13 +290,11 @@ pub struct ServeView {
     /// Loaded from `serve.saved_passphrase` if available, otherwise
     /// freshly generated and saved.
     pending_passphrase: String,
-    /// When Some, the user is editing the passphrase inline. The Input
-    /// captures keystrokes; Enter confirms + restarts the daemon, Esc
-    /// cancels. Only available in Active + Tunnel mode.
-    editing_passphrase: Option<Input>,
     /// Destructive action awaiting a second keypress to confirm.
     /// Cleared on any other key or after a timeout rendered in the footer.
     pending_confirm: Option<(PendingConfirm, Instant)>,
+    /// Whether the help overlay is visible.
+    show_help: bool,
 }
 
 impl Default for ServeView {
@@ -342,8 +337,8 @@ impl ServeView {
                         log_offset: log_file_size(),
                     },
                     pending_passphrase: pending,
-                    editing_passphrase: None,
                     pending_confirm: None,
+                    show_help: false,
                 }
             } else {
                 Self {
@@ -358,8 +353,8 @@ impl ServeView {
                         log_offset: log_file_size(),
                     },
                     pending_passphrase: pending,
-                    editing_passphrase: None,
                     pending_confirm: None,
+                    show_help: false,
                 }
             }
         } else {
@@ -390,8 +385,8 @@ impl ServeView {
                     flash: None,
                 },
                 pending_passphrase: pending,
-                editing_passphrase: None,
                 pending_confirm: None,
+                show_help: false,
             }
         }
     }
@@ -680,31 +675,10 @@ impl ServeView {
                 passphrase,
                 ..
             } => {
-                // Passphrase editing takes priority over normal keybinds.
-                if let Some(ref mut input) = self.editing_passphrase {
-                    match key.code {
-                        KeyCode::Enter => {
-                            let new_pp = input.value().to_string();
-                            if new_pp.len() < 8 {
-                                return ServeAction::Continue;
-                            }
-                            self.editing_passphrase = None;
-                            self.pending_passphrase = new_pp.clone();
-                            save_passphrase_to_disk(&new_pp);
-                            let m = *mode;
-                            let t = *transport;
-                            self.do_restart(m, t, Some(new_pp));
-                            return ServeAction::Continue;
-                        }
-                        KeyCode::Esc => {
-                            self.editing_passphrase = None;
-                            return ServeAction::Continue;
-                        }
-                        _ => {
-                            input.handle_event(&crossterm::event::Event::Key(key));
-                            return ServeAction::Continue;
-                        }
-                    }
+                // Help overlay intercepts all keys when visible.
+                if self.show_help {
+                    self.show_help = false;
+                    return ServeAction::Continue;
                 }
 
                 // Check pending confirmation inline (can't call &mut self
@@ -749,16 +723,6 @@ impl ServeView {
                             ServeAction::Continue
                         }
                     },
-                    // Edit passphrase (Tunnel only): start with empty input
-                    // so the user types a fresh passphrase. The current one
-                    // is shown as context in the render.
-                    KeyCode::Char('e') | KeyCode::Char('E')
-                        if matches!(mode, ServeMode::Tunnel) =>
-                    {
-                        self.editing_passphrase = Some(Input::default());
-                        self.pending_confirm = None;
-                        ServeAction::Continue
-                    }
                     // Generate new random passphrase + restart (Tunnel only).
                     // First press shows confirmation, second press executes.
                     KeyCode::Char('g') | KeyCode::Char('G')
@@ -800,6 +764,11 @@ impl ServeView {
                     }
                     KeyCode::Tab if urls.len() > 1 => {
                         *url_index = (*url_index + 1) % urls.len();
+                        ServeAction::Continue
+                    }
+                    KeyCode::Char('?') => {
+                        self.show_help = true;
+                        self.pending_confirm = None;
                         ServeAction::Continue
                     }
                     KeyCode::Esc | KeyCode::Char('q') => ServeAction::Close,
@@ -912,8 +881,8 @@ impl ServeView {
             local_available,
             flash: None,
         };
-        self.editing_passphrase = None;
         self.pending_confirm = None;
+        self.show_help = false;
     }
 
     /// Poll files on disk and drive state transitions. Returns true when
@@ -1094,18 +1063,22 @@ impl ServeView {
                 passphrase,
                 opened_at,
                 ..
-            } => render_active(
-                frame,
-                area,
-                theme,
-                *mode,
-                urls,
-                *url_index,
-                passphrase.as_deref(),
-                opened_at.elapsed(),
-                self.editing_passphrase.as_ref(),
-                self.pending_confirm.as_ref().map(|(a, _)| *a),
-            ),
+            } => {
+                render_active(
+                    frame,
+                    area,
+                    theme,
+                    *mode,
+                    urls,
+                    *url_index,
+                    passphrase.as_deref(),
+                    opened_at.elapsed(),
+                    self.pending_confirm.as_ref().map(|(a, _)| *a),
+                );
+                if self.show_help {
+                    render_help_overlay(frame, area, theme, *mode);
+                }
+            }
             ServeViewState::Error(msg) => render_error(frame, area, theme, msg),
         }
     }
@@ -2002,7 +1975,6 @@ fn render_active(
     url_index: usize,
     passphrase: Option<&str>,
     elapsed: Duration,
-    editing_passphrase: Option<&Input>,
     pending_confirm: Option<PendingConfirm>,
 ) {
     let Some(active_url) = urls.get(url_index).or_else(|| urls.first()) else {
@@ -2086,7 +2058,6 @@ fn render_active(
     let show_passphrase = matches!(mode, ServeMode::Tunnel);
     let show_kind_label = kind_label.is_some();
     let show_split_token = !url_fits_one_line && split_token.is_some();
-    let is_editing = editing_passphrase.is_some();
 
     // Calculate total content height for vertical centering.
     let mut inner_height: u16 = qr_height + 1 /* spacer */ + 1 /* url */;
@@ -2188,58 +2159,22 @@ fn render_active(
 
     // Passphrase row (Tunnel only)
     if show_passphrase {
-        if let Some(input) = editing_passphrase {
-            // Show current passphrase as dimmed context, then the input
-            // on the same line with a cursor block.
-            let current_pp = passphrase.unwrap_or("(none)");
-            let value = input.value();
-            let cursor = input.visual_cursor();
-            let mut spans = vec![Span::styled(
-                format!("Was: {}  New: ", current_pp),
+        let (pp_label, pp_style) = match passphrase {
+            Some(pp) => (pp.to_string(), Style::default().fg(theme.accent).bold()),
+            None => (
+                "(set when the daemon started; check the shell that ran `aoe serve`)".to_string(),
                 Style::default().fg(theme.dimmed),
-            )];
-            if !value.is_empty() && cursor < value.len() {
-                spans.push(Span::styled(
-                    &value[..cursor],
-                    Style::default().fg(theme.accent),
-                ));
-                spans.push(Span::styled(
-                    &value[cursor..cursor + 1],
-                    Style::default().fg(theme.text).bg(theme.accent),
-                ));
-                spans.push(Span::styled(
-                    &value[cursor + 1..],
-                    Style::default().fg(theme.accent),
-                ));
-            } else {
-                spans.push(Span::styled(value, Style::default().fg(theme.accent)));
-                spans.push(Span::styled(" ", Style::default().bg(theme.accent)));
-            }
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
-                chunks[idx],
-            );
-        } else {
-            let (pp_label, pp_style) = match passphrase {
-                Some(pp) => (pp.to_string(), Style::default().fg(theme.accent).bold()),
-                None => (
-                    "(set when the daemon started; check the shell that ran `aoe serve`)"
-                        .to_string(),
-                    Style::default().fg(theme.dimmed),
-                ),
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("Passphrase: ", Style::default().fg(theme.dimmed)),
-                    Span::styled(pp_label, pp_style),
-                ]))
-                .alignment(Alignment::Center),
-                chunks[idx],
-            );
-        }
+            ),
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Passphrase: ", Style::default().fg(theme.dimmed)),
+                Span::styled(pp_label, pp_style),
+            ]))
+            .alignment(Alignment::Center),
+            chunks[idx],
+        );
     }
-
-    // Edit hint is shown in the footer instead of inline.
 
     // ── Footer ────────────────────────────────────────────────────────
     let footer_block = Block::default()
@@ -2251,27 +2186,15 @@ fn render_active(
     let key_style = Style::default().fg(theme.accent);
     let desc_style = Style::default().fg(theme.dimmed);
 
-    let footer_line: Line = if is_editing {
-        let hint = if editing_passphrase.map(|i| i.value().len()).unwrap_or(0) < 8 {
-            ": save (min 8 chars)  "
-        } else {
-            ": save & restart  "
-        };
-        Line::from(vec![
-            Span::styled("Enter", key_style),
-            Span::styled(hint, desc_style),
-            Span::styled("Esc", key_style),
-            Span::styled(": cancel", desc_style),
-        ])
-    } else if let Some(confirm) = pending_confirm {
+    let footer_line: Line = if let Some(confirm) = pending_confirm {
         let warn_style = Style::default().fg(theme.waiting).bold();
         match confirm {
             PendingConfirm::NewPassphrase => Line::from(Span::styled(
-                "Press G again to confirm new random passphrase (clients will need it). Any other key cancels.",
+                "Press G again to confirm new passphrase (clients will need it). Any other key cancels.",
                 warn_style,
             )),
             PendingConfirm::Restart => Line::from(Span::styled(
-                "Press R again to confirm restart (all clients will be logged out). Any other key cancels.",
+                "Press R again to confirm restart (clears all sessions). Any other key cancels.",
                 warn_style,
             )),
         }
@@ -2285,8 +2208,6 @@ fn render_active(
         }
         if matches!(mode, ServeMode::Tunnel) {
             spans.extend([
-                Span::styled("E", key_style),
-                Span::styled(": edit pass  ", desc_style),
                 Span::styled("G", key_style),
                 Span::styled(": new pass  ", desc_style),
             ]);
@@ -2296,6 +2217,8 @@ fn render_active(
             Span::styled(": restart  ", desc_style),
             Span::styled("S", key_style),
             Span::styled(": stop  ", desc_style),
+            Span::styled("?", key_style),
+            Span::styled(": help  ", desc_style),
             Span::styled("Esc", key_style),
             Span::styled(": close", desc_style),
         ]);
@@ -2305,6 +2228,90 @@ fn render_active(
         Paragraph::new(footer_line).alignment(Alignment::Center),
         footer_inner,
     );
+}
+
+fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: ServeMode) {
+    let dialog_width: u16 = 60;
+    let dialog_height: u16 = 18;
+    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect {
+        x,
+        y,
+        width: dialog_width.min(area.width),
+        height: dialog_height.min(area.height),
+    };
+
+    frame.render_widget(Clear, dialog_area);
+    let block = Block::default()
+        .style(Style::default().bg(theme.background))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Remote Access Help ")
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let is_tunnel = matches!(mode, ServeMode::Tunnel);
+    let mut shortcuts: Vec<(&str, &str)> = Vec::new();
+    if is_tunnel {
+        shortcuts.push(("G", "Generate new random passphrase (restarts server)"));
+    }
+    shortcuts.extend([
+        ("R", "Restart server (clears all client sessions)"),
+        ("S", "Stop server and return to mode picker"),
+        ("Tab", "Cycle between URLs (when multiple available)"),
+        ("Esc / q", "Close this view (server keeps running)"),
+        ("?", "Toggle this help"),
+    ]);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Keyboard Shortcuts",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    for (key, desc) in &shortcuts {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:14}", key), Style::default().fg(theme.waiting)),
+            Span::styled(*desc, Style::default().fg(theme.text)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    if is_tunnel {
+        lines.extend([
+            Line::from(Span::styled(
+                "About the passphrase",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "  Second factor for internet-exposed tunnels.",
+                Style::default().fg(theme.text),
+            )),
+            Line::from(Span::styled(
+                "  Persists across stop/start. Press G to rotate.",
+                Style::default().fg(theme.text),
+            )),
+        ]);
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Press any key to close",
+        Style::default().fg(theme.dimmed),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Split a URL of the form `https://host/?token=XYZ` into a "clean" base
