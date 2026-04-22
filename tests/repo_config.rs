@@ -5,7 +5,7 @@ use std::fs;
 use tempfile::TempDir;
 
 mod common;
-use common::set_temp_home as setup_temp_home;
+use common::set_temp_home;
 
 /// Helper to set up a temp dir with `.agent-of-empires/config.toml`.
 fn setup_repo_config(content: &str) -> TempDir {
@@ -73,7 +73,7 @@ fn test_load_repo_config_comments_only() {
 #[serial]
 fn test_trust_untrust_cycle() {
     let temp_home = TempDir::new().unwrap();
-    setup_temp_home(temp_home.path());
+    set_temp_home(temp_home.path());
 
     let project_dir = TempDir::new().unwrap();
     let project_path = project_dir.path();
@@ -154,7 +154,7 @@ fn test_hook_trust_invalidated_on_config_change() {
     use agent_of_empires::session::repo_config::{check_hook_trust, trust_repo, HookTrustStatus};
 
     let temp_home = TempDir::new().unwrap();
-    setup_temp_home(temp_home.path());
+    set_temp_home(temp_home.path());
 
     // Create a repo with hooks
     let repo = setup_repo_config(
@@ -208,7 +208,7 @@ fn test_hook_re_trust_after_change() {
     use agent_of_empires::session::repo_config::{check_hook_trust, trust_repo, HookTrustStatus};
 
     let temp_home = TempDir::new().unwrap();
-    setup_temp_home(temp_home.path());
+    set_temp_home(temp_home.path());
 
     let repo = setup_repo_config(
         r#"
@@ -255,7 +255,7 @@ on_create = ["echo v2"]
 #[serial]
 fn test_repo_sandbox_config_merged_into_resolved_config() {
     let temp_home = TempDir::new().unwrap();
-    setup_temp_home(temp_home.path());
+    set_temp_home(temp_home.path());
 
     let repo = setup_repo_config(
         r#"
@@ -298,7 +298,7 @@ mount_ssh = true
 #[serial]
 fn test_repo_worktree_config_merged_into_resolved_config() {
     let temp_home = TempDir::new().unwrap();
-    setup_temp_home(temp_home.path());
+    set_temp_home(temp_home.path());
 
     let repo = setup_repo_config(
         r#"
