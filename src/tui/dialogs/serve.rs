@@ -2231,15 +2231,20 @@ fn render_active(
 }
 
 fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: ServeMode) {
-    let dialog_width: u16 = 60;
-    let dialog_height: u16 = 18;
+    // Size the dialog to fit the longest shortcut description plus
+    // the key column (10 chars) plus padding/borders (~6 chars).
+    // Clamp to terminal width so narrow terminals still work.
+    let dialog_width: u16 = 72.min(area.width.saturating_sub(4));
+    let is_tunnel = matches!(mode, ServeMode::Tunnel);
+    let dialog_height: u16 = if is_tunnel { 20 } else { 14 };
+    let dialog_height = dialog_height.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
     let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect {
         x,
         y,
-        width: dialog_width.min(area.width),
-        height: dialog_height.min(area.height),
+        width: dialog_width,
+        height: dialog_height,
     };
 
     frame.render_widget(Clear, dialog_area);
@@ -2257,15 +2262,14 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: Serve
     let inner = block.inner(dialog_area);
     frame.render_widget(block, dialog_area);
 
-    let is_tunnel = matches!(mode, ServeMode::Tunnel);
     let mut shortcuts: Vec<(&str, &str)> = Vec::new();
     if is_tunnel {
-        shortcuts.push(("G", "Generate new random passphrase (restarts server)"));
+        shortcuts.push(("G", "New random passphrase and restart server"));
     }
     shortcuts.extend([
         ("R", "Restart server (clears all client sessions)"),
-        ("S", "Stop server and return to mode picker"),
-        ("Tab", "Cycle between URLs (when multiple available)"),
+        ("S", "Stop server, return to mode picker"),
+        ("Tab", "Cycle URLs (when multiple available)"),
         ("Esc / q", "Close this view (server keeps running)"),
         ("?", "Toggle this help"),
     ]);
@@ -2311,7 +2315,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: Serve
         Style::default().fg(theme.dimmed),
     )));
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// Split a URL of the form `https://host/?token=XYZ` into a "clean" base
@@ -2945,5 +2949,47 @@ localhost\thttp://localhost:54321/?token=abc\n";
         std::fs::write(tmp.path().join("serve.last_port"), "not-a-number\n").unwrap();
         let port = load_or_generate_port_from(tmp.path());
         assert!(port >= 49152, "garbage content should be regenerated");
+    }
+
+    /// The help overlay has a fixed width. Every shortcut line must fit
+    /// within `dialog_width - borders(2) - padding(0)` columns so text
+    /// doesn't clip. This test catches the bug before it ships.
+    #[test]
+    fn help_overlay_text_fits_within_dialog_width() {
+        let dialog_width: usize = 72;
+        // Inner width = dialog_width - 2 (left/right border)
+        let inner_width = dialog_width - 2;
+        let key_col: usize = 14; // format!("{:14}", key)
+        let indent: usize = 2; // leading "  "
+
+        // All possible shortcut descriptions (union of Tunnel + Local)
+        let descriptions = [
+            "New random passphrase and restart server",
+            "Restart server (clears all client sessions)",
+            "Stop server, return to mode picker",
+            "Cycle URLs (when multiple available)",
+            "Close this view (server keeps running)",
+            "Toggle this help",
+            // Section headers and other lines
+            "Keyboard Shortcuts",
+            "About the passphrase",
+            "Second factor for internet-exposed tunnels.",
+            "Persists across stop/start. Press G to rotate.",
+            "Press any key to close",
+        ];
+
+        for desc in descriptions {
+            let line_len = indent + key_col + desc.len();
+            assert!(
+                line_len <= inner_width,
+                "Help text clips: {:?} needs {} cols but only {} available \
+                 (dialog_width={}, inner={})",
+                desc,
+                line_len,
+                inner_width,
+                dialog_width,
+                inner_width,
+            );
+        }
     }
 }
