@@ -10,6 +10,11 @@ import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
+import {
+  OPEN_SESSION_EVENT,
+  readSessionFromUrl,
+  writeSessionToUrl,
+} from "./lib/sessionRoute";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
@@ -67,7 +72,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     null,
   );
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // Seed from `?session=<id>` so deep links and notification taps land on
+  // the right session before the sessions list has finished loading.
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() =>
+    readSessionFromUrl(),
+  );
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [diffCollapsed, setDiffCollapsed] = useState(
     () => window.innerWidth < 768,
@@ -82,7 +91,20 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   );
   const keyboardProxyRef = useRef<HTMLTextAreaElement>(null);
 
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
+  // Prefer workspace lookup by ID; fall back to finding the workspace
+  // that contains activeSessionId so a URL-seeded session (notification
+  // tap) renders even before handleSelectSession has run to set the
+  // workspace ID explicitly.
+  const activeWorkspace = useMemo(() => {
+    const byId = activeWorkspaceId
+      ? workspaces.find((w) => w.id === activeWorkspaceId)
+      : undefined;
+    if (byId) return byId;
+    if (!activeSessionId) return undefined;
+    return workspaces.find((w) =>
+      w.sessions.some((s) => s.id === activeSessionId),
+    );
+  }, [workspaces, activeWorkspaceId, activeSessionId]);
   const activeSession = activeWorkspace?.sessions.find(
     (s) => s.id === activeSessionId,
   );
@@ -119,6 +141,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     if (ws) {
       setActiveWorkspaceId(ws.id);
       setActiveSessionId(sessionId);
+      writeSessionToUrl(sessionId);
       focusKeyboardProxy();
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
@@ -129,13 +152,44 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
       const running = ws.sessions.find((s) => isSessionActive(s.status));
-      setActiveSessionId(running?.id ?? ws.sessions[0]?.id ?? null);
+      const picked = running?.id ?? ws.sessions[0]?.id ?? null;
+      setActiveSessionId(picked);
+      writeSessionToUrl(picked);
     }
     focusKeyboardProxy();
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
   };
+
+  // Sync browser back/forward to selection state. We always clear
+  // activeWorkspaceId so the activeWorkspace memo re-derives it from
+  // the URL-provided session. Otherwise back/forward across workspaces
+  // leaves a stale workspace ID, the memo returns the wrong workspace,
+  // the session lookup fails, and the app renders the dashboard.
+  useEffect(() => {
+    const onPop = () => {
+      setActiveSessionId(readSessionFromUrl());
+      setActiveWorkspaceId(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // In-app toast forwarded from the service worker sets this event when
+  // the user taps it; navigate to the session that triggered the push.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { sessionId?: string }
+        | undefined;
+      if (detail?.sessionId) {
+        handleSelectSession(detail.sessionId);
+      }
+    };
+    window.addEventListener(OPEN_SESSION_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SESSION_EVENT, onOpen);
+  }, [handleSelectSession]);
 
   const [wizardPrefill, setWizardPrefill] = useState<WizardPrefill | undefined>(undefined);
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
@@ -168,6 +222,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     if (wasActive) {
       setActiveWorkspaceId(null);
       setActiveSessionId(null);
+      writeSessionToUrl(null);
     }
 
     const result = await deleteSession(sessionId, options);
@@ -233,6 +288,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleGoDashboard = useCallback(() => {
     setActiveWorkspaceId(null);
     setActiveSessionId(null);
+    writeSessionToUrl(null);
     setShowSettings(false);
     setSelectedFilePath(null);
   }, []);
@@ -410,7 +466,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       <div className="flex flex-1 min-h-0">
         <WorkspaceSidebar
           groups={groups}
-          activeId={activeWorkspaceId}
+          activeId={activeWorkspace?.id ?? null}
           open={sidebarOpen}
           onToggle={() => setSidebarOpen(false)}
           onSelect={handleSelectWorkspace}
@@ -436,6 +492,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             if (session) {
               injectSession(session);
               setActiveSessionId(session.id);
+              writeSessionToUrl(session.id);
               // Key format must match useWorkspaces grouping key
               const repoPath = (session.main_repo_path ?? session.project_path).replace(/\/+$/, "");
               const wsId = `${repoPath}::${session.branch ?? "__default__"}`;

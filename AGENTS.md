@@ -104,6 +104,13 @@ Keep the script ephemeral unless promoted to `web/tests/` with a mobile Playwrig
   - **Linux**: `$XDG_CONFIG_HOME/agent-of-empires/` (defaults to `~/.config/agent-of-empires/`)
   - **macOS/Windows**: `~/.agent-of-empires/`
 - Keep user data out of commits. For repo-local experiments, use ignored paths like `./.agent-of-empires/`, `.env`, and `.mcp.json`.
+- `aoe serve` writes several files to the app dir while running. All are owner-only (0600) where they contain secrets. The daemon cleans them up on shutdown; `daemon_pid()`'s stale-PID check sweeps them otherwise.
+  - `serve.pid`: daemon PID for `--stop` and reattach detection.
+  - `serve.url`: primary URL (includes the auth token) plus alternates.
+  - `serve.mode`: `tunnel` / `tailscale` / `local`.
+  - `serve.log`: daemon stdout/stderr tail.
+  - `serve.passphrase`: plaintext Tunnel passphrase, so the TUI can show it on reopen across restarts.
+  - `serve.last_mode`, `serve.last_port`: picker defaults across launches.
 
 ## Data Migrations
 

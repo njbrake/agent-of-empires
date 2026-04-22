@@ -9,11 +9,13 @@ import {
   type ReactNode,
 } from "react";
 import { toastBus, type ToastApi, type ToastKind } from "../lib/toastBus";
+import { requestOpenSession } from "../lib/sessionRoute";
 
 interface Toast {
   id: number;
   kind: ToastKind;
   message: string;
+  sessionId?: string;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -37,6 +39,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [dismiss],
   );
 
+  // Pushes a toast with an associated session so tapping it jumps to
+  // that session. Kept internal to this module since only the SW push
+  // handler uses it.
+  const pushWithSession = useCallback(
+    (message: string, sessionId: string) => {
+      const id = nextId.current++;
+      setToasts((t) => [...t, { id, kind: "info", message, sessionId }]);
+      setTimeout(() => dismiss(id), TOAST_LIFETIME_MS);
+    },
+    [dismiss],
+  );
+
   const api = useMemo<ToastApi>(
     () => ({
       push,
@@ -54,44 +68,68 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     if (typeof navigator === "undefined" || !navigator.serviceWorker) return;
     const handler = (event: MessageEvent) => {
       const data = event.data as
-        | { type?: string; payload?: { title?: string; body?: string } }
+        | {
+            type?: string;
+            payload?: {
+              title?: string;
+              body?: string;
+              session_id?: string;
+            };
+          }
         | null;
       if (!data || data.type !== "aoe-push" || !data.payload) return;
       const title = data.payload.title ?? "Agent of Empires";
       const body = data.payload.body ?? "";
       const message = body ? `${title}: ${body}` : title;
-      push(message, "info");
+      const sessionId = data.payload.session_id;
+      if (sessionId) {
+        pushWithSession(message, sessionId);
+      } else {
+        push(message, "info");
+      }
     };
     navigator.serviceWorker.addEventListener("message", handler);
     return () => {
       navigator.serviceWorker.removeEventListener("message", handler);
     };
-  }, [push]);
+  }, [push, pushWithSession]);
 
   return (
     <ToastContext.Provider value={api}>
       {children}
       <div className="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 max-w-[92vw] sm:max-w-sm">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            role={t.kind === "error" ? "alert" : "status"}
-            className={`flex items-start gap-2 px-3 py-2 rounded-md border shadow-lg animate-slide-up text-sm ${
-              t.kind === "error"
-                ? "bg-status-error/10 border-status-error/40 text-status-error"
-                : "bg-surface-800 border-surface-700 text-text-primary"
-            }`}
-          >
-            <span className="flex-1 break-words">{t.message}</span>
-            <button
-              onClick={() => dismiss(t.id)}
-              className="text-text-dim hover:text-text-secondary cursor-pointer"
-              aria-label="Dismiss"
+        {toasts.map((t) => {
+          const clickable = !!t.sessionId;
+          const onToastClick = () => {
+            if (!t.sessionId) return;
+            requestOpenSession(t.sessionId);
+            dismiss(t.id);
+          };
+          return (
+            <div
+              key={t.id}
+              role={t.kind === "error" ? "alert" : "status"}
+              onClick={clickable ? onToastClick : undefined}
+              className={`flex items-start gap-2 px-3 py-2 rounded-md border shadow-lg animate-slide-up text-sm ${
+                t.kind === "error"
+                  ? "bg-status-error/10 border-status-error/40 text-status-error"
+                  : "bg-surface-800 border-surface-700 text-text-primary"
+              } ${clickable ? "cursor-pointer hover:bg-surface-700 transition-colors" : ""}`}
             >
-              &times;
-            </button>
-          </div>
-        ))}
+              <span className="flex-1 break-words">{t.message}</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  dismiss(t.id);
+                }}
+                className="text-text-dim hover:text-text-secondary cursor-pointer"
+                aria-label="Dismiss"
+              >
+                &times;
+              </button>
+            </div>
+          );
+        })}
       </div>
     </ToastContext.Provider>
   );
