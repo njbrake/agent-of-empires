@@ -222,10 +222,8 @@ mod tests {
 
     #[test]
     fn test_tier_cycle_alignment() {
-        // Hot sessions are polled every cycle
-        for cycle in 1..=10u64 {
-            assert_eq!(cycle % TIER_HOT, 0);
-        }
+        // Hot sessions are polled every cycle: TIER_HOT must stay at 1.
+        assert_eq!(TIER_HOT, 1);
         // Warm sessions are polled every 5 cycles
         assert_ne!(1u64 % TIER_WARM, 0);
         assert_ne!(2u64 % TIER_WARM, 0);
@@ -241,7 +239,8 @@ mod tests {
     fn test_first_cycle_polls_all_tiers() {
         // cycle_count starts at TIER_COLD - 1, first cycle wraps to TIER_COLD
         let first_cycle = (TIER_COLD - 1).wrapping_add(1);
-        assert_eq!(first_cycle % TIER_HOT, 0, "first cycle must poll hot");
+        // TIER_HOT == 1 (see test_tier_cycle_alignment), so any cycle trivially
+        // polls hot; just verify the warm and cold alignments here.
         assert_eq!(first_cycle % TIER_WARM, 0, "first cycle must poll warm");
         assert_eq!(first_cycle % TIER_COLD, 0, "first cycle must poll cold");
     }
