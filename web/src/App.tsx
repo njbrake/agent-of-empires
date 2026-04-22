@@ -162,12 +162,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
   };
 
-  // Sync browser back/forward to selection state.
+  // Sync browser back/forward to selection state. We always clear
+  // activeWorkspaceId so the activeWorkspace memo re-derives it from
+  // the URL-provided session. Otherwise back/forward across workspaces
+  // leaves a stale workspace ID, the memo returns the wrong workspace,
+  // the session lookup fails, and the app renders the dashboard.
   useEffect(() => {
     const onPop = () => {
-      const id = readSessionFromUrl();
-      setActiveSessionId(id);
-      if (!id) setActiveWorkspaceId(null);
+      setActiveSessionId(readSessionFromUrl());
+      setActiveWorkspaceId(null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);

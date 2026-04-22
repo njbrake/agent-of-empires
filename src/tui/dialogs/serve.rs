@@ -110,6 +110,7 @@ fn recall_passphrase_in_memory() -> Option<String> {
 
 fn recall_passphrase() -> Option<String> {
     if let Some(pp) = recall_passphrase_in_memory() {
+        tracing::debug!("passphrase recalled from in-memory cache");
         return Some(pp);
     }
     // Fall back to the on-disk file written by the server on startup.
@@ -121,6 +122,7 @@ fn recall_passphrase() -> Option<String> {
     if trimmed.is_empty() {
         None
     } else {
+        tracing::debug!("passphrase recalled from serve.passphrase on disk");
         Some(trimmed.to_string())
     }
 }
@@ -833,12 +835,15 @@ fn spawn_daemon(
     let exe =
         std::env::current_exe().map_err(|e| format!("Could not resolve aoe binary path: {}", e))?;
 
-    // Delete stale serve.url / serve.mode from a previous hard-killed
-    // daemon before launching. Without this, Starting-state polling could
-    // latch onto the old URL before the new daemon writes the new one.
+    // Delete stale serve.url / serve.mode / serve.passphrase from a
+    // previous hard-killed daemon before launching. Without this,
+    // Starting-state polling could latch onto the old URL before the
+    // new daemon writes the new one, and the TUI could briefly display
+    // the previous tunnel's passphrase before the new one is written.
     if let Ok(dir) = crate::session::get_app_dir() {
         let _ = std::fs::remove_file(dir.join("serve.url"));
         let _ = std::fs::remove_file(dir.join("serve.mode"));
+        let _ = std::fs::remove_file(dir.join("serve.passphrase"));
     }
 
     // Reuse the port from the last TUI-launched daemon so the user can
