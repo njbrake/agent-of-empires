@@ -243,15 +243,15 @@ impl AppState {
 
     /// Record that an authenticated web client just made a request.
     pub fn touch_web_activity(&self) {
-        self.last_web_activity.store(
-            epoch_millis(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.last_web_activity
+            .store(epoch_millis(), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Returns true if an authenticated web request arrived within `threshold`.
     pub fn web_active_within(&self, threshold: std::time::Duration) -> bool {
-        let last = self.last_web_activity.load(std::sync::atomic::Ordering::Relaxed);
+        let last = self
+            .last_web_activity
+            .load(std::sync::atomic::Ordering::Relaxed);
         if last == 0 {
             return false;
         }
