@@ -14,7 +14,11 @@ A shared 60-second post-send cooldown per session prevents rapid re-buzzing when
 
 Each session also has per-session overrides that beat the server-wide defaults: you can enable `Idle` notifications only on the one long-running session you care about, for example, without flooding yourself every time any session finishes.
 
-Notifications only fire when the dashboard is NOT currently focused in the foreground — if you're actively watching the app, we suppress the push and show an in-app toast instead.
+Notifications are suppressed when you're already looking at aoe:
+
+- **Dashboard focused (per-device):** if the PWA browser tab is visible and focused, that device skips the OS notification and shows an in-app toast instead.
+- **TUI active (all devices):** if the `aoe` TUI is running on the same machine as the server, all push notifications to all devices are suppressed. The TUI writes a heartbeat file (`$app_dir/tui.active`) every 10 seconds; the push consumer skips delivery when the file was modified within the last 30 seconds.
+- **Web dashboard active (all devices):** if any browser has the web dashboard open and is making authenticated API requests, all push notifications are suppressed. The auth middleware stamps the last request time; the push consumer skips delivery when a request arrived within the last 30 seconds. This means using the dashboard on your laptop prevents notifications from firing on your phone.
 
 ## Stable HTTPS for persistent PWA installs (read this first if using mobile)
 

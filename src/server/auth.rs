@@ -269,6 +269,10 @@ pub async fn auth_middleware(
         // Record success
         state.rate_limiter.record_success(client_ip).await;
 
+        // Stamp web activity so the push consumer can suppress
+        // notifications when the dashboard is actively in use.
+        state.touch_web_activity();
+
         // Propagate the matched token's SHA-256 hash as a request extension
         // so downstream handlers (especially /api/push/*) can filter and
         // attribute subscriptions by owner without re-extracting the token.
