@@ -4,13 +4,8 @@ use anyhow::Result;
 use serial_test::serial;
 use std::fs;
 
-fn setup_temp_home() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().unwrap();
-    std::env::set_var("HOME", temp.path());
-    #[cfg(target_os = "linux")]
-    std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
-    temp
-}
+mod common;
+use common::setup_temp_home;
 
 fn get_schema_version_path() -> Result<std::path::PathBuf> {
     let app_dir = agent_of_empires::session::get_app_dir()?;

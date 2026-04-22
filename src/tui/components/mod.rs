@@ -1,5 +1,7 @@
 //! TUI components
 
+pub(crate) mod buttons;
+pub(crate) mod checkbox;
 mod dir_picker;
 mod help;
 mod list_picker;

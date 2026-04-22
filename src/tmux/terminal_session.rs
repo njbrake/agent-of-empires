@@ -1,4 +1,8 @@
-//! Terminal session for paired terminal functionality
+//! Paired terminal sessions — host (`TerminalSession`) and sandbox (`ContainerTerminalSession`).
+//!
+//! The two session types have nearly identical lifecycles, so the
+//! implementation lives in [`PairedTerminal`] and the public types are thin
+//! wrappers that fix the tmux name prefix and the log-message label.
 
 use anyhow::{bail, Result};
 use std::process::Command;
@@ -13,23 +17,52 @@ use super::{
 use crate::cli::truncate_id;
 use crate::process;
 
-pub struct TerminalSession {
-    name: String,
+/// Classifies a paired terminal: adjusts the tmux session prefix and the
+/// human-readable label used in error messages.
+#[derive(Debug, Clone, Copy)]
+enum TerminalKind {
+    Host,
+    Container,
 }
 
-impl TerminalSession {
-    pub fn new(id: &str, title: &str) -> Result<Self> {
-        Ok(Self {
-            name: Self::generate_name(id, title),
-        })
+impl TerminalKind {
+    fn prefix(self) -> &'static str {
+        match self {
+            TerminalKind::Host => TERMINAL_PREFIX,
+            TerminalKind::Container => CONTAINER_TERMINAL_PREFIX,
+        }
     }
 
-    pub fn generate_name(id: &str, title: &str) -> String {
+    fn label(self) -> &'static str {
+        match self {
+            TerminalKind::Host => "terminal session",
+            TerminalKind::Container => "container terminal session",
+        }
+    }
+}
+
+/// Shared implementation of the paired-terminal lifecycle. Not exposed; the
+/// public [`TerminalSession`] and [`ContainerTerminalSession`] wrap one of
+/// these with a fixed [`TerminalKind`].
+struct PairedTerminal {
+    name: String,
+    kind: TerminalKind,
+}
+
+impl PairedTerminal {
+    fn generate_name(kind: TerminalKind, id: &str, title: &str) -> String {
         let safe_title = sanitize_session_name(title);
-        format!("{}{}_{}", TERMINAL_PREFIX, safe_title, truncate_id(id, 8))
+        format!("{}{}_{}", kind.prefix(), safe_title, truncate_id(id, 8))
     }
 
-    pub fn exists(&self) -> bool {
+    fn new(kind: TerminalKind, id: &str, title: &str) -> Self {
+        Self {
+            name: Self::generate_name(kind, id, title),
+            kind,
+        }
+    }
+
+    fn exists(&self) -> bool {
         if let Some(exists) = session_exists_from_cache(&self.name) {
             return exists;
         }
@@ -41,15 +74,11 @@ impl TerminalSession {
             .unwrap_or(false)
     }
 
-    pub fn is_pane_dead(&self) -> bool {
+    fn is_pane_dead(&self) -> bool {
         is_pane_dead(&self.name)
     }
 
-    pub fn create(&self, working_dir: &str) -> Result<()> {
-        self.create_with_size(working_dir, None, None)
-    }
-
-    pub fn create_with_size(
+    fn create_with_size(
         &self,
         working_dir: &str,
         command: Option<&str>,
@@ -75,7 +104,7 @@ impl TerminalSession {
                 refresh_session_cache();
                 return Ok(());
             }
-            bail!("Failed to create terminal session: {}", stderr);
+            bail!("Failed to create {}: {}", self.kind.label(), stderr);
         }
 
         refresh_session_cache();
@@ -83,7 +112,7 @@ impl TerminalSession {
         Ok(())
     }
 
-    pub fn kill(&self) -> Result<()> {
+    fn kill(&self) -> Result<()> {
         if !self.exists() {
             return Ok(());
         }
@@ -99,7 +128,7 @@ impl TerminalSession {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to kill terminal session: {}", stderr);
+            bail!("Failed to kill {}: {}", self.kind.label(), stderr);
         }
 
         refresh_session_cache();
@@ -107,13 +136,13 @@ impl TerminalSession {
         Ok(())
     }
 
-    pub fn get_pane_pid(&self) -> Option<u32> {
+    fn get_pane_pid(&self) -> Option<u32> {
         process::get_pane_pid(&self.name)
     }
 
-    pub fn attach(&self) -> Result<()> {
+    fn attach(&self) -> Result<()> {
         if !self.exists() {
-            bail!("Terminal session does not exist: {}", self.name);
+            bail!("{} does not exist: {}", self.kind.label(), self.name);
         }
 
         if std::env::var("TMUX").is_ok() {
@@ -127,7 +156,7 @@ impl TerminalSession {
                     .status()?;
 
                 if !status.success() {
-                    bail!("Failed to attach to terminal session");
+                    bail!("Failed to attach to {}", self.kind.label());
                 }
             }
         } else {
@@ -136,14 +165,14 @@ impl TerminalSession {
                 .status()?;
 
             if !status.success() {
-                bail!("Failed to attach to terminal session");
+                bail!("Failed to attach to {}", self.kind.label());
             }
         }
 
         Ok(())
     }
 
-    pub fn capture_pane(&self, lines: usize) -> Result<String> {
+    fn capture_pane(&self, lines: usize) -> Result<String> {
         if !self.exists() {
             return Ok(String::new());
         }
@@ -171,43 +200,31 @@ impl TerminalSession {
     }
 }
 
-/// Container terminal session for sandboxed sessions.
-/// Uses a separate prefix (aoe_cterm_) to allow both container and host terminals to coexist.
-pub struct ContainerTerminalSession {
-    name: String,
+pub struct TerminalSession {
+    inner: PairedTerminal,
 }
 
-impl ContainerTerminalSession {
+impl TerminalSession {
     pub fn new(id: &str, title: &str) -> Result<Self> {
         Ok(Self {
-            name: Self::generate_name(id, title),
+            inner: PairedTerminal::new(TerminalKind::Host, id, title),
         })
     }
 
     pub fn generate_name(id: &str, title: &str) -> String {
-        let safe_title = sanitize_session_name(title);
-        format!(
-            "{}{}_{}",
-            CONTAINER_TERMINAL_PREFIX,
-            safe_title,
-            truncate_id(id, 8)
-        )
+        PairedTerminal::generate_name(TerminalKind::Host, id, title)
     }
 
     pub fn exists(&self) -> bool {
-        if let Some(exists) = session_exists_from_cache(&self.name) {
-            return exists;
-        }
-
-        Command::new("tmux")
-            .args(["has-session", "-t", &self.name])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.inner.exists()
     }
 
     pub fn is_pane_dead(&self) -> bool {
-        is_pane_dead(&self.name)
+        self.inner.is_pane_dead()
+    }
+
+    pub fn create(&self, working_dir: &str) -> Result<()> {
+        self.inner.create_with_size(working_dir, None, None)
     }
 
     pub fn create_with_size(
@@ -216,117 +233,74 @@ impl ContainerTerminalSession {
         command: Option<&str>,
         size: Option<(u16, u16)>,
     ) -> Result<()> {
-        if self.exists() {
-            return Ok(());
-        }
-
-        let mut args = build_terminal_create_args(&self.name, working_dir, command, size);
-        append_remain_on_exit_args(&mut args, &self.name);
-        append_pane_base_index_args(&mut args, &self.name);
-        append_mouse_on_args(&mut args, &self.name);
-        append_window_size_args(&mut args, &self.name);
-
-        let output = Command::new("tmux").args(&args).output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("duplicate session") {
-                refresh_session_cache();
-                return Ok(());
-            }
-            bail!("Failed to create container terminal session: {}", stderr);
-        }
-
-        refresh_session_cache();
-
-        Ok(())
+        self.inner.create_with_size(working_dir, command, size)
     }
 
     pub fn kill(&self) -> Result<()> {
-        if !self.exists() {
-            return Ok(());
-        }
-
-        // Kill the entire process tree first to ensure child processes are terminated
-        if let Some(pane_pid) = self.get_pane_pid() {
-            process::kill_process_tree(pane_pid);
-        }
-
-        let output = Command::new("tmux")
-            .args(["kill-session", "-t", &self.name])
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to kill container terminal session: {}", stderr);
-        }
-
-        refresh_session_cache();
-
-        Ok(())
+        self.inner.kill()
     }
 
     pub fn get_pane_pid(&self) -> Option<u32> {
-        process::get_pane_pid(&self.name)
+        self.inner.get_pane_pid()
     }
 
     pub fn attach(&self) -> Result<()> {
-        if !self.exists() {
-            bail!("Container terminal session does not exist: {}", self.name);
-        }
-
-        if std::env::var("TMUX").is_ok() {
-            let status = Command::new("tmux")
-                .args(["switch-client", "-t", &self.name])
-                .status()?;
-
-            if !status.success() {
-                let status = Command::new("tmux")
-                    .args(["attach-session", "-t", &self.name])
-                    .status()?;
-
-                if !status.success() {
-                    bail!("Failed to attach to container terminal session");
-                }
-            }
-        } else {
-            let status = Command::new("tmux")
-                .args(["attach-session", "-t", &self.name])
-                .status()?;
-
-            if !status.success() {
-                bail!("Failed to attach to container terminal session");
-            }
-        }
-
-        Ok(())
+        self.inner.attach()
     }
 
     pub fn capture_pane(&self, lines: usize) -> Result<String> {
-        if !self.exists() {
-            return Ok(String::new());
-        }
+        self.inner.capture_pane(lines)
+    }
+}
 
-        // Use `^.0` to target the first window's first pane regardless of
-        // base-index or which pane is active.  See #435, #488.
-        let target = format!("{}:^.0", self.name);
-        let output = Command::new("tmux")
-            .args([
-                "capture-pane",
-                "-t",
-                &target,
-                "-p",
-                "-e",
-                "-S",
-                &format!("-{}", lines),
-            ])
-            .output()?;
+/// Container terminal session for sandboxed sessions.
+/// Uses a separate prefix (aoe_cterm_) to allow both container and host terminals to coexist.
+pub struct ContainerTerminalSession {
+    inner: PairedTerminal,
+}
 
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Ok(String::new())
-        }
+impl ContainerTerminalSession {
+    pub fn new(id: &str, title: &str) -> Result<Self> {
+        Ok(Self {
+            inner: PairedTerminal::new(TerminalKind::Container, id, title),
+        })
+    }
+
+    pub fn generate_name(id: &str, title: &str) -> String {
+        PairedTerminal::generate_name(TerminalKind::Container, id, title)
+    }
+
+    pub fn exists(&self) -> bool {
+        self.inner.exists()
+    }
+
+    pub fn is_pane_dead(&self) -> bool {
+        self.inner.is_pane_dead()
+    }
+
+    pub fn create_with_size(
+        &self,
+        working_dir: &str,
+        command: Option<&str>,
+        size: Option<(u16, u16)>,
+    ) -> Result<()> {
+        self.inner.create_with_size(working_dir, command, size)
+    }
+
+    pub fn kill(&self) -> Result<()> {
+        self.inner.kill()
+    }
+
+    pub fn get_pane_pid(&self) -> Option<u32> {
+        self.inner.get_pane_pid()
+    }
+
+    pub fn attach(&self) -> Result<()> {
+        self.inner.attach()
+    }
+
+    pub fn capture_pane(&self, lines: usize) -> Result<String> {
+        self.inner.capture_pane(lines)
     }
 }
 
@@ -481,7 +455,10 @@ mod tests {
 
         let session_name = format!("aoe_test_terminal_dead_{}", std::process::id());
         let session = TerminalSession {
-            name: session_name.clone(),
+            inner: PairedTerminal {
+                name: session_name.clone(),
+                kind: TerminalKind::Host,
+            },
         };
 
         let output = Command::new("tmux")
@@ -529,7 +506,10 @@ mod tests {
 
         let session_name = format!("aoe_test_terminal_alive_{}", std::process::id());
         let session = TerminalSession {
-            name: session_name.clone(),
+            inner: PairedTerminal {
+                name: session_name.clone(),
+                kind: TerminalKind::Host,
+            },
         };
 
         let output = Command::new("tmux")

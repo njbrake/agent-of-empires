@@ -3,42 +3,12 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-use nix::errno::Errno;
-use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
-use tracing::debug;
-
-/// Kill a process and all its descendants
-/// Uses SIGTERM first, then SIGKILL after a short delay for stragglers
-pub fn kill_process_tree(pid: u32) {
-    // Build a map of parent -> children by parsing the process list once
+/// Collect `pid` and every descendant by parsing `ps -A` once and walking the map.
+pub(super) fn collect_pid_tree(pid: u32) -> Vec<u32> {
     let children_map = build_children_map();
-
-    // Collect all descendant PIDs (children, grandchildren, etc.)
-    let mut pids_to_kill = vec![pid];
-    collect_descendants_from_map(pid, &children_map, &mut pids_to_kill);
-
-    debug!(
-        pid,
-        descendants = ?pids_to_kill,
-        "Killing process tree"
-    );
-
-    // Kill in reverse order (children first, then parent) with SIGTERM
-    for &p in pids_to_kill.iter().rev() {
-        let _ = kill(Pid::from_raw(p as i32), Signal::SIGTERM);
-    }
-
-    // Brief pause to let processes handle SIGTERM gracefully
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // SIGKILL any survivors
-    for &p in pids_to_kill.iter().rev() {
-        if process_exists(p) {
-            debug!(pid = p, "Process survived SIGTERM, sending SIGKILL");
-            let _ = kill(Pid::from_raw(p as i32), Signal::SIGKILL);
-        }
-    }
+    let mut pids = vec![pid];
+    collect_descendants_from_map(pid, &children_map, &mut pids);
+    pids
 }
 
 /// Build a map of parent PID -> list of child PIDs by parsing `ps` output once
@@ -76,18 +46,6 @@ fn collect_descendants_from_map(
             pids.push(child_pid);
             collect_descendants_from_map(child_pid, children_map, pids);
         }
-    }
-}
-
-/// Check if a process still exists
-fn process_exists(pid: u32) -> bool {
-    // Use kill with signal 0 to check if process exists
-    // EPERM means the process exists but we lack permission (still exists)
-    // ESRCH means the process doesn't exist
-    match kill(Pid::from_raw(pid as i32), None) {
-        Ok(()) => true,
-        Err(Errno::EPERM) => true,
-        Err(_) => false,
     }
 }
 

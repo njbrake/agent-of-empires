@@ -95,7 +95,7 @@ async fn list_groups(profile: &str, args: GroupListArgs) -> Result<()> {
                 }
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&group_list)?);
+        super::output::print_json(&group_list)?;
     } else {
         let all_groups = group_tree.get_all_groups();
         if all_groups.is_empty() {
