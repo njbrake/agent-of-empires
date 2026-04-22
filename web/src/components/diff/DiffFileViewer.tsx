@@ -1,4 +1,8 @@
 import { useFileDiff } from "../../hooks/useFileDiff";
+import {
+  useHighlightedLines,
+  type SyntaxToken,
+} from "../../hooks/useHighlightedLines";
 import type { RichDiffHunk, RichDiffLine } from "../../lib/types";
 
 interface Props {
@@ -30,7 +34,13 @@ const STATUS_COLORS: Record<string, string> = {
   conflicted: "text-status-waiting",
 };
 
-function DiffLine({ line }: { line: RichDiffLine }) {
+function DiffLine({
+  line,
+  tokens,
+}: {
+  line: RichDiffLine;
+  tokens?: SyntaxToken[];
+}) {
   let bgClass = "";
   let textClass = "text-text-secondary";
   let prefix = " ";
@@ -49,6 +59,23 @@ function DiffLine({ line }: { line: RichDiffLine }) {
   // don't render a stray carriage-return glyph.
   const content = line.content.replace(/\r?\n$/, "");
 
+  // For add/delete lines, mix the syntax color with reduced opacity so
+  // the diff coloring (green/red) still dominates.
+  const renderContent = () => {
+    if (tokens && tokens.length > 0) {
+      const opacity = line.type === "equal" ? 1 : 0.7;
+      return tokens.map((tok, i) => (
+        <span
+          key={i}
+          style={tok.color ? { color: tok.color, opacity } : { opacity }}
+        >
+          {tok.content}
+        </span>
+      ));
+    }
+    return content || "\u00a0";
+  };
+
   return (
     <div className={`flex ${bgClass} hover:brightness-110 transition-[filter] duration-75`}>
       <span className="shrink-0 w-[50px] text-right pr-2 font-mono text-[11px] text-text-dim select-none border-r border-surface-700/30">
@@ -60,14 +87,22 @@ function DiffLine({ line }: { line: RichDiffLine }) {
       <span className={`shrink-0 w-4 text-center font-mono text-[12px] ${textClass} select-none`}>
         {prefix}
       </span>
-      <span className={`flex-1 font-mono text-[12px] ${textClass} whitespace-pre`}>
-        {content || "\u00a0"}
+      <span
+        className={`flex-1 font-mono text-[12px] whitespace-pre${tokens ? "" : ` ${textClass}`}`}
+      >
+        {renderContent()}
       </span>
     </div>
   );
 }
 
-function HunkView({ hunk }: { hunk: RichDiffHunk }) {
+function HunkView({
+  hunk,
+  lineTokens,
+}: {
+  hunk: RichDiffHunk;
+  lineTokens?: SyntaxToken[][];
+}) {
   return (
     <div>
       <div className="flex bg-surface-850 border-y border-surface-700/20 sticky top-0 z-[1]">
@@ -82,6 +117,7 @@ function HunkView({ hunk }: { hunk: RichDiffHunk }) {
         <DiffLine
           key={`${line.old_line_num ?? "_"}-${line.new_line_num ?? "_"}-${i}`}
           line={line}
+          tokens={lineTokens?.[i]}
         />
       ))}
     </div>
@@ -90,6 +126,10 @@ function HunkView({ hunk }: { hunk: RichDiffHunk }) {
 
 export function DiffFileViewer({ sessionId, filePath, revision, onClose }: Props) {
   const { diff, loading, error } = useFileDiff(sessionId, filePath, revision);
+  const tokenGrid = useHighlightedLines(
+    diff?.hunks ?? [],
+    diff?.file.path ?? filePath,
+  );
 
   if (loading && !diff) {
     return (
@@ -174,10 +214,11 @@ export function DiffFileViewer({ sessionId, filePath, revision, onClose }: Props
           </div>
         ) : (
           <div className="leading-[1.6]">
-            {diff.hunks.map((hunk) => (
+            {diff.hunks.map((hunk, hi) => (
               <HunkView
                 key={`${hunk.old_start}-${hunk.new_start}`}
                 hunk={hunk}
+                lineTokens={tokenGrid?.[hi]}
               />
             ))}
           </div>
