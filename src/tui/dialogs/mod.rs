@@ -29,7 +29,7 @@ pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog}
 pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
 #[cfg(feature = "serve")]
-pub use serve::ServeDialog;
+pub use serve::{ServeAction, ServeView};
 pub use welcome::WelcomeDialog;
 
 pub enum DialogResult<T> {

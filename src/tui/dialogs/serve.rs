@@ -22,8 +22,16 @@ use rand::RngExt;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::DialogResult;
 use crate::tui::styles::Theme;
+
+/// Actions returned by [`ServeView::handle_key`], following the
+/// full-page takeover pattern used by `SettingsAction` and `DiffAction`.
+pub enum ServeAction {
+    /// Keep the serve view open; no navigation change.
+    Continue,
+    /// Close the serve view and return to the home screen.
+    Close,
+}
 
 /// Which transport the daemon is serving over. Persisted to
 /// `$APP_DIR/serve.mode` so a reattaching TUI can render the right label
@@ -113,9 +121,13 @@ fn recall_passphrase() -> Option<String> {
         tracing::debug!("passphrase recalled from in-memory cache");
         return Some(pp);
     }
-    // Fall back to the on-disk file written by the server on startup.
-    // Lets the TUI display the passphrase after a restart or when the
-    // daemon was launched from the CLI (not this TUI process).
+    // Durable saved passphrase (survives stop/start cycles).
+    if let Some(pp) = load_saved_passphrase() {
+        tracing::debug!("passphrase recalled from serve.saved_passphrase");
+        return Some(pp);
+    }
+    // Ephemeral file written by the server on startup. Lets the TUI
+    // display the passphrase when the daemon was launched from the CLI.
     let dir = crate::session::get_app_dir().ok()?;
     let raw = std::fs::read_to_string(dir.join("serve.passphrase")).ok()?;
     let trimmed = raw.trim();
@@ -129,9 +141,61 @@ fn recall_passphrase() -> Option<String> {
 
 fn forget_passphrase() {
     forget_passphrase_in_memory();
+    // Only remove the ephemeral file. The durable saved_passphrase
+    // intentionally survives stop/start so the same passphrase can
+    // be reused on the next launch.
     if let Ok(dir) = crate::session::get_app_dir() {
         let _ = std::fs::remove_file(dir.join("serve.passphrase"));
     }
+}
+
+/// Load the durable saved passphrase that persists across daemon
+/// stop/start cycles. Returns None if no saved passphrase exists.
+fn load_saved_passphrase() -> Option<String> {
+    let dir = crate::session::get_app_dir().ok()?;
+    let raw = std::fs::read_to_string(dir.join("serve.saved_passphrase")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Persist a passphrase to the durable file that survives daemon
+/// stop/start cycles. Written with owner-only permissions.
+fn save_passphrase_to_disk(pp: &str) {
+    if let Ok(dir) = crate::session::get_app_dir() {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(dir.join("serve.saved_passphrase"))
+            {
+                let _ = file.write_all(pp.as_bytes());
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::write(dir.join("serve.saved_passphrase"), pp);
+        }
+    }
+}
+
+/// Load the saved passphrase if one exists, otherwise generate a
+/// fresh random one and save it for future launches.
+fn load_or_generate_passphrase() -> String {
+    if let Some(pp) = load_saved_passphrase() {
+        return pp;
+    }
+    let pp = generate_passphrase();
+    save_passphrase_to_disk(&pp);
+    pp
 }
 
 fn forget_passphrase_in_memory() {
@@ -145,7 +209,7 @@ const TUNNEL_STARTUP_TIMEOUT_SECS: u64 = 60;
 /// How much of `serve.log` to keep in memory for the tail pane.
 const LOG_TAIL_LINES: usize = 200;
 
-pub enum ServeDialogState {
+pub enum ServeViewState {
     /// No daemon running; first screen the user sees. They pick Local
     /// (bind 0.0.0.0, token auth only) or Tunnel (cloudflared + passphrase).
     /// `tunnel_available` gates the Tunnel card; `local_available`
@@ -181,6 +245,8 @@ pub enum ServeDialogState {
     /// wait on a fresh Tailscale node instead of a frozen screen.
     Starting {
         mode: ServeMode,
+        /// Remembered for restart. None for Local mode or external daemons.
+        transport: Option<TunnelTransport>,
         passphrase: Option<String>,
         started_at: Instant,
         log_tail: Vec<String>,
@@ -189,6 +255,10 @@ pub enum ServeDialogState {
     /// Daemon is live. No child field — the TUI does not own it.
     Active {
         mode: ServeMode,
+        /// Which tunnel transport was used (remembered from the Confirm
+        /// screen so we can pass it to restart). None for Local mode or
+        /// daemons started externally.
+        transport: Option<TunnelTransport>,
         urls: Vec<ServeUrl>,
         /// Which `urls` entry is the primary QR target. Starts at 0.
         /// Tab advances; cycles; no-op when urls.len() <= 1.
@@ -205,25 +275,44 @@ pub enum ServeDialogState {
     Error(String),
 }
 
-pub struct ServeDialog {
-    state: ServeDialogState,
-    /// Passphrase we will use if the user picks Tunnel and confirms.
-    /// Regenerated each time the dialog opens so leaked-to-stdout values
-    /// rotate.
-    pending_passphrase: String,
+/// A destructive action awaiting confirmation (press the key again).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingConfirm {
+    /// [G] pressed once: will generate a new random passphrase + restart.
+    NewPassphrase,
+    /// [R] pressed once: will restart the server (clears all sessions).
+    Restart,
 }
 
-impl Default for ServeDialog {
+pub struct ServeView {
+    state: ServeViewState,
+    /// Passphrase we will use if the user picks Tunnel and confirms.
+    /// Loaded from `serve.saved_passphrase` if available, otherwise
+    /// freshly generated and saved.
+    pending_passphrase: String,
+    /// Destructive action awaiting a second keypress to confirm.
+    /// Cleared on any other key or after a timeout rendered in the footer.
+    pending_confirm: Option<(PendingConfirm, Instant)>,
+    /// Whether the help overlay is visible.
+    show_help: bool,
+}
+
+impl Default for ServeView {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ServeDialog {
+impl ServeView {
     /// Construct the dialog. If a daemon is already running (detected via
     /// `$APP_DIR/serve.pid`), jump straight to Active so the user can see
     /// the URL and stop it; otherwise show ModePicker.
     pub fn new() -> Self {
+        // Use the saved passphrase if one exists, otherwise generate
+        // a fresh one and save it. This ensures the passphrase stays
+        // constant across stop/start cycles.
+        let pending = load_or_generate_passphrase();
+
         if crate::cli::serve::daemon_pid().is_some() {
             // There's already a daemon running. Read its mode from
             // serve.mode (written by the server). If missing (older daemon
@@ -239,19 +328,23 @@ impl ServeDialog {
             let urls = read_serve_urls();
             if urls.is_empty() {
                 Self {
-                    state: ServeDialogState::Starting {
+                    state: ServeViewState::Starting {
                         mode,
+                        transport: None, // unknown for reattached daemons
                         passphrase: remembered,
                         started_at: Instant::now(),
                         log_tail: initial_log_tail(),
                         log_offset: log_file_size(),
                     },
-                    pending_passphrase: generate_passphrase(),
+                    pending_passphrase: pending,
+                    pending_confirm: None,
+                    show_help: false,
                 }
             } else {
                 Self {
-                    state: ServeDialogState::Active {
+                    state: ServeViewState::Active {
                         mode,
+                        transport: None, // unknown for reattached daemons
                         urls,
                         url_index: 0,
                         passphrase: remembered,
@@ -259,7 +352,9 @@ impl ServeDialog {
                         log_tail: initial_log_tail(),
                         log_offset: log_file_size(),
                     },
-                    pending_passphrase: generate_passphrase(),
+                    pending_passphrase: pending,
+                    pending_confirm: None,
+                    show_help: false,
                 }
             }
         } else {
@@ -283,13 +378,15 @@ impl ServeDialog {
                 _ => ServeMode::Local, // no-op default when neither works; picker handles it
             };
             Self {
-                state: ServeDialogState::ModePicker {
+                state: ServeViewState::ModePicker {
                     selected,
                     tunnel_available,
                     local_available,
                     flash: None,
                 },
-                pending_passphrase: generate_passphrase(),
+                pending_passphrase: pending,
+                pending_confirm: None,
+                show_help: false,
             }
         }
     }
@@ -328,9 +425,9 @@ impl ServeDialog {
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
+    pub fn handle_key(&mut self, key: KeyEvent) -> ServeAction {
         match &mut self.state {
-            ServeDialogState::ModePicker {
+            ServeViewState::ModePicker {
                 selected,
                 tunnel_available,
                 local_available,
@@ -339,65 +436,66 @@ impl ServeDialog {
                 // Helper: attempt to commit the current `selected` mode,
                 // transitioning to Confirm (Tunnel) or Starting (Local).
                 // Rejects with a flash message if the mode isn't available.
-                let commit = |dialog: &mut ServeDialog| -> DialogResult<()> {
-                    let ServeDialogState::ModePicker {
+                let commit = |dialog: &mut ServeView| -> ServeAction {
+                    let ServeViewState::ModePicker {
                         selected,
                         tunnel_available,
                         local_available,
                         ..
                     } = &dialog.state
                     else {
-                        return DialogResult::Continue;
+                        return ServeAction::Continue;
                     };
                     let mode = *selected;
                     let cf = *tunnel_available;
                     let la = *local_available;
                     match mode {
                         ServeMode::Tunnel if !cf => {
-                            if let ServeDialogState::ModePicker { flash, .. } = &mut dialog.state {
+                            if let ServeViewState::ModePicker { flash, .. } = &mut dialog.state {
                                 *flash = Some((
                                     "Install tailscale or cloudflared to enable Tunnel mode."
                                         .to_string(),
                                     Instant::now(),
                                 ));
                             }
-                            DialogResult::Continue
+                            ServeAction::Continue
                         }
                         ServeMode::Local if !la => {
-                            if let ServeDialogState::ModePicker { flash, .. } = &mut dialog.state {
+                            if let ServeViewState::ModePicker { flash, .. } = &mut dialog.state {
                                 *flash = Some((
                                     "No non-loopback network interface available.".to_string(),
                                     Instant::now(),
                                 ));
                             }
-                            DialogResult::Continue
+                            ServeAction::Continue
                         }
                         ServeMode::Tunnel => {
-                            let (tailscale, cloudflare) = ServeDialog::assess_transports();
-                            let selected = ServeDialog::default_transport(tailscale, cloudflare);
-                            dialog.state = ServeDialogState::Confirm {
+                            let (tailscale, cloudflare) = ServeView::assess_transports();
+                            let selected = ServeView::default_transport(tailscale, cloudflare);
+                            dialog.state = ServeViewState::Confirm {
                                 selected,
                                 tailscale,
                                 cloudflare,
                                 flash: None,
                             };
-                            DialogResult::Continue
+                            ServeAction::Continue
                         }
                         ServeMode::Local => {
                             match spawn_daemon(ServeMode::Local, None, None) {
                                 Ok(()) => {
                                     remember_last_mode(ServeMode::Local);
-                                    dialog.state = ServeDialogState::Starting {
+                                    dialog.state = ServeViewState::Starting {
                                         mode: ServeMode::Local,
+                                        transport: None,
                                         passphrase: None,
                                         started_at: Instant::now(),
                                         log_tail: initial_log_tail(),
                                         log_offset: log_file_size(),
                                     };
                                 }
-                                Err(e) => dialog.state = ServeDialogState::Error(e),
+                                Err(e) => dialog.state = ServeViewState::Error(e),
                             }
-                            DialogResult::Continue
+                            ServeAction::Continue
                         }
                     }
                 };
@@ -415,7 +513,7 @@ impl ServeDialog {
                 match key.code {
                     KeyCode::Left | KeyCode::Char('h') => {
                         *selected = ServeMode::Local;
-                        DialogResult::Continue
+                        ServeAction::Continue
                     }
                     KeyCode::Right | KeyCode::Char('l') => {
                         // Only move to Tunnel if it's usable; otherwise
@@ -424,7 +522,7 @@ impl ServeDialog {
                         if *tunnel_available {
                             *selected = ServeMode::Tunnel;
                         }
-                        DialogResult::Continue
+                        ServeAction::Continue
                     }
                     KeyCode::Tab => {
                         *selected = match *selected {
@@ -432,7 +530,7 @@ impl ServeDialog {
                             ServeMode::Tunnel if *local_available => ServeMode::Local,
                             other => other,
                         };
-                        DialogResult::Continue
+                        ServeAction::Continue
                     }
                     KeyCode::Char('t') | KeyCode::Char('T') => {
                         *selected = ServeMode::Tunnel;
@@ -447,11 +545,11 @@ impl ServeDialog {
                         commit(self)
                     }
                     KeyCode::Enter => commit(self),
-                    KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
-                    _ => DialogResult::Continue,
+                    KeyCode::Esc | KeyCode::Char('q') => ServeAction::Close,
+                    _ => ServeAction::Continue,
                 }
             }
-            ServeDialogState::Confirm {
+            ServeViewState::Confirm {
                 selected,
                 tailscale,
                 cloudflare,
@@ -470,15 +568,15 @@ impl ServeDialog {
                 // with a flash if the selected card isn't Ready (keeps the
                 // user on the Confirm screen where they can pivot to the
                 // other transport or hit [E]).
-                let commit = |dialog: &mut ServeDialog| -> DialogResult<()> {
-                    let ServeDialogState::Confirm {
+                let commit = |dialog: &mut ServeView| -> ServeAction {
+                    let ServeViewState::Confirm {
                         selected,
                         tailscale,
                         cloudflare,
                         ..
                     } = &dialog.state
                     else {
-                        return DialogResult::Continue;
+                        return ServeAction::Continue;
                     };
                     let pick = *selected;
                     let status = match pick {
@@ -497,10 +595,10 @@ impl ServeDialog {
                                 "cloudflared isn't installed; pick Tailscale."
                             }
                         };
-                        if let ServeDialogState::Confirm { flash, .. } = &mut dialog.state {
+                        if let ServeViewState::Confirm { flash, .. } = &mut dialog.state {
                             *flash = Some((msg.to_string(), Instant::now()));
                         }
-                        return DialogResult::Continue;
+                        return ServeAction::Continue;
                     }
                     match spawn_daemon(
                         ServeMode::Tunnel,
@@ -509,34 +607,35 @@ impl ServeDialog {
                     ) {
                         Ok(()) => {
                             remember_last_mode(ServeMode::Tunnel);
-                            dialog.state = ServeDialogState::Starting {
+                            dialog.state = ServeViewState::Starting {
                                 mode: ServeMode::Tunnel,
+                                transport: Some(pick),
                                 passphrase: Some(dialog.pending_passphrase.clone()),
                                 started_at: Instant::now(),
                                 log_tail: initial_log_tail(),
                                 log_offset: log_file_size(),
                             };
                         }
-                        Err(e) => dialog.state = ServeDialogState::Error(e),
+                        Err(e) => dialog.state = ServeViewState::Error(e),
                     }
-                    DialogResult::Continue
+                    ServeAction::Continue
                 };
 
                 match key.code {
                     KeyCode::Left | KeyCode::Char('h') => {
                         *selected = TunnelTransport::Tailscale;
-                        DialogResult::Continue
+                        ServeAction::Continue
                     }
                     KeyCode::Right | KeyCode::Char('l') => {
                         *selected = TunnelTransport::Cloudflare;
-                        DialogResult::Continue
+                        ServeAction::Continue
                     }
                     KeyCode::Tab => {
                         *selected = match *selected {
                             TunnelTransport::Tailscale => TunnelTransport::Cloudflare,
                             TunnelTransport::Cloudflare => TunnelTransport::Tailscale,
                         };
-                        DialogResult::Continue
+                        ServeAction::Continue
                     }
                     KeyCode::Char('t') | KeyCode::Char('T') => {
                         *selected = TunnelTransport::Tailscale;
@@ -548,58 +647,141 @@ impl ServeDialog {
                     }
                     KeyCode::Enter => commit(self),
                     KeyCode::Char('r') | KeyCode::Char('R') => {
-                        let (new_ts, new_cf) = ServeDialog::assess_transports();
+                        let (new_ts, new_cf) = ServeView::assess_transports();
                         *tailscale = new_ts;
                         *cloudflare = new_cf;
                         *flash = Some(("Refreshed.".to_string(), Instant::now()));
-                        DialogResult::Continue
+                        ServeAction::Continue
                     }
-                    KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
-                    _ => DialogResult::Continue,
+                    KeyCode::Esc | KeyCode::Char('q') => ServeAction::Close,
+                    _ => ServeAction::Continue,
                 }
             }
-            ServeDialogState::Starting { .. } => match key.code {
+            ServeViewState::Starting { .. } => match key.code {
                 // Esc just closes the dialog; the daemon keeps coming up.
-                KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
+                KeyCode::Esc | KeyCode::Char('q') => ServeAction::Close,
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     // Aborting startup: stop the (half-started) daemon.
                     let _ = stop_daemon();
-                    DialogResult::Cancel
+                    ServeAction::Close
                 }
-                _ => DialogResult::Continue,
+                _ => ServeAction::Continue,
             },
-            ServeDialogState::Active {
-                urls, url_index, ..
-            } => match key.code {
-                KeyCode::Char('s') | KeyCode::Char('S') => match stop_daemon() {
-                    Ok(()) => DialogResult::Cancel,
-                    Err(e) => {
-                        self.state = ServeDialogState::Error(format!(
+            ServeViewState::Active {
+                mode,
+                transport,
+                urls,
+                url_index,
+                passphrase,
+                ..
+            } => {
+                // Help overlay intercepts all keys when visible.
+                if self.show_help {
+                    self.show_help = false;
+                    return ServeAction::Continue;
+                }
+
+                // Check pending confirmation inline (can't call &mut self
+                // method while self.state is borrowed by the match arm).
+                let confirmed = if let Some((action, when)) = self.pending_confirm {
+                    if when.elapsed() > Duration::from_secs(3) {
+                        self.pending_confirm = None;
+                        None
+                    } else {
+                        let matches = match action {
+                            PendingConfirm::NewPassphrase => {
+                                matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G'))
+                            }
+                            PendingConfirm::Restart => {
+                                matches!(key.code, KeyCode::Char('r') | KeyCode::Char('R'))
+                            }
+                        };
+                        if matches {
+                            Some(action)
+                        } else {
+                            self.pending_confirm = None;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                match key.code {
+                    // Stop: transition to ModePicker so the user can restart
+                    // with different settings. Esc/q is the way to close.
+                    KeyCode::Char('s') | KeyCode::Char('S') => match stop_daemon() {
+                        Ok(()) => {
+                            self.reset_to_mode_picker();
+                            ServeAction::Continue
+                        }
+                        Err(e) => {
+                            self.state = ServeViewState::Error(format!(
                                 "Stop failed: {}. Daemon may still be running; retry or use `aoe serve --stop` from a shell.",
                                 e
                             ));
-                        DialogResult::Continue
+                            ServeAction::Continue
+                        }
+                    },
+                    // Generate new random passphrase + restart (Tunnel only).
+                    // First press shows confirmation, second press executes.
+                    KeyCode::Char('g') | KeyCode::Char('G')
+                        if matches!(mode, ServeMode::Tunnel) =>
+                    {
+                        if confirmed == Some(PendingConfirm::NewPassphrase) {
+                            let new_pp = generate_passphrase();
+                            save_passphrase_to_disk(&new_pp);
+                            self.pending_passphrase = new_pp.clone();
+                            let m = *mode;
+                            let t = *transport;
+                            self.pending_confirm = None;
+                            self.do_restart(m, t, Some(new_pp));
+                        } else {
+                            self.pending_confirm =
+                                Some((PendingConfirm::NewPassphrase, Instant::now()));
+                        }
+                        ServeAction::Continue
                     }
-                },
-                // Tab cycles URLs in Local mode (Tailscale ↔ LAN ↔ localhost).
-                // No-op when there's only one URL (Tunnel mode, or a Local
-                // host with just loopback).
-                KeyCode::Tab if urls.len() > 1 => {
-                    *url_index = (*url_index + 1) % urls.len();
-                    DialogResult::Continue
+                    // Restart server. For Tunnel mode this clears all login
+                    // sessions; for Local mode it rebinds the port.
+                    // First press shows confirmation, second press executes.
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        if confirmed == Some(PendingConfirm::Restart) {
+                            let pp = if matches!(mode, ServeMode::Tunnel) {
+                                let s = passphrase.as_deref().unwrap_or(&self.pending_passphrase);
+                                Some(s.to_string())
+                            } else {
+                                None
+                            };
+                            let m = *mode;
+                            let t = *transport;
+                            self.pending_confirm = None;
+                            self.do_restart(m, t, pp);
+                        } else {
+                            self.pending_confirm = Some((PendingConfirm::Restart, Instant::now()));
+                        }
+                        ServeAction::Continue
+                    }
+                    KeyCode::Tab if urls.len() > 1 => {
+                        *url_index = (*url_index + 1) % urls.len();
+                        ServeAction::Continue
+                    }
+                    KeyCode::Char('?') => {
+                        self.show_help = true;
+                        self.pending_confirm = None;
+                        ServeAction::Continue
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => ServeAction::Close,
+                    _ => ServeAction::Continue,
                 }
-                // Closing without stopping is explicitly allowed — TUI is a
-                // controller, the daemon keeps running.
-                KeyCode::Esc | KeyCode::Char('q') => DialogResult::Cancel,
-                _ => DialogResult::Continue,
-            },
-            ServeDialogState::Error(msg) => match key.code {
+            }
+            ServeViewState::Error(msg) => match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     // Best-effort stop for a daemon that may still be
                     // lingering. Ignore the result — if there's no daemon
                     // to stop, that's the desired state anyway.
                     let _ = stop_daemon();
-                    DialogResult::Cancel
+                    ServeAction::Close
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') if error_mentions_tailscale(msg) => {
                     // Tailscale-related error: offer one-shot recovery
@@ -609,32 +791,105 @@ impl ServeDialog {
                     // Reset is safe even when the funnel isn't configured.
                     let result = run_tailscale_funnel_reset();
                     self.state = match result {
-                        Ok(()) => ServeDialogState::Error(
+                        Ok(()) => ServeViewState::Error(
                             "Ran `tailscale funnel reset`. The existing funnel \
                              config (if any) has been cleared.\n\n\
                              Close this dialog and press R to retry."
                                 .to_string(),
                         ),
-                        Err(e) => ServeDialogState::Error(format!(
+                        Err(e) => ServeViewState::Error(format!(
                             "`tailscale funnel reset` failed: {e}\n\n\
                              Try running it manually from a shell, then retry."
                         )),
                     };
-                    DialogResult::Continue
+                    ServeAction::Continue
                 }
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('q') => {
-                    DialogResult::Cancel
+                    ServeAction::Close
                 }
-                _ => DialogResult::Continue,
+                _ => ServeAction::Continue,
             },
         }
+    }
+
+    /// Restart the daemon and transition to Starting (or directly to
+    /// Active if the server comes up fast enough to avoid a flash).
+    fn do_restart(
+        &mut self,
+        mode: ServeMode,
+        transport: Option<TunnelTransport>,
+        passphrase: Option<String>,
+    ) {
+        let pp_ref = passphrase.as_deref();
+        match restart_daemon(mode, pp_ref, transport) {
+            Ok(()) => {
+                if let Some(ref pp) = passphrase {
+                    remember_passphrase(pp);
+                }
+                // If the server comes back fast (Tailscale reusing an
+                // existing tunnel), skip the Starting flash entirely.
+                // Give it a brief moment then check for the URL file.
+                std::thread::sleep(Duration::from_millis(200));
+                let urls = read_serve_urls();
+                if !urls.is_empty() {
+                    self.state = ServeViewState::Active {
+                        mode,
+                        transport,
+                        urls,
+                        url_index: 0,
+                        passphrase,
+                        opened_at: Instant::now(),
+                        log_tail: initial_log_tail(),
+                        log_offset: log_file_size(),
+                    };
+                } else {
+                    self.state = ServeViewState::Starting {
+                        mode,
+                        transport,
+                        passphrase,
+                        started_at: Instant::now(),
+                        log_tail: initial_log_tail(),
+                        log_offset: log_file_size(),
+                    };
+                }
+            }
+            Err(e) => {
+                self.state = ServeViewState::Error(format!("Restart failed: {}", e));
+            }
+        }
+    }
+
+    /// Reset to the mode picker (used after stopping the daemon so
+    /// the user can restart with different settings instead of being
+    /// kicked back to the home screen).
+    fn reset_to_mode_picker(&mut self) {
+        let tailscale_ok = crate::server::tunnel::tailscale_available_sync();
+        let cloudflared_ok = crate::server::tunnel::check_cloudflared().is_ok();
+        let tunnel_available = tailscale_ok || cloudflared_ok;
+        let local_available = !crate::server::discover_tagged_ips().is_empty();
+        let remembered_default = read_last_mode().unwrap_or(ServeMode::Local);
+        let selected = match remembered_default {
+            ServeMode::Local if local_available => ServeMode::Local,
+            ServeMode::Local if tunnel_available => ServeMode::Tunnel,
+            ServeMode::Tunnel if tunnel_available => ServeMode::Tunnel,
+            ServeMode::Tunnel if local_available => ServeMode::Local,
+            _ => ServeMode::Local,
+        };
+        self.state = ServeViewState::ModePicker {
+            selected,
+            tunnel_available,
+            local_available,
+            flash: None,
+        };
+        self.pending_confirm = None;
+        self.show_help = false;
     }
 
     /// Poll files on disk and drive state transitions. Returns true when
     /// the visible state changed and a redraw is needed.
     pub fn tick(&mut self) -> bool {
         match &mut self.state {
-            ServeDialogState::ModePicker { flash, .. } => {
+            ServeViewState::ModePicker { flash, .. } => {
                 // Expire the flash message after 1.5s so it doesn't stick
                 // around forever without a follow-up key press.
                 if let Some((_, t)) = flash {
@@ -645,8 +900,9 @@ impl ServeDialog {
                 }
                 false
             }
-            ServeDialogState::Starting {
+            ServeViewState::Starting {
                 mode,
+                transport,
                 passphrase,
                 started_at,
                 log_tail,
@@ -657,6 +913,7 @@ impl ServeDialog {
                 // during the 30-60s wait instead of a frozen screen.
                 let log_changed = append_new_log_lines(log_tail, log_offset);
                 let mode = *mode;
+                let xport = *transport;
                 let urls = read_serve_urls();
                 if !urls.is_empty() {
                     // If we entered Starting without a passphrase (e.g.
@@ -668,8 +925,9 @@ impl ServeDialog {
                         None if matches!(mode, ServeMode::Tunnel) => recall_passphrase(),
                         None => None,
                     };
-                    self.state = ServeDialogState::Active {
+                    self.state = ServeViewState::Active {
                         mode,
+                        transport: xport,
                         urls,
                         url_index: 0,
                         passphrase: pp,
@@ -701,7 +959,7 @@ impl ServeDialog {
                             "`aoe serve --daemon` exited before the server started."
                         }
                     };
-                    self.state = ServeDialogState::Error(format!("{}{}{}", prefix, hint, detail));
+                    self.state = ServeViewState::Error(format!("{}{}{}", prefix, hint, detail));
                     return true;
                 }
                 // Local mode comes up ~instantly; no need for the 60s
@@ -729,7 +987,7 @@ impl ServeDialog {
                     } else {
                         format!("\n\nLast log lines:\n{}", compact.join("\n"))
                     };
-                    self.state = ServeDialogState::Error(format!(
+                    self.state = ServeViewState::Error(format!(
                         "HTTPS tunnel did not announce a URL within {}s. \
                          {}\n\n\
                          Most likely cause: Tailscale Funnel needs HTTPS certs \
@@ -742,18 +1000,32 @@ impl ServeDialog {
                 }
                 log_changed
             }
-            ServeDialogState::Active {
+            ServeViewState::Active {
                 log_tail,
                 log_offset,
                 ..
-            } => append_new_log_lines(log_tail, log_offset),
+            } => {
+                let log_changed = append_new_log_lines(log_tail, log_offset);
+                // Expire stale pending confirmation so the footer hint
+                // disappears after 3s even without a keypress.
+                let confirm_expired = self
+                    .pending_confirm
+                    .as_ref()
+                    .map(|(_, t)| t.elapsed() > Duration::from_secs(3))
+                    .unwrap_or(false);
+                if confirm_expired {
+                    self.pending_confirm = None;
+                    return true;
+                }
+                log_changed
+            }
             _ => false,
         }
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         match &self.state {
-            ServeDialogState::ModePicker {
+            ServeViewState::ModePicker {
                 selected,
                 tunnel_available,
                 local_available,
@@ -767,7 +1039,7 @@ impl ServeDialog {
                 *local_available,
                 flash.as_ref().map(|(m, _)| m.as_str()),
             ),
-            ServeDialogState::Confirm {
+            ServeViewState::Confirm {
                 selected,
                 tailscale,
                 cloudflare,
@@ -781,32 +1053,33 @@ impl ServeDialog {
                 *cloudflare,
                 flash.as_ref().map(|(m, _)| m.as_str()),
             ),
-            ServeDialogState::Starting {
-                mode,
-                started_at,
-                log_tail,
-                ..
-            } => render_starting(frame, area, theme, *mode, started_at.elapsed(), log_tail),
-            ServeDialogState::Active {
+            ServeViewState::Starting {
+                mode, started_at, ..
+            } => render_starting(frame, area, theme, *mode, started_at.elapsed()),
+            ServeViewState::Active {
                 mode,
                 urls,
                 url_index,
                 passphrase,
                 opened_at,
-                log_tail,
                 ..
-            } => render_active(
-                frame,
-                area,
-                theme,
-                *mode,
-                urls,
-                *url_index,
-                passphrase.as_deref(),
-                opened_at.elapsed(),
-                log_tail,
-            ),
-            ServeDialogState::Error(msg) => render_error(frame, area, theme, msg),
+            } => {
+                render_active(
+                    frame,
+                    area,
+                    theme,
+                    *mode,
+                    urls,
+                    *url_index,
+                    passphrase.as_deref(),
+                    opened_at.elapsed(),
+                    self.pending_confirm.as_ref().map(|(a, _)| *a),
+                );
+                if self.show_help {
+                    render_help_overlay(frame, area, theme, *mode);
+                }
+            }
+            ServeViewState::Error(msg) => render_error(frame, area, theme, msg),
         }
     }
 }
@@ -915,6 +1188,7 @@ fn spawn_daemon(
     }
     if let Some(pp) = passphrase {
         remember_passphrase(pp);
+        save_passphrase_to_disk(pp);
     }
     Ok(())
 }
@@ -959,8 +1233,23 @@ fn stop_daemon() -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(stderr.trim().to_string());
     }
+    // Only clear the in-memory cache and ephemeral file. The durable
+    // serve.saved_passphrase intentionally survives so the same
+    // passphrase is reused on the next launch.
     forget_passphrase();
     Ok(())
+}
+
+/// Stop the running daemon and immediately respawn it with the given
+/// configuration. Used by passphrase-edit and force-logout flows.
+/// Returns `Ok(())` on successful respawn, `Err` if either phase fails.
+fn restart_daemon(
+    mode: ServeMode,
+    passphrase: Option<&str>,
+    transport: Option<TunnelTransport>,
+) -> Result<(), String> {
+    stop_daemon()?;
+    spawn_daemon(mode, passphrase, transport)
 }
 
 /// Read serve.url as a list of labeled URLs. File format:
@@ -1141,22 +1430,44 @@ fn render_mode_picker(
     local_available: bool,
     flash: Option<&str>,
 ) {
-    let dialog = super::centered_rect(area, 72, 16);
-    frame.render_widget(Clear, dialog);
+    frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(Line::styled(
-            " Serve ",
+            " Remote Access ",
             Style::default().fg(theme.accent).bold(),
         ));
-    let inner = block.inner(dialog);
-    frame.render_widget(block, dialog);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Center the content vertically within the full page
+    let content_height: u16 = 13; // question + spacer + cards(7) + spacer + flash + keybinds
+    let v_pad = inner.height.saturating_sub(content_height) / 2;
+    let centered = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(v_pad),
+            Constraint::Length(content_height),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    // Constrain card width to avoid stretching across huge terminals
+    let max_card_width: u16 = 72;
+    let h_pad = centered[1].width.saturating_sub(max_card_width) / 2;
+    let h_centered = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(h_pad),
+            Constraint::Length(max_card_width.min(centered[1].width)),
+            Constraint::Min(0),
+        ])
+        .split(centered[1]);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
         .constraints([
             Constraint::Length(1), // question
             Constraint::Length(1), // spacer
@@ -1164,7 +1475,7 @@ fn render_mode_picker(
             Constraint::Length(1), // flash
             Constraint::Length(1), // keybinds
         ])
-        .split(inner);
+        .split(h_centered[1]);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -1328,8 +1639,7 @@ fn render_confirm(
     cloudflare: TransportStatus,
     flash: Option<&str>,
 ) {
-    let dialog = super::centered_rect(area, 82, 24);
-    frame.render_widget(Clear, dialog);
+    frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1338,12 +1648,34 @@ fn render_confirm(
             " Expose to Internet? ",
             Style::default().fg(theme.accent).bold(),
         ));
-    let inner = block.inner(dialog);
-    frame.render_widget(block, dialog);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Center content vertically and constrain width
+    let content_height: u16 = 19; // risk(6) + picker(1) + cards(8) + flash + keybinds + margins
+    let v_pad = inner.height.saturating_sub(content_height) / 2;
+    let centered = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(v_pad),
+            Constraint::Length(content_height),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    let max_w: u16 = 82;
+    let h_pad = centered[1].width.saturating_sub(max_w) / 2;
+    let h_centered = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(h_pad),
+            Constraint::Length(max_w.min(centered[1].width)),
+            Constraint::Min(0),
+        ])
+        .split(centered[1]);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
         .constraints([
             Constraint::Length(6), // risk explanation
             Constraint::Length(1), // "Pick a transport:"
@@ -1351,7 +1683,7 @@ fn render_confirm(
             Constraint::Length(1), // flash
             Constraint::Length(1), // keybinds
         ])
-        .split(inner);
+        .split(h_centered[1]);
 
     // ── Risk explanation (compressed; picker below carries most of UI) ───
     let risk = vec![
@@ -1531,15 +1863,8 @@ fn render_starting(
     theme: &Theme,
     mode: ServeMode,
     elapsed: Duration,
-    log_tail: &[String],
 ) {
-    // Taller dialog so the daemon's serve.log can tail live underneath
-    // the wait banner. On a cold Tailscale node, HTTPS-cert provisioning
-    // can take 30-60s; a static "please wait" screen looks frozen.
-    // Showing the log makes real progress visible. Wide enough to fit
-    // typical tunnel log lines after we strip the tracing prefix.
-    let dialog = super::centered_rect(area, 100, 22);
-    frame.render_widget(Clear, dialog);
+    frame.render_widget(Clear, area);
     let (title, wait_line1, wait_line2) = match mode {
         ServeMode::Tunnel => (
             " Starting HTTPS tunnel... ",
@@ -1557,13 +1882,19 @@ fn render_starting(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
         .title(Line::styled(title, Style::default().fg(theme.title).bold()));
-    let inner = block.inner(dialog);
-    frame.render_widget(block, dialog);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    // Split: top for the wait banner, bottom for the live log tail.
-    let split = Layout::default()
+    // Center the wait banner vertically
+    let content_height: u16 = 5;
+    let v_pad = inner.height.saturating_sub(content_height) / 2;
+    let centered = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(v_pad),
+            Constraint::Length(content_height),
+            Constraint::Min(0),
+        ])
         .split(inner);
 
     let banner = vec![
@@ -1578,41 +1909,8 @@ fn render_starting(
     ];
     frame.render_widget(
         Paragraph::new(banner).alignment(Alignment::Center),
-        split[0],
+        centered[1],
     );
-
-    let tail_block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(theme.dimmed))
-        .title(Line::styled(
-            " daemon log ",
-            Style::default().fg(theme.dimmed),
-        ));
-    let tail_inner = tail_block.inner(split[1]);
-    frame.render_widget(tail_block, split[1]);
-
-    // Show the tail end of the log bounded to available rows, with the
-    // tracing prefix stripped so the message itself gets the real estate.
-    let rows = tail_inner.height as usize;
-    let skip = log_tail.len().saturating_sub(rows);
-    let lines: Vec<Line> = if log_tail.is_empty() {
-        vec![Line::from(Span::styled(
-            "(waiting for daemon output...)",
-            Style::default().fg(theme.dimmed),
-        ))]
-    } else {
-        log_tail
-            .iter()
-            .skip(skip)
-            .map(|l| {
-                Line::from(Span::styled(
-                    compact_log_line(l),
-                    Style::default().fg(theme.text),
-                ))
-            })
-            .collect()
-    };
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), tail_inner);
 }
 
 /// Shorten a tracing-formatted log line for the in-dialog tail pane.
@@ -1677,11 +1975,8 @@ fn render_active(
     url_index: usize,
     passphrase: Option<&str>,
     elapsed: Duration,
-    log_tail: &[String],
+    pending_confirm: Option<PendingConfirm>,
 ) {
-    // Defensive: callers should never hand us an empty urls slice (the
-    // Starting → Active transition gates on non-empty serve.url). But if
-    // we somehow get here, fall through to an obvious-empty render.
     let Some(active_url) = urls.get(url_index).or_else(|| urls.first()) else {
         let msg = "Daemon started but no URL available yet.";
         render_error(frame, area, theme, msg);
@@ -1689,15 +1984,7 @@ fn render_active(
     };
     let url = &active_url.url;
     let kind_label = active_url.label.as_deref();
-    // Encode the full URL including `?token=...` — the server's auth
-    // middleware rejects requests on `/` with "invalid or missing auth
-    // token" when the query param isn't present, so the phone would hit
-    // 401 before ever seeing the passphrase login.
-    //
-    // Use half-block Unicode rendering (Dense1x2): each terminal row
-    // carries two QR module rows via `\u{2580}` / `\u{2584}` / space /
-    // full-block. That's roughly 4× smaller than the previous 2\u{00D7}1 char
-    // rendering while staying scannable on any phone camera.
+
     let qr_text = match QrCode::new(url.as_bytes()) {
         Ok(code) => code
             .render::<Dense1x2>()
@@ -1705,129 +1992,125 @@ fn render_active(
             .dark_color(Dense1x2::Dark)
             .light_color(Dense1x2::Light)
             .build(),
-        Err(_) => String::from("(QR unavailable \u{2014} use the URL below)"),
+        Err(_) => String::from("(QR unavailable; use the URL below)"),
     };
 
     let qr_lines: Vec<&str> = qr_text.lines().collect();
     let qr_height = qr_lines.len() as u16;
-    let qr_width = qr_lines.first().map(|l| l.chars().count()).unwrap_or(0) as u16;
 
-    // We want to show the full URL (including `?token=...`) on ONE line
-    // so the user can triple-click it and paste straight into a browser.
-    // That only works when the terminal is wide enough; on narrower
-    // terminals the combined string would clip off the right edge, which
-    // is worse than the split display because the token half disappears
-    // entirely. So: prefer the combined row, fall back to URL + Token on
-    // separate rows when we can't fit.
     let full_url = url.as_str();
     let url_prefix = "URL: ";
     let full_url_len = url_prefix.chars().count() + full_url.chars().count();
     let (split_url, split_token) = split_url_and_token(full_url);
 
-    // Dialog wants to fit the full URL on one line. Floor at 80 for
-    // breathing room; cap by terminal width.
-    let want_width = (qr_width + 6).max((full_url_len + 4) as u16).max(80);
-    let log_height: u16 = 6;
+    // Full-page layout: header / content / footer, matching Settings/Diff.
+    frame.render_widget(Clear, area);
 
-    let dialog_width = want_width.min(area.width);
-    // Inner width available for a content row after the dialog border
-    // (1 col each side) and the layout margin (1 col each side).
-    let url_inner_width = dialog_width.saturating_sub(4).max(1) as usize;
-    // Combined URL fits on one line = copy-paste friendly rendering.
-    // Otherwise fall back to split so at least both halves are visible.
-    let url_fits_one_line = full_url_len <= url_inner_width;
-    let url_row_height: u16 = if url_fits_one_line {
-        1
-    } else {
-        // Fallback: base URL row + token row (if there is a token).
-        if split_token.is_some() {
-            2
-        } else {
-            1
-        }
-    };
+    let page = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // header
+            Constraint::Min(10),   // content
+            Constraint::Length(3), // footer
+        ])
+        .split(area);
 
-    let want_height = qr_height
-        + url_row_height
-        + 3 /* passphrase(opt) + elapsed + footer approx */
-        + log_height
-        + 3 /* borders + margins */;
-    let dialog_height = want_height.min(area.height);
-    let dialog = super::centered_rect(area, dialog_width, dialog_height);
-    frame.render_widget(Clear, dialog);
-
+    // ── Header ───────────────────────────────────────────────────────────
     let eight_hours = Duration::from_secs(8 * 3600);
-    let base_title = match mode {
-        ServeMode::Local => " Serving (local) ",
-        ServeMode::Tunnel => " Serving (tunnel) ",
-    };
-    let reminder = if elapsed >= eight_hours {
-        format!(
-            " Serving ({}) open {}h \u{2014} still need it? ",
-            match mode {
-                ServeMode::Local => "local",
-                ServeMode::Tunnel => "tunnel",
-            },
-            elapsed.as_secs() / 3600
-        )
-    } else {
-        base_title.to_string()
-    };
     let title_color = if elapsed >= eight_hours {
         theme.waiting
     } else {
         theme.title
     };
+    let header_block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(theme.border));
+    let header_inner = header_block.inner(page[0]);
+    frame.render_widget(header_block, page[0]);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border))
-        .title(Line::styled(
-            reminder,
+    let mode_label = match mode {
+        ServeMode::Local => "local",
+        ServeMode::Tunnel => "tunnel",
+    };
+    let mut header_spans = vec![
+        Span::styled(
+            format!(" Remote Access ({mode_label})"),
             Style::default().fg(title_color).bold(),
+        ),
+        Span::styled(
+            format!("  open {}", format_elapsed(elapsed)),
+            Style::default().fg(theme.dimmed),
+        ),
+    ];
+    if elapsed >= eight_hours {
+        header_spans.push(Span::styled(
+            "  still need it?",
+            Style::default().fg(theme.waiting),
         ));
-    let inner = block.inner(dialog);
-    frame.render_widget(block, dialog);
+    }
+    frame.render_widget(Paragraph::new(Line::from(header_spans)), header_inner);
 
-    // Layout: QR, optional kind label, URL row(s) (either a single full
-    // URL for copy-paste, or split URL/Token fallback), optional
-    // passphrase (Tunnel only), elapsed, log tail, footer.
+    // ── Content ──────────────────────────────────────────────────────────
+    let content_area = page[1];
+    let url_inner_width = content_area.width.saturating_sub(2).max(1) as usize;
+    let url_fits_one_line = full_url_len <= url_inner_width;
+
     let show_passphrase = matches!(mode, ServeMode::Tunnel);
     let show_kind_label = kind_label.is_some();
     let show_split_token = !url_fits_one_line && split_token.is_some();
-    let mut constraints = vec![Constraint::Length(qr_height)];
+
+    // Calculate total content height for vertical centering.
+    let mut inner_height: u16 = qr_height + 1 /* spacer */ + 1 /* url */;
     if show_kind_label {
-        constraints.push(Constraint::Length(1)); // kind label
+        inner_height += 1;
     }
-    constraints.push(Constraint::Length(1)); // url (full or base)
     if show_split_token {
-        constraints.push(Constraint::Length(1)); // token (split fallback)
+        inner_height += 1;
     }
     if show_passphrase {
-        constraints.push(Constraint::Length(1)); // passphrase
+        inner_height += 1;
     }
-    constraints.extend_from_slice(&[
-        Constraint::Length(1), // elapsed
-        Constraint::Min(1),    // log tail
-        Constraint::Length(1), // footer
-    ]);
+
+    let v_pad = content_area.height.saturating_sub(inner_height) / 2;
+
+    let mut constraints = vec![Constraint::Length(v_pad)]; // top padding
+    constraints.push(Constraint::Length(qr_height));
+    constraints.push(Constraint::Length(1)); // spacer after QR
+    if show_kind_label {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1)); // url
+    if show_split_token {
+        constraints.push(Constraint::Length(1));
+    }
+    if show_passphrase {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(0)); // bottom padding
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
+        .horizontal_margin(1)
         .constraints(constraints)
-        .split(inner);
+        .split(content_area);
 
+    // Skip the top padding chunk
+    let mut idx: usize = 0;
+    idx += 1; // top padding
+
+    // QR code
     let qr_widget: Vec<Line> = qr_lines
         .iter()
         .map(|l| Line::from(Span::styled(*l, Style::default().fg(theme.text))))
         .collect();
     frame.render_widget(
         Paragraph::new(qr_widget).alignment(Alignment::Center),
-        chunks[0],
+        chunks[idx],
     );
+    idx += 1;
 
-    let mut idx = 1;
+    // Spacer after QR
+    idx += 1;
+
     if let Some(label) = kind_label {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -1839,29 +2122,19 @@ fn render_active(
         );
         idx += 1;
     }
+
+    // URL row(s)
     if url_fits_one_line {
-        // Copy-paste path: full URL on one row, left-aligned so a triple-
-        // click in iTerm / gnome-terminal / Warp selects the whole URL.
-        // No wrap — the dialog width was sized to fit the URL exactly.
-        // The leading " URL: " label lives in the same Paragraph so a
-        // whole-line select catches both the label and the URL; most
-        // users will just triple-click-then-paste, pasting "URL: ..."
-        // and editing the label off, which is still faster than typing
-        // out a 64-char token by hand.
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(url_prefix, Style::default().fg(theme.dimmed)),
                 Span::styled(full_url, Style::default().fg(theme.accent)),
             ]))
-            .alignment(Alignment::Left),
+            .alignment(Alignment::Center),
             chunks[idx],
         );
         idx += 1;
     } else {
-        // Fallback: split URL and Token onto separate centered rows so
-        // neither half clips. User has to copy twice, but that's a
-        // strict improvement over the combined string getting truncated
-        // and the token half disappearing entirely.
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(url_prefix, Style::default().fg(theme.dimmed)),
@@ -1884,12 +2157,12 @@ fn render_active(
         }
     }
 
+    // Passphrase row (Tunnel only)
     if show_passphrase {
         let (pp_label, pp_style) = match passphrase {
             Some(pp) => (pp.to_string(), Style::default().fg(theme.accent).bold()),
             None => (
-                "(set when the daemon started \u{2014} check the shell that ran `aoe serve`)"
-                    .to_string(),
+                "(set when the daemon started; check the shell that ran `aoe serve`)".to_string(),
                 Style::default().fg(theme.dimmed),
             ),
         };
@@ -1901,60 +2174,148 @@ fn render_active(
             .alignment(Alignment::Center),
             chunks[idx],
         );
-        idx += 1;
     }
 
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(
-                "Open for {}  (daemon keeps running if you close this dialog)",
-                format_elapsed(elapsed)
-            ),
-            Style::default().fg(theme.dimmed),
-        )))
-        .alignment(Alignment::Center),
-        chunks[idx],
-    );
-    idx += 1;
-
-    let log_chunk = chunks[idx];
-    let log_lines: Vec<Line> = log_tail
-        .iter()
-        .rev()
-        .take(log_chunk.height.max(1) as usize)
-        .rev()
-        .map(|l| {
-            Line::from(Span::styled(
-                compact_log_line(l),
-                Style::default().fg(theme.dimmed),
-            ))
-        })
-        .collect();
-    let log_block = Block::default()
+    // ── Footer ────────────────────────────────────────────────────────
+    let footer_block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(theme.border))
-        .title(Line::styled(" Log ", Style::default().fg(theme.dimmed)));
-    let log_inner = log_block.inner(log_chunk);
-    frame.render_widget(log_block, log_chunk);
-    frame.render_widget(
-        Paragraph::new(log_lines).wrap(Wrap { trim: false }),
-        log_inner,
-    );
-    idx += 1;
+        .border_style(Style::default().fg(theme.border));
+    let footer_inner = footer_block.inner(page[2]);
+    frame.render_widget(footer_block, page[2]);
 
-    let footer = if urls.len() > 1 {
-        "[Tab] switch URL   [S] Stop   [Esc] Close (daemon keeps running)"
+    let key_style = Style::default().fg(theme.accent);
+    let desc_style = Style::default().fg(theme.dimmed);
+
+    let footer_line: Line = if let Some(confirm) = pending_confirm {
+        let warn_style = Style::default().fg(theme.waiting).bold();
+        match confirm {
+            PendingConfirm::NewPassphrase => Line::from(Span::styled(
+                "Press G again to confirm new passphrase (clients will need it). Any other key cancels.",
+                warn_style,
+            )),
+            PendingConfirm::Restart => Line::from(Span::styled(
+                "Press R again to confirm restart (clears all sessions). Any other key cancels.",
+                warn_style,
+            )),
+        }
     } else {
-        "[S] Stop daemon    [Esc] Close (daemon keeps running)"
+        let mut spans: Vec<Span> = Vec::new();
+        if urls.len() > 1 {
+            spans.extend([
+                Span::styled("Tab", key_style),
+                Span::styled(": URL  ", desc_style),
+            ]);
+        }
+        if matches!(mode, ServeMode::Tunnel) {
+            spans.extend([
+                Span::styled("G", key_style),
+                Span::styled(": new pass  ", desc_style),
+            ]);
+        }
+        spans.extend([
+            Span::styled("R", key_style),
+            Span::styled(": restart  ", desc_style),
+            Span::styled("S", key_style),
+            Span::styled(": stop  ", desc_style),
+            Span::styled("?", key_style),
+            Span::styled(": help  ", desc_style),
+            Span::styled("Esc", key_style),
+            Span::styled(": close", desc_style),
+        ]);
+        Line::from(spans)
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            footer,
-            Style::default().fg(theme.dimmed),
-        )))
-        .alignment(Alignment::Center),
-        chunks[idx],
+        Paragraph::new(footer_line).alignment(Alignment::Center),
+        footer_inner,
     );
+}
+
+fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: ServeMode) {
+    // Size the dialog to fit the longest shortcut description plus
+    // the key column (10 chars) plus padding/borders (~6 chars).
+    // Clamp to terminal width so narrow terminals still work.
+    let dialog_width: u16 = 72.min(area.width.saturating_sub(4));
+    let is_tunnel = matches!(mode, ServeMode::Tunnel);
+    let dialog_height: u16 = if is_tunnel { 20 } else { 14 };
+    let dialog_height = dialog_height.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect {
+        x,
+        y,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    frame.render_widget(Clear, dialog_area);
+    let block = Block::default()
+        .style(Style::default().bg(theme.background))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(" Remote Access Help ")
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let mut shortcuts: Vec<(&str, &str)> = Vec::new();
+    if is_tunnel {
+        shortcuts.push(("G", "New random passphrase and restart server"));
+    }
+    shortcuts.extend([
+        ("R", "Restart server (clears all client sessions)"),
+        ("S", "Stop server, return to mode picker"),
+        ("Tab", "Cycle URLs (when multiple available)"),
+        ("Esc / q", "Close this view (server keeps running)"),
+        ("?", "Toggle this help"),
+    ]);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Keyboard Shortcuts",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    for (key, desc) in &shortcuts {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:14}", key), Style::default().fg(theme.waiting)),
+            Span::styled(*desc, Style::default().fg(theme.text)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    if is_tunnel {
+        lines.extend([
+            Line::from(Span::styled(
+                "About the passphrase",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "  Second factor for internet-exposed tunnels.",
+                Style::default().fg(theme.text),
+            )),
+            Line::from(Span::styled(
+                "  Persists across stop/start. Press G to rotate.",
+                Style::default().fg(theme.text),
+            )),
+        ]);
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Press any key to close",
+        Style::default().fg(theme.dimmed),
+    )));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// Split a URL of the form `https://host/?token=XYZ` into a "clean" base
@@ -1986,8 +2347,7 @@ fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
     // tail, hints, plus remediation steps). Keep it wide + tall enough
     // that the whole message fits without clipping the bottom. Wrap is
     // still on for individual long lines.
-    let dialog = super::centered_rect(area, 100, 24);
-    frame.render_widget(Clear, dialog);
+    frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1996,8 +2356,8 @@ fn render_error(frame: &mut Frame, area: Rect, theme: &Theme, msg: &str) {
             " Serve failed ",
             Style::default().fg(theme.error).bold(),
         ));
-    let inner = block.inner(dialog);
-    frame.render_widget(block, dialog);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2589,5 +2949,47 @@ localhost\thttp://localhost:54321/?token=abc\n";
         std::fs::write(tmp.path().join("serve.last_port"), "not-a-number\n").unwrap();
         let port = load_or_generate_port_from(tmp.path());
         assert!(port >= 49152, "garbage content should be regenerated");
+    }
+
+    /// The help overlay has a fixed width. Every shortcut line must fit
+    /// within `dialog_width - borders(2) - padding(0)` columns so text
+    /// doesn't clip. This test catches the bug before it ships.
+    #[test]
+    fn help_overlay_text_fits_within_dialog_width() {
+        let dialog_width: usize = 72;
+        // Inner width = dialog_width - 2 (left/right border)
+        let inner_width = dialog_width - 2;
+        let key_col: usize = 14; // format!("{:14}", key)
+        let indent: usize = 2; // leading "  "
+
+        // All possible shortcut descriptions (union of Tunnel + Local)
+        let descriptions = [
+            "New random passphrase and restart server",
+            "Restart server (clears all client sessions)",
+            "Stop server, return to mode picker",
+            "Cycle URLs (when multiple available)",
+            "Close this view (server keeps running)",
+            "Toggle this help",
+            // Section headers and other lines
+            "Keyboard Shortcuts",
+            "About the passphrase",
+            "Second factor for internet-exposed tunnels.",
+            "Persists across stop/start. Press G to rotate.",
+            "Press any key to close",
+        ];
+
+        for desc in descriptions {
+            let line_len = indent + key_col + desc.len();
+            assert!(
+                line_len <= inner_width,
+                "Help text clips: {:?} needs {} cols but only {} available \
+                 (dialog_width={}, inner={})",
+                desc,
+                line_len,
+                inner_width,
+                dialog_width,
+                inner_width,
+            );
+        }
     }
 }
