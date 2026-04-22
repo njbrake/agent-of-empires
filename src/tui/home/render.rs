@@ -112,6 +112,13 @@ impl HomeView {
             return;
         }
 
+        // Serve view takes over the whole screen
+        #[cfg(feature = "serve")]
+        if let Some(ref serve) = self.serve_view {
+            serve.render(frame, area, theme);
+            return;
+        }
+
         // Layout: main area + status bar + optional update bar at bottom
         let constraints = if update_info.is_some() {
             vec![
@@ -184,11 +191,6 @@ impl HomeView {
             profile_picker_dialog,
             send_message_dialog,
         );
-
-        #[cfg(feature = "serve")]
-        if let Some(dialog) = &self.serve_dialog {
-            dialog.render(frame, area, theme);
-        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {

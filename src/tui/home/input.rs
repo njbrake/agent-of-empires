@@ -8,6 +8,8 @@ use super::{HomeView, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config, Item, Status};
 use crate::tui::app::Action;
+#[cfg(feature = "serve")]
+use crate::tui::dialogs::ServeAction;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
     HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction,
@@ -104,6 +106,18 @@ impl HomeView {
                 DiffAction::EditFile(path) => {
                     // Launch external editor (vim or nano)
                     return Some(Action::EditFile(path));
+                }
+            }
+        }
+
+        // Handle serve view (full-screen takeover)
+        #[cfg(feature = "serve")]
+        if let Some(ref mut serve) = self.serve_view {
+            match serve.handle_key(key) {
+                ServeAction::Continue => return None,
+                ServeAction::Close => {
+                    self.serve_view = None;
+                    return None;
                 }
             }
         }
@@ -425,19 +439,6 @@ impl HomeView {
             return None;
         }
 
-        // Serve dialog (serve feature only)
-        #[cfg(feature = "serve")]
-        if let Some(dialog) = &mut self.serve_dialog {
-            match dialog.handle_key(key) {
-                DialogResult::Continue => {}
-                DialogResult::Cancel | DialogResult::Submit(_) => {
-                    // Dropping the dialog kills the subprocess via kill_on_drop.
-                    self.serve_dialog = None;
-                }
-            }
-            return None;
-        }
-
         // Send message dialog
         if let Some(dialog) = &mut self.send_message_dialog {
             match dialog.handle_key(key) {
@@ -533,7 +534,7 @@ impl HomeView {
             }
             #[cfg(feature = "serve")]
             KeyCode::Char('R') => {
-                self.serve_dialog = Some(crate::tui::dialogs::ServeDialog::new());
+                self.serve_view = Some(crate::tui::dialogs::ServeView::new());
             }
             #[cfg(not(feature = "serve"))]
             KeyCode::Char('R') => {
