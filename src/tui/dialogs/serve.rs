@@ -778,18 +778,21 @@ impl ServeView {
                         }
                         ServeAction::Continue
                     }
-                    // Restart server (clears all login sessions).
+                    // Restart server. For Tunnel mode this clears all login
+                    // sessions; for Local mode it rebinds the port.
                     // First press shows confirmation, second press executes.
-                    KeyCode::Char('r') | KeyCode::Char('R')
-                        if matches!(mode, ServeMode::Tunnel) =>
-                    {
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
                         if confirmed == Some(PendingConfirm::Restart) {
-                            let pp = passphrase.as_deref().unwrap_or(&self.pending_passphrase);
-                            let pp_owned = pp.to_string();
+                            let pp = if matches!(mode, ServeMode::Tunnel) {
+                                let s = passphrase.as_deref().unwrap_or(&self.pending_passphrase);
+                                Some(s.to_string())
+                            } else {
+                                None
+                            };
                             let m = *mode;
                             let t = *transport;
                             self.pending_confirm = None;
-                            self.do_restart(m, t, Some(pp_owned));
+                            self.do_restart(m, t, pp);
                         } else {
                             self.pending_confirm = Some((PendingConfirm::Restart, Instant::now()));
                         }
@@ -840,8 +843,6 @@ impl ServeView {
         }
     }
 
-    /// Poll files on disk and drive state transitions. Returns true when
-    /// the visible state changed and a redraw is needed.
     /// Restart the daemon and transition to Starting (or directly to
     /// Active if the server comes up fast enough to avoid a flash).
     fn do_restart(
@@ -864,7 +865,7 @@ impl ServeView {
                 if !urls.is_empty() {
                     self.state = ServeViewState::Active {
                         mode,
-                        transport: Some(transport.unwrap_or(TunnelTransport::Tailscale)),
+                        transport,
                         urls,
                         url_index: 0,
                         passphrase,
@@ -915,6 +916,8 @@ impl ServeView {
         self.pending_confirm = None;
     }
 
+    /// Poll files on disk and drive state transitions. Returns true when
+    /// the visible state changed and a redraw is needed.
     pub fn tick(&mut self) -> bool {
         match &mut self.state {
             ServeViewState::ModePicker { flash, .. } => {
@@ -2279,16 +2282,14 @@ fn render_active(
                 "Press [R] again to confirm restart (all clients will be logged out). Any other key cancels.".to_string()
             }
         }
-    } else if matches!(mode, ServeMode::Tunnel) {
-        let tab = if urls.len() > 1 { "[Tab] URL  " } else { "" };
-        format!("{tab}[E] Edit pass  [G] New pass  [R] Restart  [S] Stop  [Esc] Close")
     } else {
-        let tab = if urls.len() > 1 {
-            "[Tab] switch URL   "
+        let tab = if urls.len() > 1 { "[Tab] URL  " } else { "" };
+        let pass_keys = if matches!(mode, ServeMode::Tunnel) {
+            "[E] Edit pass  [G] New pass  "
         } else {
             ""
         };
-        format!("{tab}[S] Stop   [Esc] Close")
+        format!("{tab}{pass_keys}[R] Restart  [S] Stop  [Esc] Close")
     };
     let footer_style = if pending_confirm.is_some() {
         Style::default().fg(theme.waiting).bold()
