@@ -4,9 +4,9 @@
 //!   - `sessions` — session CRUD, ensure-* lifecycle endpoints, and rich diff
 //!   - `git`      — repo cloning and branch listing
 //!   - `system`   — agents, settings, themes, profiles, filesystem,
-//!                  groups, docker, about, devices
+//!     groups, docker, about, devices
 //!   - this file  — shared validation helpers + module declarations and
-//!                  re-exports so external callers keep `api::*` paths.
+//!     re-exports so external callers keep `api::*` paths.
 
 pub(super) use super::AppState;
 

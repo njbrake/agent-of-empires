@@ -215,7 +215,7 @@ pub async fn list_branches(
             })
             .collect();
 
-        result.sort_by(|a, b| b.is_current.cmp(&a.is_current));
+        result.sort_by_key(|b| std::cmp::Reverse(b.is_current));
 
         Ok(result)
     })

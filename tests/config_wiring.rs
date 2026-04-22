@@ -199,7 +199,7 @@ fn test_parse_key_value_list_via_field_apply() {
     let mut config = Config::default();
 
     // Simulate what apply_field_to_global does for AgentCommandOverride
-    let list_items = vec!["claude=my-wrapper".to_string()];
+    let list_items = ["claude=my-wrapper".to_string()];
     let map: HashMap<String, String> = list_items
         .iter()
         .filter_map(|item| {
@@ -215,7 +215,7 @@ fn test_parse_key_value_list_via_field_apply() {
     );
 
     // Verify entries WITHOUT '=' are silently dropped (the root cause of the bug)
-    let bad_items = vec!["just-a-command".to_string()];
+    let bad_items = ["just-a-command".to_string()];
     let bad_map: HashMap<String, String> = bad_items
         .iter()
         .filter_map(|item| {

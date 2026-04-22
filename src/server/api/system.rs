@@ -274,7 +274,7 @@ pub async fn browse_filesystem(
                 is_git_repo,
             });
         }
-        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        entries.sort_by_key(|e| e.name.to_lowercase());
         let has_more = entries.len() > limit;
         entries.truncate(limit);
         Ok(BrowseResponse { entries, has_more })
