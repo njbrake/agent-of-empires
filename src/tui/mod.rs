@@ -111,6 +111,8 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     }
     let result = app.run(&mut terminal).await;
 
+    crate::session::clear_tui_heartbeat();
+
     // Restore terminal
     disable_raw_mode()?;
     execute!(

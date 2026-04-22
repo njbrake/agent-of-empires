@@ -542,6 +542,25 @@ async fn fire_due_pushes(
         return;
     }
 
+    // Suppress pushes when the user is actively using aoe (TUI or web
+    // dashboard). They can already see session state changes in real
+    // time, so OS-level push notifications are noise.
+    let suppress_reason = if crate::session::is_tui_active(std::time::Duration::from_secs(30)) {
+        Some("TUI is active")
+    } else if app_state.web_active_within(std::time::Duration::from_secs(30)) {
+        Some("web dashboard is active")
+    } else {
+        None
+    };
+    if let Some(reason) = suppress_reason {
+        tracing::debug!(
+            "push: suppressed {} notification(s), {}",
+            to_fire.len(),
+            reason,
+        );
+        return;
+    }
+
     // Snapshot instances once; fire_due_pushes holds no locks across
     // the tokio::spawn boundary below.
     let instances = app_state.instances.read().await.clone();

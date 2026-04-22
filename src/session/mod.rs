@@ -42,6 +42,7 @@ pub use storage::Storage;
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub const DEFAULT_PROFILE: &str = "default";
 
@@ -174,4 +175,42 @@ pub fn set_default_profile(name: &str) -> Result<()> {
     config.default_profile = name.to_string();
     save_config(&config)?;
     Ok(())
+}
+
+// ── TUI heartbeat ──────────────────────────────────────────────────────────
+
+const TUI_HEARTBEAT_FILE: &str = "tui.active";
+
+/// Write (or touch) the TUI heartbeat file so the push consumer knows the
+/// TUI is currently running. Called periodically from the TUI event loop.
+pub fn write_tui_heartbeat() {
+    if let Ok(dir) = get_app_dir() {
+        let _ = fs::write(dir.join(TUI_HEARTBEAT_FILE), b"");
+    }
+}
+
+/// Remove the heartbeat file on TUI exit.
+pub fn clear_tui_heartbeat() {
+    if let Ok(dir) = get_app_dir() {
+        let _ = fs::remove_file(dir.join(TUI_HEARTBEAT_FILE));
+    }
+}
+
+/// Returns true if the TUI heartbeat file was modified within `threshold`.
+/// Used by the push consumer to suppress notifications when the user is
+/// actively watching the TUI.
+pub fn is_tui_active(threshold: Duration) -> bool {
+    let dir = match get_app_dir() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let meta = match fs::metadata(dir.join(TUI_HEARTBEAT_FILE)) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let modified = match meta.modified() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    modified.elapsed().unwrap_or(Duration::MAX) < threshold
 }

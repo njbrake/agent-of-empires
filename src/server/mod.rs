@@ -216,6 +216,11 @@ pub struct AppState {
     /// primary client's resize messages are applied to its PTY, preventing
     /// multiple browser viewports from fighting over the tmux window size.
     pub session_primaries: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    /// Epoch-millis timestamp of the most recent authenticated API request.
+    /// Updated by auth middleware on every successful auth. The push consumer
+    /// checks this to suppress notifications when someone is actively using
+    /// the web dashboard (on any device).
+    pub last_web_activity: std::sync::atomic::AtomicI64,
 }
 
 impl AppState {
@@ -235,6 +240,31 @@ impl AppState {
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     }
+
+    /// Record that an authenticated web client just made a request.
+    pub fn touch_web_activity(&self) {
+        self.last_web_activity.store(
+            epoch_millis(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Returns true if an authenticated web request arrived within `threshold`.
+    pub fn web_active_within(&self, threshold: std::time::Duration) -> bool {
+        let last = self.last_web_activity.load(std::sync::atomic::Ordering::Relaxed);
+        if last == 0 {
+            return false;
+        }
+        let elapsed_ms = epoch_millis() - last;
+        elapsed_ms >= 0 && (elapsed_ms as u64) < threshold.as_millis() as u64
+    }
+}
+
+fn epoch_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 // ── Server ──────────────────────────────────────────────────────────────────
@@ -342,6 +372,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         push: push_state,
         push_enabled,
         web_config: config.web.clone(),
+        last_web_activity: std::sync::atomic::AtomicI64::new(0),
     });
 
     let app = build_router(state.clone());
