@@ -104,11 +104,35 @@ fn remember_passphrase(pp: &str) {
     }
 }
 
-fn recall_passphrase() -> Option<String> {
+fn recall_passphrase_in_memory() -> Option<String> {
     LAST_SPAWNED_PASSPHRASE.lock().ok()?.clone()
 }
 
+fn recall_passphrase() -> Option<String> {
+    if let Some(pp) = recall_passphrase_in_memory() {
+        return Some(pp);
+    }
+    // Fall back to the on-disk file written by the server on startup.
+    // Lets the TUI display the passphrase after a restart or when the
+    // daemon was launched from the CLI (not this TUI process).
+    let dir = crate::session::get_app_dir().ok()?;
+    let raw = std::fs::read_to_string(dir.join("serve.passphrase")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn forget_passphrase() {
+    forget_passphrase_in_memory();
+    if let Ok(dir) = crate::session::get_app_dir() {
+        let _ = std::fs::remove_file(dir.join("serve.passphrase"));
+    }
+}
+
+fn forget_passphrase_in_memory() {
     if let Ok(mut guard) = LAST_SPAWNED_PASSPHRASE.lock() {
         *guard = None;
     }
@@ -633,11 +657,20 @@ impl ServeDialog {
                 let mode = *mode;
                 let urls = read_serve_urls();
                 if !urls.is_empty() {
+                    // If we entered Starting without a passphrase (e.g.
+                    // the TUI reattached to a daemon started elsewhere),
+                    // retry the disk fallback now that the server has had
+                    // time to finish startup and write serve.passphrase.
+                    let pp = match passphrase.clone() {
+                        Some(pp) => Some(pp),
+                        None if matches!(mode, ServeMode::Tunnel) => recall_passphrase(),
+                        None => None,
+                    };
                     self.state = ServeDialogState::Active {
                         mode,
                         urls,
                         url_index: 0,
-                        passphrase: passphrase.clone(),
+                        passphrase: pp,
                         opened_at: Instant::now(),
                         log_tail: initial_log_tail(),
                         log_offset: log_file_size(),
@@ -2300,26 +2333,27 @@ mod tests {
 
     // These tests share the module-global LAST_SPAWNED_PASSPHRASE, so they
     // are combined into one #[test] to avoid cross-test interference when
-    // cargo runs them in parallel.
+    // cargo runs them in parallel. Uses the in-memory helpers so we don't
+    // touch the user's real serve.passphrase file during `cargo test`.
     #[test]
     fn passphrase_cache_roundtrip() {
-        forget_passphrase();
-        assert_eq!(recall_passphrase(), None);
+        forget_passphrase_in_memory();
+        assert_eq!(recall_passphrase_in_memory(), None);
 
         remember_passphrase("four word diceware phrase");
         assert_eq!(
-            recall_passphrase().as_deref(),
+            recall_passphrase_in_memory().as_deref(),
             Some("four word diceware phrase")
         );
 
         remember_passphrase("a different phrase later");
         assert_eq!(
-            recall_passphrase().as_deref(),
+            recall_passphrase_in_memory().as_deref(),
             Some("a different phrase later")
         );
 
-        forget_passphrase();
-        assert_eq!(recall_passphrase(), None);
+        forget_passphrase_in_memory();
+        assert_eq!(recall_passphrase_in_memory(), None);
     }
 
     #[test]

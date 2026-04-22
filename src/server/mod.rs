@@ -294,6 +294,15 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         info!("Passphrase login enabled (second-factor authentication)");
     }
 
+    // Persist the plaintext passphrase so the TUI can display it on
+    // reopen, including after a TUI restart or when the daemon was
+    // started from the CLI. Owner-only perms; cleaned up on shutdown.
+    if let Some(pp) = passphrase {
+        if let Ok(app_dir) = crate::session::get_app_dir() {
+            write_secret_file(&app_dir.join("serve.passphrase"), pp);
+        }
+    }
+
     // Push notifications: initialize only when the operator flag is on at
     // startup. Flipping it later requires a server restart to take effect.
     let config = crate::session::resolve_config(profile).unwrap_or_default();
@@ -631,6 +640,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // Clean up tunnel (cancels health monitor, then sends SIGTERM to cloudflared)
     if let Some(handle) = tunnel_handle {
         handle.shutdown().await;
+    }
+
+    if let Ok(app_dir) = crate::session::get_app_dir() {
+        let _ = std::fs::remove_file(app_dir.join("serve.passphrase"));
     }
 
     Ok(())
