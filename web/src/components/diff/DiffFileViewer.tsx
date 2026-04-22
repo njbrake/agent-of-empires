@@ -37,9 +37,12 @@ const STATUS_COLORS: Record<string, string> = {
 function DiffLine({
   line,
   tokens,
+  highlightPending,
 }: {
   line: RichDiffLine;
   tokens?: SyntaxToken[];
+  /** True while Shiki is loading; hides content to avoid a flash of unstyled text. */
+  highlightPending?: boolean;
 }) {
   let bgClass = "";
   let textClass = "text-text-secondary";
@@ -88,7 +91,7 @@ function DiffLine({
         {prefix}
       </span>
       <span
-        className={`flex-1 font-mono text-[12px] whitespace-pre${tokens ? "" : ` ${textClass}`}`}
+        className={`flex-1 font-mono text-[12px] whitespace-pre transition-opacity duration-100${tokens ? "" : ` ${textClass}`}${highlightPending ? " opacity-0" : ""}`}
       >
         {renderContent()}
       </span>
@@ -99,9 +102,11 @@ function DiffLine({
 function HunkView({
   hunk,
   lineTokens,
+  highlightPending,
 }: {
   hunk: RichDiffHunk;
   lineTokens?: SyntaxToken[][];
+  highlightPending?: boolean;
 }) {
   return (
     <div>
@@ -118,15 +123,17 @@ function HunkView({
           key={`${line.old_line_num ?? "_"}-${line.new_line_num ?? "_"}-${i}`}
           line={line}
           tokens={lineTokens?.[i]}
+          highlightPending={highlightPending}
         />
       ))}
     </div>
   );
 }
 
+// TODO: remove this line - test change for diff viewer dogfooding
 export function DiffFileViewer({ sessionId, filePath, revision, onClose }: Props) {
   const { diff, loading, error } = useFileDiff(sessionId, filePath, revision);
-  const tokenGrid = useHighlightedLines(
+  const { tokens: tokenGrid, loading: highlightLoading } = useHighlightedLines(
     diff?.hunks ?? [],
     diff?.file.path ?? filePath,
   );
@@ -219,6 +226,7 @@ export function DiffFileViewer({ sessionId, filePath, revision, onClose }: Props
                 key={`${hunk.old_start}-${hunk.new_start}`}
                 hunk={hunk}
                 lineTokens={tokenGrid?.[hi]}
+                highlightPending={highlightLoading}
               />
             ))}
           </div>

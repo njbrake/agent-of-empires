@@ -24,19 +24,28 @@ interface GridState {
   path: string;
 }
 
+export interface HighlightResult {
+  /** Tokenized lines, or null if the language is unrecognised. */
+  tokens: TokenGrid | null;
+  /** True while Shiki is loading the grammar and tokenizing. */
+  loading: boolean;
+}
+
 /**
  * Asynchronously syntax-highlights all lines in the given diff hunks.
  *
- * Returns `null` while loading or if the language is unrecognised (caller
- * falls back to plain text). The hook lazy-loads the Shiki grammar for the
- * file's language so we never block first paint.
+ * Returns `{ tokens, loading }`. `loading` is true while the grammar is
+ * being fetched so the caller can avoid flashing unstyled text. For
+ * unrecognised languages, `loading` is always false and `tokens` is null.
  */
 export function useHighlightedLines(
   hunks: RichDiffHunk[],
   filePath: string,
-): TokenGrid | null {
+): HighlightResult {
   const [state, setState] = useState<GridState | null>(null);
   const requestRef = useRef(0);
+
+  const hasLang = !!langImportForPath(filePath);
 
   useEffect(() => {
     const reqId = ++requestRef.current;
@@ -104,6 +113,7 @@ export function useHighlightedLines(
   }, [hunks, filePath]);
 
   // Only return the grid if it matches the current file path.
-  if (state && state.path === filePath) return state.grid;
-  return null;
+  const tokens = state && state.path === filePath ? state.grid : null;
+  // Loading: language is recognised but tokens haven't arrived yet.
+  return { tokens, loading: hasLang && !tokens };
 }
