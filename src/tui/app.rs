@@ -202,10 +202,16 @@ impl App {
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
+        let mut last_heartbeat = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
         const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
+        const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+        // Signal that the TUI is active so the web push consumer can
+        // suppress notifications while the user is watching the dashboard.
+        crate::session::write_tui_heartbeat();
 
         loop {
             // Force full redraw if needed (e.g., after returning from tmux).
@@ -327,6 +333,11 @@ impl App {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;
+            }
+
+            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+                crate::session::write_tui_heartbeat();
+                last_heartbeat = std::time::Instant::now();
             }
 
             // Animated spinners (rattles) need periodic redraws, but only at

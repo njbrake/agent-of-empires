@@ -501,6 +501,24 @@ async fn fire_due_pushes(
     };
     let push = push.clone();
 
+    // Suppress pushes when the user is actively using aoe (TUI or web
+    // dashboard). They can already see session state changes in real
+    // time, so OS-level push notifications are noise. Checked BEFORE
+    // the dwell collection loop so that dwell timers are preserved:
+    // when the user stops using aoe, any session that has been waiting
+    // past the dwell threshold fires on the next tick.
+    let suppress_reason = if crate::session::is_tui_active(std::time::Duration::from_secs(30)) {
+        Some("TUI is active")
+    } else if app_state.web_active_within(std::time::Duration::from_secs(30)) {
+        Some("web dashboard is active")
+    } else {
+        None
+    };
+    if let Some(reason) = suppress_reason {
+        tracing::debug!("push: suppressed, {}", reason);
+        return;
+    }
+
     let now = std::time::Instant::now();
     // Collect (instance_id, title, event) tuples to fire. Firing mutates
     // the dwell map (clear `*_since`, set `last_notified`) so we collect
