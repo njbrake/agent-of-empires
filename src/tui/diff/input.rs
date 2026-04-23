@@ -172,50 +172,19 @@ mod tests {
     use super::*;
     use crate::tui::dialogs::InfoDialog;
     use crossterm::event::KeyModifiers;
-    use std::collections::HashMap;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
     fn make_diff_view_with_warning() -> DiffView {
-        DiffView {
-            repo_path: PathBuf::from("/tmp/fake"),
-            base_branch: "main".to_string(),
-            files: Vec::new(),
-            selected_file: 0,
-            diff_cache: HashMap::new(),
-            scroll_offset: 0,
-            visible_lines: 20,
-            total_lines: 0,
-            branch_select: None,
-            error_message: None,
-            success_message: None,
-            context_lines: 3,
-            show_help: false,
-            file_list_width: 35,
-            warning_dialog: Some(InfoDialog::new("Warning", "Test warning")),
-        }
+        let mut view = DiffView::test_default();
+        view.warning_dialog = Some(InfoDialog::new("Warning", "Test warning"));
+        view
     }
 
     fn make_diff_view_no_warning() -> DiffView {
-        DiffView {
-            repo_path: PathBuf::from("/tmp/fake"),
-            base_branch: "main".to_string(),
-            files: Vec::new(),
-            selected_file: 0,
-            diff_cache: HashMap::new(),
-            scroll_offset: 0,
-            visible_lines: 20,
-            total_lines: 0,
-            branch_select: None,
-            error_message: None,
-            success_message: None,
-            context_lines: 3,
-            show_help: false,
-            file_list_width: 35,
-            warning_dialog: None,
-        }
+        DiffView::test_default()
     }
 
     #[test]

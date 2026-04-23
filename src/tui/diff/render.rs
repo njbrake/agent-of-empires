@@ -469,6 +469,23 @@ impl DiffView {
         }
 
         frame.render_widget(Paragraph::new(lines), inner);
+
+        // Render scrollbar when branches overflow, matching the diff content pane style
+        if state.branches.len() > inner.height as usize {
+            let max_scroll = state.branches.len().saturating_sub(inner.height as usize);
+            let scrollbar_area = Rect {
+                x: dialog_area.x + dialog_area.width - 1,
+                y: dialog_area.y + 1,
+                width: 1,
+                height: dialog_area.height.saturating_sub(2),
+            };
+            let mut scrollbar_state =
+                ScrollbarState::new(max_scroll + 1).position(scroll.scroll_offset);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -557,27 +574,11 @@ mod tests {
     use crate::tui::styles::Theme;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
 
     fn make_view_with_branches(branches: Vec<String>, selected: usize) -> DiffView {
-        DiffView {
-            repo_path: PathBuf::from("/tmp/fake"),
-            base_branch: "main".to_string(),
-            files: Vec::new(),
-            selected_file: 0,
-            diff_cache: HashMap::new(),
-            scroll_offset: 0,
-            visible_lines: 20,
-            total_lines: 0,
-            branch_select: Some(BranchSelectState { branches, selected }),
-            error_message: None,
-            success_message: None,
-            context_lines: 3,
-            show_help: false,
-            file_list_width: 35,
-            warning_dialog: None,
-        }
+        let mut view = DiffView::test_default();
+        view.branch_select = Some(BranchSelectState { branches, selected });
+        view
     }
 
     fn render_dialog_to_string(view: &mut DiffView) -> String {
