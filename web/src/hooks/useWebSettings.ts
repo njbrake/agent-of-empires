@@ -6,12 +6,14 @@ export interface WebSettings {
   mobileFontSize: number;
   desktopFontSize: number;
   autoOpenKeyboard: boolean;
+  diffViewMode: "flat" | "tree";
 }
 
 const DEFAULTS: WebSettings = {
   mobileFontSize: 8,
   desktopFontSize: 14,
   autoOpenKeyboard: true,
+  diffViewMode: "flat",
 };
 
 function getSnapshot(): WebSettings {
