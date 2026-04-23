@@ -432,7 +432,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onOpenPalette={() => setShowPalette(true)}
         onToggleDiff={toggleDiff}
         diffCollapsed={diffCollapsed}
-        diffFileCount={diffFiles.length}
         onOpenSettings={handleOpenSettings}
         onOpenHelp={handleOpenHelp}
         onOpenAbout={handleOpenAbout}
