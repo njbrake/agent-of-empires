@@ -30,6 +30,14 @@ export interface TerminalState {
   retryCount: number;
   retryCountdown: number;
   isPrimary: boolean;
+  /**
+   * True when the user has scrolled up and tmux is (likely) in copy-mode.
+   * Set when the first wheel-up byte goes out after being false; cleared
+   * by an explicit call to `exitScrollback()` from the "Back to live" UI.
+   * We use the client-side send as the signal rather than a server-sent
+   * notification because tmux copy-mode state is not exposed on the PTY.
+   */
+  isInScrollback: boolean;
 }
 
 /**
@@ -57,6 +65,7 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     retryCount: 0,
     retryCountdown: 0,
     isPrimary: true,
+    isInScrollback: false,
   });
 
   useEffect(() => {
@@ -237,6 +246,7 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
           retryCount: 0,
           retryCountdown: 0,
           isPrimary: true,
+          isInScrollback: false,
         });
         term.focus();
         // Claim primary immediately so this client's resize is applied.
@@ -365,6 +375,12 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
 
     // Touch swipe emits SGR mouse-wheel escape sequences to the PTY,
     // so tmux mouse-mode enters copy-mode and scrolls.
+    //
+    // The first wheel-up in a live pane pushes tmux into copy-mode
+    // (see src/tmux/utils.rs::append_aoe_wheel_bindings_args for the
+    // server-side binding). Flip `isInScrollback` so the TerminalView
+    // can show the "Back to live" button. The user exits explicitly
+    // via exitScrollback(); tmux's binding no longer auto-exits.
     const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
     const sendWheel = (dir: "up" | "down", count: number) => {
@@ -373,6 +389,11 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
       if (ws?.readyState !== WebSocket.OPEN) return;
       for (let i = 0; i < count; i++) {
         ws.send(new TextEncoder().encode(seq));
+      }
+      if (dir === "up") {
+        setState((prev) =>
+          prev.isInScrollback ? prev : { ...prev, isInScrollback: true },
+        );
       }
     };
 
@@ -778,6 +799,18 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     }
   }, []);
 
+  // Sends ESC to exit tmux copy-mode. The tmux binding in
+  // src/tmux/utils.rs removes the `-e` flag so copy-mode does not
+  // auto-exit on scroll-down-past-bottom; this is the only path out.
+  const exitScrollback = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(new TextEncoder().encode("\x1b"));
+    }
+    setState((prev) =>
+      prev.isInScrollback ? { ...prev, isInScrollback: false } : prev,
+    );
+  }, []);
+
   return {
     containerRef,
     termRef,
@@ -785,6 +818,7 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     manualReconnect,
     sendData,
     activate,
+    exitScrollback,
     ctrlActiveRef,
     clearCtrlRef,
   };

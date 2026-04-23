@@ -102,6 +102,73 @@ pub fn append_window_size_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
+/// Append custom wheel-scroll bindings scoped to aoe sessions (`aoe_*`).
+///
+/// Fixes the "scroll-up wraps to bottom" bug reported on the mobile web
+/// client. Root cause: tmux's default `WheelUpPane` binding enters
+/// copy-mode with the `-e` flag, which exits copy-mode when the user
+/// subsequently scrolls down past the bottom of the history. On mobile
+/// that oscillation is easy to trigger accidentally and the snap-to-live
+/// discards the user's scroll position.
+///
+/// This override:
+///   1. Root WheelUpPane: for aoe_* sessions, enter copy-mode WITHOUT
+///      the `-e` flag. Scrolling down past the bottom stops at the
+///      bottom but stays in copy-mode. The web UI supplies an explicit
+///      "Back to live" button that sends Escape to exit.
+///   2. Copy-mode Wheel[Up/Down]Pane: for aoe_* sessions, scroll 15
+///      lines per wheel tick instead of the default 5. Claude's UI
+///      re-renders frequently and fills scrollback with near-duplicate
+///      frames; a larger step helps the user traverse the duplicates.
+///
+/// Scoped via `#{m:aoe_*,#{session_name}}` so the user's own tmux
+/// sessions on the same server keep their default behavior.
+///
+/// `bind-key` is server-global and idempotent; re-issuing the same
+/// binding on every aoe session create is harmless and ensures the
+/// override is in place even if tmux has been restarted.
+///
+/// Uses tmux 3.0 brace-block command syntax so nested if-shell branches
+/// don't require escaping nightmares.
+pub fn append_aoe_wheel_bindings_args(args: &mut Vec<String>) {
+    // Root: WheelUpPane — enter copy-mode without `-e` for aoe_* sessions.
+    // Non-aoe branch preserves tmux's default binding.
+    args.extend([
+        ";".to_string(),
+        "bind-key".to_string(),
+        "-T".to_string(),
+        "root".to_string(),
+        "WheelUpPane".to_string(),
+        r##"{ if-shell -F "#{m:aoe_*,#{session_name}}" { if-shell -F "#{mouse_any_flag}" { send-keys -M } { if-shell -F "#{pane_in_mode}" { send-keys -M } { copy-mode ; send-keys -M } } } { if-shell -F "#{mouse_any_flag}" { send-keys -M } { if-shell -F "#{pane_in_mode}" { send-keys -M } { copy-mode -e ; send-keys -M } } } }"##.to_string(),
+    ]);
+
+    // Copy-mode tables: 15-line scroll for aoe_* sessions, 5 elsewhere.
+    // Override both the emacs and vi tables so either config is covered.
+    for (table, direction) in [
+        ("copy-mode", "scroll-up"),
+        ("copy-mode", "scroll-down"),
+        ("copy-mode-vi", "scroll-up"),
+        ("copy-mode-vi", "scroll-down"),
+    ] {
+        let key = if direction == "scroll-up" {
+            "WheelUpPane"
+        } else {
+            "WheelDownPane"
+        };
+        let binding = format!(
+            r##"{{ if-shell -F "#{{m:aoe_*,#{{session_name}}}}" {{ send-keys -X -N 15 {direction} }} {{ send-keys -X -N 5 {direction} }} }}"##,
+        );
+        args.extend([
+            ";".to_string(),
+            "bind-key".to_string(),
+            "-T".to_string(),
+            table.to_string(),
+            key.to_string(),
+            binding,
+        ]);
+    }
+}
+
 pub fn is_pane_dead(session_name: &str) -> bool {
     // Use `^.0` to target the first window's first pane regardless of
     // base-index or which pane is active, so the check always hits the
