@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { WTerm } from "@wterm/dom";
 import type {
   ActivateMessage,
+  PauseOutputMessage,
   PrimaryStatusMessage,
   ResizeMessage,
+  ResumeOutputMessage,
 } from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
@@ -423,9 +425,18 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
         ws.send(new TextEncoder().encode(seq));
       }
       if (clamp && dir === "up") {
-        setState((prev) =>
-          prev.isInScrollback ? prev : { ...prev, isInScrollback: true },
-        );
+        setState((prev) => {
+          if (prev.isInScrollback) return prev;
+          // First wheel-up: transitioning into scrollback. Ask the
+          // server to SIGSTOP the pane's process tree so claude stops
+          // pushing new lines into scrollback under the reader.
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({ type: "pause_output" } as PauseOutputMessage),
+            );
+          }
+          return { ...prev, isInScrollback: true };
+        });
       }
     };
     // Expose so exitScrollback can reset the depth in sync with the
@@ -840,9 +851,18 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
   // Mobile-only: sends ESC to force tmux out of copy-mode. On mobile we
   // clamp scroll-down so tmux never reaches the bottom on its own; the
   // button is the only way back to live.
+  //
+  // Also sends `resume_output` so the server SIGCONTs the pane's
+  // process tree (which was paused on entry to scrollback). The server
+  // auto-resumes on disconnect as a safety net, so forgetting this is
+  // annoying but not permanent.
   const exitScrollback = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(new TextEncoder().encode("\x1b"));
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({ type: "resume_output" } as ResumeOutputMessage),
+      );
+      ws.send(new TextEncoder().encode("\x1b"));
     }
     resetScrollbackDepthRef.current?.();
     setState((prev) =>

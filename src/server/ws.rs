@@ -344,6 +344,36 @@ async fn handle_terminal_ws(
                                         .await;
                                 }
                             }
+                            ControlMessage::PauseOutput => {
+                                // Mobile client entered tmux scrollback. SIGSTOP
+                                // the pane's process tree so claude stops
+                                // emitting bytes and the scrollback the user
+                                // is reading stays put. Skipped in read-only
+                                // mode (viewers shouldn't affect live sessions).
+                                if read_only {
+                                    continue;
+                                }
+                                let tmux_name = tmux_name_for_recv.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    if let Some(pid) = crate::process::get_pane_pid(&tmux_name) {
+                                        crate::process::stop_process_tree(pid);
+                                    }
+                                })
+                                .await
+                                .ok();
+                            }
+                            ControlMessage::ResumeOutput => {
+                                // SIGCONT the pane process tree. Always safe
+                                // (no-op if not stopped).
+                                let tmux_name = tmux_name_for_recv.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    if let Some(pid) = crate::process::get_pane_pid(&tmux_name) {
+                                        crate::process::continue_process_tree(pid);
+                                    }
+                                })
+                                .await
+                                .ok();
+                            }
                         }
                     } else if !read_only {
                         // Plain text input -> PTY stdin (blocked in read-only mode).
@@ -388,6 +418,21 @@ async fn handle_terminal_ws(
 
     // Release primary if this client held it, so the next client can take over.
     release_primary(&primaries, &tmux_name, &client_id).await;
+
+    // Safety net: if this client paused the pane's process tree via
+    // PauseOutput but the WebSocket disconnected before ResumeOutput
+    // was delivered (WiFi blip, app close, etc.), the process would
+    // stay SIGSTOP-ed indefinitely. Always send SIGCONT on disconnect.
+    // SIGCONT is a no-op for a process that's not stopped, so this is
+    // safe to invoke unconditionally.
+    let tmux_name_cleanup = tmux_name.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(pid) = crate::process::get_pane_pid(&tmux_name_cleanup) {
+            crate::process::continue_process_tree(pid);
+        }
+    })
+    .await
+    .ok();
 
     // Clean up: kill the tmux attach process
     let _ = child.kill();
@@ -459,6 +504,19 @@ enum ControlMessage {
     /// snaps to this client's viewport without requiring a keystroke.
     #[serde(rename = "activate")]
     Activate,
+    /// Pause the pane's foreground process (SIGSTOP). Sent by mobile
+    /// web clients when the user enters tmux scrollback — without
+    /// pausing, claude's continued output keeps shifting scrollback
+    /// under the reader. Paired with `resume_output` on exit. The
+    /// server also auto-resumes on WebSocket close to prevent a
+    /// dropped connection from leaving the process permanently
+    /// suspended.
+    #[serde(rename = "pause_output")]
+    PauseOutput,
+    /// Resume the pane's foreground process (SIGCONT). Inverse of
+    /// `pause_output`. SIGCONT to a non-stopped process is a no-op.
+    #[serde(rename = "resume_output")]
+    ResumeOutput,
 }
 
 #[cfg(test)]

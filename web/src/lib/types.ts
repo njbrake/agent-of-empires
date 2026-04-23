@@ -53,6 +53,17 @@ export interface ActivateMessage {
   type: "activate";
 }
 
+/** Pause the pane's foreground process (SIGSTOP). Sent by mobile web
+ *  clients when entering tmux scrollback so claude's continued output
+ *  doesn't shift what the user is reading. Paired with `resume_output`. */
+export interface PauseOutputMessage {
+  type: "pause_output";
+}
+
+export interface ResumeOutputMessage {
+  type: "resume_output";
+}
+
 /** Server → client control message indicating primary status */
 export interface PrimaryStatusMessage {
   type: "primary_status";

@@ -66,6 +66,11 @@ async function swipeDown(page: Page, travel: number) {
   await fireTouches(page, "touchend", []);
 }
 
+function hasText(handle: MockHandle, needle: string): boolean {
+  const buf = Buffer.from(needle);
+  return handle.wsMessages.some((m) => m.includes(buf));
+}
+
 test.describe("Mobile scrollback exit", () => {
   test("button appears after swipe-up and sends Escape on tap", async ({
     page,
@@ -99,6 +104,32 @@ test.describe("Mobile scrollback exit", () => {
     const newMsgs = handle.wsMessages.slice(before);
     const sawEsc = newMsgs.some((m) => m.includes(Buffer.from(ESC)));
     expect(sawEsc).toBe(true);
+  });
+
+  test("entering scrollback sends pause_output, exiting sends resume_output", async ({
+    page,
+  }) => {
+    await installTerminalSpies(page);
+    const handle = await mockTerminalApis(page);
+    await page.goto("/");
+    await seedSettings(page, { mobileFontSize: 14 });
+    await page.reload();
+    await openSession(page);
+
+    // No pause sent yet.
+    expect(hasText(handle, '"type":"pause_output"')).toBe(false);
+
+    await swipeUp(page, 300);
+    await expect
+      .poll(() => hasText(handle, '"type":"pause_output"'), { timeout: 2_000 })
+      .toBe(true);
+    // Still no resume until the user exits.
+    expect(hasText(handle, '"type":"resume_output"')).toBe(false);
+
+    await page.getByRole("button", { name: "Back to live" }).click();
+    await expect
+      .poll(() => hasText(handle, '"type":"resume_output"'), { timeout: 2_000 })
+      .toBe(true);
   });
 
   test("scroll-down clamp: fewer wheel-downs sent than wheel-ups", async ({
