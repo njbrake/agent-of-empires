@@ -62,8 +62,14 @@ function PairedTerminal({
   const { isMobile, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
 
-  ctrlActiveRef.current = ctrlActive;
-  clearCtrlRef.current = () => setCtrlActive(false);
+  // See TerminalView.tsx for why these syncs live in effects rather
+  // than running during render.
+  useEffect(() => {
+    ctrlActiveRef.current = ctrlActive;
+  });
+  useEffect(() => {
+    clearCtrlRef.current = () => setCtrlActive(false);
+  }, [clearCtrlRef]);
 
   useEffect(() => {
     let cancelled = false;

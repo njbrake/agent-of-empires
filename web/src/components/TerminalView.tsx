@@ -39,8 +39,17 @@ export function TerminalView({ session }: Props) {
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
 
-  ctrlActiveRef.current = ctrlActive;
-  clearCtrlRef.current = () => setCtrlActive(false);
+  // Sync React state → hook ref in an effect. The mobile toolbar toggles
+  // `ctrlActive` but the wterm native onData callback reads the ref to
+  // decide whether to transform the next keystroke. Writing refs during
+  // render trips react-hooks/refs; a commit-phase effect does the same
+  // work without tripping the lint.
+  useEffect(() => {
+    ctrlActiveRef.current = ctrlActive;
+  });
+  useEffect(() => {
+    clearCtrlRef.current = () => setCtrlActive(false);
+  }, [clearCtrlRef]);
 
   useEffect(() => {
     const controller = new AbortController();
