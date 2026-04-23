@@ -69,7 +69,7 @@ impl Session {
         append_pane_base_index_args(&mut args, &self.name);
         append_mouse_on_args(&mut args, &self.name);
         append_window_size_args(&mut args, &self.name);
-        append_aoe_wheel_bindings_args(&mut args);
+        append_aoe_wheel_bindings_args(&mut args, &self.name);
 
         let output = Command::new("tmux").args(&args).output()?;
 

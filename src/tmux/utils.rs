@@ -102,71 +102,73 @@ pub fn append_window_size_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
-/// Append custom wheel-scroll bindings scoped to aoe sessions (`aoe_*`).
+/// Key table name for aoe's custom wheel-scroll bindings. Sessions that
+/// opt in via `set-option key-table aoe-scroll` get our overrides;
+/// sessions left on the default `root` table are unaffected.
+const AOE_SCROLL_KEY_TABLE: &str = "aoe-scroll";
+
+/// Append custom wheel-scroll bindings for this aoe session.
 ///
 /// Fixes the "scroll-up wraps to bottom" bug reported on the mobile web
 /// client. Root cause: tmux's default `WheelUpPane` binding enters
 /// copy-mode with the `-e` flag, which exits copy-mode when the user
 /// subsequently scrolls down past the bottom of the history. On mobile
 /// that oscillation is easy to trigger accidentally and the snap-to-live
-/// discards the user's scroll position.
+/// discards the user's scroll position. Without `-e` the user stays in
+/// copy-mode until they explicitly exit; the web UI provides a "Back
+/// to live" button that sends Escape.
 ///
-/// This override:
-///   1. Root WheelUpPane: for aoe_* sessions, enter copy-mode WITHOUT
-///      the `-e` flag. Scrolling down past the bottom stops at the
-///      bottom but stays in copy-mode. The web UI supplies an explicit
-///      "Back to live" button that sends Escape to exit.
-///   2. Copy-mode Wheel[Up/Down]Pane: for aoe_* sessions, scroll 15
-///      lines per wheel tick instead of the default 5. Claude's UI
-///      re-renders frequently and fills scrollback with near-duplicate
-///      frames; a larger step helps the user traverse the duplicates.
+/// **Isolation from user's own tmux:** the binding lives in a custom
+/// `aoe-scroll` key table (not `root`). `bind-key -T aoe-scroll ...` is
+/// server-global but inert for any session that hasn't opted in, so it
+/// does NOT clobber a user's `~/.tmux.conf` WheelUpPane customization.
+/// Per-session opt-in is done via `set-option -t <session> key-table
+/// aoe-scroll` which tmux honors for mouse keys the same way it does
+/// for keyboard keys: lookup hits `aoe-scroll` first, falls through to
+/// `root` on miss.
 ///
-/// Scoped via `#{m:aoe_*,#{session_name}}` so the user's own tmux
-/// sessions on the same server keep their default behavior.
+/// We intentionally do NOT override the `copy-mode` / `copy-mode-vi`
+/// tables. Those are shared across every tmux session on the server
+/// with no way to scope per-session, so changing them there would leak
+/// into users' own sessions. The frontend already emits 20-30 wheel
+/// events per swipe; at tmux's default 5 lines/tick that's still
+/// 100-150 lines per swipe — plenty of progress on scroll.
 ///
-/// `bind-key` is server-global and idempotent; re-issuing the same
-/// binding on every aoe session create is harmless and ensures the
-/// override is in place even if tmux has been restarted.
+/// `bind-key` and `set-option` are idempotent; re-issuing on every
+/// aoe session create is harmless and keeps the binding in place after
+/// tmux server restarts.
 ///
 /// Uses tmux 3.0 brace-block command syntax so nested if-shell branches
 /// don't require escaping nightmares.
-pub fn append_aoe_wheel_bindings_args(args: &mut Vec<String>) {
-    // Root: WheelUpPane — enter copy-mode without `-e` for aoe_* sessions.
-    // Non-aoe branch preserves tmux's default binding.
+pub fn append_aoe_wheel_bindings_args(args: &mut Vec<String>, target: &str) {
+    tracing::debug!(
+        "Appending aoe-scroll key-table opt-in for session {}",
+        target
+    );
+
+    // Install the WheelUpPane binding in our custom key table. Only
+    // sessions that set `key-table aoe-scroll` use it; all other
+    // sessions on the tmux server are completely unaffected.
     args.extend([
         ";".to_string(),
         "bind-key".to_string(),
         "-T".to_string(),
-        "root".to_string(),
+        AOE_SCROLL_KEY_TABLE.to_string(),
         "WheelUpPane".to_string(),
-        r##"{ if-shell -F "#{m:aoe_*,#{session_name}}" { if-shell -F "#{mouse_any_flag}" { send-keys -M } { if-shell -F "#{pane_in_mode}" { send-keys -M } { copy-mode ; send-keys -M } } } { if-shell -F "#{mouse_any_flag}" { send-keys -M } { if-shell -F "#{pane_in_mode}" { send-keys -M } { copy-mode -e ; send-keys -M } } } }"##.to_string(),
+        r##"{ if-shell -F "#{mouse_any_flag}" { send-keys -M } { if-shell -F "#{pane_in_mode}" { send-keys -M } { copy-mode ; send-keys -M } } }"##.to_string(),
     ]);
 
-    // Copy-mode tables: 15-line scroll for aoe_* sessions, 5 elsewhere.
-    // Override both the emacs and vi tables so either config is covered.
-    for (table, direction) in [
-        ("copy-mode", "scroll-up"),
-        ("copy-mode", "scroll-down"),
-        ("copy-mode-vi", "scroll-up"),
-        ("copy-mode-vi", "scroll-down"),
-    ] {
-        let key = if direction == "scroll-up" {
-            "WheelUpPane"
-        } else {
-            "WheelDownPane"
-        };
-        let binding = format!(
-            r##"{{ if-shell -F "#{{m:aoe_*,#{{session_name}}}}" {{ send-keys -X -N 15 {direction} }} {{ send-keys -X -N 5 {direction} }} }}"##,
-        );
-        args.extend([
-            ";".to_string(),
-            "bind-key".to_string(),
-            "-T".to_string(),
-            table.to_string(),
-            key.to_string(),
-            binding,
-        ]);
-    }
+    // Opt this session into the custom key table. Mouse keys (and any
+    // other keys we might add in the future) hit `aoe-scroll` first
+    // and fall through to `root` if unbound.
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "key-table".to_string(),
+        AOE_SCROLL_KEY_TABLE.to_string(),
+    ]);
 }
 
 pub fn is_pane_dead(session_name: &str) -> bool {

@@ -240,14 +240,19 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
 
       ws.onopen = () => {
         retryCountRef.current = 0;
-        setState({
+        // Preserve isInScrollback across reconnects. Tmux's copy-mode
+        // state is stored on the pane and survives client disconnects,
+        // so the client-side flag should too — otherwise a WiFi blip
+        // mid-scroll would hide the "Back to live" button while tmux
+        // is still in copy-mode, leaving the user with no way out.
+        setState((prev) => ({
+          ...prev,
           connected: true,
           reconnecting: false,
           retryCount: 0,
           retryCountdown: 0,
           isPrimary: true,
-          isInScrollback: false,
-        });
+        }));
         term.focus();
         // Claim primary immediately so this client's resize is applied.
         // Without this, the first resize lands in "vacant" state (which
