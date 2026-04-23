@@ -256,7 +256,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setShowAddProject(true);
   }, [sessions]);
 
-
   const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
 
   const handleSelectFile = useCallback((path: string) => {
