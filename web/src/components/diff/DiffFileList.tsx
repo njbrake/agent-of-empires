@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RichDiffFile } from "../../lib/types";
 import { buildDiffTree, type DiffTreeNode } from "../../lib/diffTree";
 import { useWebSettings } from "../../hooks/useWebSettings";
@@ -129,6 +129,7 @@ function TreeView({
               data-index={i}
               onClick={() => onToggleDir(node.path)}
               onMouseEnter={() => onFocusIndex(i)}
+              aria-expanded={!node.collapsed}
               className={`w-full text-left py-1.5 cursor-pointer transition-colors flex items-center gap-1.5 text-text-muted hover:bg-surface-800/50 ${focusRing}`}
               style={{ paddingLeft: `${node.depth * 16 + 12}px`, paddingRight: 12 }}
             >
@@ -199,6 +200,12 @@ function TreeView({
   );
 }
 
+function scrollToIndex(container: HTMLDivElement | null, index: number) {
+  container
+    ?.querySelector(`[data-index="${index}"]`)
+    ?.scrollIntoView({ block: "nearest" });
+}
+
 export function DiffFileList({
   files,
   baseBranch,
@@ -209,7 +216,9 @@ export function DiffFileList({
 }: Props) {
   const { settings, update } = useWebSettings();
   const viewMode = settings.diffViewMode;
-  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(
+    () => new Set(settings.collapsedDiffDirs),
+  );
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -220,6 +229,11 @@ export function DiffFileList({
     () => buildDiffTree(files, collapsedDirs),
     [files, collapsedDirs],
   );
+
+  // Persist collapsed dirs to settings whenever they change
+  useEffect(() => {
+    update({ collapsedDiffDirs: [...collapsedDirs] });
+  }, [collapsedDirs, update]);
 
   const toggleDir = useCallback((dirPath: string) => {
     setCollapsedDirs((prev) => {
@@ -256,10 +270,7 @@ export function DiffFileList({
           e.preventDefault();
           setFocusedIndex((prev) => {
             const next = prev < itemCount - 1 ? prev + 1 : prev;
-            // Scroll into view
-            listRef.current
-              ?.querySelector(`[data-index="${next}"]`)
-              ?.scrollIntoView({ block: "nearest" });
+            scrollToIndex(listRef.current, next);
             return next;
           });
           break;
@@ -268,9 +279,7 @@ export function DiffFileList({
           e.preventDefault();
           setFocusedIndex((prev) => {
             const next = prev > 0 ? prev - 1 : 0;
-            listRef.current
-              ?.querySelector(`[data-index="${next}"]`)
-              ?.scrollIntoView({ block: "nearest" });
+            scrollToIndex(listRef.current, next);
             return next;
           });
           break;

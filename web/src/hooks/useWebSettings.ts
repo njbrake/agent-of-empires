@@ -7,6 +7,7 @@ export interface WebSettings {
   desktopFontSize: number;
   autoOpenKeyboard: boolean;
   diffViewMode: "flat" | "tree";
+  collapsedDiffDirs: string[];
 }
 
 const DEFAULTS: WebSettings = {
@@ -14,6 +15,7 @@ const DEFAULTS: WebSettings = {
   desktopFontSize: 14,
   autoOpenKeyboard: true,
   diffViewMode: "flat",
+  collapsedDiffDirs: [],
 };
 
 function getSnapshot(): WebSettings {
