@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DiffFileList } from "./diff/DiffFileList";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { BackToLiveButton } from "./BackToLiveButton";
+import { KeyboardFab } from "./KeyboardFab";
 import { ensureTerminal } from "../lib/api";
 import type { RichDiffFile, SessionResponse } from "../lib/types";
 import "@wterm/dom/css";
@@ -55,11 +56,12 @@ function PairedTerminal({
     state,
     manualReconnect,
     sendData,
+    activate,
     exitScrollback,
     ctrlActiveRef,
     clearCtrlRef,
   } = useTerminal(ready ? sessionId : null, wsPath);
-  const { isMobile, keyboardHeight } = useMobileKeyboard();
+  const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
 
   // See TerminalView.tsx for why these syncs live in effects rather
@@ -82,6 +84,42 @@ function PairedTerminal({
     };
   }, [sessionId, mode]);
 
+  // Scroll-to-bottom on keyboard height changes (same fix as TerminalView).
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollRafRef = useRef(0);
+  useLayoutEffect(() => {
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = requestAnimationFrame(() => {
+        const el = termRef.current?.element;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    });
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      window.dispatchEvent(new Event("resize"));
+      const el = termRef.current?.element;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 150);
+    return () => {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      cancelAnimationFrame(scrollRafRef.current);
+    };
+  }, [keyboardHeight, keyboardOpen, termRef]);
+
+  const toggleKeyboard = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const ta = term.element.querySelector("textarea");
+    if (keyboardOpen) {
+      ta?.blur();
+    } else if (ta instanceof HTMLElement) {
+      ta.focus();
+    }
+    activate();
+  }, [termRef, keyboardOpen, activate]);
+
   if (!ready) {
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
@@ -90,8 +128,12 @@ function PairedTerminal({
     );
   }
 
+  const rootStyle = {
+    paddingBottom: keyboardHeight > 0 ? keyboardHeight : undefined,
+  } as const;
+
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={rootStyle}>
       {!state.connected && state.reconnecting && (
         <div className="bg-status-waiting/15 border-b border-status-waiting/30 px-3 py-1 shrink-0">
           <span className="text-xs text-status-waiting">
@@ -110,12 +152,19 @@ function PairedTerminal({
           </button>
         </div>
       )}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-hidden bg-surface-950 relative"
-      >
+      <div className="flex-1 overflow-hidden bg-surface-950 relative">
+        <div
+          ref={containerRef}
+          className="absolute inset-0"
+          onPointerDown={activate}
+        />
+
         {isMobile && state.isInScrollback && (
           <BackToLiveButton onClick={exitScrollback} topOffset="top-2" />
+        )}
+
+        {isMobile && state.connected && (
+          <KeyboardFab keyboardOpen={keyboardOpen} onToggle={toggleKeyboard} />
         )}
       </div>
       {isMobile && state.connected && (
@@ -238,12 +287,14 @@ export function RightPanel({
         />
       </div>
 
-      {/* Drag handle */}
+      {/* Drag handle: taller on mobile for easier touch targeting */}
       <div
         onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart}
-        className="h-1 cursor-row-resize shrink-0 bg-surface-700/20 hover:bg-brand-600/50 transition-colors duration-75 touch-none"
-      />
+        className="h-3 md:h-1 cursor-row-resize shrink-0 bg-surface-700/20 hover:bg-brand-600/50 transition-colors duration-75 touch-none flex items-center justify-center"
+      >
+        <div className="w-8 h-0.5 rounded-full bg-surface-500/40 md:hidden" />
+      </div>
 
       {/* Lower: paired terminal */}
       <div
