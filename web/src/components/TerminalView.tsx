@@ -39,6 +39,7 @@ export function TerminalView({ session }: Props) {
   } = useTerminal(ensureState === "ready" ? session.id : null);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
+  const [termFocused, setTermFocused] = useState(false);
 
   // Sync React state → hook ref in an effect. The mobile toolbar toggles
   // `ctrlActive` but the wterm native onData callback reads the ref to
@@ -215,7 +216,7 @@ export function TerminalView({ session }: Props) {
   } as const;
   return (
     <div
-      className="flex-1 flex flex-col overflow-hidden relative"
+      className="flex-1 flex flex-col overflow-hidden relative bg-surface-800 md:pb-1.5"
       style={rootStyle}
     >
       {!state.connected && state.reconnecting && (
@@ -237,7 +238,11 @@ export function TerminalView({ session }: Props) {
         </div>
       )}
 
-      <div className="flex-1 overflow-hidden bg-surface-950 relative">
+      <div
+        className={`flex-1 overflow-hidden bg-surface-950 relative md:rounded-lg term-panel${termFocused ? " term-focused" : ""}`}
+        onFocus={() => setTermFocused(true)}
+        onBlur={() => setTermFocused(false)}
+      >
         <div
           ref={containerRef}
           className="absolute inset-0"
