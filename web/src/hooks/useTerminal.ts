@@ -652,26 +652,47 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     };
     viewport.addEventListener("click", onClickCapture, true);
 
-    // Trackpad pinch fires wheel events with ctrlKey=true
+    // Mouse wheel: Ctrl+wheel = zoom (trackpad pinch), plain wheel = scroll.
+    // wterm has no built-in wheel handling and tmux manages its own scrollback,
+    // so we convert wheel events to SGR mouse-wheel escape sequences (same
+    // mechanism the touch handler uses).
     let wheelAccum = 0;
+    let scrollWheelAccum = 0;
     let wheelPersistTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
       e.preventDefault();
-      wheelAccum -= e.deltaY * WHEEL_ZOOM_SENSITIVITY;
-      if (Math.abs(wheelAccum) < 1) return;
-      const delta = Math.trunc(wheelAccum);
-      wheelAccum -= delta;
-      const base = currentPendingOrLiveSize();
-      const next = clampFont(Math.round(base + delta));
-      if (next === base) return;
-      scheduleFontSize(next);
-      if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
-      wheelPersistTimer = setTimeout(() => {
-        flushFontSize();
-        persistFontSize(currentFontSize());
-        wheelPersistTimer = null;
-      }, WHEEL_PERSIST_DEBOUNCE_MS);
+
+      if (e.ctrlKey) {
+        // Trackpad pinch fires wheel events with ctrlKey=true
+        wheelAccum -= e.deltaY * WHEEL_ZOOM_SENSITIVITY;
+        if (Math.abs(wheelAccum) < 1) return;
+        const delta = Math.trunc(wheelAccum);
+        wheelAccum -= delta;
+        const base = currentPendingOrLiveSize();
+        const next = clampFont(Math.round(base + delta));
+        if (next === base) return;
+        scheduleFontSize(next);
+        if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+        wheelPersistTimer = setTimeout(() => {
+          flushFontSize();
+          persistFontSize(currentFontSize());
+          wheelPersistTimer = null;
+        }, WHEEL_PERSIST_DEBOUNCE_MS);
+        return;
+      }
+
+      // Plain scroll: convert to SGR mouse-wheel sequences for tmux
+      scrollWheelAccum += e.deltaY;
+      const step = pxPerWheel();
+      const rawWheels = Math.trunc(scrollWheelAccum / step);
+      const wheels = Math.max(
+        -MAX_WHEELS_PER_FRAME,
+        Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
+      );
+      if (wheels !== 0) {
+        sendWheel(wheels > 0 ? "down" : "up", Math.abs(wheels));
+        scrollWheelAccum -= wheels * step;
+      }
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
 
