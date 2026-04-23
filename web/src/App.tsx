@@ -143,6 +143,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       setActiveSessionId(sessionId);
       writeSessionToUrl(sessionId);
       focusKeyboardProxy();
+      setShowSettings(false);
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
   }, [workspaces]);
@@ -157,6 +158,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       writeSessionToUrl(picked);
     }
     focusKeyboardProxy();
+    setShowSettings(false);
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
