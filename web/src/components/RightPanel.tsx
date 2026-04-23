@@ -63,6 +63,7 @@ function PairedTerminal({
   } = useTerminal(ready ? sessionId : null, wsPath, false);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
+  const [termFocused, setTermFocused] = useState(false);
 
   // See TerminalView.tsx for why these syncs live in effects rather
   // than running during render.
@@ -133,7 +134,7 @@ function PairedTerminal({
   } as const;
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={rootStyle}>
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden md:bg-surface-800" style={rootStyle}>
       {!state.connected && state.reconnecting && (
         <div className="bg-status-waiting/15 border-b border-status-waiting/30 px-3 py-1 shrink-0">
           <span className="text-xs text-status-waiting">
@@ -152,7 +153,11 @@ function PairedTerminal({
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-hidden bg-surface-950 relative">
+      <div
+        className={`flex-1 overflow-hidden bg-surface-950 relative md:rounded-lg term-panel${termFocused ? " term-focused" : ""}`}
+        onFocus={() => setTermFocused(true)}
+        onBlur={() => setTermFocused(false)}
+      >
         <div
           ref={containerRef}
           className="absolute inset-0"
@@ -271,7 +276,7 @@ export function RightPanel({
   }, []);
 
   return (
-    <div ref={containerRef} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div ref={containerRef} className="flex-1 flex flex-col min-h-0 overflow-hidden md:bg-surface-800 md:pb-1.5">
       {/* Upper: file list */}
       <div
         style={{ flexBasis: `${topRatio * 100}%` }}
