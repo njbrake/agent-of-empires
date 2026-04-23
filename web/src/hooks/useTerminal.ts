@@ -46,7 +46,11 @@ export interface TerminalState {
  * Manages a wterm terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
  */
-export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
+export function useTerminal(
+  sessionId: string | null,
+  wsPath: string = "ws",
+  autoFocus: boolean = true,
+) {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<WTerm | null>(null);
@@ -258,7 +262,7 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
           retryCountdown: 0,
           isPrimary: true,
         }));
-        term.focus();
+        if (autoFocus) term.focus();
         // Claim primary immediately so this client's resize is applied.
         // Without this, the first resize lands in "vacant" state (which
         // works) but a race with focus/visibility events could delay it.

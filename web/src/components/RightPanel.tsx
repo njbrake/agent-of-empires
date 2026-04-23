@@ -60,7 +60,7 @@ function PairedTerminal({
     exitScrollback,
     ctrlActiveRef,
     clearCtrlRef,
-  } = useTerminal(ready ? sessionId : null, wsPath);
+  } = useTerminal(ready ? sessionId : null, wsPath, false);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
 
