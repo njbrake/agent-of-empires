@@ -216,7 +216,7 @@ export function TerminalView({ session }: Props) {
   } as const;
   return (
     <div
-      className="flex-1 flex flex-col overflow-hidden relative bg-surface-800 md:pb-1.5"
+      className="flex-1 flex flex-col overflow-hidden relative md:bg-surface-800 md:pb-1.5"
       style={rootStyle}
     >
       {!state.connected && state.reconnecting && (
