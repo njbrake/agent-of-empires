@@ -35,6 +35,7 @@ pub async fn paired_terminal_ws(
 
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
+    let pause_counts = Arc::clone(&state.session_pause_counts);
 
     match session_info {
         // Accept the "aoe-auth" subprotocol so the browser's handshake
@@ -44,7 +45,9 @@ pub async fn paired_terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only, primaries))
+            .on_upgrade(move |socket| {
+                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+            })
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -65,6 +68,7 @@ pub async fn container_terminal_ws(
 
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
+    let pause_counts = Arc::clone(&state.session_pause_counts);
 
     match session_info {
         // Accept the "aoe-auth" subprotocol so the browser's handshake
@@ -74,7 +78,9 @@ pub async fn container_terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only, primaries))
+            .on_upgrade(move |socket| {
+                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+            })
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -96,6 +102,7 @@ pub async fn terminal_ws(
 
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
+    let pause_counts = Arc::clone(&state.session_pause_counts);
 
     match session_info {
         // Accept the "aoe-auth" subprotocol so the browser's handshake
@@ -105,7 +112,9 @@ pub async fn terminal_ws(
         // itself is not echoed, only the marker.
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| handle_terminal_ws(socket, tmux_name, read_only, primaries))
+            .on_upgrade(move |socket| {
+                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+            })
             .into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
     }
@@ -127,11 +136,18 @@ static CLIENT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// sets up the PTY dimensions from the default 80x24.
 type SessionPrimaries = Arc<RwLock<std::collections::HashMap<String, String>>>;
 
+/// Per-session refcount of clients requesting SIGSTOP of the pane's
+/// process tree. Only transitions 0↔1 actually signal the process, so
+/// concurrent readers can scroll independently without one's
+/// `resume_output` un-pausing the other's scrollback.
+type SessionPauseCounts = Arc<tokio::sync::Mutex<std::collections::HashMap<String, u32>>>;
+
 async fn handle_terminal_ws(
     socket: WebSocket,
     tmux_name: String,
     read_only: bool,
     primaries: SessionPrimaries,
+    pause_counts: SessionPauseCounts,
 ) {
     use futures_util::{SinkExt, StreamExt};
 
@@ -255,6 +271,11 @@ async fn handle_terminal_ws(
     let client_id_for_recv = client_id.clone();
     let tmux_name_for_recv = tmux_name.clone();
     let ctrl_tx_for_recv = ctrl_tx.clone();
+    let pause_counts_for_recv = pause_counts.clone();
+    // Track whether THIS ws currently contributes to the pause refcount,
+    // shared between the receive loop and the post-loop cleanup.
+    let this_ws_paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let this_ws_paused_for_recv = this_ws_paused.clone();
 
     let recv_handle = tokio::spawn(async move {
         // Track the last resize the browser requested so we can apply it
@@ -344,6 +365,38 @@ async fn handle_terminal_ws(
                                         .await;
                                 }
                             }
+                            ControlMessage::PauseOutput => {
+                                // Client entered tmux scrollback. SIGSTOP the
+                                // pane's process tree so it stops emitting
+                                // bytes that would shift scrollback under the
+                                // reader. Skipped in read-only mode.
+                                //
+                                // Refcounted across clients: only the first
+                                // pause actually SIGSTOPs; duplicate pauses
+                                // from the same ws are idempotent so a client
+                                // that sends two pause_outputs doesn't
+                                // over-contribute to the count.
+                                if read_only {
+                                    continue;
+                                }
+                                pause_enter(
+                                    &pause_counts_for_recv,
+                                    &tmux_name_for_recv,
+                                    &this_ws_paused_for_recv,
+                                )
+                                .await;
+                            }
+                            ControlMessage::ResumeOutput => {
+                                // Decrement this ws's contribution; only
+                                // SIGCONT when the refcount reaches 0. Safe
+                                // to call even if this ws wasn't paused.
+                                pause_exit(
+                                    &pause_counts_for_recv,
+                                    &tmux_name_for_recv,
+                                    &this_ws_paused_for_recv,
+                                )
+                                .await;
+                            }
                         }
                     } else if !read_only {
                         // Plain text input -> PTY stdin (blocked in read-only mode).
@@ -389,6 +442,12 @@ async fn handle_terminal_ws(
     // Release primary if this client held it, so the next client can take over.
     release_primary(&primaries, &tmux_name, &client_id).await;
 
+    // Safety net: if this client paused the pane but the WebSocket
+    // disconnected before it sent ResumeOutput (WiFi blip, app close,
+    // etc.), decrement our contribution to the refcount. If this was
+    // the last pauser on the session, SIGCONT the pane's process tree.
+    pause_exit(&pause_counts, &tmux_name, &this_ws_paused).await;
+
     // Clean up: kill the tmux attach process
     let _ = child.kill();
     let _ = child.wait();
@@ -418,6 +477,72 @@ async fn is_primary_or_vacant(
     match map.get(session) {
         None => true,
         Some(id) => id == client_id,
+    }
+}
+
+/// Register that THIS WebSocket is asking the pane to be paused.
+/// Idempotent per-ws (a duplicate pause_output from the same client
+/// does not double-count). SIGSTOPs the pane's process tree on the
+/// refcount 0→1 transition. Fire-and-forget: does not await the
+/// spawn_blocking so the ws receive loop is not delayed by a slow
+/// `tmux display-message`.
+async fn pause_enter(
+    pause_counts: &SessionPauseCounts,
+    session: &str,
+    this_ws_paused: &std::sync::atomic::AtomicBool,
+) {
+    if this_ws_paused.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return; // already contributing; idempotent
+    }
+    let should_stop = {
+        let mut map = pause_counts.lock().await;
+        let count = map.entry(session.to_string()).or_insert(0);
+        *count += 1;
+        *count == 1
+    };
+    if should_stop {
+        let session = session.to_string();
+        tokio::task::spawn_blocking(move || {
+            if let Some(pid) = crate::process::get_pane_pid(&session) {
+                crate::process::stop_process_tree(pid);
+            }
+        });
+    }
+}
+
+/// Decrement THIS WebSocket's contribution to the pause refcount.
+/// SIGCONTs the pane's process tree on the N→0 transition. Safe to
+/// call even if this ws wasn't paused (no-op).
+async fn pause_exit(
+    pause_counts: &SessionPauseCounts,
+    session: &str,
+    this_ws_paused: &std::sync::atomic::AtomicBool,
+) {
+    if !this_ws_paused.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return; // not paused by us
+    }
+    let should_cont = {
+        let mut map = pause_counts.lock().await;
+        if let Some(count) = map.get_mut(session) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                map.remove(session);
+                true
+            } else {
+                false
+            }
+        } else {
+            // Refcount underflow shouldn't happen; SIGCONT as safety.
+            true
+        }
+    };
+    if should_cont {
+        let session = session.to_string();
+        tokio::task::spawn_blocking(move || {
+            if let Some(pid) = crate::process::get_pane_pid(&session) {
+                crate::process::continue_process_tree(pid);
+            }
+        });
     }
 }
 
@@ -459,6 +584,19 @@ enum ControlMessage {
     /// snaps to this client's viewport without requiring a keystroke.
     #[serde(rename = "activate")]
     Activate,
+    /// Pause the pane's foreground process (SIGSTOP). Sent by mobile
+    /// web clients when the user enters tmux scrollback — without
+    /// pausing, claude's continued output keeps shifting scrollback
+    /// under the reader. Paired with `resume_output` on exit. The
+    /// server also auto-resumes on WebSocket close to prevent a
+    /// dropped connection from leaving the process permanently
+    /// suspended.
+    #[serde(rename = "pause_output")]
+    PauseOutput,
+    /// Resume the pane's foreground process (SIGCONT). Inverse of
+    /// `pause_output`. SIGCONT to a non-stopped process is a no-op.
+    #[serde(rename = "resume_output")]
+    ResumeOutput,
 }
 
 #[cfg(test)]

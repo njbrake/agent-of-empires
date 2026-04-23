@@ -216,6 +216,13 @@ pub struct AppState {
     /// primary client's resize messages are applied to its PTY, preventing
     /// multiple browser viewports from fighting over the tmux window size.
     pub session_primaries: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    /// Per-tmux-session refcount of clients currently asking the pane's
+    /// process tree to be paused (SIGSTOP). Incremented by `pause_output`,
+    /// decremented by `resume_output` and on WebSocket disconnect. The
+    /// pane's process is SIGSTOP-ed on 0→N transitions and SIGCONT-ed on
+    /// N→0, so two mobile clients scrolling concurrently don't have one's
+    /// `resume_output` un-pause the other's scrollback read.
+    pub session_pause_counts: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u32>>>,
     /// Epoch-millis timestamp of the most recent authenticated API request.
     /// Updated by auth middleware on every successful auth. The push consumer
     /// checks this to suppress notifications when someone is actively using
@@ -377,6 +384,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         }),
         remote_owner_cache: RwLock::new(std::collections::HashMap::new()),
         session_primaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        session_pause_counts: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
         push: push_state,
         push_enabled,

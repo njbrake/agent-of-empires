@@ -4,7 +4,13 @@ import type { Page } from "@playwright/test";
 // REST API and route the PTY WebSocket so the wterm terminal mounts and the
 // gesture handlers in useTerminal.ts are exercised against the real frontend.
 
-export async function mockTerminalApis(page: Page) {
+export interface MockHandle {
+  /** Raw bytes received from the page via WebSocket (PTY data + JSON messages). */
+  wsMessages: Buffer[];
+}
+
+export async function mockTerminalApis(page: Page): Promise<MockHandle> {
+  const handle: MockHandle = { wsMessages: [] };
   await page.route("**/api/login/status", (r) =>
     r.fulfill({ json: { required: false, authenticated: true } }),
   );
@@ -56,8 +62,9 @@ export async function mockTerminalApis(page: Page) {
     );
   }
   await page.routeWebSocket(/\/sessions\/.*\/(ws|container-ws)$/, (ws) => {
-    ws.onMessage(() => {
-      /* absorb keystrokes / resize JSON */
+    ws.onMessage((msg) => {
+      if (Buffer.isBuffer(msg)) handle.wsMessages.push(msg);
+      else handle.wsMessages.push(Buffer.from(msg));
     });
     setTimeout(() => {
       try {
@@ -67,6 +74,7 @@ export async function mockTerminalApis(page: Page) {
       }
     }, 50);
   });
+  return handle;
 }
 
 // Install a WebSocket constructor spy and a localStorage.setItem spy on
