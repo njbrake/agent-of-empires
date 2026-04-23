@@ -256,26 +256,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setShowAddProject(true);
   }, [sessions]);
 
-  const lastSession = useMemo(() =>
-    sessions.length > 0
-      ? [...sessions].sort((a, b) => (b.last_accessed_at ?? b.created_at ?? "").localeCompare(a.last_accessed_at ?? a.created_at ?? ""))[0]
-      : null,
-    [sessions],
-  );
-
-  const handleRepeatLast = useCallback(() => {
-    if (!lastSession) return;
-    setWizardPrefill({
-      path: lastSession.main_repo_path || lastSession.project_path,
-      tool: lastSession.tool,
-      yoloMode: lastSession.yolo_mode,
-      sandboxEnabled: lastSession.is_sandboxed ?? false,
-      profile: lastSession.profile || undefined,
-      group: lastSession.group_path || undefined,
-      skipToReview: true,
-    });
-    setShowAddProject(true);
-  }, [lastSession]);
 
   const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
 
@@ -476,8 +456,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
           onCreateSession={handleCreateSession}
           onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
-          onRepeatLast={handleRepeatLast}
-          hasLastSession={!!lastSession}
           onDeleteSession={handleDeleteSession}
           readOnly={serverAbout?.read_only}
         />
