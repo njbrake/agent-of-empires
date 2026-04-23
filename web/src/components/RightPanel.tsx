@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DiffFileList } from "./diff/DiffFileList";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
@@ -48,9 +48,9 @@ function PairedTerminal({
   const [ready, setReady] = useState(false);
   const wsPath =
     mode === "container" ? "container-terminal/ws" : "terminal/ws";
-  const { containerRef, termRef, state, manualReconnect, sendData, ctrlActiveRef, clearCtrlRef } =
+  const { containerRef, termRef, state, manualReconnect, sendData, activate, ctrlActiveRef, clearCtrlRef } =
     useTerminal(ready ? sessionId : null, wsPath);
-  const { isMobile, keyboardHeight } = useMobileKeyboard();
+  const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
 
   ctrlActiveRef.current = ctrlActive;
@@ -67,6 +67,57 @@ function PairedTerminal({
     };
   }, [sessionId, mode]);
 
+  // Scroll-to-bottom on keyboard height changes (same fix as TerminalView).
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollRafRef = useRef(0);
+  useLayoutEffect(() => {
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = requestAnimationFrame(() => {
+        const el = termRef.current?.element;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    });
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      window.dispatchEvent(new Event("resize"));
+      const el = termRef.current?.element;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 150);
+    return () => {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      cancelAnimationFrame(scrollRafRef.current);
+    };
+  }, [keyboardHeight, keyboardOpen, termRef]);
+
+  // Auto-open keyboard on connect.
+  useEffect(() => {
+    if (!isMobile || !state.connected) return;
+    const term = termRef.current;
+    if (!term) return;
+    const delays = [50, 200, 500];
+    const timers = delays.map((ms) =>
+      setTimeout(() => {
+        const ta = term.element.querySelector("textarea");
+        if (ta instanceof HTMLElement) ta.focus();
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [isMobile, state.connected, termRef]);
+
+  const toggleKeyboard = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const ta = term.element.querySelector("textarea");
+    if (keyboardOpen) {
+      ta?.blur();
+    } else if (ta instanceof HTMLElement) {
+      ta.focus();
+    }
+    activate();
+  }, [termRef, keyboardOpen, activate]);
+
   if (!ready) {
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
@@ -75,8 +126,12 @@ function PairedTerminal({
     );
   }
 
+  const rootStyle = {
+    paddingBottom: keyboardHeight > 0 ? keyboardHeight : undefined,
+  } as const;
+
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={rootStyle}>
       {!state.connected && state.reconnecting && (
         <div className="bg-status-waiting/15 border-b border-status-waiting/30 px-3 py-1 shrink-0">
           <span className="text-xs text-status-waiting">
@@ -95,10 +150,64 @@ function PairedTerminal({
           </button>
         </div>
       )}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-hidden bg-surface-950"
-      />
+      <div className="flex-1 overflow-hidden bg-surface-950 relative">
+        <div
+          ref={containerRef}
+          className="absolute inset-0"
+          onPointerDown={activate}
+        />
+
+        {isMobile && state.connected && (
+          <button
+            type="button"
+            aria-label={keyboardOpen ? "Close keyboard" : "Open keyboard"}
+            onClick={toggleKeyboard}
+            className="absolute right-3 bottom-3 z-10 w-10 h-10 rounded-full bg-surface-800/90 border border-surface-700/30 text-text-secondary flex items-center justify-center shadow-lg backdrop-blur-sm active:scale-95"
+          >
+            {keyboardOpen ? (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="1" y="1" width="22" height="16" rx="2" />
+                <line x1="5" y1="13" x2="19" y2="13" />
+                <line x1="8" y1="20" x2="16" y2="20" />
+                <line x1="12" y1="17" x2="12" y2="20" />
+              </svg>
+            ) : (
+              <svg
+                width="18"
+                height="14"
+                viewBox="0 0 24 18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="1" y="1" width="22" height="16" rx="2" />
+                <line x1="5" y1="13" x2="19" y2="13" />
+                <line x1="5" y1="9" x2="5.01" y2="9" />
+                <line x1="9" y1="9" x2="9.01" y2="9" />
+                <line x1="13" y1="9" x2="13.01" y2="9" />
+                <line x1="17" y1="9" x2="17.01" y2="9" />
+                <line x1="5" y1="5" x2="5.01" y2="5" />
+                <line x1="9" y1="5" x2="9.01" y2="5" />
+                <line x1="13" y1="5" x2="13.01" y2="5" />
+                <line x1="17" y1="5" x2="17.01" y2="5" />
+              </svg>
+            )}
+          </button>
+        )}
+      </div>
       {isMobile && state.connected && (
         <MobileTerminalToolbar
           sendData={sendData}
@@ -219,12 +328,14 @@ export function RightPanel({
         />
       </div>
 
-      {/* Drag handle */}
+      {/* Drag handle: taller on mobile for easier touch targeting */}
       <div
         onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart}
-        className="h-1 cursor-row-resize shrink-0 bg-surface-700/20 hover:bg-brand-600/50 transition-colors duration-75 touch-none"
-      />
+        className="h-3 md:h-1 cursor-row-resize shrink-0 bg-surface-700/20 hover:bg-brand-600/50 transition-colors duration-75 touch-none flex items-center justify-center"
+      >
+        <div className="w-8 h-0.5 rounded-full bg-surface-500/40 md:hidden" />
+      </div>
 
       {/* Lower: paired terminal */}
       <div
