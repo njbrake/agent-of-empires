@@ -1268,8 +1268,9 @@ impl HomeView {
     }
 
     /// Create a session with optional hooks. Delegates to the background
-    /// `CreationPoller` when hooks are present (to avoid freezing the TUI on
-    /// slow commands like `npm install`) or when the session is sandboxed.
+    /// `CreationPoller` when hooks are present, when the session is sandboxed,
+    /// or when a worktree branch is requested (to avoid freezing the TUI on
+    /// slow git hooks like `post-checkout`).
     fn create_session_with_hooks(
         &mut self,
         data: NewSessionData,
@@ -1278,8 +1279,12 @@ impl HomeView {
         let has_hooks = hooks
             .as_ref()
             .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
+        let has_worktree = data
+            .worktree_branch
+            .as_ref()
+            .is_some_and(|b| !b.is_empty());
 
-        if data.sandbox || has_hooks {
+        if data.sandbox || has_hooks || has_worktree {
             self.request_creation(data, hooks);
             return None;
         }
