@@ -386,37 +386,39 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     // Touch swipe emits SGR mouse-wheel escape sequences to the PTY
     // so tmux mouse-mode enters copy-mode and scrolls.
     //
-    // Mobile-only scroll-depth clamp. Tmux's default WheelUpPane binding
-    // enters copy-mode with the `-e` flag, which auto-exits copy-mode
-    // when the user scrolls down past the bottom of the history. On
-    // mobile the down-swipe overshoots easily and the snap-to-live
-    // discards the scroll position. To avoid triggering `-e`, track how
-    // many wheel-UPs we've emitted since entering scrollback and refuse
-    // to emit the wheel-DOWN that would take us back to position 0.
-    // Floor the net depth at 1 so tmux always has >=5 lines of history
-    // visible (one wheel tick = 5 lines in copy-mode).
+    // Track net wheel-UP depth so the client knows whether tmux is in
+    // copy-mode and can pause/resume the pane's process accordingly.
+    // Tmux doesn't signal copy-mode state over the PTY, so the client
+    // infers it from scroll direction: depth goes 0 → 1 on first
+    // wheel-UP (copy-mode entered), back to 0 when balanced (copy-mode
+    // auto-exited via tmux's `-e` flag on desktop, or manually exited
+    // via the "Back to live" button on mobile).
     //
-    // Desktop keeps the unclamped behavior; scroll-down-past-bottom
-    // still snaps to live, matching user expectations there.
+    // Mobile-only: clamp wheel-DOWN emissions so depth floors at 1,
+    // preventing tmux's `-e` auto-exit. On mobile the down-swipe
+    // overshoots easily and the snap-to-live discards the scroll
+    // position. Desktop keeps the unclamped behavior — scroll-down-past-
+    // bottom auto-exits, as users expect there.
     //
-    // Flipping `isInScrollback` is also mobile-only — the "Back to live"
-    // button is only rendered for mobile clients, so desktop state is
-    // unchanged.
+    // Pause/resume apply to BOTH platforms: claude's continued output
+    // shifts scrollback under the reader regardless of client size.
     const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
     let scrollbackDepth = 0;
     const sendWheel = (dir: "up" | "down", count: number) => {
       let sendCount = count;
-      const clamp = isMobileViewport();
-      if (clamp) {
-        if (dir === "up") {
-          scrollbackDepth += sendCount;
-        } else {
-          const maxDown = Math.max(0, scrollbackDepth - 1);
-          sendCount = Math.min(sendCount, maxDown);
-          if (sendCount === 0) return;
-          scrollbackDepth -= sendCount;
-        }
+      const clampForMobile = isMobileViewport();
+      if (dir === "up") {
+        scrollbackDepth += sendCount;
+      } else if (clampForMobile) {
+        const maxDown = Math.max(0, scrollbackDepth - 1);
+        sendCount = Math.min(sendCount, maxDown);
+        if (sendCount === 0) return;
+        scrollbackDepth -= sendCount;
+      } else {
+        // Desktop: emit freely, let tmux's -e handle exit. Track depth
+        // so the resume transition fires when the user scrolls back.
+        scrollbackDepth = Math.max(0, scrollbackDepth - sendCount);
       }
       const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
       const ws = wsRef.current;
@@ -424,18 +426,32 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
       for (let i = 0; i < sendCount; i++) {
         ws.send(new TextEncoder().encode(seq));
       }
-      if (clamp && dir === "up") {
+      // Transition into scrollback on first wheel-up (desktop + mobile).
+      if (dir === "up") {
         setState((prev) => {
           if (prev.isInScrollback) return prev;
-          // First wheel-up: transitioning into scrollback. Ask the
-          // server to SIGSTOP the pane's process tree so claude stops
-          // pushing new lines into scrollback under the reader.
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(
               JSON.stringify({ type: "pause_output" } as PauseOutputMessage),
             );
           }
           return { ...prev, isInScrollback: true };
+        });
+      } else if (scrollbackDepth === 0) {
+        // Back at live on desktop (tmux auto-exited copy-mode via -e);
+        // resume the pane's process. On mobile this branch never fires
+        // because the clamp keeps depth >= 1; mobile exits via the
+        // explicit "Back to live" button (see exitScrollback).
+        setState((prev) => {
+          if (!prev.isInScrollback) return prev;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                type: "resume_output",
+              } as ResumeOutputMessage),
+            );
+          }
+          return { ...prev, isInScrollback: false };
         });
       }
     };

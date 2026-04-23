@@ -167,4 +167,44 @@ test.describe("Terminal mouse-wheel scroll (desktop)", () => {
       countSeq(handle, WHEEL_UP_SEQ) + countSeq(handle, WHEEL_DOWN_SEQ);
     expect(scrollCount).toBe(0);
   });
+
+  // Pause/resume roundtrip on desktop: scrolling up into scrollback
+  // sends pause_output so claude stops emitting output that would
+  // shift scrollback; scrolling back down past the starting depth
+  // sends resume_output (tmux's -e flag has by then auto-exited
+  // copy-mode). No "Back to live" button is rendered on desktop.
+  test("desktop: wheel-up sends pause_output, wheel-down back to live sends resume_output", async ({
+    page,
+  }) => {
+    await installTerminalSpies(page);
+    const handle = await mockTerminalApis(page);
+    await page.goto("/");
+    await seedSettings(page, { desktopFontSize: 14 });
+    await page.reload();
+    await openSession(page, handle);
+
+    // No button should ever appear on desktop.
+    await expect(
+      page.getByRole("button", { name: "Back to live" }),
+    ).toHaveCount(0);
+
+    await fireWheel(page, { deltaY: -120, times: 3 });
+    const hasText = (needle: string) =>
+      handle.wsMessages.some((m) => m.includes(Buffer.from(needle)));
+
+    await expect.poll(() => hasText('"type":"pause_output"')).toBe(true);
+    expect(hasText('"type":"resume_output"')).toBe(false);
+
+    // Scroll back down enough wheel ticks to zero the depth. The client
+    // emitted N wheel-UPs; N wheel-DOWNs should be enough. (deltaY=120
+    // with fontSize 14 gives ~4 wheels per fireWheel call; use times: 5
+    // to overshoot and guarantee the transition.)
+    await fireWheel(page, { deltaY: 120, times: 5 });
+    await expect.poll(() => hasText('"type":"resume_output"')).toBe(true);
+
+    // Still no button on desktop at any point.
+    await expect(
+      page.getByRole("button", { name: "Back to live" }),
+    ).toHaveCount(0);
+  });
 });
