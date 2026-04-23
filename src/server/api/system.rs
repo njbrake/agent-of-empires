@@ -17,6 +17,7 @@ pub struct AgentInfo {
     pub binary: String,
     pub host_only: bool,
     pub installed: bool,
+    pub install_hint: String,
 }
 
 pub async fn list_agents() -> Json<Vec<AgentInfo>> {
@@ -30,6 +31,7 @@ pub async fn list_agents() -> Json<Vec<AgentInfo>> {
                 binary: a.binary.to_string(),
                 host_only: a.host_only,
                 installed: available.iter().any(|s| s == a.name),
+                install_hint: a.install_hint.to_string(),
             })
             .collect::<Vec<_>>()
     })

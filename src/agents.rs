@@ -77,6 +77,8 @@ pub struct AgentDef {
     /// newlines within a paste rather than as "submit". A delay longer than the
     /// agent's burst window lets the suppression expire before Enter arrives.
     pub send_keys_enter_delay_ms: u64,
+    /// One-line install command shown when the agent is missing from PATH.
+    pub install_hint: &'static str,
 }
 
 /// Hook events shared by Claude Code and Cursor CLI.
@@ -125,6 +127,7 @@ pub const AGENTS: &[AgentDef] = &[
         }),
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "npm install -g @anthropic-ai/claude-code",
     },
     AgentDef {
         name: "opencode",
@@ -139,6 +142,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "curl -fsSL https://opencode.ai/install | bash",
     },
     AgentDef {
         name: "vibe",
@@ -153,6 +157,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "pip install vibe-tool",
     },
     AgentDef {
         name: "codex",
@@ -172,6 +177,7 @@ pub const AGENTS: &[AgentDef] = &[
         // Enter keys arriving within that window after a character stream are
         // swallowed as newlines instead of triggering submit. 150ms > 120ms.
         send_keys_enter_delay_ms: 150,
+        install_hint: "npm install -g @openai/codex",
     },
     AgentDef {
         name: "gemini",
@@ -210,6 +216,7 @@ pub const AGENTS: &[AgentDef] = &[
         }),
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "npm install -g @google/gemini-cli",
     },
     AgentDef {
         name: "cursor",
@@ -227,6 +234,7 @@ pub const AGENTS: &[AgentDef] = &[
         }),
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "see https://docs.cursor.com/cli",
     },
     AgentDef {
         name: "copilot",
@@ -241,6 +249,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "see https://docs.github.com/en/copilot/github-copilot-in-the-cli",
     },
     AgentDef {
         name: "pi",
@@ -256,6 +265,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "pip install pi-agent",
     },
     AgentDef {
         name: "droid",
@@ -270,6 +280,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
+        install_hint: "npm install -g @anthropic-ai/droid",
     },
     AgentDef {
         name: "settl",
@@ -284,6 +295,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: true,
         send_keys_enter_delay_ms: 0,
+        install_hint: "see https://settl.dev/docs/install",
     },
 ];
 
@@ -323,6 +335,11 @@ pub fn resolve_tool_name(cmd: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Return the install hint for an agent, looked up by canonical name.
+pub fn install_hint(name: &str) -> Option<&'static str> {
+    get_agent(name).map(|a| a.install_hint)
 }
 
 /// Convert a tool name to a 1-based settings index (0 = Auto).
@@ -443,5 +460,26 @@ mod tests {
         assert_eq!(send_keys_enter_delay("claude"), 0);
         assert_eq!(send_keys_enter_delay("opencode"), 0);
         assert_eq!(send_keys_enter_delay("unknown_agent"), 0);
+    }
+
+    #[test]
+    fn test_all_agents_have_install_hint() {
+        for agent in AGENTS {
+            assert!(
+                !agent.install_hint.is_empty(),
+                "Agent '{}' should have a non-empty install_hint",
+                agent.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_install_hint_lookup() {
+        assert_eq!(
+            install_hint("claude"),
+            Some("npm install -g @anthropic-ai/claude-code")
+        );
+        assert_eq!(install_hint("codex"), Some("npm install -g @openai/codex"));
+        assert!(install_hint("unknown").is_none());
     }
 }

@@ -151,6 +151,7 @@ export interface AgentInfo {
   binary: string;
   host_only: boolean;
   installed: boolean;
+  install_hint: string;
 }
 
 /** Profile info returned by /api/profiles */

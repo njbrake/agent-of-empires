@@ -25,8 +25,8 @@ use super::deletion_poller::DeletionPoller;
 use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, HooksInstallDialog,
-    InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerDialog, RenameDialog,
-    UnifiedDeleteDialog, WelcomeDialog,
+    InfoDialog, NewSessionData, NewSessionDialog, NoAgentsDialog, ProfilePickerDialog,
+    RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -161,6 +161,7 @@ pub struct HomeView {
     /// Session data pending agent hooks acknowledgment
     pub(super) pending_hooks_install_data: Option<NewSessionData>,
     pub(super) welcome_dialog: Option<WelcomeDialog>,
+    pub(super) no_agents_dialog: Option<NoAgentsDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
@@ -332,6 +333,7 @@ impl HomeView {
             hooks_install_dialog: None,
             pending_hooks_install_data: None,
             welcome_dialog: None,
+            no_agents_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
             profile_picker_dialog: None,
@@ -924,6 +926,7 @@ impl HomeView {
             || self.hook_trust_dialog.is_some()
             || self.hooks_install_dialog.is_some()
             || self.welcome_dialog.is_some()
+            || self.no_agents_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
@@ -952,6 +955,15 @@ impl HomeView {
 
     pub fn show_welcome(&mut self) {
         self.welcome_dialog = Some(WelcomeDialog::new());
+    }
+
+    pub fn show_no_agents(&mut self) {
+        self.no_agents_dialog = Some(NoAgentsDialog::new());
+    }
+
+    /// Replace available tools (used after re-check from no-agents dialog).
+    pub fn set_available_tools(&mut self, tools: AvailableTools) {
+        self.available_tools = tools;
     }
 
     pub fn show_changelog(&mut self, from_version: Option<String>) {

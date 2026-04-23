@@ -6,6 +6,7 @@ This document contains the help content for the `aoe` command-line program.
 
 * [`aoe`↴](#aoe)
 * [`aoe add`↴](#aoe-add)
+* [`aoe agents`↴](#aoe-agents)
 * [`aoe init`↴](#aoe-init)
 * [`aoe list`↴](#aoe-list)
 * [`aoe remove`↴](#aoe-remove)
@@ -60,6 +61,7 @@ Run without arguments to launch the TUI dashboard.
 ###### **Subcommands:**
 
 * `add` — Add a new session
+* `agents` — List supported agents and their install status
 * `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
 * `remove` — Remove a session
@@ -110,6 +112,14 @@ Add a new session
 * `--trust-hooks` — Automatically trust repository hooks without prompting
 * `--extra-args <EXTRA_ARGS>` — Extra arguments to append after the agent binary
 * `--cmd-override <CMD_OVERRIDE>` — Override the agent binary command
+
+
+
+## `aoe agents`
+
+List supported agents and their install status
+
+**Usage:** `aoe agents`
 
 
 

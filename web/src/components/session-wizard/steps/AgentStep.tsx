@@ -89,6 +89,24 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
       <h2 className="text-lg font-semibold text-text-primary mb-1">Which AI agent?</h2>
       <p className="text-sm text-text-muted mb-5">Pick the coding assistant and configure your session.</p>
 
+      {/* No agents installed */}
+      {installedAgents.length === 0 && agents.length > 0 && (
+        <div className="mb-5 p-4 rounded-lg border border-status-warning/30 bg-status-warning/5">
+          <p className="text-sm font-semibold text-status-warning mb-2">No agents installed</p>
+          <p className="text-sm text-text-muted mb-3">
+            Install at least one AI coding agent to create a session.
+          </p>
+          <div className="space-y-1.5">
+            {agents.slice(0, 3).map((agent) => (
+              <div key={agent.name} className="flex items-baseline gap-2">
+                <span className="text-sm font-medium text-text-primary w-20">{agent.name}</span>
+                <code className="text-xs text-text-dim font-mono">{agent.install_hint}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Agent picker */}
       <div className="grid grid-cols-2 gap-2 mb-5">
         {installedAgents.map((agent) => (

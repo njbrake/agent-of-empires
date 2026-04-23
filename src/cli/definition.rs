@@ -48,6 +48,9 @@ pub enum Commands {
     /// Add a new session
     Add(AddArgs),
 
+    /// List supported agents and their install status
+    Agents,
+
     /// Initialize .agent-of-empires/config.toml in a repository
     Init(InitArgs),
 
