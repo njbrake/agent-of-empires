@@ -388,9 +388,10 @@ impl DiffView {
             return;
         };
 
-        // Center the dialog
+        // Center the dialog. Height caps at 20 but grows to fit when fewer branches;
+        // when branches overflow, scroll indicators handle the remainder.
         let dialog_width = 40u16;
-        let dialog_height = (state.branches.len() as u16 + 4).min(20);
+        let dialog_height = (state.branches.len() as u16 + 2).clamp(3, 20);
         let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
         let dialog_y = (area.height.saturating_sub(dialog_height)) / 2;
 
@@ -413,35 +414,78 @@ impl DiffView {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let items: Vec<ListItem> = state
+        let scroll = crate::tui::components::scroll::calculate_scroll(
+            state.branches.len(),
+            state.selected,
+            inner.height as usize,
+        );
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        if scroll.has_more_above {
+            lines.push(Line::from(Span::styled(
+                format!("  [{} more above]", scroll.scroll_offset),
+                Style::default().fg(theme.dimmed),
+            )));
+        }
+
+        for (i, branch) in state
             .branches
             .iter()
             .enumerate()
-            .map(|(i, branch)| {
-                let is_selected = i == state.selected;
-                let is_current = branch == &self.base_branch;
+            .skip(scroll.scroll_offset)
+            .take(scroll.list_visible)
+        {
+            let is_selected = i == state.selected;
+            let is_current = branch == &self.base_branch;
 
-                let style = if is_selected {
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                };
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text)
+            };
 
-                let prefix = if is_selected { "> " } else { "  " };
-                let suffix = if is_current { " (current)" } else { "" };
+            let prefix = if is_selected { "> " } else { "  " };
+            let suffix = if is_current { " (current)" } else { "" };
 
-                ListItem::new(Line::from(vec![
-                    Span::styled(prefix, style),
-                    Span::styled(branch, style),
-                    Span::styled(suffix, Style::default().fg(theme.dimmed)),
-                ]))
-            })
-            .collect();
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(branch.as_str(), style),
+                Span::styled(suffix, Style::default().fg(theme.dimmed)),
+            ]));
+        }
 
-        let list = List::new(items);
-        frame.render_widget(list, inner);
+        if scroll.has_more_below {
+            let remaining = state
+                .branches
+                .len()
+                .saturating_sub(scroll.scroll_offset + scroll.list_visible);
+            lines.push(Line::from(Span::styled(
+                format!("  [{} more below]", remaining),
+                Style::default().fg(theme.dimmed),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines), inner);
+
+        // Render scrollbar when branches overflow, matching the diff content pane style
+        if state.branches.len() > inner.height as usize {
+            let max_scroll = state.branches.len().saturating_sub(inner.height as usize);
+            let scrollbar_area = Rect {
+                x: dialog_area.x + dialog_area.width - 1,
+                y: dialog_area.y + 1,
+                width: 1,
+                height: dialog_area.height.saturating_sub(2),
+            };
+            let mut scrollbar_state =
+                ScrollbarState::new(max_scroll + 1).position(scroll.scroll_offset);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -520,5 +564,90 @@ impl DiffView {
 
         let paragraph = Paragraph::new(lines);
         frame.render_widget(paragraph, inner);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::diff::BranchSelectState;
+    use crate::tui::styles::Theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn make_view_with_branches(branches: Vec<String>, selected: usize) -> DiffView {
+        let mut view = DiffView::test_default();
+        view.branch_select = Some(BranchSelectState { branches, selected });
+        view
+    }
+
+    fn render_dialog_to_string(view: &mut DiffView) -> String {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::empire();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                view.render(f, area, &theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn branch_select_shows_more_below_when_overflowing() {
+        let branches: Vec<String> = (0..40).map(|i| format!("branch-{:02}", i)).collect();
+        let mut view = make_view_with_branches(branches, 0);
+        let out = render_dialog_to_string(&mut view);
+        assert!(
+            out.contains("more below"),
+            "expected '[N more below]' indicator when branches overflow dialog, got:\n{out}"
+        );
+        assert!(!out.contains("more above"));
+    }
+
+    #[test]
+    fn branch_select_shows_more_above_when_cursor_near_end() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let branches: Vec<String> = (0..40).map(|i| format!("branch-{:02}", i)).collect();
+        let mut view = make_view_with_branches(branches, 0);
+
+        // Walk cursor to the last branch.
+        for _ in 0..39 {
+            view.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        }
+
+        let out = render_dialog_to_string(&mut view);
+        assert!(
+            out.contains("more above"),
+            "expected '[N more above]' indicator when cursor is near end, got:\n{out}"
+        );
+        assert!(!out.contains("more below"));
+        // Selected branch (last one) must be visible.
+        assert!(
+            out.contains("branch-39"),
+            "selected branch must be rendered, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn branch_select_no_indicators_when_fits() {
+        let branches: Vec<String> = (0..3).map(|i| format!("br-{i}")).collect();
+        let mut view = make_view_with_branches(branches, 0);
+        let out = render_dialog_to_string(&mut view);
+        assert!(!out.contains("more above"));
+        assert!(!out.contains("more below"));
+        assert!(out.contains("br-0"));
+        assert!(out.contains("br-1"));
+        assert!(out.contains("br-2"));
     }
 }
