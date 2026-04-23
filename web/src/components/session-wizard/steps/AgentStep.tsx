@@ -97,7 +97,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
             Install at least one AI coding agent to create a session.
           </p>
           <div className="space-y-1.5">
-            {agents.slice(0, 3).map((agent) => (
+            {agents.filter((a) => ["claude", "codex", "gemini"].includes(a.name)).map((agent) => (
               <div key={agent.name} className="flex items-baseline gap-2">
                 <span className="text-sm font-medium text-text-primary w-20">{agent.name}</span>
                 <code className="text-xs text-text-dim font-mono">{agent.install_hint}</code>
