@@ -108,7 +108,7 @@ function PairedTerminal({
         ref={containerRef}
         className="flex-1 overflow-hidden bg-surface-950 relative"
       >
-        {state.isInScrollback && (
+        {isMobile && state.isInScrollback && (
           <BackToLiveButton onClick={exitScrollback} topOffset="top-2" />
         )}
       </div>

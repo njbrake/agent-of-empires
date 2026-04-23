@@ -59,6 +59,9 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
   // Stable callback set by the component to clear React's ctrlActive state
   // when onData consumes the Ctrl modifier.
   const clearCtrlRef = useRef<(() => void) | null>(null);
+  // Populated inside the effect; `exitScrollback()` uses it to reset the
+  // mobile scroll-depth counter when the user escapes copy-mode.
+  const resetScrollbackDepthRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<TerminalState>({
     connected: false,
     reconnecting: false,
@@ -378,29 +381,59 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
       };
     }
 
-    // Touch swipe emits SGR mouse-wheel escape sequences to the PTY,
+    // Touch swipe emits SGR mouse-wheel escape sequences to the PTY
     // so tmux mouse-mode enters copy-mode and scrolls.
     //
-    // The first wheel-up in a live pane pushes tmux into copy-mode
-    // (see src/tmux/utils.rs::append_aoe_wheel_bindings_args for the
-    // server-side binding). Flip `isInScrollback` so the TerminalView
-    // can show the "Back to live" button. The user exits explicitly
-    // via exitScrollback(); tmux's binding no longer auto-exits.
+    // Mobile-only scroll-depth clamp. Tmux's default WheelUpPane binding
+    // enters copy-mode with the `-e` flag, which auto-exits copy-mode
+    // when the user scrolls down past the bottom of the history. On
+    // mobile the down-swipe overshoots easily and the snap-to-live
+    // discards the scroll position. To avoid triggering `-e`, track how
+    // many wheel-UPs we've emitted since entering scrollback and refuse
+    // to emit the wheel-DOWN that would take us back to position 0.
+    // Floor the net depth at 1 so tmux always has >=5 lines of history
+    // visible (one wheel tick = 5 lines in copy-mode).
+    //
+    // Desktop keeps the unclamped behavior; scroll-down-past-bottom
+    // still snaps to live, matching user expectations there.
+    //
+    // Flipping `isInScrollback` is also mobile-only — the "Back to live"
+    // button is only rendered for mobile clients, so desktop state is
+    // unchanged.
     const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
+    let scrollbackDepth = 0;
     const sendWheel = (dir: "up" | "down", count: number) => {
+      let sendCount = count;
+      const clamp = isMobileViewport();
+      if (clamp) {
+        if (dir === "up") {
+          scrollbackDepth += sendCount;
+        } else {
+          const maxDown = Math.max(0, scrollbackDepth - 1);
+          sendCount = Math.min(sendCount, maxDown);
+          if (sendCount === 0) return;
+          scrollbackDepth -= sendCount;
+        }
+      }
       const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
       const ws = wsRef.current;
       if (ws?.readyState !== WebSocket.OPEN) return;
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < sendCount; i++) {
         ws.send(new TextEncoder().encode(seq));
       }
-      if (dir === "up") {
+      if (clamp && dir === "up") {
         setState((prev) =>
           prev.isInScrollback ? prev : { ...prev, isInScrollback: true },
         );
       }
     };
+    // Expose so exitScrollback can reset the depth in sync with the
+    // Escape sent to tmux.
+    const resetScrollbackDepth = () => {
+      scrollbackDepth = 0;
+    };
+    resetScrollbackDepthRef.current = resetScrollbackDepth;
 
     let touchMidY = 0;
     let touchAccum = 0;
@@ -804,13 +837,14 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     }
   }, []);
 
-  // Sends ESC to exit tmux copy-mode. The tmux binding in
-  // src/tmux/utils.rs removes the `-e` flag so copy-mode does not
-  // auto-exit on scroll-down-past-bottom; this is the only path out.
+  // Mobile-only: sends ESC to force tmux out of copy-mode. On mobile we
+  // clamp scroll-down so tmux never reaches the bottom on its own; the
+  // button is the only way back to live.
   const exitScrollback = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(new TextEncoder().encode("\x1b"));
     }
+    resetScrollbackDepthRef.current?.();
     setState((prev) =>
       prev.isInScrollback ? { ...prev, isInScrollback: false } : prev,
     );

@@ -259,7 +259,7 @@ export function TerminalView({ session }: Props) {
           </div>
         )}
 
-        {state.isInScrollback && (
+        {isMobile && state.isInScrollback && (
           <BackToLiveButton onClick={exitScrollback} topOffset="top-3" />
         )}
 
