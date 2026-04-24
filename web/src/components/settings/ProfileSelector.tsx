@@ -4,7 +4,6 @@ import {
   deleteProfile,
   fetchProfiles,
   renameProfile,
-  setDefaultProfile,
 } from "../../lib/api";
 import type { ProfileInfo } from "../../lib/types";
 
@@ -79,11 +78,6 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
     }
   };
 
-  const handleSetDefault = async (name: string) => {
-    const ok = await setDefaultProfile(name);
-    if (ok) load();
-  };
-
   const closeInput = () => {
     setCreating(false);
     setRenaming(false);
@@ -144,22 +138,13 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
               Rename
             </button>
             {(!activeProfile || activeProfile.name !== selectedProfile) && (
-              <>
-                <button
-                  onClick={() => handleSetDefault(selectedProfile)}
-                  className="text-xs text-text-dim hover:text-text-primary cursor-pointer"
-                  title="Set as default profile"
-                >
-                  Default
-                </button>
-                <button
-                  onClick={() => handleDelete(selectedProfile)}
-                  className="text-xs text-text-dim hover:text-red-400 cursor-pointer"
-                  title="Delete profile"
-                >
-                  Delete
-                </button>
-              </>
+              <button
+                onClick={() => handleDelete(selectedProfile)}
+                className="text-xs text-text-dim hover:text-red-400 cursor-pointer"
+                title="Delete profile"
+              >
+                Delete
+              </button>
             )}
           </>
         )}

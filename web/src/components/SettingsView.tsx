@@ -4,10 +4,13 @@ import { NotificationSettings } from "./NotificationSettings";
 import { SecuritySettings } from "./SecuritySettings";
 import { TerminalSettings } from "./TerminalSettings";
 import {
+  fetchProfiles,
   getSettings,
+  setDefaultProfile,
   updateSettings,
   updateProfileSettings,
 } from "../lib/api";
+import type { ProfileInfo } from "../lib/types";
 import {
   ListField,
   SelectField,
@@ -59,6 +62,18 @@ export function SettingsView({ onClose }: Props) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("session");
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+
+  useEffect(() => {
+    fetchProfiles().then(setProfiles);
+  }, []);
+
+  const defaultProfile = profiles.find((p) => p.is_default)?.name ?? "default";
+
+  const handleSetDefault = async (name: string) => {
+    const ok = await setDefaultProfile(name);
+    if (ok) fetchProfiles().then(setProfiles);
+  };
 
   const loadSettings = useCallback(() => {
     const loader = selectedProfile
@@ -133,6 +148,13 @@ export function SettingsView({ onClose }: Props) {
       case "session":
         return (
           <div className="space-y-4">
+            <SelectField
+              label="Default profile"
+              description="Profile used for new sessions"
+              value={defaultProfile}
+              onChange={(v) => handleSetDefault(v)}
+              options={profiles.map((p) => ({ value: p.name, label: p.name }))}
+            />
             <TextField
               label="Default agent"
               value={(session.default_tool as string) ?? ""}
