@@ -689,7 +689,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    use axum::routing::{get, patch, post};
+    use axum::routing::{delete, get, patch, post};
 
     Router::new()
         // Sessions
@@ -718,8 +718,18 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         // Agents
         .route("/api/agents", get(api::list_agents))
-        // Wizard support
-        .route("/api/profiles", get(api::list_profiles))
+        // Profiles
+        .route(
+            "/api/profiles",
+            get(api::list_profiles).post(api::create_profile),
+        )
+        .route("/api/profiles/{name}", delete(api::delete_profile))
+        .route(
+            "/api/profiles/{name}/settings",
+            get(api::get_profile_settings).patch(api::update_profile_settings),
+        )
+        .route("/api/profiles/{name}/rename", patch(api::rename_profile))
+        .route("/api/default-profile", patch(api::default_profile))
         .route("/api/filesystem/browse", get(api::browse_filesystem))
         .route("/api/filesystem/home", get(api::filesystem_home))
         .route("/api/git/branches", get(api::list_branches))
@@ -732,6 +742,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
+        .route("/api/sounds", get(api::list_sounds))
         // Push notifications
         .route("/api/push/status", get(push::get_status))
         .route(

@@ -7,7 +7,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use super::{ALLOWED_SETTINGS_SECTIONS, SESSION_BLOCKED_FIELDS};
+use super::{validate_profile_name, ALLOWED_SETTINGS_SECTIONS, SESSION_BLOCKED_FIELDS};
 
 // --- Agents ---
 
@@ -79,7 +79,19 @@ pub async fn get_settings(
     }
 }
 
-pub async fn update_settings(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
+pub async fn update_settings(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
     // Validate that only allowed sections are being updated
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
@@ -380,4 +392,279 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         behind_tunnel: state.behind_tunnel,
         profile: state.profile.clone(),
     })
+}
+
+// --- Profile management ---
+
+#[derive(Deserialize)]
+pub struct CreateProfileBody {
+    pub name: String,
+}
+
+pub async fn create_profile(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateProfileBody>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+    if let Err(e) = validate_profile_name(&body.name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": e})),
+        )
+            .into_response();
+    }
+    match tokio::task::spawn_blocking(move || crate::session::create_profile(&body.name)).await {
+        Ok(Ok(())) => (StatusCode::CREATED, Json(serde_json::json!({"ok": true}))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn delete_profile(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+    if name == state.profile {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "active_profile", "message": "Cannot delete the active profile"})),
+        )
+            .into_response();
+    }
+    match tokio::task::spawn_blocking(move || crate::session::delete_profile(&name)).await {
+        Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "delete_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RenameProfileBody {
+    pub new_name: String,
+}
+
+pub async fn rename_profile(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<RenameProfileBody>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+    if let Err(e) = validate_profile_name(&body.new_name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": e})),
+        )
+            .into_response();
+    }
+    let old = name;
+    let new = body.new_name;
+    match tokio::task::spawn_blocking(move || crate::session::rename_profile(&old, &new)).await {
+        Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "rename_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DefaultProfileBody {
+    pub name: String,
+}
+
+pub async fn default_profile(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DefaultProfileBody>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+    let name = body.name;
+    match tokio::task::spawn_blocking(move || crate::session::set_default_profile(&name)).await {
+        Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn get_profile_settings(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = validate_profile_name(&name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": e})),
+        )
+            .into_response();
+    }
+    let result =
+        tokio::task::spawn_blocking(move || crate::session::load_profile_config(&name)).await;
+    match result {
+        Ok(Ok(config)) => match serde_json::to_value(&config) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
+            )
+                .into_response(),
+        },
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "load_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn update_profile_settings(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+    if let Err(e) = validate_profile_name(&name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": e})),
+        )
+            .into_response();
+    }
+    // Validate allowed sections
+    if let Some(obj) = body.as_object() {
+        for key in obj.keys() {
+            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "validation_failed",
+                        "message": format!("Settings section '{}' is not allowed via the web API.", key)
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        let config = crate::session::load_profile_config(&name).unwrap_or_default();
+        let mut current = serde_json::to_value(&config)?;
+        if let (Some(current_obj), Some(update_obj)) = (current.as_object_mut(), body.as_object()) {
+            for (key, value) in update_obj {
+                let mut value = value.clone();
+                if key == "session" {
+                    if let Some(session_obj) = value.as_object_mut() {
+                        for blocked in SESSION_BLOCKED_FIELDS {
+                            session_obj.remove(*blocked);
+                        }
+                    }
+                }
+                current_obj.insert(key.clone(), value);
+            }
+        }
+        let config: crate::session::ProfileConfig = serde_json::from_value(current)?;
+        crate::session::save_profile_config(&name, &config)?;
+        Ok::<_, anyhow::Error>(config)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(config)) => match serde_json::to_value(&config) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
+            )
+                .into_response(),
+        },
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+// --- Sounds ---
+
+pub async fn list_sounds() -> Json<Vec<String>> {
+    Json(crate::sound::list_available_sounds())
 }

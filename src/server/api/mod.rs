@@ -21,8 +21,10 @@ pub use sessions::{
     update_session_notifications, CleanupDefaults, SessionResponse,
 };
 pub use system::{
-    browse_filesystem, docker_status, filesystem_home, get_about, get_settings, list_agents,
-    list_devices, list_groups, list_profiles, list_themes, update_settings,
+    browse_filesystem, create_profile, default_profile, delete_profile, docker_status,
+    filesystem_home, get_about, get_profile_settings, get_settings, list_agents, list_devices,
+    list_groups, list_profiles, list_sounds, list_themes, rename_profile, update_profile_settings,
+    update_settings,
 };
 
 const SHELL_METACHARACTERS: &[char] = &[
@@ -42,10 +44,34 @@ pub(super) fn validate_no_shell_injection(value: &str, field_name: &str) -> Resu
 
 pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
     "theme", "session", "tmux", "updates", "sound", "sandbox", "worktree",
+    // web: audited 2026-04-24, contains only boolean notification toggles
+    // (notifications_enabled, notify_on_waiting, notify_on_idle, notify_on_error).
+    // No shell commands, no binary paths, no RCE surface.
+    "web",
 ];
 
 pub(super) const SESSION_BLOCKED_FIELDS: &[&str] =
     &["agent_command_override", "agent_extra_args", "extra_env"];
+
+/// Validate that a profile name contains only safe characters.
+/// Rejects path traversal attempts (../, /) and shell metacharacters.
+pub(super) fn validate_profile_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Profile name cannot be empty".to_string());
+    }
+    if name.len() > 64 {
+        return Err("Profile name must be 64 characters or fewer".to_string());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(
+            "Profile name must contain only letters, digits, hyphens, and underscores".to_string(),
+        );
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -118,14 +144,17 @@ mod tests {
         // hooks bypass the trust prompt that gates repo hooks.
         let expected: &[&str] = &[
             "theme", "session", "tmux", "updates", "sound", "sandbox", "worktree",
+            // web: audited 2026-04-24. WebConfig has 4 boolean fields
+            // (notifications_enabled, notify_on_waiting, notify_on_idle,
+            // notify_on_error). No shell commands, no binary paths.
+            "web",
         ];
         assert_eq!(
             ALLOWED_SETTINGS_SECTIONS.len(),
             expected.len(),
             "ALLOWED_SETTINGS_SECTIONS size changed — adding a section widens \
              the API write surface and must be reviewed as a security change. \
-             In particular, do NOT add 'hooks' or 'web' without auditing the \
-             RCE surface."
+             In particular, do NOT add 'hooks' without auditing the RCE surface."
         );
         for section in expected {
             assert!(
@@ -141,6 +170,25 @@ mod tests {
              repo-hook trust prompt and run arbitrary shell commands on session \
              start (local RCE)"
         );
+    }
+
+    #[test]
+    fn profile_name_rejects_path_traversal() {
+        assert!(validate_profile_name("../etc").is_err());
+        assert!(validate_profile_name("foo/bar").is_err());
+        assert!(validate_profile_name("..").is_err());
+        assert!(validate_profile_name(".hidden").is_err());
+        assert!(validate_profile_name("").is_err());
+        assert!(validate_profile_name(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn profile_name_accepts_valid_names() {
+        assert!(validate_profile_name("default").is_ok());
+        assert!(validate_profile_name("work").is_ok());
+        assert!(validate_profile_name("my-profile").is_ok());
+        assert!(validate_profile_name("profile_2").is_ok());
+        assert!(validate_profile_name("A").is_ok());
     }
 
     #[test]

@@ -121,6 +121,101 @@ export async function updateSettings(
   }
 }
 
+// --- Profile management ---
+
+export async function createProfile(name: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteProfile(name: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/profiles/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function renameProfile(
+  name: string,
+  newName: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `/api/profiles/${encodeURIComponent(name)}/rename`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_name: newName }),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function setDefaultProfile(name: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/default-profile", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export function getProfileSettings(
+  name: string,
+): Promise<Record<string, unknown> | null> {
+  return fetchJson<Record<string, unknown>>(
+    `/api/profiles/${encodeURIComponent(name)}/settings`,
+  );
+}
+
+export async function updateProfileSettings(
+  name: string,
+  updates: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `/api/profiles/${encodeURIComponent(name)}/settings`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// --- Themes & Sounds ---
+
+export async function fetchThemes(): Promise<string[]> {
+  return (await fetchJson<string[]>("/api/themes")) ?? [];
+}
+
+export async function fetchSounds(): Promise<string[]> {
+  return (await fetchJson<string[]>("/api/sounds")) ?? [];
+}
+
 // --- About / server info ---
 
 export interface ServerAbout {
