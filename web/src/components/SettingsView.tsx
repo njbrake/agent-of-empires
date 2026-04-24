@@ -406,7 +406,7 @@ export function SettingsView({ onClose }: Props) {
               className={`px-4 py-2.5 text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
                 activeTab === tab.id
                   ? "text-brand-500 border-b-2 border-brand-500"
-                  : "text-text-dim hover:text-text-primary"
+                  : "text-text-secondary hover:text-text-primary"
               }`}
             >
               {tab.label}
@@ -426,7 +426,7 @@ export function SettingsView({ onClose }: Props) {
               className={`px-4 py-2 text-sm text-left cursor-pointer transition-colors ${
                 activeTab === tab.id
                   ? "text-brand-500 bg-surface-800 border-r-2 border-brand-500"
-                  : "text-text-dim hover:text-text-primary hover:bg-surface-800/50"
+                  : "text-text-secondary hover:text-text-primary hover:bg-surface-800/50"
               }`}
             >
               {tab.label}

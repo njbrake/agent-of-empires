@@ -605,7 +605,7 @@ export function WorkspaceSidebar({
         <div className="border-t border-surface-700/20 p-2">
           <button
             onClick={onSettings}
-            className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
+            className="w-8 h-8 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
             title="Settings"
             aria-label="Settings"
           >
