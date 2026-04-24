@@ -29,6 +29,8 @@ import type { WizardPrefill } from "./components/session-wizard/SessionWizard";
 import type { SessionResponse } from "./lib/types";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
+import { TokenEntryPage } from "./components/TokenEntryPage";
+import { TOKEN_EXPIRED_EVENT } from "./lib/fetchInterceptor";
 import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
@@ -36,6 +38,13 @@ import { DisconnectBanner } from "./components/DisconnectBanner";
 export default function App() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
+  const [tokenExpired, setTokenExpired] = useState(false);
+
+  useEffect(() => {
+    const onTokenExpired = () => setTokenExpired(true);
+    window.addEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
+    return () => window.removeEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
+  }, []);
 
   useEffect(() => {
     loginStatus().then(({ required, authenticated }) => {
@@ -43,6 +52,15 @@ export default function App() {
       setLoginAuthenticated(authenticated);
     });
   }, []);
+
+  const handleTokenSuccess = () => {
+    setTokenExpired(false);
+    // Re-check login status now that token auth works
+    loginStatus().then(({ required, authenticated }) => {
+      setLoginRequired(required);
+      setLoginAuthenticated(authenticated);
+    });
+  };
 
   const handleLoginSuccess = () => {
     setLoginAuthenticated(true);
@@ -52,6 +70,11 @@ export default function App() {
     await logout();
     setLoginAuthenticated(false);
   };
+
+  // Token auth is the first factor; show token entry before anything else
+  if (tokenExpired) {
+    return <TokenEntryPage onSuccess={handleTokenSuccess} />;
+  }
 
   if (loginRequired && !loginAuthenticated) {
     return <LoginPage onSuccess={handleLoginSuccess} />;
