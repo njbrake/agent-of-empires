@@ -59,7 +59,7 @@ const PAGES = [
     dest: "guides/remote-phone-access.md",
     title: "Remote Access from Your Phone",
     description:
-      "Access your Agent of Empires sessions from your phone via a one-keystroke Cloudflare Tunnel with QR pairing.",
+      "Access your Agent of Empires sessions from your phone via Tailscale Funnel or Cloudflare Tunnel with QR pairing.",
   },
   {
     source: "docs/guides/worktrees.md",
@@ -67,6 +67,13 @@ const PAGES = [
     title: "Worktrees Reference",
     description:
       "Git worktree commands and configuration reference for Agent of Empires.",
+  },
+  {
+    source: "docs/guides/agent-override.md",
+    dest: "guides/agent-override.md",
+    title: "Agent Command Overrides",
+    description:
+      "Override agent commands with custom scripts or sandboxed wrappers in Agent of Empires.",
   },
 
   // --- Docs pages (docs/ → pages/docs/) ---
@@ -138,6 +145,7 @@ const URL_MAP = {
   "docs/guides/web-dashboard.md": "/guides/web-dashboard/",
   "docs/guides/remote-phone-access.md": "/guides/remote-phone-access/",
   "docs/guides/worktrees.md": "/guides/worktrees/",
+  "docs/guides/agent-override.md": "/guides/agent-override/",
 };
 
 const GITHUB_BASE =
@@ -188,9 +196,15 @@ function rewriteLinks(content, sourceDir) {
     }
   );
 
-  // Rewrite relative image/asset paths to absolute (assets/ → /assets/)
-  // The build copies docs/assets/* to website/public/assets/
-  content = content.replace(/\]\(assets\//g, "](/assets/");
+  // Rewrite relative image/asset paths to absolute (/assets/...).
+  // The build copies docs/assets/* to website/public/assets/. Both
+  // `assets/foo.png` (used by root-level docs like docs/index.md) and
+  // `../assets/foo.png` (used by guides at docs/guides/foo.md) map to
+  // the same place, so normalize both to `/assets/`. This catches
+  // markdown links, markdown images (![alt](..) contains ](..)), and
+  // HTML-less references alike. `(?:\.\.\/)*` handles any depth of
+  // parent-directory hops so deeper-nested docs future-proof through.
+  content = content.replace(/\]\((?:\.\.\/)*assets\//g, "](/assets/");
 
   return content;
 }

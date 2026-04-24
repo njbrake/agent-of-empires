@@ -8,10 +8,12 @@ use super::{HomeView, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config, Item, Status};
 use crate::tui::app::Action;
+#[cfg(feature = "serve")]
+use crate::tui::dialogs::ServeAction;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction,
-    RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
+    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, NoAgentsAction,
+    ProfilePickerAction, RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -106,6 +108,37 @@ impl HomeView {
                     return Some(Action::EditFile(path));
                 }
             }
+        }
+
+        // Handle serve view (full-screen takeover)
+        #[cfg(feature = "serve")]
+        if let Some(ref mut serve) = self.serve_view {
+            match serve.handle_key(key) {
+                ServeAction::Continue => return None,
+                ServeAction::Close => {
+                    self.serve_view = None;
+                    return None;
+                }
+            }
+        }
+
+        // Handle no-agents dialog (highest priority, blocks all interaction)
+        if let Some(dialog) = &mut self.no_agents_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel | DialogResult::Submit(NoAgentsAction::Quit) => {
+                    return Some(Action::Quit);
+                }
+                DialogResult::Submit(NoAgentsAction::Recheck) => {
+                    let tools = crate::tmux::AvailableTools::detect();
+                    if tools.any_available() {
+                        self.set_available_tools(tools);
+                        self.no_agents_dialog = None;
+                    }
+                    // If still no agents, keep dialog open (user can try again)
+                }
+            }
+            return None;
         }
 
         // Handle welcome/changelog dialogs first (highest priority)
@@ -425,19 +458,6 @@ impl HomeView {
             return None;
         }
 
-        // Serve dialog (serve feature only)
-        #[cfg(feature = "serve")]
-        if let Some(dialog) = &mut self.serve_dialog {
-            match dialog.handle_key(key) {
-                DialogResult::Continue => {}
-                DialogResult::Cancel | DialogResult::Submit(_) => {
-                    // Dropping the dialog kills the subprocess via kill_on_drop.
-                    self.serve_dialog = None;
-                }
-            }
-            return None;
-        }
-
         // Send message dialog
         if let Some(dialog) = &mut self.send_message_dialog {
             match dialog.handle_key(key) {
@@ -452,11 +472,16 @@ impl HomeView {
                         if let Some(inst) = self.get_instance(&session_id) {
                             match crate::tmux::Session::new(&inst.id, &inst.title) {
                                 Ok(tmux_session) => {
-                                    if let Err(e) = tmux_session.send_keys(&message) {
+                                    let delay = crate::agents::send_keys_enter_delay(&inst.tool);
+                                    if let Err(e) =
+                                        tmux_session.send_keys_with_delay(&message, delay)
+                                    {
                                         self.info_dialog = Some(InfoDialog::new(
                                             "Send Failed",
                                             &format!("Failed to send message: {}", e),
                                         ));
+                                    } else {
+                                        self.stamp_last_accessed(&session_id);
                                     }
                                 }
                                 Err(e) => {
@@ -497,6 +522,21 @@ impl HomeView {
             return None;
         }
 
+        // In strict_hotkeys mode, normalize shifted/ctrl keys to their standard
+        // equivalents so the match block below doesn't need duplication.
+        //
+        // Mapping (strict mode only):
+        //   Shift+letter actions -> lowercase: N->n, X->x, D->d, R->r, S->s, M->m, T->t, C->c, Q->q, O->o
+        //   Ctrl+letter relocated bindings -> uppercase: Ctrl+T->T, Ctrl+D->D, Ctrl+R->R, Ctrl+P->P, Ctrl+N->N
+        //   Ctrl+G -> g (group toggle was lowercase)
+        //   Bare lowercase action letters -> blocked (return None)
+        let key = if self.strict_hotkeys {
+            self.normalize_strict_key(key)
+        } else {
+            Some(key)
+        };
+        let key = key?;
+
         // Normal mode keybindings
         match key.code {
             KeyCode::Esc if !self.search_matches.is_empty() => {
@@ -513,7 +553,7 @@ impl HomeView {
             }
             #[cfg(feature = "serve")]
             KeyCode::Char('R') => {
-                self.serve_dialog = Some(crate::tui::dialogs::ServeDialog::new());
+                self.serve_view = Some(crate::tui::dialogs::ServeView::new());
             }
             #[cfg(not(feature = "serve"))]
             KeyCode::Char('R') => {
@@ -586,6 +626,8 @@ impl HomeView {
                         "Please Wait",
                         "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
                     ));
+                } else if !self.available_tools.any_available() {
+                    self.show_no_agents();
                 } else {
                     let existing_groups: Vec<String> =
                         self.all_groups().iter().map(|g| g.path.clone()).collect();
@@ -1226,8 +1268,9 @@ impl HomeView {
     }
 
     /// Create a session with optional hooks. Delegates to the background
-    /// `CreationPoller` when hooks are present (to avoid freezing the TUI on
-    /// slow commands like `npm install`) or when the session is sandboxed.
+    /// `CreationPoller` when hooks are present, when the session is sandboxed,
+    /// or when a worktree branch is requested (to avoid freezing the TUI on
+    /// slow git hooks like `post-checkout`).
     fn create_session_with_hooks(
         &mut self,
         data: NewSessionData,
@@ -1236,8 +1279,12 @@ impl HomeView {
         let has_hooks = hooks
             .as_ref()
             .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
+        let has_worktree = data
+            .worktree_branch
+            .as_ref()
+            .is_some_and(|b| !b.is_empty());
 
-        if data.sandbox || has_hooks {
+        if data.sandbox || has_hooks || has_worktree {
             self.request_creation(data, hooks);
             return None;
         }
@@ -1254,6 +1301,67 @@ impl HomeView {
                 }
                 None
             }
+        }
+    }
+
+    /// In strict_hotkeys mode, normalize key events so the main match block
+    /// doesn't need per-key duplication. Returns `None` to swallow bare
+    /// lowercase action letters that would otherwise fire destructive actions.
+    fn normalize_strict_key(&self, key: KeyEvent) -> Option<KeyEvent> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let bare = key.modifiers == KeyModifiers::NONE;
+        let shift_only = key.modifiers == KeyModifiers::SHIFT;
+        let has_search = !self.search_matches.is_empty();
+
+        // n/N are dual-purpose: search next/prev AND new session/new-from-selection.
+        // When search matches exist, let them through unchanged for vi-style navigation.
+        if has_search {
+            match key.code {
+                KeyCode::Char('n') if bare => return Some(key),
+                KeyCode::Char('N') if bare || shift_only => return Some(key),
+                _ => {}
+            }
+        }
+
+        match key.code {
+            // Ctrl+letter relocations: map to the uppercase letter they replace
+            // Ctrl+T -> T (attach terminal), Ctrl+D -> D (diff view),
+            // Ctrl+R -> R (serve), Ctrl+P -> P (profiles), Ctrl+N -> N (new from selection)
+            KeyCode::Char(c @ ('t' | 'd' | 'r' | 'p' | 'n')) if ctrl => Some(KeyEvent::new(
+                KeyCode::Char(c.to_ascii_uppercase()),
+                KeyModifiers::NONE,
+            )),
+            // Ctrl+G -> g (toggle group by)
+            KeyCode::Char('g') if ctrl => {
+                Some(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            }
+            // Ctrl+O stays as-is (cycle sort backward, already handled by its own arm)
+            KeyCode::Char('o') if ctrl => Some(key),
+            // Shifted action letters: map to lowercase equivalents
+            // N->n (new), X->x (stop), S->s (settings), M->m (message),
+            // T->t (toggle view), C->c (container toggle), Q->q (quit), O->o (sort)
+            KeyCode::Char(c @ ('N' | 'X' | 'S' | 'M' | 'T' | 'C' | 'Q' | 'O'))
+                if bare || shift_only =>
+            {
+                Some(KeyEvent::new(
+                    KeyCode::Char(c.to_ascii_lowercase()),
+                    KeyModifiers::NONE,
+                ))
+            }
+            // D -> d (delete) and R -> r (rename) in strict mode
+            // (the original uppercase D=diff and R=serve are now behind Ctrl)
+            KeyCode::Char(c @ ('D' | 'R')) if bare || shift_only => Some(KeyEvent::new(
+                KeyCode::Char(c.to_ascii_lowercase()),
+                KeyModifiers::NONE,
+            )),
+            // Block bare lowercase action letters that would fire without a modifier
+            KeyCode::Char('q' | 'n' | 't' | 'c' | 's' | 'd' | 'x' | 'r' | 'm' | 'o' | 'g')
+                if bare =>
+            {
+                None
+            }
+            // Everything else passes through unchanged (navigation, ?, /, Enter, etc.)
+            _ => Some(key),
         }
     }
 }

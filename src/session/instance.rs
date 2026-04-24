@@ -17,8 +17,6 @@ use super::environment::{build_docker_env_args, shell_escape};
 pub struct TerminalInfo {
     #[serde(default)]
     pub created: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -75,8 +73,6 @@ pub struct SandboxInfo {
     pub container_id: Option<String>,
     pub image: String,
     pub container_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
     /// Additional environment entries (session-specific).
     /// `KEY` = pass through from host, `KEY=VALUE` = set explicitly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,6 +129,19 @@ pub struct Instance {
     #[serde(default, skip_serializing)]
     pub source_profile: String,
 
+    // Push-notification per-session overrides. None means "inherit the
+    // server-wide default for this event type" (WebConfig.notify_on_*).
+    // Some(true)/Some(false) is an explicit user toggle and takes
+    // precedence over the global. Because the overrides are per-event-
+    // type, a session can opt INTO an event that is globally off (e.g.,
+    // Running to Idle), not just opt out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_waiting: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_idle: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_error: Option<bool>,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -163,10 +172,20 @@ impl Instance {
             sandbox_info: None,
             terminal_info: None,
             source_profile: String::new(),
+            notify_on_waiting: None,
+            notify_on_idle: None,
+            notify_on_error: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,
         }
+    }
+
+    /// Stamp `last_accessed_at` to the current time. Call this on
+    /// user-initiated interactions (attach, send keys, etc.) so the
+    /// timestamp reflects actual activity, not just status transitions.
+    pub fn touch_last_accessed(&mut self) {
+        self.last_accessed_at = Some(Utc::now());
     }
 
     pub fn is_sub_session(&self) -> bool {
@@ -250,10 +269,7 @@ impl Instance {
             self.apply_terminal_tmux_options();
         }
 
-        self.terminal_info = Some(TerminalInfo {
-            created: true,
-            created_at: Some(Utc::now()),
-        });
+        self.terminal_info = Some(TerminalInfo { created: true });
 
         Ok(())
     }
@@ -624,7 +640,6 @@ impl Instance {
 
         if let Some(ref mut sandbox) = self.sandbox_info {
             sandbox.container_id = Some(container_id);
-            sandbox.created_at = Some(Utc::now());
         }
 
         Ok(container)
@@ -694,6 +709,14 @@ impl Instance {
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
+        let prev_status = self.status;
+        self.update_status_with_metadata_inner(metadata);
+        if self.status != prev_status {
+            self.last_accessed_at = Some(Utc::now());
+        }
+    }
+
+    fn update_status_with_metadata_inner(&mut self, metadata: Option<&tmux::PaneMetadata>) {
         if matches!(
             self.status,
             Status::Stopped | Status::Deleting | Status::Creating
@@ -967,11 +990,25 @@ fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
 /// Uses POSIX-standard `stty susp undef` which works on both Linux and macOS.
 /// Single quotes in `cmd` are escaped with the `'\''` technique to prevent
 /// breaking out of the outer single-quoted wrapper.
+///
+/// The leading `exec` ensures the tmux default shell (which may be fish, nu,
+/// etc.) replaces itself with the POSIX wrapper. Without it, fish stays as the
+/// pane process because fish does not exec the last command in `-c` mode. That
+/// causes `#{pane_current_command}` to report "fish", which triggers a false
+/// restart on reattach. See #757.
 fn wrap_command_ignore_suspend(cmd: &str) -> String {
-    let shell = super::environment::user_posix_shell();
+    let user = super::environment::user_shell();
+    let posix = super::environment::user_posix_shell();
     let escaped = cmd.replace('\'', "'\\''");
     // Use login shell (-l) so version-manager PATHs (NVM, etc.) are available.
-    format!("{} -lc 'stty susp undef; exec env {}'", shell, escaped)
+    // Skip -l when falling back to bash for a non-POSIX user shell (fish, nu,
+    // pwsh): bash's login scripts won't contain the user's PATH setup and -l
+    // may reset the inherited PATH that already has the correct entries.
+    let flag = if user == posix { "-lc" } else { "-c" };
+    format!(
+        "exec {} {} 'stty susp undef; exec env {}'",
+        posix, flag, escaped
+    )
 }
 
 /// Check whether captured pane content indicates a living agent rather than
@@ -1098,6 +1135,90 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_wrap_command_starts_with_exec() {
+        // All wrapped commands must start with `exec` so that the tmux
+        // default shell (which may be fish/nu) replaces itself with the
+        // POSIX wrapper. Without this, fish stays as the pane process and
+        // #{pane_current_command} reports "fish", triggering false restarts
+        // on reattach. See #757.
+        let original = std::env::var("SHELL").ok();
+        for shell in &["/bin/bash", "/bin/zsh", "/usr/bin/fish", "/usr/bin/nu"] {
+            std::env::set_var("SHELL", shell);
+            let wrapped = wrap_command_ignore_suspend("claude");
+            assert!(
+                wrapped.starts_with("exec "),
+                "SHELL={}: wrapped command must start with 'exec': {}",
+                shell,
+                wrapped,
+            );
+        }
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_wrap_command_posix_shell_uses_login() {
+        let original = std::env::var("SHELL").ok();
+        std::env::set_var("SHELL", "/bin/zsh");
+        let wrapped = wrap_command_ignore_suspend("claude");
+        // POSIX shell: should use -lc for version-manager PATHs
+        assert!(
+            wrapped.contains("-lc"),
+            "POSIX shell should use -lc: {}",
+            wrapped,
+        );
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_wrap_command_fish_skips_login() {
+        let original = std::env::var("SHELL").ok();
+        std::env::set_var("SHELL", "/usr/bin/fish");
+        let wrapped = wrap_command_ignore_suspend("claude");
+        // Fish: should use -c (no -l) because bash's login scripts
+        // won't have fish's PATH setup.
+        assert!(
+            wrapped.starts_with("exec bash -c "),
+            "fish shell should produce 'exec bash -c ...': {}",
+            wrapped,
+        );
+        assert!(
+            !wrapped.contains("-lc"),
+            "fish shell should NOT use -lc: {}",
+            wrapped,
+        );
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_wrap_command_nu_skips_login() {
+        let original = std::env::var("SHELL").ok();
+        std::env::set_var("SHELL", "/usr/bin/nu");
+        let wrapped = wrap_command_ignore_suspend("claude");
+        assert!(
+            wrapped.starts_with("exec bash -c "),
+            "nu shell should produce 'exec bash -c ...': {}",
+            wrapped,
+        );
+        match original {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
     // Additional tests for is_sandboxed
     #[test]
     fn test_is_sandboxed_without_sandbox_info() {
@@ -1113,7 +1234,6 @@ mod tests {
             container_id: None,
             image: "test-image".to_string(),
             container_name: "test".to_string(),
-            created_at: None,
             extra_env: None,
             custom_instruction: None,
         });
@@ -1128,7 +1248,6 @@ mod tests {
             container_id: None,
             image: "test-image".to_string(),
             container_name: "test".to_string(),
-            created_at: None,
             extra_env: None,
             custom_instruction: None,
         });
@@ -1233,7 +1352,6 @@ mod tests {
             container_id: Some("abc123".to_string()),
             image: "myimage:latest".to_string(),
             container_name: "test_container".to_string(),
-            created_at: Some(Utc::now()),
             extra_env: Some(vec!["MY_VAR".to_string(), "OTHER_VAR".to_string()]),
             custom_instruction: None,
         };
@@ -1258,7 +1376,6 @@ mod tests {
         assert_eq!(info.image, "test-image");
         assert_eq!(info.container_name, "test");
         assert!(info.container_id.is_none());
-        assert!(info.created_at.is_none());
     }
 
     // Tests for Instance serialization
@@ -1339,10 +1456,7 @@ mod tests {
     #[test]
     fn test_has_terminal_true_when_created() {
         let mut inst = Instance::new("test", "/tmp/test");
-        inst.terminal_info = Some(TerminalInfo {
-            created: true,
-            created_at: Some(Utc::now()),
-        });
+        inst.terminal_info = Some(TerminalInfo { created: true });
         assert!(inst.has_terminal());
     }
 
@@ -1356,10 +1470,7 @@ mod tests {
     #[test]
     fn test_terminal_info_created_false_means_no_terminal() {
         let mut inst = Instance::new("test", "/tmp/test");
-        inst.terminal_info = Some(TerminalInfo {
-            created: false,
-            created_at: None,
-        });
+        inst.terminal_info = Some(TerminalInfo { created: false });
         assert!(!inst.has_terminal());
     }
 

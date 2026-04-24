@@ -5,6 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::DialogResult;
+use crate::tui::components::checkbox::{checkbox_line, CheckboxStyle};
 use crate::tui::styles::Theme;
 
 #[derive(Clone, Debug, Default)]
@@ -281,71 +282,49 @@ impl GroupDeleteOptionsDialog {
         // Track current chunk index for optional checkboxes
         let mut next_chunk = 4;
 
+        let style = CheckboxStyle::delete_group(theme);
+
         // Worktree checkbox (only shown when delete is selected and has managed worktrees)
         if show_worktree_option {
             let wt_focused = Some(self.focused_field) == self.worktree_field_index();
-            let wt_checkbox = if self.options.delete_worktrees {
-                "[x]"
-            } else {
-                "[ ]"
-            };
-            let wt_style = if wt_focused {
-                Style::default().fg(theme.error).underlined()
-            } else if self.options.delete_worktrees {
-                Style::default().fg(theme.error)
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-            let wt_line = Line::from(vec![
-                Span::raw("    "),
-                Span::styled(wt_checkbox, wt_style),
-                Span::styled(" Also delete managed worktrees", wt_style),
-            ]);
+            let wt_line = checkbox_line(
+                theme,
+                "Also delete managed worktrees",
+                None,
+                4,
+                self.options.delete_worktrees,
+                wt_focused,
+                style,
+            );
             frame.render_widget(Paragraph::new(wt_line), chunks[next_chunk]);
             next_chunk += 1;
 
             if show_force_option {
                 let fc_focused = Some(self.focused_field) == self.force_field_index();
-                let fc_checkbox = if self.options.force_delete_worktrees {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
-                let fc_style = if fc_focused {
-                    Style::default().fg(theme.error).underlined()
-                } else if self.options.force_delete_worktrees {
-                    Style::default().fg(theme.error)
-                } else {
-                    Style::default().fg(theme.dimmed)
-                };
-                let fc_line = Line::from(vec![
-                    Span::raw("        "),
-                    Span::styled(fc_checkbox, fc_style),
-                    Span::styled(" Force delete", fc_style),
-                ]);
+                let fc_line = checkbox_line(
+                    theme,
+                    "Force delete",
+                    None,
+                    8,
+                    self.options.force_delete_worktrees,
+                    fc_focused,
+                    style,
+                );
                 frame.render_widget(Paragraph::new(fc_line), chunks[next_chunk]);
                 next_chunk += 1;
             }
 
             // Branch checkbox (shown alongside worktree option)
             let br_focused = Some(self.focused_field) == self.branch_field_index();
-            let br_checkbox = if self.options.delete_branches {
-                "[x]"
-            } else {
-                "[ ]"
-            };
-            let br_style = if br_focused {
-                Style::default().fg(theme.error).underlined()
-            } else if self.options.delete_branches {
-                Style::default().fg(theme.error)
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-            let br_line = Line::from(vec![
-                Span::raw("    "),
-                Span::styled(br_checkbox, br_style),
-                Span::styled(" Also delete git branches", br_style),
-            ]);
+            let br_line = checkbox_line(
+                theme,
+                "Also delete git branches",
+                None,
+                4,
+                self.options.delete_branches,
+                br_focused,
+                style,
+            );
             frame.render_widget(Paragraph::new(br_line), chunks[next_chunk]);
             next_chunk += 1;
         }
@@ -353,23 +332,15 @@ impl GroupDeleteOptionsDialog {
         // Container checkbox (only shown when delete is selected and has containers)
         if show_container_option {
             let ct_focused = Some(self.focused_field) == self.container_field_index();
-            let ct_checkbox = if self.options.delete_containers {
-                "[x]"
-            } else {
-                "[ ]"
-            };
-            let ct_style = if ct_focused {
-                Style::default().fg(theme.error).underlined()
-            } else if self.options.delete_containers {
-                Style::default().fg(theme.error)
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-            let ct_line = Line::from(vec![
-                Span::raw("    "),
-                Span::styled(ct_checkbox, ct_style),
-                Span::styled(" Also delete containers", ct_style),
-            ]);
+            let ct_line = checkbox_line(
+                theme,
+                "Also delete containers",
+                None,
+                4,
+                self.options.delete_containers,
+                ct_focused,
+                style,
+            );
             frame.render_widget(Paragraph::new(ct_line), chunks[next_chunk]);
             next_chunk += 1;
         }

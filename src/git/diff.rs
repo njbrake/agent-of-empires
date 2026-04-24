@@ -19,6 +19,7 @@ pub enum FileStatus {
     Renamed,
     Copied,
     Untracked,
+    Conflicted,
 }
 
 impl FileStatus {
@@ -31,6 +32,7 @@ impl FileStatus {
             FileStatus::Renamed => 'R',
             FileStatus::Copied => 'C',
             FileStatus::Untracked => '?',
+            FileStatus::Conflicted => 'U',
         }
     }
 
@@ -43,6 +45,7 @@ impl FileStatus {
             FileStatus::Renamed => "renamed",
             FileStatus::Copied => "copied",
             FileStatus::Untracked => "untracked",
+            FileStatus::Conflicted => "conflicted",
         }
     }
 }
@@ -174,6 +177,33 @@ pub fn compute_changed_files(repo_path: &Path, base_branch: &str) -> Result<Vec<
             additions,
             deletions,
         });
+    }
+
+    // Append conflicted files from the index (not visible via diff_tree_to_workdir_with_index)
+    let index = repo.index()?;
+    if index.has_conflicts() {
+        for conflict in index.conflicts()? {
+            let conflict = conflict?;
+            let path = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref())
+                .and_then(|entry| std::str::from_utf8(&entry.path).ok())
+                .map(PathBuf::from);
+
+            if let Some(path) = path {
+                if !files.iter().any(|f| f.path == path) {
+                    files.push(DiffFile {
+                        path,
+                        old_path: None,
+                        status: FileStatus::Conflicted,
+                        additions: 0,
+                        deletions: 0,
+                    });
+                }
+            }
+        }
     }
 
     // Sort by path for consistent ordering
@@ -329,7 +359,22 @@ pub fn compute_file_diff(
         .unwrap_or_default();
 
     // Determine file status
-    let status = if old_content.is_empty() && !new_content.is_empty() {
+    let index = repo.index()?;
+    let is_conflicted = index.has_conflicts()
+        && index.conflicts()?.any(|c| {
+            c.ok()
+                .and_then(|c| c.our.or(c.their).or(c.ancestor))
+                .and_then(|e| {
+                    std::str::from_utf8(&e.path)
+                        .ok()
+                        .map(|p| Path::new(p) == file_path)
+                })
+                .unwrap_or(false)
+        });
+
+    let status = if is_conflicted {
+        FileStatus::Conflicted
+    } else if old_content.is_empty() && !new_content.is_empty() {
         FileStatus::Added
     } else if !old_content.is_empty() && new_content.is_empty() && !full_path.exists() {
         FileStatus::Deleted
@@ -489,26 +534,12 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
     Ok(branches)
 }
 
-/// Get the default branch name (main or master)
+/// Get the default branch name (main or master).
+/// Delegates to `GitWorktree::detect_default_branch` which also checks
+/// remote tracking refs as a fallback.
 pub fn get_default_branch(repo_path: &Path) -> Result<String> {
-    let repo = super::open_repo_at(repo_path)?;
-
-    // Try to find main first, then master
-    for name in &["main", "master"] {
-        if repo.find_branch(name, git2::BranchType::Local).is_ok() {
-            return Ok(name.to_string());
-        }
-    }
-
-    // Fall back to first branch
-    if let Some(branch) = repo.branches(Some(git2::BranchType::Local))?.next() {
-        let (branch, _) = branch?;
-        if let Some(name) = branch.name()? {
-            return Ok(name.to_string());
-        }
-    }
-
-    Err(GitError::BranchNotFound("No branches found".to_string()))
+    let git_wt = super::GitWorktree::new(repo_path.to_path_buf())?;
+    git_wt.detect_default_branch()
 }
 
 #[cfg(test)]
@@ -880,6 +911,137 @@ mod tests {
         assert!(!is_binary_bytes(b"hello world"));
         assert!(!is_binary_bytes(b"line 1\nline 2"));
         assert!(is_binary_bytes(b"hello\0world"));
+    }
+
+    /// Set up a repo in a mid-merge state with a conflict on `conflicted.txt`.
+    /// Returns the temp dir; HEAD is on `feature` branch.
+    fn setup_conflict_repo() -> (TempDir, git2::Repository) {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        commit_file(&repo, "conflicted.txt", "base\n", "Initial commit");
+
+        // Scope borrows of repo so commits are dropped before we return repo.
+        let main_commit_id = {
+            let ancestor = repo.head().unwrap().peel_to_commit().unwrap();
+            ensure_local_branch(&repo, "main", &ancestor);
+            repo.set_head("refs/heads/main").unwrap();
+            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+                .unwrap();
+            commit_file(&repo, "conflicted.txt", "main version\n", "Main change");
+            let main_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            let id = main_commit.id();
+
+            ensure_local_branch(&repo, "feature", &ancestor);
+            id
+        };
+
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        commit_file(
+            &repo,
+            "conflicted.txt",
+            "feature version\n",
+            "Feature change",
+        );
+
+        let conflict_content =
+            "<<<<<<< HEAD\nfeature version\n=======\nmain version\n>>>>>>> main\n";
+        fs::write(dir.path().join("conflicted.txt"), conflict_content).unwrap();
+
+        let ancestor_blob = repo.blob(b"base\n").unwrap();
+        let our_blob = repo.blob(b"feature version\n").unwrap();
+        let their_blob = repo.blob(b"main version\n").unwrap();
+
+        let make_entry = |id: git2::Oid, stage: u16, size: u32| git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: 0o100644,
+            uid: 0,
+            gid: 0,
+            file_size: size,
+            id,
+            flags: stage << 12,
+            flags_extended: 0,
+            path: b"conflicted.txt".to_vec(),
+        };
+
+        let mut index = repo.index().unwrap();
+        index.remove(Path::new("conflicted.txt"), 0).ok();
+        index.add(&make_entry(ancestor_blob, 1, 5)).unwrap();
+        index.add(&make_entry(our_blob, 2, 16)).unwrap();
+        index.add(&make_entry(their_blob, 3, 13)).unwrap();
+        index.write().unwrap();
+
+        repo.reference("refs/heads/main", main_commit_id, true, "reset main")
+            .unwrap();
+
+        (dir, repo)
+    }
+
+    #[test]
+    fn test_conflicted_file_appears_in_changed_files() {
+        let (dir, _repo) = setup_conflict_repo();
+        let files = compute_changed_files(dir.path(), "main").unwrap();
+        let conflicted: Vec<_> = files
+            .iter()
+            .filter(|f| f.status == FileStatus::Conflicted)
+            .collect();
+        assert!(
+            !conflicted.is_empty(),
+            "Expected at least one Conflicted file, got: {:?}",
+            files
+                .iter()
+                .map(|f| (&f.path, f.status))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            conflicted
+                .iter()
+                .any(|f| f.path == Path::new("conflicted.txt")),
+            "conflicted.txt should be Conflicted"
+        );
+    }
+
+    #[test]
+    fn test_conflicted_file_no_duplicate_in_changed_files() {
+        let (dir, _repo) = setup_conflict_repo();
+        let files = compute_changed_files(dir.path(), "main").unwrap();
+        let count = files
+            .iter()
+            .filter(|f| f.path == Path::new("conflicted.txt"))
+            .count();
+        assert_eq!(count, 1, "conflicted.txt should appear exactly once");
+    }
+
+    #[test]
+    fn test_conflicted_file_diff_shows_markers() {
+        let (dir, _repo) = setup_conflict_repo();
+        let diff = compute_file_diff(dir.path(), Path::new("conflicted.txt"), "main", 3).unwrap();
+
+        assert_eq!(diff.file.status, FileStatus::Conflicted);
+        assert!(
+            !diff.hunks.is_empty(),
+            "Should produce hunks for conflicted file"
+        );
+
+        let all_content: String = diff
+            .hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .map(|l| l.content.as_str())
+            .collect();
+        assert!(
+            all_content.contains("<<<<<<<"),
+            "Diff should contain conflict markers"
+        );
+        assert!(
+            all_content.contains(">>>>>>>"),
+            "Diff should contain conflict markers"
+        );
     }
 
     #[test]

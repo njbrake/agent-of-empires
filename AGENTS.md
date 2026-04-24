@@ -13,7 +13,7 @@
 - `src/process/`: OS-specific process handling (`macos.rs`, `linux.rs`).
 - `src/docker/`: Docker sandboxing and container management.
 - `src/git/`: git worktree operations and template resolution.
-- `src/server/`: web dashboard backend (axum server, REST API, WebSocket PTY relay, auth), gated behind `serve` feature.
+- `src/server/`: web dashboard backend (axum server, REST API, WebSocket PTY relay, auth).
 - `src/update/`: version checking against GitHub releases.
 - `web/`: React + TypeScript frontend for the web dashboard (built with Vite + Tailwind CSS).
 - `src/migrations/`: versioned data migrations for breaking changes (see below).
@@ -29,15 +29,13 @@
 
 - `cargo build` / `cargo build --release`: TUI-only (release binary at `target/release/aoe`).
 - `cargo build --profile dev-release`: optimized local builds without LTO; faster compile. Use `--release` for CI.
-- `cargo build --features serve`: web dashboard support (needs Node.js + npm).
+- `cargo build --features serve`: includes the web dashboard (needs Node.js + npm).
 - `cargo test`: unit + integration tests (some skip if `tmux` unavailable).
 - `cargo fmt` + `cargo clippy`: run before pushing; fix clippy warnings unless there's a strong reason not to.
 - Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes `debug.log` in app data dir).
 - Running from source needs `tmux` installed.
 
-### Web Dashboard (experimental)
-
-Behind the `serve` feature flag; experimental, subject to change.
+### Web Dashboard
 
 - Stack: React 19, TypeScript, Vite, Tailwind v4, xterm.js v6. Installable as a PWA ("Install Agent of Empires" in Chrome; "Add to Home Screen" on iOS).
 - Build: `cargo build --features serve` (build.rs runs `npm install && npm run build` in `web/` when inputs change).
@@ -52,6 +50,7 @@ Every configurable field must be editable in the settings TUI. When adding one t
 ## Coding Style & Naming Conventions
 
 - Let `cargo fmt` + `cargo clippy` decide; fix warnings.
+- **No dead code.** Never add `#[allow(dead_code)]` or write fields/functions that nothing reads. If a field isn't used yet, don't add it; if it stops being used, remove it.
 - **No emdashes or `--`** as separators in docs/comments; use commas, semicolons, or rephrase.
 - Rust naming: `snake_case` modules/functions, `CamelCase` types, `SCREAMING_SNAKE_CASE` constants.
 - Keep OS-specific logic in `src/process/{macos,linux}.rs`, not sprinkled `cfg` checks.
@@ -105,6 +104,13 @@ Keep the script ephemeral unless promoted to `web/tests/` with a mobile Playwrig
   - **Linux**: `$XDG_CONFIG_HOME/agent-of-empires/` (defaults to `~/.config/agent-of-empires/`)
   - **macOS/Windows**: `~/.agent-of-empires/`
 - Keep user data out of commits. For repo-local experiments, use ignored paths like `./.agent-of-empires/`, `.env`, and `.mcp.json`.
+- `aoe serve` writes several files to the app dir while running. All are owner-only (0600) where they contain secrets. The daemon cleans them up on shutdown; `daemon_pid()`'s stale-PID check sweeps them otherwise.
+  - `serve.pid`: daemon PID for `--stop` and reattach detection.
+  - `serve.url`: primary URL (includes the auth token) plus alternates.
+  - `serve.mode`: `tunnel` / `tailscale` / `local`.
+  - `serve.log`: daemon stdout/stderr tail.
+  - `serve.passphrase`: plaintext Tunnel passphrase, so the TUI can show it on reopen across restarts.
+  - `serve.last_mode`, `serve.last_port`: picker defaults across launches.
 
 ## Data Migrations
 
@@ -136,3 +142,23 @@ The CI workflow (`.github/workflows/docs.yml`) triggers on changes to `docs/**`,
 ## Design System
 
 Read `DESIGN.md` before any visual/UI change — fonts, colors, spacing, and aesthetic direction are defined there. Don't deviate without explicit approval; in QA mode, flag code that doesn't match.
+
+## Skill routing
+
+When the user's request matches an available skill, ALWAYS invoke it using the Skill
+tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
+The skill has specialized workflows that produce better results than ad-hoc answers.
+
+Key routing rules:
+- Product ideas, "is this worth building", brainstorming → invoke office-hours
+- Bugs, errors, "why is this broken", 500 errors → invoke investigate
+- Ship, deploy, push, create PR → invoke ship
+- QA, test the site, find bugs → invoke qa
+- Code review, check my diff → invoke review
+- Update docs after shipping → invoke document-release
+- Weekly retro → invoke retro
+- Design system, brand → invoke design-consultation
+- Visual audit, design polish → invoke design-review
+- Architecture review → invoke plan-eng-review
+- Save progress, checkpoint, resume → invoke checkpoint
+- Code quality, health check → invoke health

@@ -1,10 +1,12 @@
 //! CLI command implementations
 
 pub mod add;
+pub mod agents;
 pub mod definition;
 pub mod group;
 pub mod init;
 pub mod list;
+pub mod output;
 pub mod profile;
 pub mod remove;
 pub mod send;

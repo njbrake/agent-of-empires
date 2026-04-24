@@ -143,6 +143,7 @@ impl SettingsView {
             SettingsCategory::Updates,
             SettingsCategory::Tmux,
             SettingsCategory::Sound,
+            SettingsCategory::Web,
         ];
 
         let mut view = Self {

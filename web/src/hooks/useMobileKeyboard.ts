@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 
 // Detects touch-primary devices and tracks soft-keyboard state via visualViewport.
 // isMobile is used to decide whether the mobile toolbar renders at all.
-// keyboardOpen tracks whether the keyboard is visible (for UI state like hiding
-// the keyboard button). keyboardHeight is the portion of keyboard occlusion that
-// the browser's layout viewport did NOT account for; apply as paddingBottom.
+// keyboardHeight is the extra padding needed to keep content above the keyboard;
+// it accounts for what the layout viewport already handled and subtracts the
+// bottom safe-area inset (the App root pads for it).
 export function useMobileKeyboard() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" &&
@@ -14,8 +14,9 @@ export function useMobileKeyboard() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const rafRef = useRef(0);
   const stableCountRef = useRef(0);
-  // Track the max viewport height ever seen (before keyboard opens) so we can
-  // detect keyboard-open on devices where innerHeight shrinks with the keyboard.
+  const lastOcclusionRef = useRef(0);
+  // Track the max viewport height seen (before keyboard opens) so we can
+  // detect keyboard-open even when innerHeight shrinks with the keyboard.
   const fullHeightRef = useRef(0);
 
   useEffect(() => {
@@ -36,6 +37,13 @@ export function useMobileKeyboard() {
     let lastOpen = false;
     let lastPadding = 0;
 
+    // Read the bottom safe-area inset once. The App root applies this as
+    // padding, so the keyboard compensation should not include it.
+    const safeBottom = parseFloat(
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--safe-area-bottom"),
+    ) || 0;
+
     const measure = () => {
       const currentVvH = vv.height;
 
@@ -46,19 +54,17 @@ export function useMobileKeyboard() {
       }
 
       // Detect keyboard open: significant drop from remembered full height.
-      const totalOcclusion = fullHeightRef.current - currentVvH - vv.offsetTop;
+      const totalOcclusion = fullHeightRef.current - currentVvH;
       const open = totalOcclusion > 100;
 
-      // For paddingBottom: only pad for what the browser's layout viewport
-      // did NOT handle. When innerHeight shrinks with the keyboard (iOS PWA,
-      // iOS 26 Safari), the flex layout already accounts for most of the
-      // keyboard, and paddingBottom would double-compensate.
-      const layoutHandled = fullHeightRef.current - window.innerHeight;
-      const extraOcclusion = Math.max(
-        0,
-        totalOcclusion - Math.max(0, layoutHandled),
-      );
-      const padding = open ? extraOcclusion : 0;
+      // The padding we need is just the gap between innerHeight and the
+      // visual viewport, minus the bottom safe area the App root already
+      // handles. When innerHeight shrinks with the keyboard (iOS PWA,
+      // iOS 26 Safari), innerHeight ≈ vvHeight and padding ≈ 0 (the flex
+      // layout already accounted for it).
+      const padding = open
+        ? Math.max(0, window.innerHeight - currentVvH - safeBottom)
+        : 0;
 
       if (open !== lastOpen || padding !== lastPadding) {
         lastOpen = open;
@@ -71,15 +77,25 @@ export function useMobileKeyboard() {
     };
 
     // iOS keyboard animation takes ~300ms but visualViewport events don't
-    // fire every frame during it. Poll via rAF to catch the transition as
-    // it happens, then stop once the value is stable for ~60 frames.
+    // fire every frame during it. Poll via rAF to catch the transition,
+    // stopping early when the measurement stabilizes (same value 3 frames
+    // in a row) or after 20 frames max to avoid burning CPU while typing.
+    const MAX_POLL_FRAMES = 20;
+    const STABLE_THRESHOLD = 3;
     const startPolling = () => {
       cancelAnimationFrame(rafRef.current);
       stableCountRef.current = 0;
+      let frameCount = 0;
       const poll = () => {
-        measure();
-        stableCountRef.current++;
-        if (stableCountRef.current < 60) {
+        frameCount++;
+        const occlusion = measure();
+        if (Math.abs(occlusion - lastOcclusionRef.current) < 1) {
+          stableCountRef.current++;
+        } else {
+          stableCountRef.current = 0;
+        }
+        lastOcclusionRef.current = occlusion;
+        if (stableCountRef.current < STABLE_THRESHOLD && frameCount < MAX_POLL_FRAMES) {
           rafRef.current = requestAnimationFrame(poll);
         }
       };

@@ -375,7 +375,6 @@ pub fn build_instance(
             container_id: None,
             image: params.sandbox_image.clone(),
             container_name: containers::DockerContainer::generate_name(&instance.id),
-            created_at: None,
             extra_env: if params.extra_env.is_empty() {
                 None
             } else {

@@ -6,20 +6,17 @@ test.describe("Dashboard layout", () => {
     await expect(page.locator("header")).toBeVisible();
   });
 
-  test("shows fallback title when no workspace selected", async ({ page }) => {
+  test("shows branded home screen with logo text", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("Agent of Empires")).toBeVisible();
+    await expect(page.getByText("empires", { exact: false })).toBeVisible();
   });
 
-  test("shows empty state when no sessions exist", async ({ page }) => {
+  test("shows branded home screen with action panes", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("No sessions yet")).toBeVisible();
-  });
-
-  test("shows create session CTA in empty state", async ({ page }) => {
-    await page.goto("/");
-    const cta = page.getByRole("button", { name: "Create session" });
-    await expect(cta).toBeVisible();
+    await expect(page.getByText("empires", { exact: false })).toBeVisible();
+    await expect(page.getByText("Open project")).toBeVisible();
+    await expect(page.getByText("Clone URL")).toBeVisible();
+    await expect(page.getByText("Docs")).toBeVisible();
   });
 
   test("shows offline indicator when API unreachable", async ({ page }) => {
@@ -32,8 +29,7 @@ test.describe("Sidebar", () => {
   test("sidebar visible on desktop by default", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    await expect(page.getByRole("button", { name: "+ New Session" })).toBeVisible();
-    await expect(page.getByPlaceholder("Search... (/)")).toBeVisible();
+    await expect(page.getByLabel("Add project")).toBeVisible();
   });
 
   test("sidebar toggle button exists", async ({ page }) => {
@@ -44,106 +40,63 @@ test.describe("Sidebar", () => {
   test("sidebar can be toggled closed and open on desktop", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    const newBtn = page.getByRole("button", { name: "+ New Session" });
-    await expect(newBtn).toBeVisible();
+    const addBtn = page.getByLabel("Add project");
+    await expect(addBtn).toBeVisible();
 
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    await expect(newBtn).not.toBeVisible();
+    await expect(addBtn).not.toBeVisible();
 
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    await expect(newBtn).toBeVisible();
+    await expect(addBtn).toBeVisible();
   });
 });
 
-test.describe("Create session modal", () => {
-  test("opens from empty state CTA", async ({ page }) => {
+test.describe("Create session from home screen", () => {
+  test("'Open project' pane opens session wizard", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
+    await page.getByText("Open project").click();
+    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
   });
 
-  test("opens from sidebar button", async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 720 });
+  test("'Clone URL' pane opens wizard on Clone tab", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "+ New Session" }).click();
-    await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
+    await page.getByText("Clone URL").click();
+    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    // Should be on the Clone tab, showing the URL input
+    await expect(page.getByPlaceholder("https://github.com/user/repo.git")).toBeVisible();
   });
 
   test("opens with keyboard shortcut n", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    // Click body first to ensure keyboard events reach the app
     await page.locator("body").click();
     await page.keyboard.press("n");
-    await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
   });
 
-  test("has project path field", async ({ page }) => {
+  test("wizard closes on cancel", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByPlaceholder("/path/to/your/project")).toBeVisible();
-  });
-
-  test("has branch field", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByPlaceholder("feat/my-feature")).toBeVisible();
-  });
-
-  test("has agent section", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    // The modal has an "AGENT" label
-    await expect(page.locator("text=Agent").first()).toBeVisible();
-  });
-
-  test("submit disabled without path", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    // The submit button inside the modal (not the CTA)
-    const submit = page.locator("form button[type='submit']");
-    await expect(submit).toBeDisabled();
-  });
-
-  test("submit enables with path", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await page.getByPlaceholder("/path/to/your/project").fill("/tmp/test");
-    const submit = page.locator("form button[type='submit']");
-    await expect(submit).toBeEnabled();
-  });
-
-  test("advanced options toggle", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByPlaceholder("Auto-generated if empty")).not.toBeVisible();
-    await page.getByText("Show advanced options").click();
-    await expect(page.getByPlaceholder("Auto-generated if empty")).toBeVisible();
-  });
-
-  test("closes on cancel", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
+    await page.getByText("Open project").click();
+    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByRole("heading", { name: "New Session" })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add project" })).not.toBeVisible();
   });
 
-  test("closes on escape", async ({ page }) => {
+  test("wizard closes on escape", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
+    await page.getByText("Open project").click();
+    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("heading", { name: "New Session" })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add project" })).not.toBeVisible();
   });
 
-  test("closes on backdrop click", async ({ page }) => {
+  test("wizard closes on backdrop click", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
+    await page.getByText("Open project").click();
+    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
     // Click the backdrop (top-left corner, outside the modal)
     await page.mouse.click(10, 10);
-    await expect(page.getByRole("heading", { name: "New Session" })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add project" })).not.toBeVisible();
   });
 });
 
@@ -156,8 +109,7 @@ test.describe("Settings", () => {
   test("settings opens on click", async ({ page }) => {
     await page.goto("/");
     await page.getByRole("button", { name: "Settings" }).click();
-    // Settings view shows loading state (no backend in test)
-    await expect(page.getByText("Loading settings...")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Back/i })).toBeVisible();
   });
 
   test("settings opens with keyboard shortcut s", async ({ page }) => {
@@ -165,7 +117,7 @@ test.describe("Settings", () => {
     await page.goto("/");
     await page.locator("body").click();
     await page.keyboard.press("s");
-    await expect(page.getByText("Loading settings...")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Back/i })).toBeVisible();
   });
 });
 
@@ -175,18 +127,17 @@ test.describe("Keyboard shortcuts", () => {
     await page.goto("/");
     // Should not crash even with no session selected
     await page.keyboard.press("Shift+d");
-    await expect(page.getByText("No sessions yet")).toBeVisible();
+    await expect(page.getByText("empires", { exact: false })).toBeVisible();
   });
 
   test("? opens help overlay", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    // Dispatch a ? keydown event directly since Shift+/ handling varies by layout
     await page.evaluate(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }));
     });
-    await expect(page.getByRole("heading", { name: "Keyboard Shortcuts" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Help" })).toBeVisible();
   });
 
   test("escape closes help overlay", async ({ page }) => {
@@ -196,9 +147,9 @@ test.describe("Keyboard shortcuts", () => {
     await page.evaluate(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }));
     });
-    await expect(page.getByRole("heading", { name: "Keyboard Shortcuts" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Help" })).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("heading", { name: "Keyboard Shortcuts" })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "Help" })).not.toBeVisible();
   });
 });
 
@@ -206,27 +157,35 @@ test.describe("Mobile responsive", () => {
   test("sidebar closed by default on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
-    // Sidebar button should not be visible (sidebar closed)
-    await expect(page.getByRole("button", { name: "+ New Session" })).not.toBeVisible();
-    // Main content visible
-    await expect(page.getByText("No sessions yet")).toBeVisible();
+    // Sidebar is translated off-screen on mobile (not display:none), so
+    // use toBeInViewport rather than toBeVisible.
+    await expect(page.getByLabel("Add project")).not.toBeInViewport();
+    // Home screen content visible
+    await expect(page.getByText("empires", { exact: false })).toBeVisible();
+  });
+
+  test("mobile home screen shows sidebar toggle between title and panes", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto("/");
+    await expect(page.getByText("Show sessions")).toBeVisible();
+    await expect(page.getByText("Open project")).toBeVisible();
   });
 
   test("hamburger opens sidebar overlay on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    await expect(page.getByRole("button", { name: "+ New Session" })).toBeVisible();
+    await expect(page.getByLabel("Add project")).toBeInViewport();
   });
 
-  test("sidebar has close button on mobile", async ({ page }) => {
+  test("sidebar closes via toggle on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    const closeBtn = page.getByRole("button", { name: "×" });
-    await expect(closeBtn).toBeVisible();
-    await closeBtn.click();
-    await expect(page.getByRole("button", { name: "+ New Session" })).not.toBeVisible();
+    await expect(page.getByLabel("Add project")).toBeInViewport();
+    // Toggle the sidebar closed again
+    await page.getByRole("button", { name: "Toggle sidebar" }).click();
+    await expect(page.getByLabel("Add project")).not.toBeInViewport();
   });
 
   test("settings gear accessible on mobile", async ({ page }) => {
@@ -238,29 +197,28 @@ test.describe("Mobile responsive", () => {
   test("create modal works on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
-    await page.getByRole("button", { name: "Create session" }).click();
-    await expect(page.getByRole("heading", { name: "New Session" })).toBeVisible();
-    await expect(page.getByPlaceholder("/path/to/your/project")).toBeVisible();
+    await page.getByText("Open project").click();
+    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
   });
 });
 
 test.describe("Design system", () => {
-  test("uses warm navy background", async ({ page }) => {
+  test("uses dark surface background", async ({ page }) => {
     await page.goto("/");
     const bg = await page.evaluate(() =>
       getComputedStyle(document.body).backgroundColor,
     );
-    // #0f172a = rgb(15, 23, 42)
-    expect(bg).toContain("15");
-    expect(bg).not.toBe("rgb(13, 17, 23)");
+    // surface-900 = #1c1c1f = rgb(28, 28, 31)
+    expect(bg).toContain("28");
+    expect(bg).not.toBe("rgb(255, 255, 255)");
   });
 
-  test("loads DM Sans body font", async ({ page }) => {
+  test("loads Geist Sans body font", async ({ page }) => {
     await page.goto("/");
     const fonts = await page.evaluate(() =>
       getComputedStyle(document.body).fontFamily,
     );
-    expect(fonts.toLowerCase()).toContain("dm sans");
+    expect(fonts.toLowerCase()).toContain("geist");
   });
 
   test("focus-visible ring appears on keyboard navigation", async ({ page }) => {

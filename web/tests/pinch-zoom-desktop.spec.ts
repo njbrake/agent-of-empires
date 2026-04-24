@@ -14,12 +14,10 @@ test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false });
 
 test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
   async function openSession(page: Page) {
+    // First match is the group header; second is the session row.
+    await page.locator('button:has-text("pinch-test")').nth(1).click();
     await page
-      .getByRole("button", { name: /pinch-test claude/ })
-      .first()
-      .click();
-    await page
-      .locator(".xterm")
+      .locator(".wterm")
       .first()
       .waitFor({ state: "visible", timeout: 10_000 });
   }
@@ -30,15 +28,15 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     );
   }
 
-  // Dispatch wheel events on .xterm with configurable ctrlKey/deltaY.
+  // Dispatch wheel events on .wterm with configurable ctrlKey/deltaY.
   async function fireWheel(
     page: Page,
     opts: { deltaY: number; ctrlKey: boolean; times?: number },
   ) {
     await page.evaluate(
       ({ deltaY, ctrlKey, times }) => {
-        const target = document.querySelector<HTMLElement>(".xterm");
-        if (!target) throw new Error(".xterm not mounted");
+        const target = document.querySelector<HTMLElement>(".wterm");
+        if (!target) throw new Error(".wterm not mounted");
         for (let i = 0; i < (times ?? 1); i++) {
           target.dispatchEvent(
             new WheelEvent("wheel", {
@@ -93,7 +91,7 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
       .toBeLessThan(14);
   });
 
-  test("wheel without ctrlKey is ignored (native scroll path)", async ({
+  test("wheel without ctrlKey does not change font size (scrolls terminal instead)", async ({
     page,
   }) => {
     await installTerminalSpies(page);
@@ -122,15 +120,15 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     expect(await readFontSize(page, "desktop")).toBe(14);
   });
 
-  test("Ctrl+wheel zoom does NOT re-mount the xterm (live-sync regression guard)", async ({
+  test("Ctrl+wheel zoom does NOT re-mount the terminal (live-sync regression guard)", async ({
     page,
   }) => {
     // Regression guard for the load-bearing change in this PR: the main
     // terminal useEffect no longer depends on the font-size setting, so
     // persisting a new font size (via pinch/wheel → update()) must NOT
-    // tear down and rebuild the xterm. We can't drive this via the
+    // tear down and rebuild the terminal. We can't drive this via the
     // settings UI because SettingsView fully replaces the app view (and
-    // unmounts TerminalView). Instead, we tag the live .xterm before a
+    // unmounts TerminalView). Instead, we tag the live .wterm before a
     // Ctrl+wheel zoom and assert the same element survives the persist.
     await installTerminalSpies(page);
     await mockTerminalApis(page);
@@ -139,10 +137,10 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     await page.reload();
     await openSession(page);
 
-    const tag = `xterm-${Date.now()}`;
+    const tag = `wterm-${Date.now()}`;
     await page.evaluate((id) => {
-      const el = document.querySelector(".xterm");
-      if (!el) throw new Error("no .xterm to tag");
+      const el = document.querySelector(".wterm");
+      if (!el) throw new Error("no .wterm to tag");
       el.setAttribute("data-test-id", id);
     }, tag);
 

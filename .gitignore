@@ -67,3 +67,4 @@ website/src/pages/docs/cli/*.md
 
 # Demo recording intermediate files
 *.cast
+/test-results

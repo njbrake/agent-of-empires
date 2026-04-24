@@ -169,7 +169,7 @@ pub fn is_tmux_available() -> bool {
     Command::new("tmux").arg("-V").output().is_ok()
 }
 
-fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
+pub(crate) fn is_agent_available(agent: &crate::agents::AgentDef) -> bool {
     use crate::agents::DetectionMethod;
     match &agent.detection {
         DetectionMethod::Which(binary) => {

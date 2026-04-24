@@ -281,7 +281,43 @@ where
     match sort_order {
         SortOrder::AZ => items.sort_by_key(|a| key(a).to_lowercase()),
         SortOrder::ZA => items.sort_by_key(|b| std::cmp::Reverse(key(b).to_lowercase())),
-        _ => {}
+        SortOrder::Newest | SortOrder::Oldest | SortOrder::LastActivity => {}
+    }
+}
+
+/// Sort a slice of session references by `sort_order`.
+fn sort_sessions(sessions: &mut [&Instance], sort_order: SortOrder) {
+    match sort_order {
+        SortOrder::Oldest => sessions.sort_by_key(|i| i.created_at),
+        SortOrder::Newest => sessions.sort_by_key(|i| Reverse(i.created_at)),
+        SortOrder::LastActivity => sessions.sort_by_key(|i| last_activity_session_key(i)),
+        SortOrder::AZ | SortOrder::ZA => sort_by_name(sessions, sort_order, |i| &i.title),
+    }
+}
+
+/// Sort a slice of group references by `sort_order`, using `instances` for
+/// timestamp-based orderings.
+fn sort_groups<T, N, P>(
+    items: &mut [T],
+    sort_order: SortOrder,
+    instances: &[Instance],
+    name: N,
+    path: P,
+) where
+    N: Fn(&T) -> &str,
+    P: Fn(&T) -> &str,
+{
+    match sort_order {
+        SortOrder::Oldest => {
+            items.sort_by_key(|g| min_created_at_in_group(path(g), instances));
+        }
+        SortOrder::Newest => {
+            items.sort_by_key(|g| Reverse(max_created_at_in_group(path(g), instances)));
+        }
+        SortOrder::LastActivity => {
+            items.sort_by_key(|g| last_activity_group_key(path(g), instances));
+        }
+        SortOrder::AZ | SortOrder::ZA => sort_by_name(items, sort_order, name),
     }
 }
 
@@ -309,6 +345,41 @@ fn min_created_at_in_group(path: &str, instances: &[Instance]) -> DateTime<Utc> 
         .unwrap_or(DateTime::<Utc>::MAX_UTC)
 }
 
+/// Get the most recent last_accessed_at among all sessions (direct and nested) in a group.
+/// Groups with no sessions (or whose sessions have never reported activity) sort to the bottom
+/// for descending order.
+fn max_last_accessed_in_group(path: &str, instances: &[Instance]) -> Option<DateTime<Utc>> {
+    let prefix = format!("{}/", path);
+    instances
+        .iter()
+        .filter(|i| i.group_path == path || i.group_path.starts_with(&prefix))
+        .filter_map(|i| i.last_accessed_at)
+        .max()
+}
+
+/// Key used to sort sessions by LastActivity in descending order, pushing
+/// sessions with no recorded activity to the bottom.
+///
+/// Rust's default ordering on `Option` places `None` BEFORE `Some(..)`; we
+/// invert by wrapping in `Reverse` AND bucketing `None` into the "has no
+/// activity" tier via the leading bool.
+fn last_activity_session_key(inst: &Instance) -> (bool, Reverse<Option<DateTime<Utc>>>) {
+    (
+        inst.last_accessed_at.is_none(),
+        Reverse(inst.last_accessed_at),
+    )
+}
+
+/// Key used to sort groups by LastActivity in descending order. Groups with no
+/// activity sort to the bottom.
+fn last_activity_group_key(
+    path: &str,
+    instances: &[Instance],
+) -> (bool, Reverse<Option<DateTime<Utc>>>) {
+    let ts = max_last_accessed_in_group(path, instances);
+    (ts.is_none(), Reverse(ts))
+}
+
 /// Flatten instances from multiple profiles into a single flat list.
 /// Merges all profiles' sessions and groups at depth 0 (no profile headers).
 /// Uses per-profile GroupTrees so collapsed state is isolated per profile.
@@ -325,11 +396,7 @@ pub fn flatten_tree_all_profiles(
         .filter(|i| i.group_path.is_empty())
         .collect();
 
-    match sort_order {
-        SortOrder::Oldest => ungrouped.sort_by_key(|i| i.created_at),
-        SortOrder::Newest => ungrouped.sort_by_key(|i| Reverse(i.created_at)),
-        _ => sort_by_name(&mut ungrouped, sort_order, |i| &i.title),
-    }
+    sort_sessions(&mut ungrouped, sort_order);
 
     for inst in ungrouped {
         items.push(Item::Session {
@@ -351,6 +418,9 @@ pub fn flatten_tree_all_profiles(
         }
     }
 
+    // Sort using the per-profile instances stored in each tuple (element 2),
+    // not the global instances slice, so groups from different profiles with
+    // the same name get sort keys scoped to their own profile's sessions.
     match sort_order {
         SortOrder::Oldest => {
             all_roots.sort_by_key(|(_, g, insts)| min_created_at_in_group(&g.path, insts));
@@ -358,10 +428,12 @@ pub fn flatten_tree_all_profiles(
         SortOrder::Newest => {
             all_roots.sort_by_key(|(_, g, insts)| Reverse(max_created_at_in_group(&g.path, insts)));
         }
-        _ => all_roots.sort_by_key(|(_, g, _)| g.name.to_lowercase()),
-    }
-    if matches!(sort_order, SortOrder::ZA) {
-        all_roots.reverse();
+        SortOrder::LastActivity => {
+            all_roots.sort_by_key(|(_, g, insts)| last_activity_group_key(&g.path, insts));
+        }
+        SortOrder::AZ | SortOrder::ZA => {
+            sort_by_name(&mut all_roots, sort_order, |(_, g, _)| &*g.name)
+        }
     }
 
     for (profile_name, root, profile_instances) in &all_roots {
@@ -391,11 +463,7 @@ pub fn flatten_tree(
         .filter(|i| i.group_path.is_empty())
         .collect();
 
-    match sort_order {
-        SortOrder::Oldest => ungrouped.sort_by_key(|i| i.created_at),
-        SortOrder::Newest => ungrouped.sort_by_key(|i| Reverse(i.created_at)),
-        _ => sort_by_name(&mut ungrouped, sort_order, |i| &i.title),
-    }
+    sort_sessions(&mut ungrouped, sort_order);
 
     for inst in ungrouped {
         items.push(Item::Session {
@@ -407,15 +475,13 @@ pub fn flatten_tree(
     // Add groups and their sessions
     let roots = group_tree.get_roots();
     let mut roots_to_iterate: Vec<&Group> = roots.iter().collect();
-    match sort_order {
-        SortOrder::Oldest => {
-            roots_to_iterate.sort_by_key(|g| min_created_at_in_group(&g.path, instances));
-        }
-        SortOrder::Newest => {
-            roots_to_iterate.sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
-        }
-        _ => sort_by_name(&mut roots_to_iterate, sort_order, |g| &g.name),
-    }
+    sort_groups(
+        &mut roots_to_iterate,
+        sort_order,
+        instances,
+        |g| &g.name,
+        |g| &g.path,
+    );
 
     for root in roots_to_iterate {
         flatten_group(root, instances, &mut items, 0, sort_order, None);
@@ -453,11 +519,7 @@ fn flatten_group(
         .filter(|i| i.group_path == group.path)
         .collect();
 
-    match sort_order {
-        SortOrder::Oldest => group_sessions.sort_by_key(|i| i.created_at),
-        SortOrder::Newest => group_sessions.sort_by_key(|i| Reverse(i.created_at)),
-        _ => sort_by_name(&mut group_sessions, sort_order, |i| &i.title),
-    }
+    sort_sessions(&mut group_sessions, sort_order);
 
     for inst in group_sessions {
         items.push(Item::Session {
@@ -468,16 +530,13 @@ fn flatten_group(
 
     // Recursively add child groups (sort them if needed)
     let mut children_to_iterate: Vec<&Group> = group.children.iter().collect();
-    match sort_order {
-        SortOrder::Oldest => {
-            children_to_iterate.sort_by_key(|g| min_created_at_in_group(&g.path, instances));
-        }
-        SortOrder::Newest => {
-            children_to_iterate
-                .sort_by_key(|g| Reverse(max_created_at_in_group(&g.path, instances)));
-        }
-        _ => sort_by_name(&mut children_to_iterate, sort_order, |g| &g.name),
-    }
+    sort_groups(
+        &mut children_to_iterate,
+        sort_order,
+        instances,
+        |g| &g.name,
+        |g| &g.path,
+    );
 
     for child in children_to_iterate {
         flatten_group(child, instances, items, depth + 1, sort_order, profile);
@@ -845,10 +904,46 @@ mod tests {
 
     #[test]
     fn test_sort_order_cycle() {
-        assert_eq!(SortOrder::Newest.cycle(), SortOrder::Oldest);
+        assert_eq!(SortOrder::Newest.cycle(), SortOrder::LastActivity);
+        assert_eq!(SortOrder::LastActivity.cycle(), SortOrder::Oldest);
         assert_eq!(SortOrder::Oldest.cycle(), SortOrder::AZ);
         assert_eq!(SortOrder::AZ.cycle(), SortOrder::ZA);
         assert_eq!(SortOrder::ZA.cycle(), SortOrder::Newest);
+    }
+
+    #[test]
+    fn test_sort_order_cycle_reverse() {
+        assert_eq!(SortOrder::Newest.cycle_reverse(), SortOrder::ZA);
+        assert_eq!(SortOrder::ZA.cycle_reverse(), SortOrder::AZ);
+        assert_eq!(SortOrder::AZ.cycle_reverse(), SortOrder::Oldest);
+        assert_eq!(SortOrder::Oldest.cycle_reverse(), SortOrder::LastActivity);
+        assert_eq!(SortOrder::LastActivity.cycle_reverse(), SortOrder::Newest);
+    }
+
+    #[test]
+    fn test_sort_last_activity_descending_with_none_last() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let mut inst_recent = Instance::new("recent", "/tmp/r");
+        inst_recent.last_accessed_at = Some(now);
+        let mut inst_older = Instance::new("older", "/tmp/o");
+        inst_older.last_accessed_at = Some(now - Duration::hours(1));
+        let inst_never = Instance::new("never", "/tmp/n");
+        let instances = vec![inst_never, inst_older, inst_recent];
+        let tree = GroupTree::new_with_groups(&instances, &[]);
+
+        let items = flatten_tree(&tree, &instances, SortOrder::LastActivity);
+        let titles: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Session { id, .. } => instances
+                    .iter()
+                    .find(|inst| &inst.id == id)
+                    .map(|inst| inst.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(titles, vec!["recent", "older", "never"]);
     }
 
     #[test]

@@ -83,9 +83,7 @@ In the TUI, select the tool from the dropdown in the new session dialog.
 | `q` | Quit |
 | `Ctrl+b d` | Detach from tmux session |
 
-## Use the Web Dashboard (experimental)
-
-> The web dashboard is included in release binaries and the install script but not yet in the Homebrew formula. If you installed via `brew install aoe`, see the [installation docs](installation.md#homebrew) for alternatives.
+## Use the Web Dashboard
 
 Prefer a browser? Run `aoe serve` to start the web dashboard:
 

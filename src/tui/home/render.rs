@@ -44,6 +44,45 @@ fn spinner_starting(created_at: &DateTime<Utc>) -> &'static str {
         .current_frame()
 }
 
+/// Format a timestamp as a compact relative age (e.g. `3m`, `2h`, `4d`, `2mo`).
+/// Returns an empty string for `None` so callers can unconditionally substitute
+/// the result without guarding for absence.
+fn format_relative_age(ts: Option<DateTime<Utc>>) -> String {
+    let Some(ts) = ts else {
+        return String::new();
+    };
+    let now = Utc::now();
+    let secs = (now - ts).num_seconds();
+    if secs <= 0 {
+        return "<1m".to_string();
+    }
+    if secs < 60 {
+        return "<1m".to_string();
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{}m", mins);
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{}h", hours);
+    }
+    let days = hours / 24;
+    if days < 30 {
+        return format!("{}d", days);
+    }
+    let months = days / 30;
+    format!("{}mo", months)
+}
+
+/// Minimum column width required to render the last-activity column.
+/// When the session list is narrower than this, the column is hidden entirely.
+const LAST_ACTIVITY_MIN_WIDTH: u16 = 50;
+
+/// Width reserved for the right-aligned last-activity column:
+/// 5 chars for the label (e.g. `"<1m"`, `"30mo"`) + 1 char left padding.
+const LAST_ACTIVITY_SLOT: usize = 6;
+
 impl HomeView {
     pub fn render(
         &mut self,
@@ -70,6 +109,13 @@ impl HomeView {
             let _ = diff.get_current_diff();
 
             diff.render(frame, area, theme);
+            return;
+        }
+
+        // Serve view takes over the whole screen
+        #[cfg(feature = "serve")]
+        if let Some(ref serve) = self.serve_view {
+            serve.render(frame, area, theme);
             return;
         }
 
@@ -113,61 +159,39 @@ impl HomeView {
 
         // Render dialogs on top
         if self.show_help {
-            HelpOverlay::render(frame, area, theme, self.sort_order);
+            HelpOverlay::render(frame, area, theme, self.sort_order, self.strict_hotkeys);
         }
 
-        if let Some(dialog) = &self.new_dialog {
-            dialog.render(frame, area, theme);
+        // Each Option<Dialog> field on HomeView gets the same render dispatch:
+        // if present, call render(frame, area, theme). Macro-collapsed to keep
+        // the list of active dialog types in one place — adding a new dialog
+        // means adding one line here, not stamping out another five-line
+        // if-let block.
+        macro_rules! render_dialogs {
+            ($($field:ident),* $(,)?) => {
+                $(
+                    if let Some(dialog) = &self.$field {
+                        dialog.render(frame, area, theme);
+                    }
+                )*
+            };
         }
 
-        if let Some(dialog) = &self.confirm_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.unified_delete_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.group_delete_options_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.rename_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.hooks_install_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.hook_trust_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.welcome_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.changelog_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.info_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.profile_picker_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        if let Some(dialog) = &self.send_message_dialog {
-            dialog.render(frame, area, theme);
-        }
-
-        #[cfg(feature = "serve")]
-        if let Some(dialog) = &self.serve_dialog {
-            dialog.render(frame, area, theme);
-        }
+        render_dialogs!(
+            new_dialog,
+            confirm_dialog,
+            unified_delete_dialog,
+            group_delete_options_dialog,
+            rename_dialog,
+            hooks_install_dialog,
+            hook_trust_dialog,
+            welcome_dialog,
+            no_agents_dialog,
+            changelog_dialog,
+            info_dialog,
+            profile_picker_dialog,
+            send_message_dialog,
+        );
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -247,7 +271,7 @@ impl HomeView {
             let is_selected = abs_idx == self.cursor;
             let is_match =
                 !self.search_matches.is_empty() && self.search_matches.contains(&abs_idx);
-            let mut line = self.render_item_line(item, is_selected, is_match, theme);
+            let mut line = self.render_item_line(item, is_selected, is_match, theme, inner.width);
             if is_selected {
                 // Pad to full width so the selection background fills the entire row
                 let pad = (inner.width as usize).saturating_sub(line.width());
@@ -322,6 +346,7 @@ impl HomeView {
         is_selected: bool,
         is_match: bool,
         theme: &Theme,
+        list_width: u16,
     ) -> Line<'static> {
         let indent = get_indent(item.depth());
 
@@ -435,6 +460,29 @@ impl HomeView {
                             Style::default().fg(theme.branch),
                         ));
                     }
+                }
+
+                // Last-activity column: right-aligned, fixed-width slot just
+                // before the terminal-mode/status badge. Hidden when the list
+                // pane is too narrow to justify spending the horizontal budget.
+                if list_width >= LAST_ACTIVITY_MIN_WIDTH {
+                    let age = format_relative_age(inst.last_accessed_at);
+                    // Reserve LAST_ACTIVITY_SLOT cells; right-align inside the
+                    // slot so columns line up across rows of varying title
+                    // length. Empty `age` still reserves space — keeping the
+                    // column aligned is why we don't conditionally skip per
+                    // row.
+                    let padded = format!("{:>width$}", age, width = LAST_ACTIVITY_SLOT);
+                    line_spans.push(Span::styled(padded, Style::default().fg(theme.dimmed)));
+                }
+
+                if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
+                    let mode = self.get_terminal_mode(id);
+                    let mode_text = match mode {
+                        TerminalMode::Container => " [container]",
+                        TerminalMode::Host => " [host]",
+                    };
+                    line_spans.push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
                 }
             }
         }
@@ -816,12 +864,13 @@ impl HomeView {
                 Span::styled(enter_action_text, desc_style),
             ])
         }
+        let strict = self.strict_hotkeys;
         spans.extend([
             Span::styled("│", sep_style),
-            Span::styled(" t", key_style),
+            Span::styled(if strict { " T" } else { " t" }, key_style),
             Span::styled(" View ", desc_style),
             Span::styled("│", sep_style),
-            Span::styled(" g", key_style),
+            Span::styled(if strict { " ^G" } else { " g" }, key_style),
             Span::styled(" Group ", desc_style),
         ]);
 
@@ -832,7 +881,7 @@ impl HomeView {
                     if inst.is_sandboxed() {
                         spans.extend([
                             Span::styled("│", sep_style),
-                            Span::styled(" c", key_style),
+                            Span::styled(if strict { " C" } else { " c" }, key_style),
                             Span::styled(" Mode ", desc_style),
                         ]);
                     }
@@ -842,14 +891,14 @@ impl HomeView {
 
         spans.extend([
             Span::styled("│", sep_style),
-            Span::styled(" n", key_style),
+            Span::styled(if strict { " N" } else { " n" }, key_style),
             Span::styled(" New ", desc_style),
         ]);
 
         if self.selected_session.is_some() {
             spans.extend([
                 Span::styled("│", sep_style),
-                Span::styled(" m", key_style),
+                Span::styled(if strict { " M" } else { " m" }, key_style),
                 Span::styled(" Msg ", desc_style),
             ]);
         }
@@ -857,7 +906,7 @@ impl HomeView {
         if !self.flat_items.is_empty() {
             spans.extend([
                 Span::styled("│", sep_style),
-                Span::styled(" d", key_style),
+                Span::styled(if strict { " D" } else { " d" }, key_style),
                 Span::styled(" Del ", desc_style),
             ]);
         }
@@ -867,13 +916,13 @@ impl HomeView {
             Span::styled(" /", key_style),
             Span::styled(" Search ", desc_style),
             Span::styled("│", sep_style),
-            Span::styled(" D", key_style),
+            Span::styled(if strict { " ^D" } else { " D" }, key_style),
             Span::styled(" Diff ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(" ?", key_style),
             Span::styled(" Help ", desc_style),
             Span::styled("│", sep_style),
-            Span::styled(" q", key_style),
+            Span::styled(if strict { " Q" } else { " q" }, key_style),
             Span::styled(" Quit", desc_style),
         ]);
 
@@ -890,5 +939,51 @@ impl HomeView {
         let bar = Paragraph::new(Line::from(Span::styled(text, update_style)))
             .style(Style::default().bg(theme.selection));
         frame.render_widget(bar, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_relative_age_none_returns_empty() {
+        assert_eq!(format_relative_age(None), "");
+    }
+
+    #[test]
+    fn format_relative_age_future_timestamp_returns_less_than_1m() {
+        let future = Utc::now() + chrono::Duration::hours(1);
+        assert_eq!(format_relative_age(Some(future)), "<1m");
+    }
+
+    #[test]
+    fn format_relative_age_recent_returns_less_than_1m() {
+        let recent = Utc::now() - chrono::Duration::seconds(30);
+        assert_eq!(format_relative_age(Some(recent)), "<1m");
+    }
+
+    #[test]
+    fn format_relative_age_minutes() {
+        let ts = Utc::now() - chrono::Duration::minutes(5);
+        assert_eq!(format_relative_age(Some(ts)), "5m");
+    }
+
+    #[test]
+    fn format_relative_age_hours() {
+        let ts = Utc::now() - chrono::Duration::hours(3);
+        assert_eq!(format_relative_age(Some(ts)), "3h");
+    }
+
+    #[test]
+    fn format_relative_age_days() {
+        let ts = Utc::now() - chrono::Duration::days(7);
+        assert_eq!(format_relative_age(Some(ts)), "7d");
+    }
+
+    #[test]
+    fn format_relative_age_months() {
+        let ts = Utc::now() - chrono::Duration::days(60);
+        assert_eq!(format_relative_age(Some(ts)), "2mo");
     }
 }

@@ -22,10 +22,11 @@ cp "$ROOT_DIR/assets/logo.png" "$ROOT_DIR/website/public/assets/"
 cp "$ROOT_DIR/assets/social-preview.png" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
 cp "$ROOT_DIR/assets/social-preview.svg" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
 cp "$ROOT_DIR/theme/favicon.png" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
-if [ -f "$ROOT_DIR/docs/assets/demo.gif" ]; then
-  cp "$ROOT_DIR/docs/assets/demo.gif" "$ROOT_DIR/website/public/assets/"
-  echo "  - demo.gif copied ($(du -h "$ROOT_DIR/docs/assets/demo.gif" | cut -f1))"
-fi
+for f in "$ROOT_DIR/docs/assets/"*; do
+  [ -f "$f" ] || continue
+  cp "$f" "$ROOT_DIR/website/public/assets/"
+  echo "  - $(basename "$f") copied ($(du -h "$f" | cut -f1))"
+done
 
 # 2. Build Astro website
 echo "Building Astro website..."

@@ -66,6 +66,7 @@ fn check_stale_build_cache() {
 
 #[cfg(feature = "serve")]
 fn build_frontend() {
+    use std::path::Path;
     use std::process::Command;
 
     println!("cargo:rerun-if-changed=web/src");
@@ -74,6 +75,25 @@ fn build_frontend() {
     println!("cargo:rerun-if-changed=web/package-lock.json");
     println!("cargo:rerun-if-changed=web/vite.config.ts");
     println!("cargo:rerun-if-changed=web/tsconfig.json");
+
+    // AOE_WEB_DIST allows Nix (and other reproducible build systems) to supply
+    // a pre-built frontend directory, bypassing the npm build entirely. When
+    // set, the directory is copied to web/dist/ and npm is not invoked.
+    //
+    // Registered unconditionally so Cargo re-runs build.rs when the var is
+    // added or removed, not only when it is already set.
+    println!("cargo:rerun-if-env-changed=AOE_WEB_DIST");
+    if let Ok(dist_src) = std::env::var("AOE_WEB_DIST") {
+        eprintln!("Using pre-built web frontend from AOE_WEB_DIST={dist_src}");
+        let src = Path::new(&dist_src);
+        let dst = Path::new("web/dist");
+        if dst.exists() {
+            std::fs::remove_dir_all(dst).expect("Failed to remove existing web/dist");
+        }
+        // Recursively copy src -> web/dist
+        copy_dir(src, dst);
+        return;
+    }
 
     // Always rebuild: the rerun-if-changed directives above ensure this
     // function only runs when web source files actually changed.
@@ -157,6 +177,20 @@ fn maybe_install_web_deps() {
             "`npm {install_cmd}` failed in web/. \
              Run `cd web && npm {install_cmd}` to see the full error."
         );
+    }
+}
+
+#[cfg(feature = "serve")]
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).expect("Failed to create directory");
+    for entry in std::fs::read_dir(src).expect("Failed to read directory") {
+        let entry = entry.expect("Failed to read entry");
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type().expect("Failed to get file type").is_dir() {
+            copy_dir(&entry.path(), &dst_path);
+        } else {
+            std::fs::copy(entry.path(), dst_path).expect("Failed to copy file");
+        }
     }
 }
 

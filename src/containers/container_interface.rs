@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use super::error::Result;
-use enum_dispatch::enum_dispatch;
 
 pub struct VolumeMount {
     pub host_path: String,
@@ -50,7 +49,6 @@ pub struct ContainerConfig {
     pub port_mappings: Vec<String>,
 }
 
-#[enum_dispatch]
 pub trait ContainerRuntimeInterface {
     /// Check if the container runtime CLI is available
     fn is_available(&self) -> bool;

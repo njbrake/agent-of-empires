@@ -275,7 +275,7 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
             parent_session_id: inst.parent_session_id.clone(),
             profile: storage.profile().to_string(),
         };
-        println!("{}", serde_json::to_string_pretty(&details)?);
+        super::output::print_json(&details)?;
     } else {
         println!("Session: {}", inst.title);
         println!("  ID:      {}", inst.id);
@@ -344,7 +344,7 @@ async fn capture_session(profile: &str, args: CaptureArgs) -> Result<()> {
             content,
             lines: args.lines,
         };
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        super::output::print_json(&output)?;
     } else {
         print!("{}", content);
     }
@@ -458,7 +458,7 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
                             profile: profile_name.clone(),
                             id: inst.id.clone(),
                         };
-                        println!("{}", serde_json::to_string_pretty(&info)?);
+                        super::output::print_json(&info)?;
                     } else if args.quiet {
                         println!("{}", inst.title);
                     } else {

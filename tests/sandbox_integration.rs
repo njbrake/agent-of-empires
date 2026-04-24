@@ -20,7 +20,6 @@ fn test_sandbox_info_serialization() {
         container_id: Some("abc123".to_string()),
         image: "ubuntu:latest".to_string(),
         container_name: "aoe-sandbox-test1234".to_string(),
-        created_at: Some(chrono::Utc::now()),
         extra_env: Some(vec!["MY_VAR".to_string()]),
         custom_instruction: None,
     };
@@ -45,7 +44,6 @@ fn test_instance_is_sandboxed() {
         container_id: None,
         image: "test-image".to_string(),
         container_name: "aoe-sandbox-test".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });
@@ -56,7 +54,6 @@ fn test_instance_is_sandboxed() {
         container_id: None,
         image: "test-image".to_string(),
         container_name: "aoe-sandbox-test".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });
@@ -76,7 +73,6 @@ fn test_sandbox_info_persists_across_save_load() {
         container_id: Some("container123".to_string()),
         image: "custom:image".to_string(),
         container_name: "aoe-sandbox-abcd1234".to_string(),
-        created_at: Some(chrono::Utc::now()),
         extra_env: Some(vec!["API_KEY".to_string(), "SECRET=my_secret".to_string()]),
         custom_instruction: None,
     });

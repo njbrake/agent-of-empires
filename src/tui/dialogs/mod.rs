@@ -9,6 +9,7 @@ mod hook_trust;
 mod hooks_install;
 mod info;
 mod new_session;
+mod no_agents;
 mod profile_picker;
 mod rename;
 mod send_message;
@@ -25,11 +26,12 @@ pub use hook_trust::{HookTrustAction, HookTrustDialog};
 pub use hooks_install::HooksInstallDialog;
 pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
+pub use no_agents::{NoAgentsAction, NoAgentsDialog};
 pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};
 pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
 #[cfg(feature = "serve")]
-pub use serve::ServeDialog;
+pub use serve::{ServeAction, ServeView};
 pub use welcome::WelcomeDialog;
 
 pub enum DialogResult<T> {

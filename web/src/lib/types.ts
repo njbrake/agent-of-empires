@@ -13,8 +13,22 @@ export interface SessionResponse {
   branch: string | null;
   main_repo_path: string | null;
   is_sandboxed: boolean;
+  has_managed_worktree: boolean;
   has_terminal: boolean;
   profile: string;
+  cleanup_defaults: CleanupDefaults;
+  remote_owner: string | null;
+  /** Per-session push-notification overrides. null means "inherit the
+   *  server default" for that event type; boolean is an explicit toggle. */
+  notify_on_waiting: boolean | null;
+  notify_on_idle: boolean | null;
+  notify_on_error: boolean | null;
+}
+
+export interface CleanupDefaults {
+  delete_worktree: boolean;
+  delete_branch: boolean;
+  delete_sandbox: boolean;
 }
 
 export type SessionStatus =
@@ -35,11 +49,39 @@ export interface ResizeMessage {
   rows: number;
 }
 
+export interface ActivateMessage {
+  type: "activate";
+}
+
+/** Pause the pane's foreground process (SIGSTOP). Sent by mobile web
+ *  clients when entering tmux scrollback so claude's continued output
+ *  doesn't shift what the user is reading. Paired with `resume_output`. */
+export interface PauseOutputMessage {
+  type: "pause_output";
+}
+
+export interface ResumeOutputMessage {
+  type: "resume_output";
+}
+
+/** Server → client control message indicating primary status */
+export interface PrimaryStatusMessage {
+  type: "primary_status";
+  is_primary: boolean;
+}
+
 /** Rich diff file info with addition/deletion stats */
 export interface RichDiffFile {
   path: string;
   old_path: string | null;
-  status: "added" | "modified" | "deleted" | "renamed" | "copied" | "untracked";
+  status:
+    | "added"
+    | "modified"
+    | "deleted"
+    | "renamed"
+    | "copied"
+    | "untracked"
+    | "conflicted";
   additions: number;
   deletions: number;
 }
@@ -85,6 +127,7 @@ export interface RepoGroup {
   id: string;
   repoPath: string;
   displayName: string;
+  remoteOwner: string | null;
   workspaces: Workspace[];
   status: WorkspaceStatus;
   collapsed: boolean;
@@ -108,6 +151,7 @@ export interface AgentInfo {
   binary: string;
   host_only: boolean;
   installed: boolean;
+  install_hint: string;
 }
 
 /** Profile info returned by /api/profiles */
@@ -124,10 +168,10 @@ export interface DirEntry {
   is_git_repo: boolean;
 }
 
-/** Branch info returned by /api/git/branches */
-export interface BranchInfo {
-  name: string;
-  is_current: boolean;
+/** Browse response returned by /api/filesystem/browse */
+export interface BrowseResponse {
+  entries: DirEntry[];
+  has_more: boolean;
 }
 
 /** Group info returned by /api/groups */
@@ -158,4 +202,5 @@ export interface CreateSessionRequest {
   extra_repo_paths?: string[];
   command_override?: string;
   custom_instruction?: string;
+  profile?: string;
 }

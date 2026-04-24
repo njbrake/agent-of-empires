@@ -193,16 +193,28 @@ enum TokenSource {
     Bearer,
 }
 
+/// Request extension carrying the SHA-256 hash of the bearer token that
+/// authenticated this request. Inserted by `auth_middleware` after a
+/// successful token match; absent in no-auth mode. Push handlers read
+/// this to filter subscriptions by owner.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthenticatedTokenHash(pub [u8; 32]);
+
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let client_ip = resolve_client_ip(addr, request.headers());
 
-    // No-auth mode: pass everything through
+    // No-auth mode: pass everything through. Insert a zeroed
+    // AuthenticatedTokenHash so handlers that extract the extension
+    // still succeed; all no-auth clients share the same "owner" value.
     if state.token_manager.is_no_auth().await {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedTokenHash([0u8; 32]));
         return next.run(request).await;
     }
 
@@ -226,12 +238,14 @@ pub async fn auth_middleware(
     // A stale cookie must not block a valid query param token.
     let mut matched_source = None;
     let mut needs_upgrade = false;
+    let mut matched_token_hash: Option<[u8; 32]> = None;
 
     for (token_value, source) in extract_tokens(&request) {
         let (valid, upgrade) = state.token_manager.validate(token_value).await;
         if valid {
             matched_source = Some(source);
             needs_upgrade = upgrade;
+            matched_token_hash = Some(super::push::sha256_token(token_value));
             break;
         }
     }
@@ -245,6 +259,7 @@ pub async fn auth_middleware(
             if valid {
                 matched_source = Some(TokenSource::WebSocketProtocol);
                 needs_upgrade = upgrade;
+                matched_token_hash = Some(super::push::sha256_token(&proto));
                 break;
             }
         }
@@ -253,6 +268,19 @@ pub async fn auth_middleware(
     if let Some(source) = matched_source {
         // Record success
         state.rate_limiter.record_success(client_ip).await;
+
+        // Stamp web activity so the push consumer can suppress
+        // notifications when the dashboard is actively in use.
+        state.touch_web_activity();
+
+        // Propagate the matched token's SHA-256 hash as a request extension
+        // so downstream handlers (especially /api/push/*) can filter and
+        // attribute subscriptions by owner without re-extracting the token.
+        if let Some(hash) = matched_token_hash {
+            request
+                .extensions_mut()
+                .insert(AuthenticatedTokenHash(hash));
+        }
 
         let user_agent = request
             .headers()
@@ -300,7 +328,10 @@ pub async fn auth_middleware(
 
                         // Set token cookie/header on the redirect so the browser
                         // has the current token when it follows the redirect.
-                        if source == TokenSource::QueryParam || needs_upgrade {
+                        if source == TokenSource::QueryParam
+                            || source == TokenSource::Bearer
+                            || needs_upgrade
+                        {
                             attach_token_headers(&mut response, &state).await;
                         }
 
@@ -312,8 +343,12 @@ pub async fn auth_middleware(
                 let session_id = session_id.expect("valid session implies session_id exists");
                 let mut response = next.run(request).await;
 
-                // Set token cookie/header if needed
-                if source == TokenSource::QueryParam || needs_upgrade {
+                // Set token cookie/header if needed (including Bearer to
+                // rehydrate cookie from localStorage)
+                if source == TokenSource::QueryParam
+                    || source == TokenSource::Bearer
+                    || needs_upgrade
+                {
                     attach_token_headers(&mut response, &state).await;
                 }
 
@@ -331,10 +366,15 @@ pub async fn auth_middleware(
 
         let mut response = next.run(request).await;
 
-        // Set cookie/X-Aoe-Token if authenticated via query param or if token
-        // needs upgrade. The X-Aoe-Token header lets the PWA update its
-        // localStorage-cached token without a full page reload.
-        let should_refresh = source == TokenSource::QueryParam || needs_upgrade;
+        // Refresh the auth cookie when the token was provided via query param,
+        // Bearer header, or when the token needs upgrade (grace period).
+        // Including Bearer here is important: when the cookie expires but the
+        // SPA still has the token in localStorage, API calls authenticate via
+        // Bearer header. Setting the cookie on those responses "rehydrates" it
+        // so the next browser navigation (HTML page load) works without
+        // re-pasting the ?token= URL.
+        let should_refresh =
+            source == TokenSource::QueryParam || source == TokenSource::Bearer || needs_upgrade;
 
         if should_refresh {
             attach_token_headers(&mut response, &state).await;
@@ -343,9 +383,19 @@ pub async fn auth_middleware(
         return response;
     }
 
-    // Auth failed: record failure
+    // Auth failed. For API and WebSocket routes, return 401. For everything
+    // else (the SPA shell, static assets), serve the page anyway so the
+    // frontend can attempt auth via localStorage + Bearer header. Without
+    // this, an expired cookie means the SPA never loads and localStorage
+    // never gets a chance to re-authenticate.
+    let path = request.uri().path();
+    let is_api_or_ws = path.starts_with("/api/") || path.contains("/ws");
+
+    if !is_api_or_ws {
+        return next.run(request).await;
+    }
+
     let locked = state.rate_limiter.record_failure(client_ip).await;
-    let path = request.uri().path().to_string();
     tracing::warn!(
         ip = %client_ip,
         path = %path,

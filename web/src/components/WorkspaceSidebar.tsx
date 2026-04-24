@@ -1,18 +1,30 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
-import { renameSession } from "../lib/api";
+import { renameSession, setSessionNotifications } from "../lib/api";
 import { StatusGlyph } from "./StatusGlyph";
+import { OwnerAvatar } from "./OwnerAvatar";
 
 const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
 const DEFAULT_WIDTH = 280;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
 
+// Module-level bus for closing any open SessionRow context menu when a
+// new one opens. Each SessionRow manages its own menu state; without
+// this bus, long-pressing a second session on mobile leaves the first
+// menu visible because document "click" listeners don't fire on
+// touchstart. Publishing on open + subscribing here keeps "one menu at
+// a time" without lifting state up to the parent.
+const menuBus = new EventTarget();
+function closeOtherContextMenus() {
+  menuBus.dispatchEvent(new Event("close"));
+}
+
 interface Props {
   groups: RepoGroup[];
   activeId: string | null;
-  creatingForProject: string | null;
   open: boolean;
   onToggle: () => void;
   onSelect: (workspaceId: string) => void;
@@ -20,6 +32,8 @@ interface Props {
   onNew: () => void;
   onCreateSession: (repoPath: string) => void;
   onSettings: () => void;
+  onDeleteSession?: (workspaceId: string) => void;
+  readOnly?: boolean;
 }
 
 function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string | null } {
@@ -29,6 +43,22 @@ function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string 
   if (error) return { status: "Error", createdAt: error.created_at };
   const first = ws.sessions[0];
   return { status: first?.status ?? "Unknown", createdAt: first?.created_at ?? null };
+}
+
+/** Derive which of the three context-menu presets best describes a
+ *  session's current per-event notification overrides. If the three
+ *  overrides aren't all the same value, the session is in a "custom"
+ *  mixed state, which the context menu renders as "Default" too
+ *  (selecting "Default" then resets it cleanly). */
+type NotifyPreset = "off" | "default" | "all";
+function detectNotifyPreset(
+  waiting: boolean | null | undefined,
+  idle: boolean | null | undefined,
+  error: boolean | null | undefined,
+): NotifyPreset {
+  if (waiting === false && idle === false && error === false) return "off";
+  if (waiting === true && idle === true && error === true) return "all";
+  return "default";
 }
 
 function loadSavedWidth(): number {
@@ -48,18 +78,35 @@ const SessionRow = memo(function SessionRow({
   workspace,
   isActive,
   onClick,
+  onDelete,
+  readOnly,
   indented,
 }: {
   workspace: Workspace;
   isActive: boolean;
   onClick: () => void;
+  onDelete?: (workspaceId: string) => void;
+  readOnly?: boolean;
   indented?: boolean;
 }) {
   const { status: sessionStatus, createdAt } = bestSession(workspace);
   const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
-  const sessionId = workspace.sessions[0]?.id;
+  const firstSession = workspace.sessions[0];
+  const sessionId = firstSession?.id;
+  const isDeleting = sessionStatus === "Deleting";
+  const notifyPreset = detectNotifyPreset(
+    firstSession?.notify_on_waiting,
+    firstSession?.notify_on_idle,
+    firstSession?.notify_on_error,
+  );
+
+  const setNotifyPreset = async (preset: NotifyPreset) => {
+    setContextMenu(null);
+    if (!sessionId || preset === notifyPreset) return;
+    await setSessionNotifications(sessionId, preset);
+  };
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -67,6 +114,8 @@ const SessionRow = memo(function SessionRow({
   const renameRef = useRef<HTMLInputElement>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
+  const touchOpenedAt = useRef(0);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     return () => {
@@ -81,16 +130,36 @@ const SessionRow = memo(function SessionRow({
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
-    document.addEventListener("click", close);
-    document.addEventListener("contextmenu", close);
+    const onDocClick = (e: MouseEvent) => {
+      // Clicks inside the menu should be handled by item onClick
+      // handlers, not by this dismiss listener.
+      if (menuRef.current?.contains(e.target as Node)) return;
+      // On mobile, lifting the finger after a long-press dispatches a
+      // synthetic click even when touchend called preventDefault().
+      // Ignore clicks that arrive shortly after a touch-triggered open.
+      if (Date.now() - touchOpenedAt.current < 500) return;
+      close();
+    };
+    // Defer so the event that opened the menu finishes bubbling first
+    const id = requestAnimationFrame(() => {
+      document.addEventListener("click", onDocClick);
+      document.addEventListener("contextmenu", close);
+    });
+    // Listen for the "close" broadcast from any sibling SessionRow
+    // that is opening its own menu.
+    menuBus.addEventListener("close", close);
     return () => {
-      document.removeEventListener("click", close);
+      cancelAnimationFrame(id);
+      document.removeEventListener("click", onDocClick);
       document.removeEventListener("contextmenu", close);
+      menuBus.removeEventListener("close", close);
     };
   }, [contextMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
+    if (isDeleting) return;
     e.preventDefault();
+    closeOtherContextMenus();
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
 
@@ -101,13 +170,19 @@ const SessionRow = memo(function SessionRow({
     }
   };
 
-  const handleTouchStart = () => {
+  const handleTouchStart = (e: React.TouchEvent) => {
     clearLongPress();
     longPressFired.current = false;
-    if (!sessionId) return;
+    if (!sessionId || isDeleting) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const tx = touch.clientX;
+    const ty = touch.clientY;
     longPressTimer.current = setTimeout(() => {
       longPressFired.current = true;
-      startRename();
+      touchOpenedAt.current = Date.now();
+      closeOtherContextMenus();
+      setContextMenu({ x: tx, y: ty });
     }, 500);
   };
 
@@ -130,6 +205,11 @@ const SessionRow = memo(function SessionRow({
     const trimmed = renameValue.trim();
     if (!trimmed || trimmed === label || !sessionId) return;
     await renameSession(sessionId, trimmed);
+  };
+
+  const handleDelete = () => {
+    setContextMenu(null);
+    onDelete?.(workspace.id);
   };
 
   if (renaming) {
@@ -160,13 +240,13 @@ const SessionRow = memo(function SessionRow({
         onTouchEnd={handleTouchEnd}
         onTouchMove={clearLongPress}
         onTouchCancel={clearLongPress}
-        className={`w-full text-left py-2 cursor-pointer transition-colors duration-75 ${
+        className={`w-full text-left py-2 cursor-pointer select-none transition-colors duration-75 ${
           indented ? "pl-6 pr-3" : "px-3"
         } ${
           isActive
             ? "bg-surface-850 border-l-2 border-brand-600"
-            : "border-l-2 border-transparent hover:bg-surface-800/50"
-        }`}
+            : "border-l-2 border-transparent hover:bg-surface-700/40"
+        } ${isDeleting ? "opacity-50 pointer-events-none" : ""}`}
       >
         <div className="flex items-center gap-2">
           <span
@@ -179,18 +259,58 @@ const SessionRow = memo(function SessionRow({
           </span>
         </div>
       </button>
-      {contextMenu && (
+      {contextMenu && createPortal(
         <div
-          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[140px]"
+          ref={menuRef}
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
             onClick={startRename}
-            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+            className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
           >
             Rename
           </button>
-        </div>
+          <div className="border-t border-surface-700/20 my-1" />
+          <div className="px-3 py-1 text-[11px] font-mono uppercase tracking-widest text-text-muted">
+            Notifications
+          </div>
+          {(["off", "default", "all"] as const).map((preset) => {
+            const label =
+              preset === "off"
+                ? "Off"
+                : preset === "default"
+                  ? "Default"
+                  : "All events";
+            const selected = notifyPreset === preset;
+            return (
+              <button
+                key={preset}
+                onClick={() => void setNotifyPreset(preset)}
+                className={`w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2 ${
+                  selected ? "text-text-primary" : "text-text-secondary"
+                }`}
+              >
+                <span className="w-3 text-brand-500">
+                  {selected ? "✓" : ""}
+                </span>
+                {label}
+              </button>
+            );
+          })}
+          {!readOnly && (
+            <>
+              <div className="border-t border-surface-700/20 my-1" />
+              <button
+                onClick={handleDelete}
+                className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-status-error hover:bg-status-error/10 cursor-pointer transition-colors"
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>,
+        document.body,
       )}
     </>
   );
@@ -199,13 +319,11 @@ const SessionRow = memo(function SessionRow({
 const RepoGroupHeader = memo(function RepoGroupHeader({
   group,
   hasActiveChild,
-  creating,
   onClick,
   onNewSession,
 }: {
   group: RepoGroup;
   hasActiveChild: boolean;
-  creating: boolean;
   onClick: () => void;
   onNewSession: () => void;
 }) {
@@ -237,32 +355,21 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
         >
           <path d="M2 3 L5 6.5 L8 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
+        <OwnerAvatar owner={group.remoteOwner} size={16} />
         <span className="text-[13px] md:text-[14px] font-medium truncate flex-1" title={group.repoPath}>
           {group.displayName}
         </span>
       </button>
-      <Tooltip text={creating ? "Creating..." : "New session"}>
+      <Tooltip text="New session">
         <button
           onClick={onNewSession}
-          disabled={creating}
-          className={`w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors ${
-            creating
-              ? "text-text-dim cursor-not-allowed"
-              : "text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
-          }`}
+          className="w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
           aria-label={`New session in ${group.displayName}`}
         >
-          {creating ? (
-            <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          )}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
         </button>
       </Tooltip>
     </div>
@@ -292,7 +399,6 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 export function WorkspaceSidebar({
   groups,
   activeId,
-  creatingForProject,
   open,
   onToggle,
   onSelect,
@@ -300,6 +406,8 @@ export function WorkspaceSidebar({
   onNew,
   onCreateSession,
   onSettings,
+  onDeleteSession,
+  readOnly,
 }: Props) {
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -370,14 +478,14 @@ export function WorkspaceSidebar({
   return (
     <>
       <div
-        className={`fixed inset-0 z-30 md:hidden transition-opacity duration-300 ${
+        className={`fixed top-12 inset-x-0 bottom-0 z-30 md:hidden transition-opacity duration-300 ${
           open ? "bg-black/50" : "opacity-0 pointer-events-none"
         }`}
         onClick={onToggle}
       />
       <div
         style={{ width }}
-        className={`fixed inset-y-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none ${
+        className={`fixed top-12 bottom-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col md:h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none ${
           open ? "translate-x-0" : "-translate-x-full md:hidden"
         }`}
       >
@@ -455,7 +563,7 @@ export function WorkspaceSidebar({
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
           {filteredGroups.map((group) => {
             const showExpanded = q ? true : !group.collapsed;
             const hasActiveChild = group.workspaces.some(
@@ -466,7 +574,6 @@ export function WorkspaceSidebar({
                 <RepoGroupHeader
                   group={{ ...group, collapsed: !showExpanded }}
                   hasActiveChild={!showExpanded && hasActiveChild}
-                  creating={creatingForProject === group.repoPath}
                   onClick={() => !q && onToggleRepo(group.id)}
                   onNewSession={() => onCreateSession(group.repoPath)}
                 />
@@ -477,6 +584,8 @@ export function WorkspaceSidebar({
                       workspace={ws}
                       isActive={ws.id === activeId}
                       onClick={() => onSelect(ws.id)}
+                      onDelete={onDeleteSession}
+                      readOnly={readOnly}
                       indented
                     />
                   ))}
@@ -519,7 +628,7 @@ export function WorkspaceSidebar({
       {/* Resize handle (desktop only) */}
       <div
         onMouseDown={handleMouseDown}
-        className="hidden md:block w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
+        className="hidden md:block w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75"
       />
     </>
   );

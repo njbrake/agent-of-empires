@@ -62,19 +62,8 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
         std::process::exit(1);
     }
 
-    // Check for coding tools
+    // Check for coding tools (no-agents case is handled inside the TUI)
     let available_tools = crate::tmux::AvailableTools::detect();
-    if !available_tools.any_available() {
-        eprintln!("Error: No coding tools found in PATH");
-        eprintln!();
-        eprintln!("Agent of Empires requires at least one of:");
-        eprintln!("  claude    - Anthropic's Claude CLI");
-        eprintln!("  opencode  - OpenCode CLI");
-        eprintln!("  cursor    - Cursor's Agent CLI");
-        eprintln!();
-        eprintln!("Install one of these tools and ensure it's in your PATH.");
-        std::process::exit(1);
-    }
 
     // If version changed, refresh the update cache before showing TUI.
     // This ensures we have release notes for the changelog dialog.
@@ -110,6 +99,8 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
         app.show_startup_warning(&warning);
     }
     let result = app.run(&mut terminal).await;
+
+    crate::session::clear_tui_heartbeat();
 
     // Restore terminal
     disable_raw_mode()?;

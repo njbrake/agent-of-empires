@@ -67,7 +67,7 @@ export function ContentSplit({
         localStorage.setItem(SPLIT_STORAGE_KEY, String(w));
         return w;
       });
-      // Trigger resize for xterm fit
+      // Trigger resize for terminal fit
       window.dispatchEvent(new Event("resize"));
     };
 
@@ -95,7 +95,7 @@ export function ContentSplit({
           <div
             onMouseDown={handleMouseDown}
             onDoubleClick={onToggleCollapse}
-            className="hidden md:block w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
+            className="hidden md:block w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75"
           />
 
           {/* Right pane: inline on desktop, overlay on mobile */}
@@ -108,10 +108,10 @@ export function ContentSplit({
 
           {/* Mobile: slide-in panel from right with backdrop (mirrors left sidebar pattern) */}
           <div
-            className="md:hidden fixed inset-0 bg-black/50 z-30"
+            className="md:hidden fixed top-12 inset-x-0 bottom-0 bg-black/50 z-30"
             onClick={onToggleCollapse}
           />
-          <div className="md:hidden fixed inset-y-0 right-0 z-40 w-[85vw] max-w-sm flex flex-col bg-surface-900">
+          <div className="md:hidden fixed top-12 bottom-0 right-0 z-40 w-[85vw] max-w-sm flex flex-col bg-surface-900">
             <div className="h-10 flex items-center px-3 border-b border-surface-700/20 shrink-0">
               <span className="text-sm text-text-muted flex-1">
                 Diff & Shell

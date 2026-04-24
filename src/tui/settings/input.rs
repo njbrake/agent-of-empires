@@ -536,6 +536,11 @@ impl SettingsView {
                     t.name = None;
                 }
             }
+            FieldKey::ThemeColorMode => {
+                if let Some(ref mut t) = config.theme {
+                    t.color_mode = None;
+                }
+            }
             // Updates
             FieldKey::CheckEnabled => {
                 if let Some(ref mut u) = config.updates {
@@ -619,6 +624,11 @@ impl SettingsView {
             FieldKey::YoloModeDefault => {
                 if let Some(ref mut s) = config.session {
                     s.yolo_mode_default = None;
+                }
+            }
+            FieldKey::StrictHotkeys => {
+                if let Some(ref mut s) = config.session {
+                    s.strict_hotkeys = None;
                 }
             }
             FieldKey::AgentExtraArgs => {
@@ -748,6 +758,11 @@ impl SettingsView {
                     h.on_destroy = None;
                 }
             }
+            // Web settings are server-global; no per-profile override to clear.
+            FieldKey::WebNotificationsEnabled
+            | FieldKey::WebNotifyOnWaiting
+            | FieldKey::WebNotifyOnIdle
+            | FieldKey::WebNotifyOnError => {}
         }
 
         // Sync repo_config when in Repo scope

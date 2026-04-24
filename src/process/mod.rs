@@ -1,6 +1,16 @@
 //! Process utilities for tmux session management
 
 use std::process::Command;
+use std::time::Duration;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use nix::errno::Errno;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use nix::sys::signal::{kill, Signal};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use nix::unistd::Pid;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use tracing::debug;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -51,18 +61,96 @@ pub fn get_foreground_pid(shell_pid: u32) -> Option<u32> {
 /// Sends SIGTERM first, then SIGKILL to any survivors
 pub fn kill_process_tree(pid: u32) {
     #[cfg(target_os = "linux")]
-    {
-        linux::kill_process_tree(pid);
-    }
+    let pids = linux::collect_pid_tree(pid);
 
     #[cfg(target_os = "macos")]
-    {
-        macos::kill_process_tree(pid);
-    }
+    let pids = macos::collect_pid_tree(pid);
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    kill_with_fallback(&pids);
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         // No-op on unsupported platforms, fall back to tmux kill-session only
+    }
+}
+
+/// SIGTERM every pid in reverse order (children first), wait briefly for
+/// graceful shutdown, then SIGKILL anything still alive.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn kill_with_fallback(pids: &[u32]) {
+    debug!(descendants = ?pids, "Killing process tree");
+
+    for &p in pids.iter().rev() {
+        let _ = kill(Pid::from_raw(p as i32), Signal::SIGTERM);
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    for &p in pids.iter().rev() {
+        if process_exists(p) {
+            debug!(pid = p, "Process survived SIGTERM, sending SIGKILL");
+            let _ = kill(Pid::from_raw(p as i32), Signal::SIGKILL);
+        }
+    }
+}
+
+/// Portable "is this pid still around?" check via kill(pid, 0).
+/// EPERM means the process exists but we lack permission (still exists).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn process_exists(pid: u32) -> bool {
+    match kill(Pid::from_raw(pid as i32), None) {
+        Ok(()) => true,
+        Err(Errno::EPERM) => true,
+        Err(_) => false,
+    }
+}
+
+/// Send SIGSTOP to a process and all its descendants. Used to pause
+/// the agent (claude) while a mobile client is reading tmux scrollback
+/// — without this, claude's continued output keeps pushing lines into
+/// scrollback under the reader and shifts what they're trying to read.
+///
+/// Paired with [`continue_process_tree`] which sends SIGCONT. The web
+/// server guarantees a SIGCONT on client disconnect so a dropped
+/// connection cannot leave the pane's process permanently suspended.
+pub fn stop_process_tree(pid: u32) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    signal_process_tree(pid, Signal::SIGSTOP);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Send SIGCONT to a process and all its descendants. Inverse of
+/// [`stop_process_tree`]; SIGCONT to a non-stopped process is a no-op,
+/// so this is safe to invoke unconditionally as cleanup.
+pub fn continue_process_tree(pid: u32) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    signal_process_tree(pid, Signal::SIGCONT);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn signal_process_tree(pid: u32, signal: Signal) {
+    #[cfg(target_os = "linux")]
+    let pids = linux::collect_pid_tree(pid);
+    #[cfg(target_os = "macos")]
+    let pids = macos::collect_pid_tree(pid);
+
+    debug!(descendants = ?pids, ?signal, "Signaling process tree");
+    for &p in pids.iter().rev() {
+        if let Err(e) = kill(Pid::from_raw(p as i32), signal) {
+            if e != Errno::ESRCH {
+                debug!(pid = p, ?signal, error = %e, "signal_process_tree: kill failed");
+            }
+        }
     }
 }

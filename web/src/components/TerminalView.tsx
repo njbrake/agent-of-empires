@@ -1,12 +1,18 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
-import { useWebSettings } from "../hooks/useWebSettings";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
+import { BackToLiveButton } from "./BackToLiveButton";
+import { KeyboardFab } from "./KeyboardFab";
 import { ensureSession } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
-import "@xterm/xterm/css/xterm.css";
+import "@wterm/dom/css";
 
 interface Props {
   session: SessionResponse;
@@ -20,13 +26,32 @@ export function TerminalView({ session }: Props) {
     "pending",
   );
   const [ensureError, setEnsureError] = useState<string | null>(null);
-  const { containerRef, termRef, state, manualReconnect, sendData } =
-    useTerminal(ensureState === "ready" ? session.id : null);
+  const {
+    containerRef,
+    termRef,
+    state,
+    manualReconnect,
+    sendData,
+    activate,
+    exitScrollback,
+    ctrlActiveRef,
+    clearCtrlRef,
+  } = useTerminal(ensureState === "ready" ? session.id : null);
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
-  const { settings } = useWebSettings();
-  const proxyRef = useRef<HTMLInputElement>(null);
-  const [proxyFocused, setProxyFocused] = useState(false);
   const [ctrlActive, setCtrlActive] = useState(false);
+  const [termFocused, setTermFocused] = useState(false);
+
+  // Sync React state → hook ref in an effect. The mobile toolbar toggles
+  // `ctrlActive` but the wterm native onData callback reads the ref to
+  // decide whether to transform the next keystroke. Writing refs during
+  // render trips react-hooks/refs; a commit-phase effect does the same
+  // work without tripping the lint.
+  useEffect(() => {
+    ctrlActiveRef.current = ctrlActive;
+  });
+  useEffect(() => {
+    clearCtrlRef.current = () => setCtrlActive(false);
+  }, [clearCtrlRef]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -41,14 +66,10 @@ export function TerminalView({ session }: Props) {
         setEnsureError(res.message ?? "Could not start session.");
       }
     });
-    // Abort the in-flight ensure when the selected session changes or the
-    // component unmounts. Without this, switching sessions mid-ensure would
-    // let the server restart the previous session after the user moved on.
     return () => controller.abort();
   }, [session.id]);
 
   const retryEnsure = useCallback(() => {
-    // Re-entrancy guard: ignore clicks while a retry is already in flight.
     setEnsureState((prev) => {
       if (prev === "pending") return prev;
       setEnsureError(null);
@@ -65,141 +86,88 @@ export function TerminalView({ session }: Props) {
       return "pending";
     });
   }, [session.id]);
+
   const [hintDismissed, setHintDismissed] = useState(() => {
     try {
       return localStorage.getItem(SCROLL_HINT_SEEN_KEY) === "1";
     } catch {
-      return true; // localStorage unavailable — treat as already seen
+      return true;
     }
   });
   const showScrollHint = isMobile && state.connected && !hintDismissed;
-  // Treat the keyboard as "up" whenever the proxy input has focus, not only
-  // when visualViewport reports a shrunk viewport. On iOS PWA standalone
-  // mode and iPadOS floating keyboards, visualViewport can lag or never
-  // fire; proxy focus flips instantly.
-  const keyboardVisible = keyboardOpen || proxyFocused;
 
-  // When the soft keyboard opens, the terminal height shrinks and xterm's
-  // Re-fit xterm and scroll to the cursor whenever keyboardHeight changes.
-  // useLayoutEffect runs synchronously after React has committed the new
-  // paddingBottom to the DOM, so fitAddon.fit() measures the correct
-  // container size. A rAF then scrolls to bottom after xterm has reflowed.
+  // When the keyboard opens (keyboardHeight goes from 0 → positive), the
+  // terminal container shrinks. wterm's ResizeObserver fires and checks
+  // _isScrolledToBottom() BEFORE the DOM has reflowed, sees the reduced
+  // clientHeight while scrollTop/scrollHeight are stale, and concludes "not
+  // at bottom." This makes it skip _scrollToBottom() after the resize,
+  // leaving the cursor off-screen.
+  //
+  // Fix: force a scroll-to-bottom via double-rAF (fires after wterm's own
+  // rAF render) on every keyboardHeight change, plus a debounced final
+  // scroll after the animation settles.
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollRafRef = useRef(0);
   useLayoutEffect(() => {
-    window.dispatchEvent(new Event("resize"));
-    if (!keyboardOpen) return;
-    const id = requestAnimationFrame(() => {
-      termRef.current?.scrollToBottom();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [keyboardOpen, keyboardHeight, termRef]);
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
 
-  // Auto-open soft keyboard when a session is selected, if the user wants it.
-  // iOS can delay or skip showing the keyboard when focus() is called from a
-  // timeout (broken user-gesture chain). Retry a few times with increasing
-  // delay to cover the WS-connect + terminal-mount + keyboard-animation window.
+    // Immediate: double-rAF ensures we fire AFTER wterm's scheduled render
+    // (which also uses rAF). This keeps the cursor visible during the
+    // keyboard animation, not just after it settles.
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = requestAnimationFrame(() => {
+        const el = termRef.current?.element;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    });
+
+    // Debounced: final correction after the keyboard animation fully settles.
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      window.dispatchEvent(new Event("resize"));
+      const el = termRef.current?.element;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 150);
+    return () => {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      cancelAnimationFrame(scrollRafRef.current);
+    };
+  }, [keyboardHeight, keyboardOpen, termRef]);
+
+  // On initial connect, auto-open the keyboard.
   useEffect(() => {
     if (!isMobile || !state.connected) return;
-    if (!settings.autoOpenKeyboard) return;
+    const term = termRef.current;
+    if (!term) return;
+    // Retry a few times: wterm's textarea may not exist immediately.
     const delays = [50, 200, 500];
     const timers = delays.map((ms) =>
       setTimeout(() => {
-        if (!proxyRef.current) return;
-        proxyRef.current.focus();
+        const ta = term.element.querySelector("textarea");
+        if (ta instanceof HTMLElement) ta.focus();
       }, ms),
     );
     return () => timers.forEach(clearTimeout);
-  }, [isMobile, state.connected, session.id, settings.autoOpenKeyboard]);
+  }, [isMobile, state.connected, termRef]);
 
-  // The proxy input is the keyboard bridge: soft keyboard types into it,
-  // we relay each input to the PTY and clear. Mobile browsers don't
-  // reliably expose xterm's own helper textarea for the soft keyboard.
-  const onProxyInput = useCallback(
-    (e: FormEvent<HTMLInputElement>) => {
-      const value = e.currentTarget.value;
-      if (!value) return;
-      if (ctrlActive) {
-        // Transform each character to its Ctrl equivalent.
-        // Ctrl+A = \x01, Ctrl+Z = \x1a, etc.
-        for (const ch of value) {
-          const code = ch.toUpperCase().charCodeAt(0);
-          if (code >= 65 && code <= 90) {
-            sendData(String.fromCharCode(code - 64));
-          }
-        }
-        setCtrlActive(false);
-      } else {
-        sendData(value);
-      }
-      e.currentTarget.value = "";
-    },
-    [sendData, ctrlActive],
-  );
+  // Toggle keyboard: focus/blur MUST be the first thing in this handler
+  // so iOS considers it part of the user-gesture chain. Anything before
+  // focus() (even a synchronous ws.send) can break iOS keyboard display.
+  // Claim primary after the focus so the PTY resizes to this viewport.
+  const toggleKeyboard = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const ta = term.element.querySelector("textarea");
+    if (keyboardOpen) {
+      ta?.blur();
+    } else if (ta instanceof HTMLElement) {
+      ta.focus();
+    }
+    activate();
+  }, [termRef, keyboardOpen, activate]);
 
-  // iOS soft keyboards don't fire 'input' for Enter/Backspace/Tab/Arrows — they
-  // only fire keydown. Without this handler, hitting Return on iOS silently
-  // dropped the keystroke (Enter never reached the PTY). Translate the common
-  // non-printing keys into the byte sequences the shell expects. Printable
-  // keys stay on the 'input' path so composition/autocorrect still works.
-  const onProxyKeyDown = useCallback(
-    (e: ReactKeyboardEvent<HTMLInputElement>) => {
-      // Single printable character with Ctrl armed: transform to control char.
-      if (ctrlActive && e.key.length === 1) {
-        const code = e.key.toUpperCase().charCodeAt(0);
-        if (code >= 65 && code <= 90) {
-          e.preventDefault();
-          sendData(String.fromCharCode(code - 64));
-          setCtrlActive(false);
-          if (proxyRef.current) proxyRef.current.value = "";
-          return;
-        }
-      }
-
-      const seq = (() => {
-        switch (e.key) {
-          case "Enter":
-            return "\r";
-          case "Backspace":
-            return "\x7f";
-          case "Tab":
-            return "\t";
-          case "Escape":
-            return "\x1b";
-          case "ArrowUp":
-            return "\x1b[A";
-          case "ArrowDown":
-            return "\x1b[B";
-          case "ArrowRight":
-            return "\x1b[C";
-          case "ArrowLeft":
-            return "\x1b[D";
-          default:
-            return null;
-        }
-      })();
-      if (seq === null) return;
-      e.preventDefault();
-      sendData(seq);
-      if (ctrlActive) setCtrlActive(false);
-      if (proxyRef.current) proxyRef.current.value = "";
-    },
-    [sendData, ctrlActive],
-  );
-
-  // Tap the terminal pane to reopen the keyboard. Skip when text is
-  // selected (preserves native long-press-to-select behavior).
-  const onContainerClick = useCallback(() => {
-    if (!isMobile) return;
-    const selection = window.getSelection()?.toString() ?? "";
-    if (selection.length > 0) return;
-    proxyRef.current?.focus();
-  }, [isMobile]);
-
-  const focusProxy = useCallback(() => {
-    proxyRef.current?.focus();
-  }, []);
-
-  // Dismiss the one-time scroll hint on first touchmove or after a timeout.
-  // Persisted to localStorage so it's shown only once per device.
+  // Dismiss scroll hint on first touch or timeout.
   useEffect(() => {
     if (!showScrollHint) return;
     const markSeen = () => {
@@ -207,7 +175,7 @@ export function TerminalView({ session }: Props) {
       try {
         localStorage.setItem(SCROLL_HINT_SEEN_KEY, "1");
       } catch {
-        // ignore quota / disabled-storage errors
+        // ignore
       }
     };
     const t = setTimeout(markSeen, SCROLL_HINT_TIMEOUT_MS);
@@ -246,10 +214,9 @@ export function TerminalView({ session }: Props) {
   const rootStyle = {
     paddingBottom: keyboardHeight > 0 ? keyboardHeight : undefined,
   } as const;
-
   return (
     <div
-      className="flex-1 flex flex-col overflow-hidden relative"
+      className="flex-1 flex flex-col overflow-hidden relative md:bg-surface-800 md:pb-1.5"
       style={rootStyle}
     >
       {!state.connected && state.reconnecting && (
@@ -261,9 +228,7 @@ export function TerminalView({ session }: Props) {
       )}
       {!state.connected && !state.reconnecting && state.retryCount >= 3 && (
         <div className="bg-status-error/10 border-b border-status-error/30 px-4 py-1.5 flex items-center gap-2 shrink-0">
-          <span className="text-xs text-status-error">
-            Connection lost
-          </span>
+          <span className="text-xs text-status-error">Connection lost</span>
           <button
             onClick={manualReconnect}
             className="text-xs text-brand-500 hover:text-brand-400 cursor-pointer underline"
@@ -273,78 +238,48 @@ export function TerminalView({ session }: Props) {
         </div>
       )}
 
-      <div className="flex-1 overflow-hidden bg-surface-950 relative">
+      <div
+        className={`flex-1 overflow-hidden bg-surface-950 relative md:rounded-lg term-panel${termFocused ? " term-focused" : ""}`}
+        onFocus={() => setTermFocused(true)}
+        onBlur={() => setTermFocused(false)}
+      >
         <div
           ref={containerRef}
-          onClick={onContainerClick}
           className="absolute inset-0"
+          onPointerDown={activate}
         />
 
+        {state.connected && !state.isPrimary && (
+          <div
+            aria-hidden="true"
+            className="absolute left-0 right-0 top-3 flex justify-center pointer-events-none z-10"
+          >
+            <span className="font-mono text-[11px] text-text-dim bg-surface-800/80 border border-surface-700/50 rounded-md px-2.5 py-1 backdrop-blur-sm">
+              Viewing from another device. Tap to take over.
+            </span>
+          </div>
+        )}
+
+        {showScrollHint && (
+          <div
+            aria-hidden="true"
+            className="absolute left-0 right-0 top-3 flex justify-center pointer-events-none motion-safe:animate-[fadeIn_300ms_ease-out]"
+          >
+            <span className="flex items-center gap-2 font-mono text-[13px] text-text-primary bg-surface-800/95 border border-surface-700 rounded-md px-3 py-2 shadow-lg backdrop-blur-sm">
+              <span aria-hidden="true" className="text-base leading-none">
+                {"\u21C5"}
+              </span>
+              Swipe to scroll
+            </span>
+          </div>
+        )}
+
+        {isMobile && state.isInScrollback && (
+          <BackToLiveButton onClick={exitScrollback} topOffset="top-3" />
+        )}
+
         {isMobile && state.connected && (
-          <>
-            <input
-              ref={proxyRef}
-              type="text"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              onInput={onProxyInput}
-              onKeyDown={onProxyKeyDown}
-              onFocus={() => setProxyFocused(true)}
-              onBlur={() => setProxyFocused(false)}
-              aria-hidden="true"
-              tabIndex={-1}
-              className="absolute opacity-0 pointer-events-none w-px h-px -z-10"
-              style={{ left: 0, top: 0 }}
-            />
-
-            {!keyboardVisible && (
-              <button
-                type="button"
-                aria-label="Open keyboard"
-                onClick={focusProxy}
-                className="absolute right-3 bottom-3 w-9 h-9 rounded-full bg-surface-800 border border-surface-700/30 text-text-secondary flex items-center justify-center motion-safe:transition-opacity motion-safe:duration-150 hover:bg-surface-700 active:scale-95"
-              >
-                <svg
-                  width="18"
-                  height="14"
-                  viewBox="0 0 24 18"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <rect x="1" y="1" width="22" height="16" rx="2" />
-                  <line x1="5" y1="13" x2="19" y2="13" />
-                  <line x1="5" y1="9" x2="5.01" y2="9" />
-                  <line x1="9" y1="9" x2="9.01" y2="9" />
-                  <line x1="13" y1="9" x2="13.01" y2="9" />
-                  <line x1="17" y1="9" x2="17.01" y2="9" />
-                  <line x1="5" y1="5" x2="5.01" y2="5" />
-                  <line x1="9" y1="5" x2="9.01" y2="5" />
-                  <line x1="13" y1="5" x2="13.01" y2="5" />
-                  <line x1="17" y1="5" x2="17.01" y2="5" />
-                </svg>
-              </button>
-            )}
-
-            {showScrollHint && (
-              <div
-                aria-hidden="true"
-                className="absolute left-0 right-0 top-3 flex justify-center pointer-events-none motion-safe:animate-[fadeIn_300ms_ease-out]"
-              >
-                <span className="flex items-center gap-2 font-mono text-[13px] text-text-primary bg-surface-800/95 border border-surface-700 rounded-md px-3 py-2 shadow-lg backdrop-blur-sm">
-                  <span aria-hidden="true" className="text-base leading-none">
-                    {"\u21C5"}
-                  </span>
-                  Two fingers to scroll
-                </span>
-              </div>
-            )}
-          </>
+          <KeyboardFab keyboardOpen={keyboardOpen} onToggle={toggleKeyboard} />
         )}
       </div>
 

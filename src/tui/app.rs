@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
-use super::styles::load_theme;
 use super::styles::Theme;
 use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
@@ -48,6 +47,7 @@ pub fn check_version_change() -> Result<Option<String>> {
 
 impl App {
     pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
+        let no_agents = !available_tools.any_available();
         let active_profile = if profile.is_empty() {
             None // all-profiles mode
         } else {
@@ -64,10 +64,17 @@ impl App {
         } else {
             &config.theme.name
         };
-        let theme = load_theme(theme_name);
+        let palette_mode = matches!(
+            config.theme.color_mode,
+            crate::session::config::ColorMode::Palette
+        );
+        let theme = crate::tui::styles::load_theme_with_mode(theme_name, palette_mode);
         let current_version = env!("CARGO_PKG_VERSION").to_string();
 
-        if !config.app_state.has_seen_welcome {
+        if no_agents {
+            // Show the no-agents onboarding dialog (takes priority over welcome/changelog)
+            home.show_no_agents();
+        } else if !config.app_state.has_seen_welcome {
             home.show_welcome();
             config.app_state.has_seen_welcome = true;
             config.app_state.last_seen_version = Some(current_version);
@@ -140,7 +147,17 @@ impl App {
     }
 
     pub fn set_theme(&mut self, name: &str) {
-        self.theme = load_theme(name);
+        let palette_mode = load_config()
+            .ok()
+            .flatten()
+            .map(|c| {
+                matches!(
+                    c.theme.color_mode,
+                    crate::session::config::ColorMode::Palette
+                )
+            })
+            .unwrap_or(false);
+        self.theme = crate::tui::styles::load_theme_with_mode(name, palette_mode);
         self.needs_redraw = true;
     }
 
@@ -189,10 +206,16 @@ impl App {
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
+        let mut last_heartbeat = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
         const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
+        const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+        // Signal that the TUI is active so the web push consumer can
+        // suppress notifications while the user is watching the dashboard.
+        crate::session::write_tui_heartbeat();
 
         loop {
             // Force full redraw if needed (e.g., after returning from tmux).
@@ -314,6 +337,11 @@ impl App {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;
+            }
+
+            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+                crate::session::write_tui_heartbeat();
+                last_heartbeat = std::time::Instant::now();
             }
 
             // Animated spinners (rattles) need periodic redraws, but only at
@@ -583,6 +611,7 @@ impl App {
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
+        self.home.stamp_last_accessed(session_id);
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {

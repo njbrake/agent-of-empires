@@ -23,13 +23,22 @@ pub struct ServeArgs {
     #[arg(long)]
     pub read_only: bool,
 
-    /// Expose via Cloudflare Tunnel for secure remote access
+    /// Expose the dashboard over a public HTTPS tunnel. Prefers Tailscale
+    /// Funnel when `tailscale` is installed and logged in (stable
+    /// `.ts.net` URL, installable PWAs survive restarts). Falls back to a
+    /// Cloudflare quick tunnel otherwise (fresh URL on every restart).
     #[arg(long)]
     pub remote: bool,
 
-    /// Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+    /// Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`).
+    /// Takes precedence over Tailscale auto-detection.
     #[arg(long, requires = "remote")]
     pub tunnel_name: Option<String>,
+
+    /// Skip Tailscale Funnel auto-detection and go straight to Cloudflare.
+    /// Useful if you have Tailscale installed for unrelated reasons.
+    #[arg(long, requires = "remote")]
+    pub no_tailscale: bool,
 
     /// Hostname for a named tunnel (e.g., aoe.example.com)
     #[arg(long, requires = "tunnel_name")]
@@ -91,6 +100,7 @@ fn read_serve_mode_label() -> Option<&'static str> {
     match raw.trim() {
         "local" => Some("local"),
         "tunnel" => Some("tunnel"),
+        "tailscale" => Some("tailscale"),
         _ => None,
     }
 }
@@ -152,6 +162,7 @@ pub fn daemon_pid() -> Option<u32> {
                     let _ = std::fs::remove_file(dir.join("serve.url"));
                     let _ = std::fs::remove_file(dir.join("serve.log"));
                     let _ = std::fs::remove_file(dir.join("serve.mode"));
+                    let _ = std::fs::remove_file(dir.join("serve.passphrase"));
                 }
                 None
             }
@@ -277,18 +288,28 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         remote: args.remote,
         tunnel_name: args.tunnel_name.as_deref(),
         tunnel_url: args.tunnel_url.as_deref(),
+        no_tailscale: args.no_tailscale,
         is_daemon: false,
         passphrase: args.passphrase.as_deref(),
     })
     .await;
 
-    // Clean up PID and URL files on exit
+    // Clean up PID and URL files on exit, but only if the PID file
+    // still belongs to this process. A newer daemon spawn may have
+    // overwritten it; removing their file would orphan them.
     if let Ok(path) = pid_file_path() {
-        let _ = std::fs::remove_file(path);
-    }
-    if let Ok(dir) = crate::session::get_app_dir() {
-        let _ = std::fs::remove_file(dir.join("serve.url"));
-        let _ = std::fs::remove_file(dir.join("serve.mode"));
+        let is_ours = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .is_some_and(|pid| pid == std::process::id());
+        if is_ours {
+            let _ = std::fs::remove_file(&path);
+            if let Ok(dir) = crate::session::get_app_dir() {
+                let _ = std::fs::remove_file(dir.join("serve.url"));
+                let _ = std::fs::remove_file(dir.join("serve.mode"));
+                let _ = std::fs::remove_file(dir.join("serve.passphrase"));
+            }
+        }
     }
 
     result
@@ -304,6 +325,19 @@ pub fn daemon_log_path() -> Result<PathBuf> {
 
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     use std::process::{Command, Stdio};
+
+    // Refuse to spawn if another daemon is already running. The TUI
+    // dialog checks daemon_pid() before reaching here, but a CLI user
+    // could call `aoe serve --daemon` twice, and a race between the
+    // TUI check and this function could overwrite the PID file and
+    // orphan the existing daemon.
+    if let Some(existing) = daemon_pid() {
+        bail!(
+            "A serve daemon is already running (PID {}). \
+             Stop it first with `aoe serve --stop`.",
+            existing
+        );
+    }
 
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
@@ -330,6 +364,9 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     if let Some(ref url) = args.tunnel_url {
         cmd.args(["--tunnel-url", url]);
     }
+    if args.no_tailscale {
+        cmd.arg("--no-tailscale");
+    }
     if let Some(ref passphrase) = args.passphrase {
         // Pass via env var to avoid exposing the passphrase in the process list
         cmd.env("AOE_SERVE_PASSPHRASE", passphrase);
@@ -339,6 +376,21 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     }
 
     cmd.stdin(Stdio::null());
+
+    // Create a new session so the daemon is not killed by SIGHUP when the
+    // parent terminal closes. setsid() is async-signal-safe.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid() is async-signal-safe per POSIX, which is the
+        // only requirement for pre_exec closures.
+        unsafe {
+            cmd.pre_exec(|| {
+                nix::unistd::setsid().map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
+    }
 
     // Redirect stdout/stderr to a log file so controllers like the TUI can
     // tail the daemon's output. Truncate on each start so stale content from
@@ -402,11 +454,35 @@ fn stop_daemon() -> Result<()> {
         nix::sys::signal::Signal::SIGTERM,
     ) {
         Ok(()) => {
-            std::fs::remove_file(&path)?;
+            // Wait for the process to actually exit so the port is
+            // released before a new daemon can be spawned. Without
+            // this, closing the dialog and immediately reopening
+            // races with the dying daemon and can orphan it.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+                    Err(nix::errno::Errno::ESRCH) => break,
+                    _ if std::time::Instant::now() >= deadline => {
+                        // Still alive after timeout; escalate.
+                        let _ = nix::sys::signal::kill(
+                            nix::unistd::Pid::from_raw(pid),
+                            nix::sys::signal::Signal::SIGKILL,
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            // The daemon's own cleanup may have already removed some
+            // of these; that's fine.
+            let _ = std::fs::remove_file(&path);
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
                 let _ = std::fs::remove_file(dir.join("serve.log"));
                 let _ = std::fs::remove_file(dir.join("serve.mode"));
+                let _ = std::fs::remove_file(dir.join("serve.passphrase"));
             }
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
@@ -417,6 +493,7 @@ fn stop_daemon() -> Result<()> {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
                 let _ = std::fs::remove_file(dir.join("serve.log"));
                 let _ = std::fs::remove_file(dir.join("serve.mode"));
+                let _ = std::fs::remove_file(dir.join("serve.passphrase"));
             }
             println!("Daemon was not running (stale PID file cleaned up)");
         }

@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "1.4.3"
+version = "1.4.5"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Agent of Empires Contributors"]
@@ -85,13 +85,12 @@ regex = "1.10"
 
 # Git operations
 git2 = { version = "0.20", features = ["vendored-openssl"] }
-enum_dispatch = "0.3.13"
 
 # Diff computation
 similar = "2.6"
 
 # Hashing
-sha2 = "0.11"
+sha2 = "0.10"
 
 # File locking
 fs2 = "0.4"
@@ -107,9 +106,30 @@ mime_guess = { version = "2.0", optional = true }
 qrcode = { version = "0.14", optional = true }
 argon2 = { version = "0.5", optional = true }
 
+# Web Push (VAPID + payload encryption), optional behind "serve".
+p256 = { version = "0.13", features = ["pem", "pkcs8", "ecdsa", "ecdh"], optional = true }
+base64 = { version = "0.22", optional = true }
+hkdf = { version = "0.12", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+jsonwebtoken = { version = "9.3", optional = true }
+getrandom = { version = "0.3", optional = true }
+
 [features]
 default = []
-serve = ["axum", "tower-http", "rust-embed", "mime_guess", "qrcode", "argon2"]
+serve = [
+    "axum",
+    "tower-http",
+    "rust-embed",
+    "mime_guess",
+    "qrcode",
+    "argon2",
+    "p256",
+    "base64",
+    "hkdf",
+    "aes-gcm",
+    "jsonwebtoken",
+    "getrandom",
+]
 
 [dev-dependencies]
 tempfile = "3.14"

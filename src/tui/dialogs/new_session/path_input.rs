@@ -10,8 +10,6 @@ pub(in crate::tui::dialogs) struct PathGhostCompletion {
     pub(super) input_snapshot: String,
     pub(super) cursor_snapshot: usize,
     pub(super) ghost_text: String,
-    #[allow(dead_code)]
-    candidates: Vec<String>,
 }
 
 fn char_to_byte_idx(value: &str, char_idx: usize) -> usize {
@@ -136,7 +134,6 @@ pub(super) fn compute_path_ghost(input: &Input) -> Option<PathGhostCompletion> {
         input_snapshot: value,
         cursor_snapshot: cursor_char,
         ghost_text,
-        candidates: matches,
     })
 }
 

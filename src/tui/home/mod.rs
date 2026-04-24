@@ -22,11 +22,11 @@ use crate::tmux::AvailableTools;
 use super::creation_poller::{CreationPoller, CreationRequest};
 use super::deletion_poller::DeletionPoller;
 #[cfg(feature = "serve")]
-use super::dialogs::ServeDialog;
+use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, HooksInstallDialog,
-    InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerDialog, RenameDialog,
-    UnifiedDeleteDialog, WelcomeDialog,
+    InfoDialog, NewSessionData, NewSessionDialog, NoAgentsDialog, ProfilePickerDialog,
+    RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -161,11 +161,12 @@ pub struct HomeView {
     /// Session data pending agent hooks acknowledgment
     pub(super) pending_hooks_install_data: Option<NewSessionData>,
     pub(super) welcome_dialog: Option<WelcomeDialog>,
+    pub(super) no_agents_dialog: Option<NoAgentsDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     #[cfg(feature = "serve")]
-    pub(super) serve_dialog: Option<ServeDialog>,
+    pub(super) serve_view: Option<ServeView>,
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
@@ -215,6 +216,10 @@ pub struct HomeView {
 
     // Sound config for state transition sounds
     pub(super) sound_config: crate::sound::SoundConfig,
+
+    // When true, letter-based action hotkeys require SHIFT (guard against
+    // dictation / stray keystrokes triggering destructive actions).
+    pub(super) strict_hotkeys: bool,
 
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
@@ -275,6 +280,10 @@ impl HomeView {
             .as_ref()
             .map(|config| config.sound.clone())
             .unwrap_or_default();
+        let strict_hotkeys = resolved
+            .as_ref()
+            .map(|config| config.session.strict_hotkeys)
+            .unwrap_or(false);
         let user_config = load_config().ok().flatten();
         let sort_order = user_config
             .as_ref()
@@ -324,11 +333,12 @@ impl HomeView {
             hooks_install_dialog: None,
             pending_hooks_install_data: None,
             welcome_dialog: None,
+            no_agents_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
             profile_picker_dialog: None,
             #[cfg(feature = "serve")]
-            serve_dialog: None,
+            serve_view: None,
             send_message_dialog: None,
             pending_send_session: None,
             pending_attach_after_warning: None,
@@ -353,6 +363,7 @@ impl HomeView {
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
+            strict_hotkeys,
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -866,8 +877,8 @@ impl HomeView {
 
         // Poll serve dialog for subprocess startup events.
         #[cfg(feature = "serve")]
-        if let Some(dialog) = &mut self.serve_dialog {
-            if dialog.tick() {
+        if let Some(view) = &mut self.serve_view {
+            if view.tick() {
                 changed = true;
             }
         }
@@ -901,7 +912,7 @@ impl HomeView {
 
     pub fn has_dialog(&self) -> bool {
         #[cfg(feature = "serve")]
-        let serve_open = self.serve_dialog.is_some();
+        let serve_open = self.serve_view.is_some();
         #[cfg(not(feature = "serve"))]
         let serve_open = false;
 
@@ -915,6 +926,7 @@ impl HomeView {
             || self.hook_trust_dialog.is_some()
             || self.hooks_install_dialog.is_some()
             || self.welcome_dialog.is_some()
+            || self.no_agents_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
@@ -943,6 +955,15 @@ impl HomeView {
 
     pub fn show_welcome(&mut self) {
         self.welcome_dialog = Some(WelcomeDialog::new());
+    }
+
+    pub fn show_no_agents(&mut self) {
+        self.no_agents_dialog = Some(NoAgentsDialog::new());
+    }
+
+    /// Replace available tools (used after re-check from no-agents dialog).
+    pub fn set_available_tools(&mut self, tools: AvailableTools) {
+        self.available_tools = tools;
     }
 
     pub fn show_changelog(&mut self, from_version: Option<String>) {
@@ -1096,6 +1117,11 @@ impl HomeView {
 
     pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
         self.mutate_instance(id, |inst| inst.status = status);
+    }
+
+    /// Stamp `last_accessed_at` on a session (user-initiated interaction).
+    pub fn stamp_last_accessed(&mut self, id: &str) {
+        self.mutate_instance(id, |inst| inst.touch_last_accessed());
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -1266,6 +1292,9 @@ impl HomeView {
 
             // Refresh sound config
             self.sound_config = config.sound.clone();
+
+            // Refresh strict-hotkeys mode
+            self.strict_hotkeys = config.session.strict_hotkeys;
         }
     }
 

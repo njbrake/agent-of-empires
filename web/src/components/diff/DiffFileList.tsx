@@ -16,6 +16,7 @@ const STATUS_COLORS: Record<string, string> = {
   renamed: "text-accent-600",
   copied: "text-accent-600",
   untracked: "text-text-muted",
+  conflicted: "text-status-waiting",
 };
 
 const STATUS_LETTERS: Record<string, string> = {
@@ -25,6 +26,7 @@ const STATUS_LETTERS: Record<string, string> = {
   renamed: "R",
   copied: "C",
   untracked: "?",
+  conflicted: "U",
 };
 
 export function DiffFileList({

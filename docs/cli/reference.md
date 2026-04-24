@@ -6,6 +6,7 @@ This document contains the help content for the `aoe` command-line program.
 
 * [`aoe`↴](#aoe)
 * [`aoe add`↴](#aoe-add)
+* [`aoe agents`↴](#aoe-agents)
 * [`aoe init`↴](#aoe-init)
 * [`aoe list`↴](#aoe-list)
 * [`aoe remove`↴](#aoe-remove)
@@ -60,6 +61,7 @@ Run without arguments to launch the TUI dashboard.
 ###### **Subcommands:**
 
 * `add` — Add a new session
+* `agents` — List supported agents and their install status
 * `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
 * `remove` — Remove a session
@@ -72,7 +74,7 @@ Run without arguments to launch the TUI dashboard.
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
 * `theme` — Manage color themes (list, export, customize)
-* `serve` — Start a web dashboard for remote session access [experimental]
+* `serve` — Start a web dashboard for remote session access
 * `uninstall` — Uninstall Agent of Empires
 * `completion` — Generate shell completions
 
@@ -110,6 +112,14 @@ Add a new session
 * `--trust-hooks` — Automatically trust repository hooks without prompting
 * `--extra-args <EXTRA_ARGS>` — Extra arguments to append after the agent binary
 * `--cmd-override <CMD_OVERRIDE>` — Override the agent binary command
+
+
+
+## `aoe agents`
+
+List supported agents and their install status
+
+**Usage:** `aoe agents`
 
 
 
@@ -628,7 +638,7 @@ Show the custom themes directory path
 
 ## `aoe serve`
 
-Start a web dashboard for remote session access [experimental]
+Start a web dashboard for remote session access
 
 **Usage:** `aoe serve [OPTIONS]`
 
@@ -642,8 +652,9 @@ Start a web dashboard for remote session access [experimental]
   Default value: `127.0.0.1`
 * `--no-auth` — Disable authentication (only allowed with localhost binding)
 * `--read-only` — Read-only mode: view terminals but cannot send keystrokes
-* `--remote` — Expose via Cloudflare Tunnel for secure remote access
-* `--tunnel-name <TUNNEL_NAME>` — Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`)
+* `--remote` — Expose the dashboard over a public HTTPS tunnel. Prefers Tailscale Funnel when `tailscale` is installed and logged in (stable `.ts.net` URL, installable PWAs survive restarts). Falls back to a Cloudflare quick tunnel otherwise (fresh URL on every restart)
+* `--tunnel-name <TUNNEL_NAME>` — Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`). Takes precedence over Tailscale auto-detection
+* `--no-tailscale` — Skip Tailscale Funnel auto-detection and go straight to Cloudflare. Useful if you have Tailscale installed for unrelated reasons
 * `--tunnel-url <TUNNEL_URL>` — Hostname for a named tunnel (e.g., aoe.example.com)
 * `--daemon` — Run as a background daemon (detach from terminal)
 * `--stop` — Stop a running daemon

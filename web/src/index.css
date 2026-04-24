@@ -88,12 +88,18 @@
 }
 
 html {
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  height: 100dvh;
+  overflow: hidden;
   overscroll-behavior: none;
+  /* safe-area insets are handled by the App root, not html, to avoid
+     making the document taller than the viewport (which lets iOS scroll
+     the page when the keyboard opens, breaking keyboard-height math). */
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 body {
+  height: 100%;
+  overflow: hidden;
   font-family: var(--font-sans);
   background: var(--color-surface-900);
   color: var(--color-text-primary);
@@ -152,8 +158,40 @@ select:focus-visible,
   outline-offset: 2px;
 }
 
-@media (max-width: 768px) {
-  .safe-area-bottom {
-    padding-bottom: env(safe-area-inset-bottom);
+/* wterm overrides: strip default chrome for embedded use. */
+.wterm {
+  padding: 4px 8px;
+  border-radius: 0;
+  box-shadow: none;
+  overflow-y: auto;
+  --term-row-height: calc(var(--term-font-size) * var(--term-line-height));
+}
+
+.wterm ::selection {
+  background: rgba(161, 161, 170, 0.2);
+}
+
+/* Subtle focus ring for terminal panels (desktop only).
+   Uses a pseudo-element overlay so it paints above wterm's background. */
+@media (pointer: fine) {
+  .term-panel::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 1px solid rgba(217, 119, 6, 0.45);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 20;
+    opacity: 0;
+    transition: opacity 0.15s ease-out;
+  }
+  .term-panel.term-focused::after {
+    opacity: 1;
   }
 }
+
+.safe-area-inset {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+

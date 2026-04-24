@@ -5,7 +5,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).toBeVisible();
   });
 
@@ -28,7 +28,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).not.toBeVisible();
@@ -38,7 +38,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).toBeVisible();
     await page.locator('[data-testid="command-palette-backdrop"]').click({
       position: { x: 10, y: 10 },
@@ -50,7 +50,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByRole("option", { name: /New session/i })).toBeVisible();
     await expect(page.getByRole("option", { name: /Go to dashboard/i })).toBeVisible();
     await expect(page.getByRole("option", { name: /Open settings/i })).toBeVisible();
@@ -60,7 +60,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await page.getByPlaceholder("Search actions, sessions, settings…").fill("settings");
     await expect(page.getByRole("option", { name: /Open settings/i })).toBeVisible();
     await expect(page.getByRole("option", { name: /New session/i })).not.toBeVisible();
@@ -70,7 +70,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await page.getByPlaceholder("Search actions, sessions, settings…").fill("zzzxxqqq");
     await expect(page.getByText("No matches")).toBeVisible();
   });
@@ -79,7 +79,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await page.getByPlaceholder("Search actions, sessions, settings…").fill("new session");
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
@@ -89,10 +89,10 @@ test.describe("Command palette", () => {
   test("opens from within a focused input", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    await page.getByRole("button", { name: "Add project" }).first().click();
+    await page.getByLabel("Add project").first().click();
     await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
-    await page.getByPlaceholder("/path/to/your/project").click();
-    await page.keyboard.press("Control+k");
+    await page.getByPlaceholder("Type to filter...").click();
+    await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).toBeVisible();
   });
 
@@ -100,7 +100,7 @@ test.describe("Command palette", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.locator("body").click();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("ControlOrMeta+k");
     await page.getByPlaceholder("Search actions, sessions, settings…").fill("About Agent");
     await page.keyboard.press("Enter");
     await expect(page.getByRole("heading", { name: "Agent of Empires" })).toBeVisible();

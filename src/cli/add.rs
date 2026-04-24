@@ -223,6 +223,18 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     if let Some(cmd) = &args.command {
         let tool_name = detect_tool(cmd)?;
+        // Verify the agent binary is actually on PATH before creating the session
+        if let Some(agent_def) = crate::agents::get_agent(&tool_name) {
+            if !crate::tmux::is_agent_available(agent_def) {
+                bail!(
+                    "'{}' is not installed or not on $PATH.\n\
+                     Install with: {}\n\
+                     See all supported agents: aoe agents",
+                    agent_def.binary,
+                    agent_def.install_hint
+                );
+            }
+        }
         instance.tool = tool_name;
         // Only store a custom command when the user passed extra args
         // (e.g. "claude --resume xyz"). A bare tool name/alias should resolve
@@ -322,7 +334,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 container_id: None,
                 image,
                 container_name,
-                created_at: None,
                 extra_env: None,
                 custom_instruction: config.sandbox.custom_instruction.clone(),
             });

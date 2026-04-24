@@ -7,8 +7,23 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 
+/// Did the user invoke `aoe serve`? Feature-gated because `Commands::Serve`
+/// only exists when the `serve` feature is on; in TUI-only builds we
+/// always return false so the tracing-init branch below compiles.
+#[cfg(feature = "serve")]
+fn is_serve_command(cli: &Cli) -> bool {
+    matches!(cli.command, Some(Commands::Serve(_)))
+}
+
+#[cfg(not(feature = "serve"))]
+fn is_serve_command(_cli: &Cli) -> bool {
+    false
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     let mut debug_log_warning: Option<String> = None;
     if std::env::var("AGENT_OF_EMPIRES_DEBUG").is_ok() {
         // Log to file to avoid corrupting the TUI on stderr.
@@ -29,9 +44,20 @@ async fn main() -> Result<()> {
                 "AGENT_OF_EMPIRES_DEBUG is set but the debug log file could not be created. Debug logging is disabled.".to_string(),
             );
         }
+    } else if is_serve_command(&cli) {
+        // `aoe serve` writes info-level tracing to stdout so the daemon
+        // path (which redirects child stdout/stderr into serve.log) can
+        // capture progress for the TUI's Starting-screen log tail.
+        // Without this, serve.log would be empty and the user would
+        // stare at "(waiting for daemon output...)" for 30-60s during
+        // cert provisioning. Foreground `aoe serve` just prints to
+        // the user's terminal; that's fine and matches other CLIs.
+        tracing_subscriber::fmt()
+            .with_env_filter("agent_of_empires=info")
+            .with_ansi(false)
+            .try_init()
+            .ok();
     }
-
-    let cli = Cli::parse();
 
     // Handle commands that don't need app data or migrations.
     // These work in read-only/sandboxed environments (e.g. Nix builds).
@@ -47,6 +73,7 @@ async fn main() -> Result<()> {
                 TmuxCommands::Status(args) => cli::tmux::run_status(args),
             };
         }
+        Some(Commands::Agents) => return cli::agents::run(),
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Theme { command }) => {
             use cli::theme::ThemeCommands;

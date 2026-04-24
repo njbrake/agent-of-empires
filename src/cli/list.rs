@@ -95,7 +95,7 @@ pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
                 created_at: inst.created_at,
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        super::output::print_json(&sessions)?;
         return Ok(());
     }
 
@@ -139,7 +139,7 @@ async fn run_all_profiles(json: bool) -> Result<()> {
                 }
             }
         }
-        println!("{}", serde_json::to_string_pretty(&all_sessions)?);
+        super::output::print_json(&all_sessions)?;
         return Ok(());
     }
 

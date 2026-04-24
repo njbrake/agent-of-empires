@@ -1,11 +1,11 @@
 import { useCallback, useState } from "react";
-import type { Terminal } from "@xterm/xterm";
+import type { WTerm } from "@wterm/dom";
 import type { RefObject } from "react";
 import { useLongPressDrag, type DragAxis } from "../hooks/useLongPressDrag";
 
 interface Props {
   sendData: (data: string) => void;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<WTerm | null>;
   keyboardHeight: number;
   ctrlActive: boolean;
   onCtrlToggle: () => void;
@@ -58,7 +58,7 @@ export function MobileTerminalToolbar({
     "flex-1 flex items-center justify-center h-11 rounded-md transition-colors duration-75 text-text-secondary select-none touch-manipulation relative active:bg-surface-700/50 active:scale-95";
 
   const strip =
-    "shrink-0 flex items-center gap-1 px-2 py-1.5 bg-surface-850 border-t border-surface-700/20 safe-area-bottom";
+    "shrink-0 flex items-center gap-1 px-2 py-1.5 bg-surface-850 border-t border-surface-700/20";
 
   // Parent (TerminalView) reserves paddingBottom for the keyboard, so the
   // strip naturally sits above it. env(keyboard-inset-height) covers iPadOS
@@ -118,6 +118,35 @@ export function MobileTerminalToolbar({
       <button type="button" aria-label="Ctrl+C interrupt" className={btnBase}
         onClick={() => { send("\x03"); if (ctrlActive) onCtrlToggle(); }}>
         <span className="font-mono text-xs">^C</span>
+      </button>
+      <button type="button" aria-label="Paste from clipboard" className={btnBase}
+        onClick={() => {
+          haptic();
+          // Focus wterm's textarea and use execCommand('paste'). On
+          // Safari 13+, this shows a native "Paste" permission callout.
+          // When confirmed, wterm's handlePaste fires automatically.
+          // Works on non-HTTPS origins unlike navigator.clipboard.readText.
+          const ta = termRef.current?.element.querySelector("textarea");
+          if (ta) {
+            (ta as HTMLTextAreaElement).focus({ preventScroll: true });
+            document.execCommand("paste");
+          }
+          refocusTerminal();
+        }}>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="9" y="2" width="6" height="4" rx="1" />
+          <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2" />
+        </svg>
       </button>
     </div>
   );

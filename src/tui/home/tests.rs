@@ -957,7 +957,6 @@ fn create_test_env_with_group_sessions() -> TestEnv {
         container_id: None,
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });
@@ -1030,7 +1029,6 @@ fn test_group_has_containers() {
         container_id: None,
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });
@@ -1223,7 +1221,6 @@ fn test_delete_group_with_sessions_respects_container_option() {
         container_id: None,
         image: "ubuntu:latest".to_string(),
         container_name: "test-container".to_string(),
-        created_at: None,
         extra_env: None,
         custom_instruction: None,
     });
@@ -1530,6 +1527,9 @@ fn test_o_key_cycles_sort_order_forward() {
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
     env.view.handle_key(key(KeyCode::Char('o')));
+    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
+
+    env.view.handle_key(key(KeyCode::Char('o')));
     assert_eq!(env.view.sort_order, SortOrder::Oldest);
 
     env.view.handle_key(key(KeyCode::Char('o')));
@@ -1550,7 +1550,8 @@ fn test_ctrl_o_key_cycles_sort_order_backward() {
     let mut env = create_test_env_with_mixed_sessions();
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
-    // Ctrl+o cycles backward: Oldest -> ZA -> AZ -> Newest -> Oldest
+    // Ctrl+o cycles backward:
+    // Newest -> ZA -> AZ -> Oldest -> LastActivity -> Newest
     env.view
         .handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
     assert_eq!(env.view.sort_order, SortOrder::ZA);
@@ -1565,6 +1566,10 @@ fn test_ctrl_o_key_cycles_sort_order_backward() {
 
     env.view
         .handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
+
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 }
 
@@ -1576,7 +1581,8 @@ fn test_o_key_flat_items_sorted_az() {
     let mut env = create_test_env_with_mixed_sessions();
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
-    // Press 'o' twice to get to AZ (Newest -> Oldest -> AZ)
+    // Press 'o' three times to get to AZ (Newest -> LastActivity -> Oldest -> AZ)
+    env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
     assert_eq!(env.view.sort_order, SortOrder::AZ);
@@ -1608,7 +1614,9 @@ fn test_o_key_flat_items_sorted_za() {
 
     let mut env = create_test_env_with_mixed_sessions();
 
-    // Press 'o' three times to get to ZA (Oldest -> Newest -> AZ -> ZA)
+    // Press 'o' four times to get to ZA
+    // (Newest -> LastActivity -> Oldest -> AZ -> ZA)
+    env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
@@ -1641,7 +1649,9 @@ fn test_o_key_flat_items_newest_preserves_insertion_order() {
 
     let mut env = create_test_env_with_mixed_sessions();
 
-    // Press 'o' four times to wrap back to Newest (Newest -> Oldest -> AZ -> ZA -> Newest)
+    // Press 'o' five times to wrap back to Newest
+    // (Newest -> LastActivity -> Oldest -> AZ -> ZA -> Newest)
+    env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
     env.view.handle_key(key(KeyCode::Char('o')));
@@ -1688,7 +1698,7 @@ fn test_o_key_clamps_cursor_when_list_shrinks() {
     assert!(filtered_count < initial_items);
 
     env.view.handle_key(key(KeyCode::Char('o')));
-    assert_eq!(env.view.sort_order, SortOrder::Oldest);
+    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
 
     let valid_max = env.view.flat_items.len().saturating_sub(1);
     assert!(env.view.cursor <= valid_max);
@@ -2535,7 +2545,7 @@ fn test_apply_creation_results_returns_session_id() {
 fn test_project_group_name_uses_last_path_segment() {
     use super::project_group_name;
 
-    let mut inst = Instance::new("test", "/home/user/my-project");
+    let inst = Instance::new("test", "/home/user/my-project");
     assert_eq!(project_group_name(&inst), "my-project");
 }
 

@@ -45,6 +45,9 @@ pub struct Config {
 
     #[serde(default)]
     pub app_state: AppStateConfig,
+
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 /// Session list sort order
@@ -53,6 +56,7 @@ pub struct Config {
 pub enum SortOrder {
     #[default]
     Newest,
+    LastActivity,
     Oldest,
     AZ,
     ZA,
@@ -61,7 +65,8 @@ pub enum SortOrder {
 impl SortOrder {
     pub fn cycle(self) -> Self {
         match self {
-            SortOrder::Newest => SortOrder::Oldest,
+            SortOrder::Newest => SortOrder::LastActivity,
+            SortOrder::LastActivity => SortOrder::Oldest,
             SortOrder::Oldest => SortOrder::AZ,
             SortOrder::AZ => SortOrder::ZA,
             SortOrder::ZA => SortOrder::Newest,
@@ -71,7 +76,8 @@ impl SortOrder {
     pub fn cycle_reverse(self) -> Self {
         match self {
             SortOrder::Newest => SortOrder::ZA,
-            SortOrder::Oldest => SortOrder::Newest,
+            SortOrder::LastActivity => SortOrder::Newest,
+            SortOrder::Oldest => SortOrder::LastActivity,
             SortOrder::AZ => SortOrder::Oldest,
             SortOrder::ZA => SortOrder::AZ,
         }
@@ -80,6 +86,7 @@ impl SortOrder {
     pub fn label(self) -> &'static str {
         match self {
             SortOrder::Newest => "Newest",
+            SortOrder::LastActivity => "Recent",
             SortOrder::Oldest => "Oldest",
             SortOrder::AZ => "A-Z",
             SortOrder::ZA => "Z-A",
@@ -176,6 +183,17 @@ pub struct SessionConfig {
     /// Maps a custom (or built-in) agent to another agent's status detection heuristics.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_detect_as: HashMap<String, String>,
+
+    /// Require SHIFT on letter-based TUI hotkeys (e.g. SHIFT+N for New, SHIFT+D for Delete).
+    /// Guards against accidental destructive actions from dictation software, a forgotten
+    /// focus, or stray keystrokes. Navigation keys (h/j/k/l, arrows, Enter, Esc), punctuation
+    /// (/, ?), and numeric modifiers stay unshifted. Previously-uppercase bindings
+    /// (P, R, T, N, D, G) relocate to Ctrl+letter so nothing is lost.
+    /// Note: Ctrl+D (diff view) may conflict with terminal EOF in some tmux configs;
+    /// if so, rebind tmux's send-prefix or use the `D` key from the help overlay.
+    /// Off by default — existing users keep the legacy single-letter UX.
+    #[serde(default)]
+    pub strict_hotkeys: bool,
 }
 
 impl SessionConfig {
@@ -257,14 +275,71 @@ fn default_context_lines() -> usize {
     3
 }
 
+/// Web dashboard runtime configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Operator kill switch for browser push notifications. When false,
+    /// `/api/push/*` returns 404 and the status-change consumer drops
+    /// events without sending. Existing subscriptions persist across
+    /// flips, so toggling back to true resumes delivery without requiring
+    /// users to re-opt-in.
+    #[serde(default = "default_true")]
+    pub notifications_enabled: bool,
+
+    /// Server-wide default: fire a push on Running to Waiting transitions.
+    /// Sessions can override per-session via `Instance.notify_on_waiting`.
+    #[serde(default = "default_true")]
+    pub notify_on_waiting: bool,
+
+    /// Server-wide default: fire a push on Running to Idle transitions.
+    /// Off by default because Idle fires on every session completion and
+    /// gets spammy quickly. Sessions can opt in via `Instance.notify_on_idle`.
+    #[serde(default)]
+    pub notify_on_idle: bool,
+
+    /// Server-wide default: fire a push on Running to Error transitions.
+    #[serde(default = "default_true")]
+    pub notify_on_error: bool,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            notifications_enabled: true,
+            notify_on_waiting: true,
+            notify_on_idle: false,
+            notify_on_error: true,
+        }
+    }
+}
+
 fn default_profile() -> String {
     "default".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// Emit 24-bit RGB escapes (\e[38;2;R;G;Bm). Default — best fidelity on
+    /// modern terminals and SSH sessions that pass RGB correctly.
+    #[default]
+    Truecolor,
+    /// Emit 256-palette escapes (\e[38;5;<idx>m) by converting every theme
+    /// Rgb(r,g,b) to the nearest xterm-256 index. Use this when the transport
+    /// (notably some mosh clients) mishandles 24-bit RGB — preview panes in
+    /// aoe already use 256-palette via ansi-to-tui, so palette mode renders
+    /// chrome through the same escape path and survives the same transports.
+    Palette,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThemeConfig {
     #[serde(default)]
     pub name: String,
+    /// How theme colors are emitted at the escape-sequence level.
+    /// See `ColorMode` for the truecolor vs palette trade-off.
+    #[serde(default)]
+    pub color_mode: ColorMode,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -22,5 +22,6 @@ mod errors;
 mod new_session;
 mod profile_picker;
 mod sandbox;
+mod serve;
 mod tui_launch;
 mod unified_view;
