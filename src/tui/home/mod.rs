@@ -83,9 +83,6 @@ pub(super) struct PreviewCache {
     pub(super) content: String,
     pub(super) last_refresh: Instant,
     pub(super) dimensions: (u16, u16),
-    /// Scroll offset the cache was captured at. Used to invalidate the cache
-    /// when the user scrolls past the currently captured history window.
-    pub(super) scroll_offset: u16,
     /// Number of lines that were captured into `content`. Used together with
     /// the BUFFER reserve so consecutive wheel ticks don't trigger a fresh
     /// `tmux capture-pane` subprocess while the cached window still covers
@@ -100,7 +97,6 @@ impl Default for PreviewCache {
             content: String::new(),
             last_refresh: Instant::now(),
             dimensions: (0, 0),
-            scroll_offset: 0,
             captured_lines: 0,
         }
     }

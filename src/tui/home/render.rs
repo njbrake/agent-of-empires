@@ -590,7 +590,6 @@ impl HomeView {
                     self.preview_cache.session_id = Some(id.clone());
                     self.preview_cache.dimensions = (width, height);
                     self.preview_cache.last_refresh = Instant::now();
-                    self.preview_cache.scroll_offset = scroll_offset;
                     self.preview_scroll_offset = clamp_scroll_to_capture(
                         self.preview_scroll_offset,
                         self.preview_cache.captured_lines,
@@ -638,7 +637,6 @@ impl HomeView {
                     self.terminal_preview_cache.session_id = Some(id.clone());
                     self.terminal_preview_cache.dimensions = (width, height);
                     self.terminal_preview_cache.last_refresh = Instant::now();
-                    self.terminal_preview_cache.scroll_offset = scroll_offset;
                     self.preview_scroll_offset = clamp_scroll_to_capture(
                         self.preview_scroll_offset,
                         self.terminal_preview_cache.captured_lines,
@@ -686,7 +684,6 @@ impl HomeView {
                     self.container_terminal_preview_cache.session_id = Some(id.clone());
                     self.container_terminal_preview_cache.dimensions = (width, height);
                     self.container_terminal_preview_cache.last_refresh = Instant::now();
-                    self.container_terminal_preview_cache.scroll_offset = scroll_offset;
                     self.preview_scroll_offset = clamp_scroll_to_capture(
                         self.preview_scroll_offset,
                         self.container_terminal_preview_cache.captured_lines,
