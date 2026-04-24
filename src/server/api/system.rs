@@ -449,6 +449,13 @@ pub async fn delete_profile(
         )
             .into_response();
     }
+    if let Err(e) = validate_profile_name(&name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": e})),
+        )
+            .into_response();
+    }
     if name == state.profile {
         return (
             StatusCode::BAD_REQUEST,
@@ -487,6 +494,13 @@ pub async fn rename_profile(
             Json(
                 serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
             ),
+        )
+            .into_response();
+    }
+    if let Err(e) = validate_profile_name(&name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": e})),
         )
             .into_response();
     }
@@ -529,6 +543,13 @@ pub async fn default_profile(
             Json(
                 serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
             ),
+        )
+            .into_response();
+    }
+    if let Err(e) = validate_profile_name(&body.name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "validation_failed", "message": e})),
         )
             .into_response();
     }

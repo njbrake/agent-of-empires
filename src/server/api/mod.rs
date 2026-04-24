@@ -50,8 +50,16 @@ pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
     "web",
 ];
 
-pub(super) const SESSION_BLOCKED_FIELDS: &[&str] =
-    &["agent_command_override", "agent_extra_args", "extra_env"];
+pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
+    "agent_command_override",
+    "agent_extra_args",
+    "extra_env",
+    // custom_agents maps names to arbitrary shell commands (e.g., "ssh -t host claude").
+    // agent_detect_as maps names to detection targets but is part of the agent config
+    // surface that should only be editable locally.
+    "custom_agents",
+    "agent_detect_as",
+];
 
 /// Validate that a profile name contains only safe characters.
 /// Rejects path traversal attempts (../, /) and shell metacharacters.
@@ -193,11 +201,19 @@ mod tests {
 
     #[test]
     fn session_blocked_fields_are_pinned() {
-        // These three fields let an API caller swap the agent binary,
-        // append arbitrary argv, or inject environment variables — all
-        // command-injection vectors. If Rust renames the field it must
-        // be renamed here in the same commit, not replaced.
-        let expected: &[&str] = &["agent_command_override", "agent_extra_args", "extra_env"];
+        // These fields let an API caller swap the agent binary,
+        // append arbitrary argv, inject environment variables, or define
+        // custom agent commands — all command-injection vectors. If Rust
+        // renames a field it must be renamed here in the same commit.
+        let expected: &[&str] = &[
+            "agent_command_override",
+            "agent_extra_args",
+            "extra_env",
+            // custom_agents: maps agent names to arbitrary shell commands
+            "custom_agents",
+            // agent_detect_as: part of the agent config surface
+            "agent_detect_as",
+        ];
         assert_eq!(
             SESSION_BLOCKED_FIELDS.len(),
             expected.len(),
