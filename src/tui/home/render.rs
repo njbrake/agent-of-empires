@@ -48,6 +48,16 @@ fn scroll_exceeds_cache(cache_captured_lines: usize, height: u16, scroll_offset:
     needed > cache_captured_lines
 }
 
+/// Clamp the user's preview scroll offset to what the freshly captured pane
+/// can actually render. Prevents the offset from drifting into "phantom"
+/// territory (M3 from the multi-AI review) when tmux history is shorter than
+/// `MAX_PREVIEW_SCROLL`.
+fn clamp_scroll_to_capture(scroll_offset: u16, captured_lines: usize, area_height: u16) -> u16 {
+    let visible = area_height.saturating_sub(1) as usize;
+    let real_max = captured_lines.saturating_sub(visible) as u16;
+    scroll_offset.min(real_max)
+}
+
 fn spinner_running(created_at: &DateTime<Utc>) -> &'static str {
     spinners::dots()
         .set_interval(Duration::from_millis(220))
@@ -581,6 +591,11 @@ impl HomeView {
                     self.preview_cache.dimensions = (width, height);
                     self.preview_cache.last_refresh = Instant::now();
                     self.preview_cache.scroll_offset = scroll_offset;
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.preview_cache.captured_lines,
+                        height,
+                    );
                 }
             }
         }
@@ -624,6 +639,11 @@ impl HomeView {
                     self.terminal_preview_cache.dimensions = (width, height);
                     self.terminal_preview_cache.last_refresh = Instant::now();
                     self.terminal_preview_cache.scroll_offset = scroll_offset;
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.terminal_preview_cache.captured_lines,
+                        height,
+                    );
                 }
             }
         }
@@ -667,6 +687,11 @@ impl HomeView {
                     self.container_terminal_preview_cache.dimensions = (width, height);
                     self.container_terminal_preview_cache.last_refresh = Instant::now();
                     self.container_terminal_preview_cache.scroll_offset = scroll_offset;
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.container_terminal_preview_cache.captured_lines,
+                        height,
+                    );
                 }
             }
         }

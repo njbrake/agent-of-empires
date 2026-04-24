@@ -1140,7 +1140,6 @@ impl HomeView {
     /// content instead.
     pub fn handle_scroll_up(&mut self) -> bool {
         const STEP: u16 = 3;
-        const MAX_PREVIEW_SCROLL: u16 = 2000;
         if let Some(ref mut diff) = self.diff_view {
             diff.scroll_up(STEP);
             return true;
@@ -1148,8 +1147,34 @@ impl HomeView {
         if self.selected_session.is_none() || self.has_dialog() {
             return false;
         }
+
+        let active_cache = match self.view_mode {
+            ViewMode::Agent => &self.preview_cache,
+            ViewMode::Terminal => {
+                let terminal_mode = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|id| self.get_instance(id))
+                    .map(|inst| {
+                        if inst.is_sandboxed() {
+                            self.get_terminal_mode(&inst.id)
+                        } else {
+                            TerminalMode::Host
+                        }
+                    })
+                    .unwrap_or(TerminalMode::Host);
+                match terminal_mode {
+                    TerminalMode::Container => &self.container_terminal_preview_cache,
+                    TerminalMode::Host => &self.terminal_preview_cache,
+                }
+            }
+        };
+
+        let visible_height = active_cache.dimensions.1.saturating_sub(1) as usize;
+        let real_max = active_cache.captured_lines.saturating_sub(visible_height) as u16;
+
         let new_offset = self.preview_scroll_offset.saturating_add(STEP);
-        let clamped = new_offset.min(MAX_PREVIEW_SCROLL);
+        let clamped = new_offset.min(real_max);
         if clamped == self.preview_scroll_offset {
             return false;
         }
