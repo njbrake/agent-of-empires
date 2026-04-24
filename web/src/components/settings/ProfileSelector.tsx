@@ -114,11 +114,11 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   return (
     <div className="relative" ref={panelRef}>
       <div className="flex items-center gap-2">
-        <label className="text-xs text-text-dim shrink-0">Profile</label>
+        <label className="text-sm font-medium text-text-secondary shrink-0">Profile</label>
         <select
           value={selectedProfile ?? ""}
           onChange={(e) => onSelect(e.target.value || null)}
-          className="bg-surface-900 border border-surface-700 rounded-md px-2 py-1 text-xs text-text-primary focus:border-brand-600 focus:outline-none w-36"
+          className="bg-surface-900 border border-surface-700 rounded-md px-2 py-1 text-sm text-text-primary focus:border-brand-600 focus:outline-none w-40"
         >
           <option value="">Global</option>
           {profiles.map((p) => (
@@ -129,9 +129,10 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
         </select>
         <button
           onClick={startCreate}
-          className="text-xs text-brand-500 hover:text-brand-400 cursor-pointer shrink-0"
+          className="text-sm text-brand-500 hover:text-brand-400 cursor-pointer shrink-0 font-medium px-1.5"
+          title="Create new profile"
         >
-          +
+          + New
         </button>
         {selectedProfile && !creating && !renaming && (
           <>

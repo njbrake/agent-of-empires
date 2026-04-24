@@ -394,7 +394,7 @@ export function SettingsView({ onClose }: Props) {
         {saveError && (
           <span className="ml-2 text-xs text-red-400">{saveError}</span>
         )}
-        <div className="ml-auto">
+        <div className="flex-1 flex justify-center">
           <ProfileSelector
             selectedProfile={selectedProfile}
             onSelect={setSelectedProfile}
