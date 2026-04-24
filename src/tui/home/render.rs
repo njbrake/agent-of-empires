@@ -191,6 +191,7 @@ impl HomeView {
             hooks_install_dialog,
             hook_trust_dialog,
             welcome_dialog,
+            no_agents_dialog,
             changelog_dialog,
             info_dialog,
             profile_picker_dialog,

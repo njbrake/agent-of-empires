@@ -6,22 +6,28 @@ export interface WebSettings {
   mobileFontSize: number;
   desktopFontSize: number;
   autoOpenKeyboard: boolean;
+  diffViewMode: "flat" | "tree";
+  collapsedDiffDirs: string[];
 }
 
-const DEFAULTS: WebSettings = {
-  mobileFontSize: 8,
-  desktopFontSize: 14,
-  autoOpenKeyboard: true,
-};
+function getDefaults(): WebSettings {
+  return {
+    mobileFontSize: 8,
+    desktopFontSize: 14,
+    autoOpenKeyboard: true,
+    diffViewMode: window.innerWidth < 768 ? "flat" : "tree",
+    collapsedDiffDirs: [],
+  };
+}
 
 function getSnapshot(): WebSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+    if (raw) return { ...getDefaults(), ...JSON.parse(raw) };
   } catch {
     // ignore
   }
-  return DEFAULTS;
+  return getDefaults();
 }
 
 // Subscribers for useSyncExternalStore
@@ -40,7 +46,7 @@ function emitChange() {
 
 // Cache snapshot to return stable reference when nothing changed
 let cachedRaw: string | null = null;
-let cachedSettings: WebSettings = DEFAULTS;
+let cachedSettings: WebSettings = getDefaults();
 
 function getStableSnapshot(): WebSettings {
   const raw = localStorage.getItem(STORAGE_KEY);

@@ -47,6 +47,7 @@ pub fn check_version_change() -> Result<Option<String>> {
 
 impl App {
     pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
+        let no_agents = !available_tools.any_available();
         let active_profile = if profile.is_empty() {
             None // all-profiles mode
         } else {
@@ -70,7 +71,10 @@ impl App {
         let theme = crate::tui::styles::load_theme_with_mode(theme_name, palette_mode);
         let current_version = env!("CARGO_PKG_VERSION").to_string();
 
-        if !config.app_state.has_seen_welcome {
+        if no_agents {
+            // Show the no-agents onboarding dialog (takes priority over welcome/changelog)
+            home.show_no_agents();
+        } else if !config.app_state.has_seen_welcome {
             home.show_welcome();
             config.app_state.has_seen_welcome = true;
             config.app_state.last_seen_version = Some(current_version);

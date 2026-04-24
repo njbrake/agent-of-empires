@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { WTerm } from "@wterm/dom";
 import type {
   ActivateMessage,
+  PauseOutputMessage,
   PrimaryStatusMessage,
   ResizeMessage,
+  ResumeOutputMessage,
 } from "../lib/types";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
@@ -30,13 +32,25 @@ export interface TerminalState {
   retryCount: number;
   retryCountdown: number;
   isPrimary: boolean;
+  /**
+   * True when the user has scrolled up and tmux is (likely) in copy-mode.
+   * Set when the first wheel-up byte goes out after being false; cleared
+   * by an explicit call to `exitScrollback()` from the "Back to live" UI.
+   * We use the client-side send as the signal rather than a server-sent
+   * notification because tmux copy-mode state is not exposed on the PTY.
+   */
+  isInScrollback: boolean;
 }
 
 /**
  * Manages a wterm terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
  */
-export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
+export function useTerminal(
+  sessionId: string | null,
+  wsPath: string = "ws",
+  autoFocus: boolean = true,
+) {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<WTerm | null>(null);
@@ -51,12 +65,16 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
   // Stable callback set by the component to clear React's ctrlActive state
   // when onData consumes the Ctrl modifier.
   const clearCtrlRef = useRef<(() => void) | null>(null);
+  // Populated inside the effect; `exitScrollback()` uses it to reset the
+  // mobile scroll-depth counter when the user escapes copy-mode.
+  const resetScrollbackDepthRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<TerminalState>({
     connected: false,
     reconnecting: false,
     retryCount: 0,
     retryCountdown: 0,
     isPrimary: true,
+    isInScrollback: false,
   });
 
   useEffect(() => {
@@ -231,14 +249,20 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
 
       ws.onopen = () => {
         retryCountRef.current = 0;
-        setState({
+        // Preserve isInScrollback across reconnects. Tmux's copy-mode
+        // state is stored on the pane and survives client disconnects,
+        // so the client-side flag should too — otherwise a WiFi blip
+        // mid-scroll would hide the "Back to live" button while tmux
+        // is still in copy-mode, leaving the user with no way out.
+        setState((prev) => ({
+          ...prev,
           connected: true,
           reconnecting: false,
           retryCount: 0,
           retryCountdown: 0,
           isPrimary: true,
-        });
-        term.focus();
+        }));
+        if (autoFocus) term.focus();
         // Claim primary immediately so this client's resize is applied.
         // Without this, the first resize lands in "vacant" state (which
         // works) but a race with focus/visibility events could delay it.
@@ -363,18 +387,84 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
       };
     }
 
-    // Touch swipe emits SGR mouse-wheel escape sequences to the PTY,
+    // Touch swipe emits SGR mouse-wheel escape sequences to the PTY
     // so tmux mouse-mode enters copy-mode and scrolls.
+    //
+    // Track net wheel-UP depth so the client knows whether tmux is in
+    // copy-mode and can pause/resume the pane's process accordingly.
+    // Tmux doesn't signal copy-mode state over the PTY, so the client
+    // infers it from scroll direction: depth goes 0 → 1 on first
+    // wheel-UP (copy-mode entered), back to 0 when balanced (copy-mode
+    // auto-exited via tmux's `-e` flag on desktop, or manually exited
+    // via the "Back to live" button on mobile).
+    //
+    // Mobile-only: clamp wheel-DOWN emissions so depth floors at 1,
+    // preventing tmux's `-e` auto-exit. On mobile the down-swipe
+    // overshoots easily and the snap-to-live discards the scroll
+    // position. Desktop keeps the unclamped behavior — scroll-down-past-
+    // bottom auto-exits, as users expect there.
+    //
+    // Pause/resume apply to BOTH platforms: claude's continued output
+    // shifts scrollback under the reader regardless of client size.
     const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
+    let scrollbackDepth = 0;
     const sendWheel = (dir: "up" | "down", count: number) => {
+      let sendCount = count;
+      const clampForMobile = isMobileViewport();
+      if (dir === "up") {
+        scrollbackDepth += sendCount;
+      } else if (clampForMobile) {
+        const maxDown = Math.max(0, scrollbackDepth - 1);
+        sendCount = Math.min(sendCount, maxDown);
+        if (sendCount === 0) return;
+        scrollbackDepth -= sendCount;
+      } else {
+        // Desktop: emit freely, let tmux's -e handle exit. Track depth
+        // so the resume transition fires when the user scrolls back.
+        scrollbackDepth = Math.max(0, scrollbackDepth - sendCount);
+      }
       const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
       const ws = wsRef.current;
       if (ws?.readyState !== WebSocket.OPEN) return;
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < sendCount; i++) {
         ws.send(new TextEncoder().encode(seq));
       }
+      // Transition into scrollback on first wheel-up (desktop + mobile).
+      if (dir === "up") {
+        setState((prev) => {
+          if (prev.isInScrollback) return prev;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({ type: "pause_output" } as PauseOutputMessage),
+            );
+          }
+          return { ...prev, isInScrollback: true };
+        });
+      } else if (scrollbackDepth === 0) {
+        // Back at live on desktop (tmux auto-exited copy-mode via -e);
+        // resume the pane's process. On mobile this branch never fires
+        // because the clamp keeps depth >= 1; mobile exits via the
+        // explicit "Back to live" button (see exitScrollback).
+        setState((prev) => {
+          if (!prev.isInScrollback) return prev;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                type: "resume_output",
+              } as ResumeOutputMessage),
+            );
+          }
+          return { ...prev, isInScrollback: false };
+        });
+      }
     };
+    // Expose so exitScrollback can reset the depth in sync with the
+    // Escape sent to tmux.
+    const resetScrollbackDepth = () => {
+      scrollbackDepth = 0;
+    };
+    resetScrollbackDepthRef.current = resetScrollbackDepth;
 
     let touchMidY = 0;
     let touchAccum = 0;
@@ -652,26 +742,47 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     };
     viewport.addEventListener("click", onClickCapture, true);
 
-    // Trackpad pinch fires wheel events with ctrlKey=true
+    // Mouse wheel: Ctrl+wheel = zoom (trackpad pinch), plain wheel = scroll.
+    // wterm has no built-in wheel handling and tmux manages its own scrollback,
+    // so we convert wheel events to SGR mouse-wheel escape sequences (same
+    // mechanism the touch handler uses).
     let wheelAccum = 0;
+    let scrollWheelAccum = 0;
     let wheelPersistTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
       e.preventDefault();
-      wheelAccum -= e.deltaY * WHEEL_ZOOM_SENSITIVITY;
-      if (Math.abs(wheelAccum) < 1) return;
-      const delta = Math.trunc(wheelAccum);
-      wheelAccum -= delta;
-      const base = currentPendingOrLiveSize();
-      const next = clampFont(Math.round(base + delta));
-      if (next === base) return;
-      scheduleFontSize(next);
-      if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
-      wheelPersistTimer = setTimeout(() => {
-        flushFontSize();
-        persistFontSize(currentFontSize());
-        wheelPersistTimer = null;
-      }, WHEEL_PERSIST_DEBOUNCE_MS);
+
+      if (e.ctrlKey) {
+        // Trackpad pinch fires wheel events with ctrlKey=true
+        wheelAccum -= e.deltaY * WHEEL_ZOOM_SENSITIVITY;
+        if (Math.abs(wheelAccum) < 1) return;
+        const delta = Math.trunc(wheelAccum);
+        wheelAccum -= delta;
+        const base = currentPendingOrLiveSize();
+        const next = clampFont(Math.round(base + delta));
+        if (next === base) return;
+        scheduleFontSize(next);
+        if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
+        wheelPersistTimer = setTimeout(() => {
+          flushFontSize();
+          persistFontSize(currentFontSize());
+          wheelPersistTimer = null;
+        }, WHEEL_PERSIST_DEBOUNCE_MS);
+        return;
+      }
+
+      // Plain scroll: convert to SGR mouse-wheel sequences for tmux
+      scrollWheelAccum += e.deltaY;
+      const step = pxPerWheel();
+      const rawWheels = Math.trunc(scrollWheelAccum / step);
+      const wheels = Math.max(
+        -MAX_WHEELS_PER_FRAME,
+        Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
+      );
+      if (wheels !== 0) {
+        sendWheel(wheels > 0 ? "down" : "up", Math.abs(wheels));
+        scrollWheelAccum -= wheels * step;
+      }
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
 
@@ -757,6 +868,28 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     }
   }, []);
 
+  // Mobile-only: sends ESC to force tmux out of copy-mode. On mobile we
+  // clamp scroll-down so tmux never reaches the bottom on its own; the
+  // button is the only way back to live.
+  //
+  // Also sends `resume_output` so the server SIGCONTs the pane's
+  // process tree (which was paused on entry to scrollback). The server
+  // auto-resumes on disconnect as a safety net, so forgetting this is
+  // annoying but not permanent.
+  const exitScrollback = useCallback(() => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({ type: "resume_output" } as ResumeOutputMessage),
+      );
+      ws.send(new TextEncoder().encode("\x1b"));
+    }
+    resetScrollbackDepthRef.current?.();
+    setState((prev) =>
+      prev.isInScrollback ? { ...prev, isInScrollback: false } : prev,
+    );
+  }, []);
+
   return {
     containerRef,
     termRef,
@@ -764,6 +897,7 @@ export function useTerminal(sessionId: string | null, wsPath: string = "ws") {
     manualReconnect,
     sendData,
     activate,
+    exitScrollback,
     ctrlActiveRef,
     clearCtrlRef,
   };

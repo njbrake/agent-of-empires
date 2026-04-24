@@ -75,7 +75,7 @@
             pname = "agent-of-empires-web";
             version = "0";
             src = ./web;
-            npmDepsHash = "sha256-xk+Tob7yptWVaorn86xVgVtTYz2h0moPJDMe1kXt1Bs=";
+            npmDepsHash = "sha256-iuXZ3514jGE3MHu3tWWtoxR8Numn12Vdq+NgwlaPdCw=";
             # tsc -b && vite build; output goes to web/dist
             installPhase = ''
               mkdir $out

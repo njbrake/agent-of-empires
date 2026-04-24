@@ -32,8 +32,6 @@ interface Props {
   onNew: () => void;
   onCreateSession: (repoPath: string) => void;
   onSettings: () => void;
-  onRepeatLast?: () => void;
-  hasLastSession?: boolean;
   onDeleteSession?: (workspaceId: string) => void;
   readOnly?: boolean;
 }
@@ -408,8 +406,6 @@ export function WorkspaceSidebar({
   onNew,
   onCreateSession,
   onSettings,
-  onRepeatLast,
-  hasLastSession,
   onDeleteSession,
   readOnly,
 }: Props) {
@@ -568,18 +564,6 @@ export function WorkspaceSidebar({
         )}
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
-          {hasLastSession && onRepeatLast && !filterQuery && (
-            <button
-              onClick={onRepeatLast}
-              className="flex items-center gap-2 w-full px-4 py-2 text-left text-sm text-text-dim hover:text-text-secondary hover:bg-surface-800/50 cursor-pointer transition-colors border-b border-surface-700/20"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="1 4 1 10 7 10" />
-                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-              </svg>
-              Repeat last session
-            </button>
-          )}
           {filteredGroups.map((group) => {
             const showExpanded = q ? true : !group.collapsed;
             const hasActiveChild = group.workspaces.some(
@@ -644,7 +628,7 @@ export function WorkspaceSidebar({
       {/* Resize handle (desktop only) */}
       <div
         onMouseDown={handleMouseDown}
-        className="hidden md:block w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
+        className="hidden md:block w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75"
       />
     </>
   );

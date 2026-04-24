@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
                 TmuxCommands::Status(args) => cli::tmux::run_status(args),
             };
         }
+        Some(Commands::Agents) => return cli::agents::run(),
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Theme { command }) => {
             use cli::theme::ThemeCommands;

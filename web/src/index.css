@@ -171,6 +171,25 @@ select:focus-visible,
   background: rgba(161, 161, 170, 0.2);
 }
 
+/* Subtle focus ring for terminal panels (desktop only).
+   Uses a pseudo-element overlay so it paints above wterm's background. */
+@media (pointer: fine) {
+  .term-panel::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 1px solid rgba(217, 119, 6, 0.45);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 20;
+    opacity: 0;
+    transition: opacity 0.15s ease-out;
+  }
+  .term-panel.term-focused::after {
+    opacity: 1;
+  }
+}
+
 .safe-area-inset {
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
     env(safe-area-inset-bottom) env(safe-area-inset-left);

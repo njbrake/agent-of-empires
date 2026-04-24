@@ -95,7 +95,7 @@ export function ContentSplit({
           <div
             onMouseDown={handleMouseDown}
             onDoubleClick={onToggleCollapse}
-            className="hidden md:block w-1 cursor-col-resize shrink-0 hover:bg-brand-600/50 transition-colors duration-75"
+            className="hidden md:block w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75"
           />
 
           {/* Right pane: inline on desktop, overlay on mobile */}

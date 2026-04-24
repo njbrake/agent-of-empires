@@ -29,6 +29,8 @@ import type { WizardPrefill } from "./components/session-wizard/SessionWizard";
 import type { SessionResponse } from "./lib/types";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
+import { TokenEntryPage } from "./components/TokenEntryPage";
+import { TOKEN_EXPIRED_EVENT } from "./lib/fetchInterceptor";
 import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
@@ -36,6 +38,13 @@ import { DisconnectBanner } from "./components/DisconnectBanner";
 export default function App() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
+  const [tokenExpired, setTokenExpired] = useState(false);
+
+  useEffect(() => {
+    const onTokenExpired = () => setTokenExpired(true);
+    window.addEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
+    return () => window.removeEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
+  }, []);
 
   useEffect(() => {
     loginStatus().then(({ required, authenticated }) => {
@@ -43,6 +52,15 @@ export default function App() {
       setLoginAuthenticated(authenticated);
     });
   }, []);
+
+  const handleTokenSuccess = () => {
+    setTokenExpired(false);
+    // Re-check login status now that token auth works
+    loginStatus().then(({ required, authenticated }) => {
+      setLoginRequired(required);
+      setLoginAuthenticated(authenticated);
+    });
+  };
 
   const handleLoginSuccess = () => {
     setLoginAuthenticated(true);
@@ -52,6 +70,11 @@ export default function App() {
     await logout();
     setLoginAuthenticated(false);
   };
+
+  // Token auth is the first factor; show token entry before anything else
+  if (tokenExpired) {
+    return <TokenEntryPage onSuccess={handleTokenSuccess} />;
+  }
 
   if (loginRequired && !loginAuthenticated) {
     return <LoginPage onSuccess={handleLoginSuccess} />;
@@ -143,6 +166,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       setActiveSessionId(sessionId);
       writeSessionToUrl(sessionId);
       focusKeyboardProxy();
+      setShowSettings(false);
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
   }, [workspaces]);
@@ -157,6 +181,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       writeSessionToUrl(picked);
     }
     focusKeyboardProxy();
+    setShowSettings(false);
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
@@ -253,27 +278,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     });
     setShowAddProject(true);
   }, [sessions]);
-
-  const lastSession = useMemo(() =>
-    sessions.length > 0
-      ? [...sessions].sort((a, b) => (b.last_accessed_at ?? b.created_at ?? "").localeCompare(a.last_accessed_at ?? a.created_at ?? ""))[0]
-      : null,
-    [sessions],
-  );
-
-  const handleRepeatLast = useCallback(() => {
-    if (!lastSession) return;
-    setWizardPrefill({
-      path: lastSession.main_repo_path || lastSession.project_path,
-      tool: lastSession.tool,
-      yoloMode: lastSession.yolo_mode,
-      sandboxEnabled: lastSession.is_sandboxed ?? false,
-      profile: lastSession.profile || undefined,
-      group: lastSession.group_path || undefined,
-      skipToReview: true,
-    });
-    setShowAddProject(true);
-  }, [lastSession]);
 
   const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
 
@@ -451,7 +455,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onOpenPalette={() => setShowPalette(true)}
         onToggleDiff={toggleDiff}
         diffCollapsed={diffCollapsed}
-        diffFileCount={diffFiles.length}
         onOpenSettings={handleOpenSettings}
         onOpenHelp={handleOpenHelp}
         onOpenAbout={handleOpenAbout}
@@ -474,8 +477,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
           onCreateSession={handleCreateSession}
           onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
-          onRepeatLast={handleRepeatLast}
-          hasLastSession={!!lastSession}
           onDeleteSession={handleDeleteSession}
           readOnly={serverAbout?.read_only}
         />

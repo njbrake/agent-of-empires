@@ -1,6 +1,7 @@
 //! CLI command implementations
 
 pub mod add;
+pub mod agents;
 pub mod definition;
 pub mod group;
 pub mod init;

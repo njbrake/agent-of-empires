@@ -12,8 +12,8 @@ use crate::tui::app::Action;
 use crate::tui::dialogs::ServeAction;
 use crate::tui::dialogs::{
     ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, ProfilePickerAction,
-    RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
+    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, NoAgentsAction,
+    ProfilePickerAction, RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -120,6 +120,25 @@ impl HomeView {
                     return None;
                 }
             }
+        }
+
+        // Handle no-agents dialog (highest priority, blocks all interaction)
+        if let Some(dialog) = &mut self.no_agents_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel | DialogResult::Submit(NoAgentsAction::Quit) => {
+                    return Some(Action::Quit);
+                }
+                DialogResult::Submit(NoAgentsAction::Recheck) => {
+                    let tools = crate::tmux::AvailableTools::detect();
+                    if tools.any_available() {
+                        self.set_available_tools(tools);
+                        self.no_agents_dialog = None;
+                    }
+                    // If still no agents, keep dialog open (user can try again)
+                }
+            }
+            return None;
         }
 
         // Handle welcome/changelog dialogs first (highest priority)
@@ -607,6 +626,8 @@ impl HomeView {
                         "Please Wait",
                         "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
                     ));
+                } else if !self.available_tools.any_available() {
+                    self.show_no_agents();
                 } else {
                     let existing_groups: Vec<String> =
                         self.all_groups().iter().map(|g| g.path.clone()).collect();
@@ -1247,8 +1268,9 @@ impl HomeView {
     }
 
     /// Create a session with optional hooks. Delegates to the background
-    /// `CreationPoller` when hooks are present (to avoid freezing the TUI on
-    /// slow commands like `npm install`) or when the session is sandboxed.
+    /// `CreationPoller` when hooks are present, when the session is sandboxed,
+    /// or when a worktree branch is requested (to avoid freezing the TUI on
+    /// slow git hooks like `post-checkout`).
     fn create_session_with_hooks(
         &mut self,
         data: NewSessionData,
@@ -1257,8 +1279,9 @@ impl HomeView {
         let has_hooks = hooks
             .as_ref()
             .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
+        let has_worktree = data.worktree_branch.as_ref().is_some_and(|b| !b.is_empty());
 
-        if data.sandbox || has_hooks {
+        if data.sandbox || has_hooks || has_worktree {
             self.request_creation(data, hooks);
             return None;
         }

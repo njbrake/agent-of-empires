@@ -91,7 +91,7 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
       .toBeLessThan(14);
   });
 
-  test("wheel without ctrlKey is ignored (native scroll path)", async ({
+  test("wheel without ctrlKey does not change font size (scrolls terminal instead)", async ({
     page,
   }) => {
     await installTerminalSpies(page);

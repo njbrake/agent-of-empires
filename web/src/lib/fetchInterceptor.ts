@@ -2,6 +2,10 @@ import { isServerDown } from "./connectionState";
 import { reportError } from "./toastBus";
 import { clearToken, getToken, saveToken } from "./token";
 
+/** Dispatched on `window` when the auth token is rejected or missing. App.tsx
+ *  listens for this to show the token entry page instead of just a toast. */
+export const TOKEN_EXPIRED_EVENT = "aoe:token-expired";
+
 /**
  * Install a global fetch wrapper that:
  * 1. Injects `Authorization: Bearer <token>` when we have a stored token.
@@ -79,27 +83,30 @@ export function installFetchErrorToasts(): void {
 }
 
 // On 401 with a token present, the stored token is dead (server restart,
-// rotated past grace period, or revoked). Clear it once and prompt the user
-// to reconnect. We dedupe so a burst of concurrent 401s produces one toast.
-let tokenRejectedReported = false;
+// rotated past grace period, or revoked). Clear it once and show the token
+// entry page. We dedupe so a burst of concurrent 401s produces one event.
+let tokenExpiredDispatched = false;
 function handleTokenRejected(): void {
   clearToken();
-  if (tokenRejectedReported) return;
-  tokenRejectedReported = true;
-  reportError(
-    "Session expired. Open the current dashboard URL from `aoe serve` to reconnect.",
-  );
+  if (tokenExpiredDispatched) return;
+  tokenExpiredDispatched = true;
+  window.dispatchEvent(new CustomEvent(TOKEN_EXPIRED_EVENT));
 }
 
 // On 401 with no token at all (cookie expired AND localStorage cleared).
-// Show a one-time toast so the user isn't staring at an empty dashboard.
-let noTokenReported = false;
+// Show the token entry page so the user can paste their token.
+let noTokenDispatched = false;
 function handleNoToken(): void {
-  if (noTokenReported) return;
-  noTokenReported = true;
-  reportError(
-    "Not authenticated. Paste the dashboard URL from `aoe serve` to connect.",
-  );
+  if (noTokenDispatched) return;
+  noTokenDispatched = true;
+  window.dispatchEvent(new CustomEvent(TOKEN_EXPIRED_EVENT));
+}
+
+/** Reset the dedup flags so a new 401 after re-authentication will be
+ *  caught again. Called when the user submits a new token. */
+export function resetTokenExpired(): void {
+  tokenExpiredDispatched = false;
+  noTokenDispatched = false;
 }
 
 // Inject Authorization header without clobbering anything the caller set.
