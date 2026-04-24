@@ -653,7 +653,23 @@ pub async fn update_profile_settings(
                         }
                     }
                 }
-                current_obj.insert(key.clone(), value);
+                // Deep merge within sections so that sending a single field
+                // (e.g. {"session": {"yolo_mode_default": true}}) only sets
+                // that field as a profile override, preserving other existing
+                // overrides instead of replacing the entire section.
+                if let Some(existing) = current_obj.get_mut(key) {
+                    if let (Some(existing_obj), Some(new_obj)) =
+                        (existing.as_object_mut(), value.as_object())
+                    {
+                        for (k, v) in new_obj {
+                            existing_obj.insert(k.clone(), v.clone());
+                        }
+                    } else {
+                        current_obj.insert(key.clone(), value);
+                    }
+                } else {
+                    current_obj.insert(key.clone(), value);
+                }
             }
         }
         let config: crate::session::ProfileConfig = serde_json::from_value(current)?;

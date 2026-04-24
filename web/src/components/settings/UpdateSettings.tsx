@@ -2,17 +2,16 @@ import { CollapsibleSection, NumberField, ToggleField } from "./FormFields";
 
 interface Props {
   settings: Record<string, unknown>;
-  onSave: (section: string, data: Record<string, unknown>) => void;
+  onSaveField: (section: string, field: string, value: unknown) => void;
   onUpdate: (patch: Record<string, unknown>) => void;
 }
 
-export function UpdateSettings({ settings, onSave, onUpdate }: Props) {
+export function UpdateSettings({ settings, onSaveField, onUpdate }: Props) {
   const updates = (settings.updates ?? {}) as Record<string, unknown>;
 
   const save = (field: string, value: unknown) => {
-    const updated = { ...updates, [field]: value };
-    onUpdate({ updates: updated });
-    onSave("updates", updated);
+    onUpdate({ updates: { ...updates, [field]: value } });
+    onSaveField("updates", field, value);
   };
 
   return (

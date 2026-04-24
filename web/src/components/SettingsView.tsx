@@ -46,7 +46,7 @@ export function SettingsView({ onClose }: Props) {
     loadSettings();
   }, [loadSettings]);
 
-  const save = useCallback(
+  const sendSave = useCallback(
     async (section: string, data: Record<string, unknown>) => {
       setSaving(true);
       setSaveError(null);
@@ -74,6 +74,10 @@ export function SettingsView({ onClose }: Props) {
   const worktree = (settings?.worktree ?? {}) as Record<string, unknown>;
   const web = (settings?.web ?? {}) as Record<string, unknown>;
 
+  // Central save-by-field: updates local display immediately, then sends
+  // only the changed field to the API. Profile mode sends a field-level
+  // delta (backend deep merges) so inherited values stay inherited.
+  // Global mode sends the full section (backend replaces the section).
   const saveField = (
     section: string,
     sectionData: Record<string, unknown>,
@@ -82,8 +86,22 @@ export function SettingsView({ onClose }: Props) {
   ) => {
     const updated = { ...sectionData, [field]: value };
     updateLocal({ [section]: updated });
-    save(section, updated);
+    if (selectedProfile) {
+      sendSave(section, { [field]: value });
+    } else {
+      sendSave(section, updated);
+    }
   };
+
+  // Field-level save for sub-components: they call onSaveField(section, field, value)
+  // and the parent handles global vs profile semantics.
+  const saveSubField = useCallback(
+    (section: string, field: string, value: unknown) => {
+      const sectionData = (settings?.[section] ?? {}) as Record<string, unknown>;
+      saveField(section, sectionData, field, value);
+    },
+    [settings, selectedProfile, sendSave, loadSettings],
+  );
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-surface-900">
@@ -292,16 +310,16 @@ export function SettingsView({ onClose }: Props) {
             </CollapsibleSection>
 
             {/* Theme */}
-            <ThemeSettings settings={settings} onSave={save} onUpdate={updateLocal} />
+            <ThemeSettings settings={settings} onSaveField={saveSubField} onUpdate={updateLocal} />
 
             {/* Sound */}
-            <SoundSettings settings={settings} onSave={save} onUpdate={updateLocal} />
+            <SoundSettings settings={settings} onSaveField={saveSubField} onUpdate={updateLocal} />
 
             {/* Tmux */}
-            <TmuxSettings settings={settings} onSave={save} onUpdate={updateLocal} />
+            <TmuxSettings settings={settings} onSaveField={saveSubField} onUpdate={updateLocal} />
 
             {/* Updates */}
-            <UpdateSettings settings={settings} onSave={save} onUpdate={updateLocal} />
+            <UpdateSettings settings={settings} onSaveField={saveSubField} onUpdate={updateLocal} />
           </>
         )}
 

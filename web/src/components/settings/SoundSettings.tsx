@@ -2,17 +2,16 @@ import { CollapsibleSection, SelectField, SliderField, TextField, ToggleField } 
 
 interface Props {
   settings: Record<string, unknown>;
-  onSave: (section: string, data: Record<string, unknown>) => void;
+  onSaveField: (section: string, field: string, value: unknown) => void;
   onUpdate: (patch: Record<string, unknown>) => void;
 }
 
-export function SoundSettings({ settings, onSave, onUpdate }: Props) {
+export function SoundSettings({ settings, onSaveField, onUpdate }: Props) {
   const sound = (settings.sound ?? {}) as Record<string, unknown>;
 
   const save = (field: string, value: unknown) => {
-    const updated = { ...sound, [field]: value };
-    onUpdate({ sound: updated });
-    onSave("sound", updated);
+    onUpdate({ sound: { ...sound, [field]: value } });
+    onSaveField("sound", field, value);
   };
 
   const enabled = (sound.enabled as boolean) ?? false;

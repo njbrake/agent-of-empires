@@ -16,7 +16,8 @@ interface Props {
 export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [inputValue, setInputValue] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -29,21 +30,48 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
 
   const activeProfile = profiles.find((p) => p.is_default);
 
+  const validateName = (name: string): string | null => {
+    if (!name) return "Name is required";
+    if (!/^[a-zA-Z0-9_-]+$/.test(name))
+      return "Only letters, digits, hyphens, and underscores";
+    return null;
+  };
+
   const handleCreate = async () => {
-    const trimmed = newName.trim();
-    if (!trimmed) return;
-    if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
-      setError("Only letters, digits, hyphens, and underscores");
+    const trimmed = inputValue.trim();
+    const err = validateName(trimmed);
+    if (err) {
+      setError(err);
       return;
     }
     const ok = await createProfile(trimmed);
     if (ok) {
-      setCreating(false);
-      setNewName("");
-      setError(null);
+      closeInput();
       load();
     } else {
       setError("Failed to create profile");
+    }
+  };
+
+  const handleRename = async () => {
+    if (!selectedProfile) return;
+    const trimmed = inputValue.trim();
+    if (trimmed === selectedProfile) {
+      closeInput();
+      return;
+    }
+    const err = validateName(trimmed);
+    if (err) {
+      setError(err);
+      return;
+    }
+    const ok = await renameProfile(selectedProfile, trimmed);
+    if (ok) {
+      onSelect(trimmed);
+      closeInput();
+      load();
+    } else {
+      setError("Failed to rename profile");
     }
   };
 
@@ -56,19 +84,36 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
     }
   };
 
-  const handleRename = async (name: string) => {
-    const newN = prompt("New name:", name);
-    if (!newN || newN === name) return;
-    const ok = await renameProfile(name, newN);
-    if (ok) {
-      if (selectedProfile === name) onSelect(newN);
-      load();
-    }
-  };
-
   const handleSetDefault = async (name: string) => {
     const ok = await setDefaultProfile(name);
     if (ok) load();
+  };
+
+  const closeInput = () => {
+    setCreating(false);
+    setRenaming(false);
+    setInputValue("");
+    setError(null);
+  };
+
+  const startRename = () => {
+    if (!selectedProfile) return;
+    setRenaming(true);
+    setCreating(false);
+    setInputValue(selectedProfile);
+    setError(null);
+  };
+
+  const startCreate = () => {
+    setCreating(true);
+    setRenaming(false);
+    setInputValue("");
+    setError(null);
+  };
+
+  const submitInput = () => {
+    if (creating) handleCreate();
+    else if (renaming) handleRename();
   };
 
   return (
@@ -89,47 +134,50 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
           ))}
         </select>
         <button
-          onClick={() => setCreating(!creating)}
+          onClick={startCreate}
           className="text-xs text-brand-500 hover:text-brand-400 cursor-pointer shrink-0"
         >
           + New
         </button>
       </div>
 
-      {creating && (
+      {(creating || renaming) && (
         <div className="mt-2 flex gap-2">
           <input
             type="text"
-            value={newName}
+            value={inputValue}
             onChange={(e) => {
-              setNewName(e.target.value);
+              setInputValue(e.target.value);
               setError(null);
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreate();
-              if (e.key === "Escape") {
-                setCreating(false);
-                setError(null);
-              }
+              if (e.key === "Enter") submitInput();
+              if (e.key === "Escape") closeInput();
             }}
-            placeholder="Profile name"
+            placeholder={creating ? "Profile name" : "New name"}
             autoFocus
             className={`flex-1 bg-surface-900 border rounded-md px-2 py-1.5 text-sm text-text-primary focus:outline-none ${error ? "border-red-500" : "border-surface-700 focus:border-brand-600"}`}
           />
           <button
-            onClick={handleCreate}
+            onClick={submitInput}
             className="px-3 py-1.5 rounded-md bg-brand-600 hover:bg-brand-500 text-sm font-medium text-surface-950 cursor-pointer"
           >
-            Create
+            {creating ? "Create" : "Rename"}
+          </button>
+          <button
+            onClick={closeInput}
+            className="px-2 py-1.5 text-sm text-text-dim hover:text-text-primary cursor-pointer"
+          >
+            Cancel
           </button>
         </div>
       )}
       {error && <div className="text-xs text-red-400 mt-1">{error}</div>}
 
-      {selectedProfile && (
+      {selectedProfile && !creating && !renaming && (
         <div className="mt-2 flex gap-2 text-xs">
           <button
-            onClick={() => handleRename(selectedProfile)}
+            onClick={startRename}
             className="text-text-dim hover:text-text-primary cursor-pointer"
           >
             Rename

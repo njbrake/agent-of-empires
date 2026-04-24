@@ -4,11 +4,11 @@ import { CollapsibleSection, SelectField } from "./FormFields";
 
 interface Props {
   settings: Record<string, unknown>;
-  onSave: (section: string, data: Record<string, unknown>) => void;
+  onSaveField: (section: string, field: string, value: unknown) => void;
   onUpdate: (patch: Record<string, unknown>) => void;
 }
 
-export function ThemeSettings({ settings, onSave, onUpdate }: Props) {
+export function ThemeSettings({ settings, onSaveField, onUpdate }: Props) {
   const [themes, setThemes] = useState<string[]>([]);
   const theme = (settings.theme ?? {}) as Record<string, unknown>;
 
@@ -17,9 +17,8 @@ export function ThemeSettings({ settings, onSave, onUpdate }: Props) {
   }, []);
 
   const save = (field: string, value: unknown) => {
-    const updated = { ...theme, [field]: value };
-    onUpdate({ theme: updated });
-    onSave("theme", updated);
+    onUpdate({ theme: { ...theme, [field]: value } });
+    onSaveField("theme", field, value);
   };
 
   return (

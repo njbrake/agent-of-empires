@@ -2,17 +2,16 @@ import { CollapsibleSection, SelectField } from "./FormFields";
 
 interface Props {
   settings: Record<string, unknown>;
-  onSave: (section: string, data: Record<string, unknown>) => void;
+  onSaveField: (section: string, field: string, value: unknown) => void;
   onUpdate: (patch: Record<string, unknown>) => void;
 }
 
-export function TmuxSettings({ settings, onSave, onUpdate }: Props) {
+export function TmuxSettings({ settings, onSaveField, onUpdate }: Props) {
   const tmux = (settings.tmux ?? {}) as Record<string, unknown>;
 
   const save = (field: string, value: unknown) => {
-    const updated = { ...tmux, [field]: value };
-    onUpdate({ tmux: updated });
-    onSave("tmux", updated);
+    onUpdate({ tmux: { ...tmux, [field]: value } });
+    onSaveField("tmux", field, value);
   };
 
   const modeOptions = [
