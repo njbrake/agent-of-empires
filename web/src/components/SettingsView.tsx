@@ -35,19 +35,27 @@ type TabId =
   | "security"
   | "devices";
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: "session", label: "Session" },
-  { id: "sandbox", label: "Sandbox" },
-  { id: "worktree", label: "Worktree" },
-  { id: "theme", label: "Theme" },
-  { id: "sound", label: "Sound" },
-  { id: "tmux", label: "Tmux" },
-  { id: "updates", label: "Updates" },
-  { id: "notifications", label: "Notifications" },
-  { id: "terminal", label: "Terminal" },
-  { id: "security", label: "Security" },
-  { id: "devices", label: "Devices" },
+type SidebarItem =
+  | { kind: "tab"; id: TabId; label: string }
+  | { kind: "divider"; label: string };
+
+const SIDEBAR: SidebarItem[] = [
+  { kind: "divider", label: "General" },
+  { kind: "tab", id: "session", label: "Session" },
+  { kind: "tab", id: "sandbox", label: "Sandbox" },
+  { kind: "tab", id: "worktree", label: "Worktree" },
+  { kind: "tab", id: "theme", label: "Theme" },
+  { kind: "tab", id: "sound", label: "Sound" },
+  { kind: "tab", id: "tmux", label: "Tmux" },
+  { kind: "tab", id: "updates", label: "Updates" },
+  { kind: "divider", label: "Web Dashboard" },
+  { kind: "tab", id: "notifications", label: "Notifications" },
+  { kind: "tab", id: "terminal", label: "Terminal" },
+  { kind: "tab", id: "security", label: "Security" },
+  { kind: "tab", id: "devices", label: "Devices" },
 ];
+
+const TABS = SIDEBAR.filter((s): s is { kind: "tab"; id: TabId; label: string } => s.kind === "tab");
 
 interface Props {
   onClose: () => void;
@@ -419,20 +427,24 @@ export function SettingsView({ onClose }: Props) {
 
       {/* Mobile tabs (horizontal scroll) */}
       <div className="md:hidden border-b border-surface-700 bg-surface-850 overflow-x-auto">
-        <div className="flex">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2.5 text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
-                activeTab === tab.id
-                  ? "text-brand-500 border-b-2 border-brand-500"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="flex items-center">
+          {SIDEBAR.map((item) =>
+            item.kind === "divider" ? (
+              <div key={item.label} className="h-4 w-px bg-surface-700 mx-1 shrink-0" />
+            ) : (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`px-4 py-2.5 text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
+                  activeTab === item.id
+                    ? "text-brand-500 border-b-2 border-brand-500"
+                    : "text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                {item.label}
+              </button>
+            ),
+          )}
         </div>
       </div>
 
@@ -440,19 +452,28 @@ export function SettingsView({ onClose }: Props) {
       <div className="flex-1 flex min-h-0">
         {/* Side tabs (desktop only) */}
         <nav className="hidden md:flex flex-col w-44 shrink-0 border-r border-surface-700 bg-surface-850 py-2 overflow-y-auto">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2 text-sm text-left cursor-pointer transition-colors ${
-                activeTab === tab.id
-                  ? "text-brand-500 bg-surface-800 border-r-2 border-brand-500"
-                  : "text-text-secondary hover:text-text-primary hover:bg-surface-800/50"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+          {SIDEBAR.map((item, i) =>
+            item.kind === "divider" ? (
+              <div
+                key={item.label}
+                className={`px-4 pt-3 pb-1 text-[10px] font-mono uppercase tracking-widest text-text-dim ${i > 0 ? "mt-2 border-t border-surface-700/40" : ""}`}
+              >
+                {item.label}
+              </div>
+            ) : (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`px-4 py-2 text-sm text-left cursor-pointer transition-colors ${
+                  activeTab === item.id
+                    ? "text-brand-500 bg-surface-800 border-r-2 border-brand-500"
+                    : "text-text-secondary hover:text-text-primary hover:bg-surface-800/50"
+                }`}
+              >
+                {item.label}
+              </button>
+            ),
+          )}
         </nav>
 
         {/* Content area */}
