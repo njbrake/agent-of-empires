@@ -109,6 +109,7 @@ impl DockerContainer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use docker::Docker;
 
     #[test]
     fn test_container_generate_name_short_id() {
@@ -124,8 +125,8 @@ mod tests {
 
     #[test]
     fn test_container_exec_command() {
-        let container = DockerContainer::new("test1234567890ab", "ubuntu:latest");
-        let cmd = container.exec_command(None, "my-agent");
+        let docker = Docker::default();
+        let cmd = docker.exec_command("aoe-sandbox-test1234", None, "my-agent");
         assert_eq!(cmd, "docker exec -it aoe-sandbox-test1234 my-agent");
     }
     #[test]

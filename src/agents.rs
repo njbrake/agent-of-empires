@@ -297,6 +297,22 @@ pub const AGENTS: &[AgentDef] = &[
         send_keys_enter_delay_ms: 0,
         install_hint: "see https://settl.dev/docs/install",
     },
+    AgentDef {
+        name: "qwen",
+        binary: "qwen",
+        aliases: &[],
+        detection: DetectionMethod::Which("qwen"),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
+        instruction_flag: Some("--append-system-prompt {}"),
+        set_default_command: true,
+        detect_status: status_detection::detect_qwen_status,
+        container_env: &[],
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".qwen/settings.json",
+            events: CLAUDE_CURSOR_HOOK_EVENTS,
+        }),
+        host_only: false,
+    },
 ];
 
 /// Look up an agent by canonical name.
@@ -379,6 +395,7 @@ mod tests {
         assert_eq!(get_agent("pi").unwrap().binary, "pi");
         assert_eq!(get_agent("droid").unwrap().binary, "droid");
         assert_eq!(get_agent("settl").unwrap().binary, "settl");
+        assert_eq!(get_agent("qwen").unwrap().binary, "qwen");
     }
 
     #[test]
@@ -393,7 +410,7 @@ mod tests {
             names,
             vec![
                 "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi",
-                "droid", "settl"
+                "droid", "settl", "qwen"
             ]
         );
     }
@@ -414,6 +431,7 @@ mod tests {
         assert_eq!(resolve_tool_name("settl"), Some("settl"));
         assert_eq!(resolve_tool_name("settlers"), Some("settl"));
         assert_eq!(resolve_tool_name("catan"), Some("settl"));
+        assert_eq!(resolve_tool_name("qwen"), Some("qwen"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -429,6 +447,7 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("pi")), 8);
         assert_eq!(settings_index_from_name(Some("droid")), 9);
         assert_eq!(settings_index_from_name(Some("settl")), 10);
+        assert_eq!(settings_index_from_name(Some("qwen")), 11);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
@@ -438,6 +457,7 @@ mod tests {
         assert_eq!(name_from_settings_index(8), Some("pi"));
         assert_eq!(name_from_settings_index(9), Some("droid"));
         assert_eq!(name_from_settings_index(10), Some("settl"));
+        assert_eq!(name_from_settings_index(11), Some("qwen"));
         assert_eq!(name_from_settings_index(99), None);
     }
 

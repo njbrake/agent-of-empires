@@ -631,6 +631,107 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+/// Qwen Code status detection via tmux pane parsing.
+/// Qwen Code is a full-screen TUI. It shows spinners and activity indicators
+/// while processing, and displays approval prompts when actions need confirmation.
+pub fn detect_qwen_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // RUNNING: Spinners and interrupt hints
+    for line in &lines {
+        for spinner in SPINNER_CHARS {
+            if line.contains(spinner) {
+                return Status::Running;
+            }
+        }
+    }
+
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+    {
+        return Status::Running;
+    }
+
+    // RUNNING: Activity indicators
+    let activity_indicators = [
+        "thinking",
+        "working",
+        "reading",
+        "writing",
+        "executing",
+        "generating",
+        "processing",
+    ];
+    for indicator in &activity_indicators {
+        if last_lines_lower.contains(indicator) {
+            return Status::Running;
+        }
+    }
+
+    // WAITING: Approval prompts
+    let approval_prompts = [
+        "(y/n)",
+        "[y/n]",
+        "allow",
+        "approve",
+        "execute?",
+        "run command?",
+        "enter to select",
+        "esc to cancel",
+    ];
+    for prompt in &approval_prompts {
+        if last_lines_lower.contains(prompt) {
+            return Status::Waiting;
+        }
+    }
+
+    // WAITING: Selection menus with numbered options
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("❯") && trimmed.len() > 2 {
+            let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
+            if after_cursor.starts_with("1.")
+                || after_cursor.starts_with("2.")
+                || after_cursor.starts_with("3.")
+            {
+                return Status::Waiting;
+            }
+        }
+    }
+
+    // WAITING: Input prompt ready
+    for line in non_empty_lines.iter().rev().take(10) {
+        let clean_line = strip_ansi(line).trim().to_string();
+        if clean_line == ">" || clean_line == "> " || clean_line == "qwen>" {
+            return Status::Waiting;
+        }
+        if clean_line.starts_with("> ")
+            && !clean_line.to_lowercase().contains("esc")
+            && clean_line.len() < 100
+        {
+            return Status::Waiting;
+        }
+    }
+
+    Status::Idle
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,5 +1051,46 @@ mod tests {
     fn test_detect_settl_status_is_stub() {
         // settl uses hook-based detection; the stub always returns Idle
         assert_eq!(detect_settl_status("anything"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_qwen_status_running() {
+        assert_eq!(
+            detect_qwen_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_qwen_status("Thinking about your request"),
+            Status::Running
+        );
+        assert_eq!(detect_qwen_status("working ⠋"), Status::Running);
+        assert_eq!(detect_qwen_status("loading ⠹"), Status::Running);
+        assert_eq!(detect_qwen_status("generating code"), Status::Running);
+        assert_eq!(detect_qwen_status("reading file.rs"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_qwen_status_waiting() {
+        assert_eq!(detect_qwen_status("run command? (y/n)"), Status::Waiting);
+        assert_eq!(
+            detect_qwen_status("Allow this tool to run?"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_qwen_status("pick an option\nenter to select"),
+            Status::Waiting
+        );
+        assert_eq!(detect_qwen_status("done\n>"), Status::Waiting);
+        assert_eq!(detect_qwen_status("done\nqwen>"), Status::Waiting);
+        assert_eq!(
+            detect_qwen_status("Select:\n❯ 1. Option A\n  2. Option B"),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_detect_qwen_status_idle() {
+        assert_eq!(detect_qwen_status("file saved"), Status::Idle);
+        assert_eq!(detect_qwen_status("random output text"), Status::Idle);
     }
 }
