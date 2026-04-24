@@ -77,7 +77,12 @@ fn format_relative_age(ts: Option<DateTime<Utc>>) -> String {
 
 /// Minimum column width required to render the last-activity column.
 /// When the session list is narrower than this, the column is hidden entirely.
-const LAST_ACTIVITY_MIN_WIDTH: u16 = 50;
+/// Compared against `inner.width` (list pane minus 2-char border), so this is
+/// effectively `home_list_width - 2`. Keeping it at 30 lets the column appear
+/// for users who set `home_list_width` in the 35–45 range (the common narrow-
+/// pane setting) and for mobile clients with tight pane widths; the 6-char
+/// age slot plus ~24 chars for title/branch still fits comfortably.
+const LAST_ACTIVITY_MIN_WIDTH: u16 = 30;
 
 /// Width reserved for the right-aligned last-activity column:
 /// 5 chars for the label (e.g. `"<1m"`, `"30mo"`) + 1 char left padding.
