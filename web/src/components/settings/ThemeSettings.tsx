@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchThemes } from "../../lib/api";
-import { CollapsibleSection, SelectField } from "./FormFields";
+import { SelectField } from "./FormFields";
 
 interface Props {
   settings: Record<string, unknown>;
@@ -22,10 +22,10 @@ export function ThemeSettings({ settings, onSaveField, onUpdate }: Props) {
   };
 
   return (
-    <CollapsibleSection
-      title="Theme"
-      subtitle="These settings apply to the TUI (local tmux sessions), not the web dashboard."
-    >
+    <div className="space-y-4">
+      <p className="text-xs text-text-dim">
+        These settings apply to the TUI (local tmux sessions), not the web dashboard.
+      </p>
       <SelectField
         label="Theme"
         value={(theme.name as string) ?? ""}
@@ -44,6 +44,6 @@ export function ThemeSettings({ settings, onSaveField, onUpdate }: Props) {
           { value: "palette", label: "Palette (256 colors)" },
         ]}
       />
-    </CollapsibleSection>
+    </div>
   );
 }

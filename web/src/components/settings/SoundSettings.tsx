@@ -1,4 +1,4 @@
-import { CollapsibleSection, SelectField, SliderField, TextField, ToggleField } from "./FormFields";
+import { SelectField, SliderField, TextField, ToggleField } from "./FormFields";
 
 interface Props {
   settings: Record<string, unknown>;
@@ -17,10 +17,10 @@ export function SoundSettings({ settings, onSaveField, onUpdate }: Props) {
   const enabled = (sound.enabled as boolean) ?? false;
 
   return (
-    <CollapsibleSection
-      title="Sound"
-      subtitle="Audio alerts play on the server host machine, not in your browser."
-    >
+    <div className="space-y-4">
+      <p className="text-xs text-text-dim">
+        Audio alerts play on the server host machine, not in your browser.
+      </p>
       <ToggleField
         label="Enabled"
         description="Play sounds on session status changes"
@@ -81,6 +81,6 @@ export function SoundSettings({ settings, onSaveField, onUpdate }: Props) {
           />
         </>
       )}
-    </CollapsibleSection>
+    </div>
   );
 }

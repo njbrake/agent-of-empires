@@ -1,4 +1,4 @@
-import { CollapsibleSection, NumberField, ToggleField } from "./FormFields";
+import { NumberField, ToggleField } from "./FormFields";
 
 interface Props {
   settings: Record<string, unknown>;
@@ -15,7 +15,7 @@ export function UpdateSettings({ settings, onSaveField, onUpdate }: Props) {
   };
 
   return (
-    <CollapsibleSection title="Updates">
+    <div className="space-y-4">
       <ToggleField
         label="Check for updates"
         description="Periodically check for new versions"
@@ -40,6 +40,6 @@ export function UpdateSettings({ settings, onSaveField, onUpdate }: Props) {
         checked={(updates.notify_in_cli as boolean) ?? true}
         onChange={(v) => save("notify_in_cli", v)}
       />
-    </CollapsibleSection>
+    </div>
   );
 }

@@ -1,4 +1,4 @@
-import { CollapsibleSection, SelectField } from "./FormFields";
+import { SelectField } from "./FormFields";
 
 interface Props {
   settings: Record<string, unknown>;
@@ -21,10 +21,10 @@ export function TmuxSettings({ settings, onSaveField, onUpdate }: Props) {
   ];
 
   return (
-    <CollapsibleSection
-      title="Tmux"
-      subtitle="These settings apply to the TUI (local tmux sessions), not the web dashboard."
-    >
+    <div className="space-y-4">
+      <p className="text-xs text-text-dim">
+        These settings apply to the TUI (local tmux sessions), not the web dashboard.
+      </p>
       <SelectField
         label="Status bar"
         description="Show tmux status bar in sessions"
@@ -39,6 +39,6 @@ export function TmuxSettings({ settings, onSaveField, onUpdate }: Props) {
         onChange={(v) => save("mouse", v)}
         options={modeOptions}
       />
-    </CollapsibleSection>
+    </div>
   );
 }
