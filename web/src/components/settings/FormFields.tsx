@@ -109,6 +109,17 @@ export function TextField({
   mono?: boolean;
   multiline?: boolean;
 }) {
+  const [local, setLocal] = useState(value);
+  const [focused, setFocused] = useState(false);
+
+  // Sync from parent when not focused (external updates)
+  if (!focused && local !== value) setLocal(value);
+
+  const commit = () => {
+    if (local !== value) onChange(local);
+    setFocused(false);
+  };
+
   const cls = `w-full bg-surface-900 border border-surface-700 rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none ${mono ? "font-mono" : ""}`;
   return (
     <div>
@@ -118,8 +129,11 @@ export function TextField({
       )}
       {multiline ? (
         <textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
+          value={local}
+          onChange={(e) => setLocal(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commit(); } }}
           placeholder={placeholder}
           rows={3}
           className={cls + " resize-y"}
@@ -127,8 +141,11 @@ export function TextField({
       ) : (
         <input
           type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
+          value={local}
+          onChange={(e) => setLocal(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
           placeholder={placeholder}
           className={cls}
         />
@@ -186,6 +203,17 @@ export function NumberField({
   min?: number;
   max?: number;
 }) {
+  const [local, setLocal] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+
+  if (!focused && local !== String(value)) setLocal(String(value));
+
+  const commit = () => {
+    const n = Number(local);
+    if (!isNaN(n) && n !== value) onChange(n);
+    setFocused(false);
+  };
+
   return (
     <div>
       <label className="block text-sm text-text-dim mb-1">{label}</label>
@@ -194,11 +222,11 @@ export function NumberField({
       )}
       <input
         type="number"
-        value={value}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          if (!isNaN(n)) onChange(n);
-        }}
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
         min={min}
         max={max}
         className="w-full bg-surface-900 border border-surface-700 rounded-md px-3 py-2 text-sm text-text-primary focus:border-brand-600 focus:outline-none"
