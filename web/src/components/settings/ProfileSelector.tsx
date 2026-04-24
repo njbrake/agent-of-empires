@@ -123,7 +123,7 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
           <option value="">Global</option>
           {profiles.map((p) => (
             <option key={p.name} value={p.name}>
-              {p.name}{p.is_default ? " (active)" : ""}
+              {p.name}
             </option>
           ))}
         </select>
