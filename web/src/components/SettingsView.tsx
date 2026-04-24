@@ -394,6 +394,12 @@ export function SettingsView({ onClose }: Props) {
         {saveError && (
           <span className="ml-2 text-xs text-red-400">{saveError}</span>
         )}
+        <div className="ml-auto">
+          <ProfileSelector
+            selectedProfile={selectedProfile}
+            onSelect={setSelectedProfile}
+          />
+        </div>
       </div>
 
       {/* Mobile tabs (horizontal scroll) */}
@@ -437,12 +443,6 @@ export function SettingsView({ onClose }: Props) {
         {/* Content area */}
         <div className="flex-1 overflow-y-auto">
           <div className="p-6 max-w-2xl mx-auto space-y-5">
-            {/* Profile selector + tab heading */}
-            <ProfileSelector
-              selectedProfile={selectedProfile}
-              onSelect={setSelectedProfile}
-            />
-
             <h2 className="text-lg font-semibold text-text-bright">{currentTabLabel}</h2>
 
             {renderTabContent()}

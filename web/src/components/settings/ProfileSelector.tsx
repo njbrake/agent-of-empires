@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createProfile,
   deleteProfile,
@@ -19,6 +19,7 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
     fetchProfiles().then(setProfiles);
@@ -27,6 +28,18 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Close panel on outside click
+  useEffect(() => {
+    if (!creating && !renaming) return;
+    const handler = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        closeInput();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [creating, renaming]);
 
   const activeProfile = profiles.find((p) => p.is_default);
 
@@ -40,39 +53,21 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   const handleCreate = async () => {
     const trimmed = inputValue.trim();
     const err = validateName(trimmed);
-    if (err) {
-      setError(err);
-      return;
-    }
+    if (err) { setError(err); return; }
     const ok = await createProfile(trimmed);
-    if (ok) {
-      closeInput();
-      load();
-    } else {
-      setError("Failed to create profile");
-    }
+    if (ok) { closeInput(); load(); }
+    else setError("Failed to create profile");
   };
 
   const handleRename = async () => {
     if (!selectedProfile) return;
     const trimmed = inputValue.trim();
-    if (trimmed === selectedProfile) {
-      closeInput();
-      return;
-    }
+    if (trimmed === selectedProfile) { closeInput(); return; }
     const err = validateName(trimmed);
-    if (err) {
-      setError(err);
-      return;
-    }
+    if (err) { setError(err); return; }
     const ok = await renameProfile(selectedProfile, trimmed);
-    if (ok) {
-      onSelect(trimmed);
-      closeInput();
-      load();
-    } else {
-      setError("Failed to rename profile");
-    }
+    if (ok) { onSelect(trimmed); closeInput(); load(); }
+    else setError("Failed to rename profile");
   };
 
   const handleDelete = async (name: string) => {
@@ -117,19 +112,18 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   };
 
   return (
-    <div className="border border-surface-700/40 rounded-lg px-4 py-3 bg-surface-850">
-      <div className="flex items-center gap-3">
-        <label className="text-sm text-text-dim shrink-0">Profile</label>
+    <div className="relative" ref={panelRef}>
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-text-dim shrink-0">Profile</label>
         <select
           value={selectedProfile ?? ""}
           onChange={(e) => onSelect(e.target.value || null)}
-          className="flex-1 bg-surface-900 border border-surface-700 rounded-md px-2 py-1.5 text-sm text-text-primary focus:border-brand-600 focus:outline-none"
+          className="bg-surface-900 border border-surface-700 rounded-md px-2 py-1 text-xs text-text-primary focus:border-brand-600 focus:outline-none w-36"
         >
-          <option value="">Global (all profiles)</option>
+          <option value="">Global</option>
           {profiles.map((p) => (
             <option key={p.name} value={p.name}>
-              {p.name}
-              {p.is_default ? " (active)" : ""}
+              {p.name}{p.is_default ? " (active)" : ""}
             </option>
           ))}
         </select>
@@ -137,69 +131,63 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
           onClick={startCreate}
           className="text-xs text-brand-500 hover:text-brand-400 cursor-pointer shrink-0"
         >
-          + New
+          +
         </button>
+        {selectedProfile && !creating && !renaming && (
+          <>
+            <button
+              onClick={startRename}
+              className="text-xs text-text-dim hover:text-text-primary cursor-pointer"
+              title="Rename profile"
+            >
+              Rename
+            </button>
+            {(!activeProfile || activeProfile.name !== selectedProfile) && (
+              <>
+                <button
+                  onClick={() => handleSetDefault(selectedProfile)}
+                  className="text-xs text-text-dim hover:text-text-primary cursor-pointer"
+                  title="Set as default profile"
+                >
+                  Default
+                </button>
+                <button
+                  onClick={() => handleDelete(selectedProfile)}
+                  className="text-xs text-text-dim hover:text-red-400 cursor-pointer"
+                  title="Delete profile"
+                >
+                  Delete
+                </button>
+              </>
+            )}
+          </>
+        )}
       </div>
 
+      {/* Inline create/rename input */}
       {(creating || renaming) && (
-        <div className="mt-2 flex gap-2">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => {
-              setInputValue(e.target.value);
-              setError(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submitInput();
-              if (e.key === "Escape") closeInput();
-            }}
-            placeholder={creating ? "Profile name" : "New name"}
-            autoFocus
-            className={`flex-1 bg-surface-900 border rounded-md px-2 py-1.5 text-sm text-text-primary focus:outline-none ${error ? "border-red-500" : "border-surface-700 focus:border-brand-600"}`}
-          />
-          <button
-            onClick={submitInput}
-            className="px-3 py-1.5 rounded-md bg-brand-600 hover:bg-brand-500 text-sm font-medium text-surface-950 cursor-pointer"
-          >
-            {creating ? "Create" : "Rename"}
-          </button>
-          <button
-            onClick={closeInput}
-            className="px-2 py-1.5 text-sm text-text-dim hover:text-text-primary cursor-pointer"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-      {error && <div className="text-xs text-red-400 mt-1">{error}</div>}
-
-      {selectedProfile && !creating && !renaming && (
-        <div className="mt-2 flex gap-2 text-xs">
-          <button
-            onClick={startRename}
-            className="text-text-dim hover:text-text-primary cursor-pointer"
-          >
-            Rename
-          </button>
-          {!activeProfile || activeProfile.name !== selectedProfile ? (
-            <>
-              <span className="text-surface-700">|</span>
-              <button
-                onClick={() => handleSetDefault(selectedProfile)}
-                className="text-text-dim hover:text-text-primary cursor-pointer"
-              >
-                Set as default
-              </button>
-              <span className="text-surface-700">|</span>
-              <button
-                onClick={() => handleDelete(selectedProfile)}
-                className="text-text-dim hover:text-red-400 cursor-pointer"
-              >
-                Delete
-              </button>
-            </>
-          ) : null}
+        <div className="absolute right-0 top-full mt-1 z-10 bg-surface-850 border border-surface-700 rounded-lg p-3 shadow-lg min-w-[280px]">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => { setInputValue(e.target.value); setError(null); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitInput();
+                if (e.key === "Escape") closeInput();
+              }}
+              placeholder={creating ? "Profile name" : "New name"}
+              autoFocus
+              className={`flex-1 bg-surface-900 border rounded-md px-2 py-1.5 text-sm text-text-primary focus:outline-none ${error ? "border-red-500" : "border-surface-700 focus:border-brand-600"}`}
+            />
+            <button
+              onClick={submitInput}
+              className="px-3 py-1.5 rounded-md bg-brand-600 hover:bg-brand-500 text-xs font-medium text-surface-950 cursor-pointer"
+            >
+              {creating ? "Create" : "Rename"}
+            </button>
+          </div>
+          {error && <div className="text-xs text-red-400 mt-1">{error}</div>}
         </div>
       )}
     </div>
