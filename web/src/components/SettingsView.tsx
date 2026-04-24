@@ -436,7 +436,7 @@ export function SettingsView({ onClose }: Props) {
 
         {/* Content area */}
         <div className="flex-1 overflow-y-auto">
-          <div className="p-6 max-w-2xl space-y-5">
+          <div className="p-6 max-w-2xl mx-auto space-y-5">
             {/* Profile selector + tab heading */}
             <ProfileSelector
               selectedProfile={selectedProfile}
