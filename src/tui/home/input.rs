@@ -1039,6 +1039,7 @@ impl HomeView {
 
     pub(super) fn update_selected(&mut self) {
         if let Some(item) = self.flat_items.get(self.cursor) {
+            let prev_session = self.selected_session.clone();
             match item {
                 Item::Session { id, .. } => {
                     self.selected_session = Some(id.clone());
@@ -1050,6 +1051,9 @@ impl HomeView {
                     self.selected_group = Some(path.clone());
                     self.selected_group_profile = self.profile_for_cursor(self.cursor);
                 }
+            }
+            if self.selected_session != prev_session {
+                self.preview_scroll_offset = 0;
             }
         }
     }
@@ -1112,6 +1116,47 @@ impl HomeView {
         if let Err(e) = self.save() {
             tracing::error!("Failed to save group state: {}", e);
         }
+    }
+
+    /// Scroll the preview pane up by one mouse-wheel step. Returns `true` if
+    /// the UI should redraw. When the diff view is open, scroll the diff
+    /// content instead.
+    pub fn handle_scroll_up(&mut self) -> bool {
+        const STEP: u16 = 3;
+        const MAX_PREVIEW_SCROLL: u16 = 2000;
+        if let Some(ref mut diff) = self.diff_view {
+            diff.scroll_up(STEP);
+            return true;
+        }
+        if self.selected_session.is_none() || self.has_dialog() {
+            return false;
+        }
+        let new_offset = self.preview_scroll_offset.saturating_add(STEP);
+        let clamped = new_offset.min(MAX_PREVIEW_SCROLL);
+        if clamped == self.preview_scroll_offset {
+            return false;
+        }
+        self.preview_scroll_offset = clamped;
+        true
+    }
+
+    /// Scroll the preview pane down by one mouse-wheel step. Returns `true`
+    /// if the UI should redraw. When the diff view is open, scroll the diff
+    /// content instead.
+    pub fn handle_scroll_down(&mut self) -> bool {
+        const STEP: u16 = 3;
+        if let Some(ref mut diff) = self.diff_view {
+            diff.scroll_down(STEP);
+            return true;
+        }
+        if self.selected_session.is_none() || self.has_dialog() {
+            return false;
+        }
+        if self.preview_scroll_offset == 0 {
+            return false;
+        }
+        self.preview_scroll_offset = self.preview_scroll_offset.saturating_sub(STEP);
+        true
     }
 
     /// Route a bracketed paste event to the active text input dialog.
@@ -1279,10 +1324,7 @@ impl HomeView {
         let has_hooks = hooks
             .as_ref()
             .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
-        let has_worktree = data
-            .worktree_branch
-            .as_ref()
-            .is_some_and(|b| !b.is_empty());
+        let has_worktree = data.worktree_branch.as_ref().is_some_and(|b| !b.is_empty());
 
         if data.sandbox || has_hooks || has_worktree {
             self.request_creation(data, hooks);

@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
 };
 use futures_util::StreamExt;
 use ratatui::prelude::*;
@@ -113,6 +113,7 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
+            DisableMouseCapture,
             crossterm::cursor::Show
         )?;
         std::io::Write::flush(terminal.backend_mut())?;
@@ -133,6 +134,7 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::EnterAlternateScreen,
             EnableBracketedPaste,
+            EnableMouseCapture,
             crossterm::cursor::Hide
         )?;
         std::io::Write::flush(terminal.backend_mut())?;
@@ -248,7 +250,17 @@ impl App {
                             }
                             continue;
                         }
-                        Some(Ok(Event::Mouse(_))) => continue,
+                        Some(Ok(Event::Mouse(mouse))) => {
+                            let handled = match mouse.kind {
+                                MouseEventKind::ScrollUp => self.home.handle_scroll_up(),
+                                MouseEventKind::ScrollDown => self.home.handle_scroll_down(),
+                                _ => false,
+                            };
+                            if handled {
+                                terminal.draw(|f| self.render(f))?;
+                            }
+                            continue;
+                        }
                         Some(Ok(Event::Paste(text))) => {
                             self.home.handle_paste(&text);
 

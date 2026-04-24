@@ -23,6 +23,14 @@ fn session_offset(created_at: &DateTime<Utc>) -> usize {
     created_at.timestamp_millis() as usize
 }
 
+/// Number of pane lines to capture for the preview, accounting for the user's
+/// scrollback offset. A small buffer is added so moderate scrolls don't force a
+/// fresh capture on every wheel tick.
+fn capture_lines_for(height: u16, scroll_offset: u16) -> usize {
+    const BUFFER: u16 = 20;
+    height.saturating_add(scroll_offset).saturating_add(BUFFER) as usize
+}
+
 fn spinner_running(created_at: &DateTime<Utc>) -> &'static str {
     spinners::dots()
         .set_interval(Duration::from_millis(220))
@@ -494,6 +502,7 @@ impl HomeView {
     fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250; // Refresh preview 4x/second max
 
+        let scroll_offset = self.preview_scroll_offset;
         let session_changed = match &self.selected_session {
             Some(id) => self.preview_cache.session_id.as_ref() != Some(id),
             None => false,
@@ -501,19 +510,22 @@ impl HomeView {
         let dims_changed = self.preview_cache.dimensions != (width, height);
         let timer_expired =
             self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS;
+        let offset_changed = self.preview_cache.scroll_offset != scroll_offset;
 
-        let needs_refresh =
-            self.selected_session.is_some() && (session_changed || dims_changed || timer_expired);
+        let needs_refresh = self.selected_session.is_some()
+            && (session_changed || dims_changed || timer_expired || offset_changed);
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
                 if let Some(inst) = self.get_instance(id) {
+                    let capture_lines = capture_lines_for(height, scroll_offset);
                     self.preview_cache.content = inst
-                        .capture_output_with_size(height as usize, width, height)
+                        .capture_output_with_size(capture_lines, width, height)
                         .unwrap_or_default();
                     self.preview_cache.session_id = Some(id.clone());
                     self.preview_cache.dimensions = (width, height);
                     self.preview_cache.last_refresh = Instant::now();
+                    self.preview_cache.scroll_offset = scroll_offset;
                 }
             }
         }
@@ -523,10 +535,12 @@ impl HomeView {
     fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
+        let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
             Some(id) => {
                 self.terminal_preview_cache.session_id.as_ref() != Some(id)
                     || self.terminal_preview_cache.dimensions != (width, height)
+                    || self.terminal_preview_cache.scroll_offset != scroll_offset
                     || self
                         .terminal_preview_cache
                         .last_refresh
@@ -540,13 +554,15 @@ impl HomeView {
         if needs_refresh {
             if let Some(id) = &self.selected_session {
                 if let Some(inst) = self.get_instance(id) {
+                    let capture_lines = capture_lines_for(height, scroll_offset);
                     self.terminal_preview_cache.content = inst
                         .terminal_tmux_session()
-                        .and_then(|s| s.capture_pane(height as usize))
+                        .and_then(|s| s.capture_pane(capture_lines))
                         .unwrap_or_default();
                     self.terminal_preview_cache.session_id = Some(id.clone());
                     self.terminal_preview_cache.dimensions = (width, height);
                     self.terminal_preview_cache.last_refresh = Instant::now();
+                    self.terminal_preview_cache.scroll_offset = scroll_offset;
                 }
             }
         }
@@ -556,10 +572,12 @@ impl HomeView {
     fn refresh_container_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
+        let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
             Some(id) => {
                 self.container_terminal_preview_cache.session_id.as_ref() != Some(id)
                     || self.container_terminal_preview_cache.dimensions != (width, height)
+                    || self.container_terminal_preview_cache.scroll_offset != scroll_offset
                     || self
                         .container_terminal_preview_cache
                         .last_refresh
@@ -573,13 +591,15 @@ impl HomeView {
         if needs_refresh {
             if let Some(id) = &self.selected_session {
                 if let Some(inst) = self.get_instance(id) {
+                    let capture_lines = capture_lines_for(height, scroll_offset);
                     self.container_terminal_preview_cache.content = inst
                         .container_terminal_tmux_session()
-                        .and_then(|s| s.capture_pane(height as usize))
+                        .and_then(|s| s.capture_pane(capture_lines))
                         .unwrap_or_default();
                     self.container_terminal_preview_cache.session_id = Some(id.clone());
                     self.container_terminal_preview_cache.dimensions = (width, height);
                     self.container_terminal_preview_cache.last_refresh = Instant::now();
+                    self.container_terminal_preview_cache.scroll_offset = scroll_offset;
                 }
             }
         }
@@ -627,6 +647,7 @@ impl HomeView {
                                 inner,
                                 inst,
                                 &self.preview_cache.content,
+                                self.preview_scroll_offset,
                                 theme,
                             );
                         }
@@ -695,6 +716,7 @@ impl HomeView {
                             inst,
                             terminal_running,
                             preview_content,
+                            self.preview_scroll_offset,
                             theme,
                         );
                     }
@@ -985,5 +1007,20 @@ mod tests {
     fn format_relative_age_months() {
         let ts = Utc::now() - chrono::Duration::days(60);
         assert_eq!(format_relative_age(Some(ts)), "2mo");
+    }
+
+    #[test]
+    fn capture_lines_for_adds_buffer_to_height() {
+        assert_eq!(capture_lines_for(30, 0), 50);
+    }
+
+    #[test]
+    fn capture_lines_for_extends_by_scroll_offset() {
+        assert_eq!(capture_lines_for(30, 200), 250);
+    }
+
+    #[test]
+    fn capture_lines_for_saturates_instead_of_overflowing() {
+        assert_eq!(capture_lines_for(u16::MAX, u16::MAX), u16::MAX as usize);
     }
 }

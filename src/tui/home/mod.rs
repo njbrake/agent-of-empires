@@ -82,6 +82,9 @@ pub(super) struct PreviewCache {
     pub(super) content: String,
     pub(super) last_refresh: Instant,
     pub(super) dimensions: (u16, u16),
+    /// Scroll offset the cache was captured at. Used to invalidate the cache
+    /// when the user scrolls past the currently captured history window.
+    pub(super) scroll_offset: u16,
 }
 
 impl Default for PreviewCache {
@@ -91,6 +94,7 @@ impl Default for PreviewCache {
             content: String::new(),
             last_refresh: Instant::now(),
             dimensions: (0, 0),
+            scroll_offset: 0,
         }
     }
 }
@@ -208,6 +212,10 @@ pub struct HomeView {
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
     pub(super) container_terminal_preview_cache: PreviewCache,
+
+    /// Mouse wheel offset for the preview pane, in lines back from the bottom.
+    /// Reset to 0 whenever the selected session changes.
+    pub(super) preview_scroll_offset: u16,
 
     // Terminal mode for sandboxed sessions (per-session, ephemeral)
     pub(super) terminal_modes: HashMap<String, TerminalMode>,
@@ -360,6 +368,7 @@ impl HomeView {
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
+            preview_scroll_offset: 0,
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
@@ -1064,6 +1073,7 @@ impl HomeView {
         self.preview_cache = PreviewCache::default();
         self.terminal_preview_cache = PreviewCache::default();
         self.container_terminal_preview_cache = PreviewCache::default();
+        self.preview_scroll_offset = 0;
         // Clear search since match indices are invalid with new flat_items
         if self.search_active {
             self.search_active = false;
