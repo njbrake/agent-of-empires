@@ -467,19 +467,21 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       <DisconnectBanner />
 
       <div className="flex flex-1 min-h-0">
-        <WorkspaceSidebar
-          groups={groups}
-          activeId={activeWorkspace?.id ?? null}
-          open={sidebarOpen}
-          onToggle={() => setSidebarOpen(false)}
-          onSelect={handleSelectWorkspace}
-          onToggleRepo={toggleRepoCollapsed}
-          onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
-          onCreateSession={handleCreateSession}
-          onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
-          onDeleteSession={handleDeleteSession}
-          readOnly={serverAbout?.read_only}
-        />
+        {!showSettings && (
+          <WorkspaceSidebar
+            groups={groups}
+            activeId={activeWorkspace?.id ?? null}
+            open={sidebarOpen}
+            onToggle={() => setSidebarOpen(false)}
+            onSelect={handleSelectWorkspace}
+            onToggleRepo={toggleRepoCollapsed}
+            onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
+            onCreateSession={handleCreateSession}
+            onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
+            onDeleteSession={handleDeleteSession}
+            readOnly={serverAbout?.read_only}
+          />
+        )}
 
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
           {renderContent()}
