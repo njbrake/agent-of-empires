@@ -1,6 +1,7 @@
 //! Input handling for HomeView
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
@@ -19,6 +20,22 @@ use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
 
 impl HomeView {
+    pub fn is_diff_open(&self) -> bool {
+        self.diff_view.is_some()
+    }
+
+    pub fn has_selected_session(&self) -> bool {
+        self.selected_session.is_some()
+    }
+
+    pub fn hit_preview(&self, col: u16, row: u16) -> bool {
+        self.preview_area.contains(Position::from((col, row)))
+    }
+
+    pub fn hit_diff(&self, col: u16, row: u16) -> bool {
+        self.diff_area.contains(Position::from((col, row)))
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
         // Handle unsaved changes confirmation for settings (shown over settings view)
         if self.settings_close_confirm {
