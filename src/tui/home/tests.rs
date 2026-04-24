@@ -2600,3 +2600,34 @@ fn test_cursor_follows_session_after_deletion() {
     );
     assert_eq!(env.view.cursor, 1);
 }
+
+#[test]
+#[serial]
+fn home_launches_on_default_view_mode_from_config() {
+    use crate::session::config::{save_config, Config};
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _storage = Storage::new("test").unwrap();
+
+    let mut config = Config::default();
+    config.app_state.has_seen_welcome = true; // avoid new-user Project group_by path
+    config.app_state.default_view_mode = Some(ViewMode::Terminal);
+    save_config(&config).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let view = HomeView::new(Some("test".to_string()), tools).unwrap();
+    assert_eq!(view.view_mode, ViewMode::Terminal);
+}
+
+#[test]
+#[serial]
+fn home_defaults_to_agent_when_config_unset() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _storage = Storage::new("test").unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let view = HomeView::new(Some("test".to_string()), tools).unwrap();
+    assert_eq!(view.view_mode, ViewMode::Agent);
+}

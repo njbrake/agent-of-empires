@@ -119,6 +119,15 @@ impl GroupByMode {
     }
 }
 
+/// Home-screen view mode: agent session list or paired terminal view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewMode {
+    #[default]
+    Agent,
+    Terminal,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppStateConfig {
     #[serde(default)]
@@ -144,6 +153,12 @@ pub struct AppStateConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_by: Option<GroupByMode>,
+
+    /// Launch view mode for the home screen. When unset, launches on the
+    /// agent list (existing behavior); set to "terminal" to land on the
+    /// paired-terminal view instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_view_mode: Option<ViewMode>,
 }
 
 /// Session-related configuration defaults
