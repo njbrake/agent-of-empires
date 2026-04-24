@@ -192,20 +192,25 @@ pub struct ProfileInfo {
 
 pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<ProfileInfo>> {
     let profiles = crate::session::list_profiles().unwrap_or_default();
-    let active = &state.profile;
+    // Treat empty profile (server launched without --profile) as "default"
+    let active = if state.profile.is_empty() {
+        "default"
+    } else {
+        &state.profile
+    };
     let mut result: Vec<ProfileInfo> = profiles
         .into_iter()
         .map(|name| {
-            let is_default = name == *active;
+            let is_default = name == active;
             ProfileInfo { name, is_default }
         })
         .collect();
     // Ensure the active profile appears even if list_profiles missed it
-    if !result.iter().any(|p| p.name == *active) {
+    if !active.is_empty() && !result.iter().any(|p| p.name == active) {
         result.insert(
             0,
             ProfileInfo {
-                name: active.clone(),
+                name: active.to_string(),
                 is_default: true,
             },
         );
