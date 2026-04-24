@@ -97,11 +97,6 @@ export function TopBar({
                 </span>
               </>
             )}
-            {activeSession?.tool && (
-              <span className="hidden md:inline text-text-dim truncate">
-                · {activeSession.tool}
-              </span>
-            )}
           </div>
         )}
       </div>
