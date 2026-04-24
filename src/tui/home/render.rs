@@ -944,6 +944,12 @@ impl HomeView {
             Span::styled(" ?", key_style),
             Span::styled(" Help ", desc_style),
             Span::styled("│", sep_style),
+            // Mouse capture is enabled globally, which disables the terminal's
+            // native drag-to-select. Surface the modifier-key workaround so
+            // users don't think copy-paste is broken.
+            Span::styled(" ⌥/Shift+drag", key_style),
+            Span::styled(" Select ", desc_style),
+            Span::styled("│", sep_style),
             Span::styled(if strict { " Q" } else { " q" }, key_style),
             Span::styled(" Quit", desc_style),
         ]);
