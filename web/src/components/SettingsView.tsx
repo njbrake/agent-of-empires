@@ -7,7 +7,6 @@ import {
   fetchProfiles,
   getSettings,
   setDefaultProfile,
-  updateSettings,
   updateProfileSettings,
 } from "../lib/api";
 import type { ProfileInfo } from "../lib/types";
@@ -60,12 +59,16 @@ export function SettingsView({ onClose }: Props) {
   );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
+  const [selectedProfile, setSelectedProfile] = useState("default");
   const [activeTab, setActiveTab] = useState<TabId>("session");
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
 
   useEffect(() => {
-    fetchProfiles().then(setProfiles);
+    fetchProfiles().then((p) => {
+      setProfiles(p);
+      const active = p.find((pr) => pr.is_default);
+      if (active) setSelectedProfile(active.name);
+    });
   }, []);
 
   const defaultProfile = profiles.find((p) => p.is_default)?.name ?? "default";
@@ -76,10 +79,7 @@ export function SettingsView({ onClose }: Props) {
   };
 
   const loadSettings = useCallback(() => {
-    const loader = selectedProfile
-      ? getSettings(selectedProfile)
-      : getSettings();
-    loader.then((s) => {
+    getSettings(selectedProfile).then((s) => {
       if (s) setSettings(s);
     });
   }, [selectedProfile]);
@@ -92,9 +92,7 @@ export function SettingsView({ onClose }: Props) {
     async (section: string, data: Record<string, unknown>) => {
       setSaving(true);
       setSaveError(null);
-      const ok = selectedProfile
-        ? await updateProfileSettings(selectedProfile, { [section]: data })
-        : await updateSettings({ [section]: data });
+      const ok = await updateProfileSettings(selectedProfile, { [section]: data });
       setSaving(false);
       if (!ok) {
         setSaveError("Failed to save, please try again");
@@ -122,13 +120,8 @@ export function SettingsView({ onClose }: Props) {
     field: string,
     value: unknown,
   ) => {
-    const updated = { ...sectionData, [field]: value };
-    updateLocal({ [section]: updated });
-    if (selectedProfile) {
-      sendSave(section, { [field]: value });
-    } else {
-      sendSave(section, updated);
-    }
+    updateLocal({ [section]: { ...sectionData, [field]: value } });
+    sendSave(section, { [field]: value });
   };
 
   const saveSubField = useCallback(

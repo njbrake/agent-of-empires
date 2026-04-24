@@ -8,8 +8,8 @@ import {
 import type { ProfileInfo } from "../../lib/types";
 
 interface Props {
-  selectedProfile: string | null;
-  onSelect: (profile: string | null) => void;
+  selectedProfile: string;
+  onSelect: (profile: string) => void;
 }
 
 export function ProfileSelector({ selectedProfile, onSelect }: Props) {
@@ -28,6 +28,8 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
     load();
   }, [load]);
 
+  const activeProfile = profiles.find((p) => p.is_default);
+
   // Close panel on outside click
   useEffect(() => {
     if (!creating && !renaming) return;
@@ -39,8 +41,6 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [creating, renaming]);
-
-  const activeProfile = profiles.find((p) => p.is_default);
 
   const validateName = (name: string): string | null => {
     if (!name) return "Name is required";
@@ -59,7 +59,6 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   };
 
   const handleRename = async () => {
-    if (!selectedProfile) return;
     const trimmed = inputValue.trim();
     if (trimmed === selectedProfile) { closeInput(); return; }
     const err = validateName(trimmed);
@@ -73,7 +72,9 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
     if (!confirm(`Delete profile "${name}"?`)) return;
     const ok = await deleteProfile(name);
     if (ok) {
-      if (selectedProfile === name) onSelect(null);
+      // Fall back to the default profile
+      const fallback = activeProfile?.name ?? "default";
+      if (selectedProfile === name) onSelect(fallback === name ? "default" : fallback);
       load();
     }
   };
@@ -86,7 +87,6 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
   };
 
   const startRename = () => {
-    if (!selectedProfile) return;
     setRenaming(true);
     setCreating(false);
     setInputValue(selectedProfile);
@@ -110,11 +110,10 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
       <div className="flex items-center gap-2">
         <label className="text-sm font-medium text-text-secondary shrink-0">Profile</label>
         <select
-          value={selectedProfile ?? ""}
-          onChange={(e) => onSelect(e.target.value || null)}
+          value={selectedProfile}
+          onChange={(e) => onSelect(e.target.value)}
           className="bg-surface-900 border border-surface-700 rounded-md px-2 py-1 text-sm text-text-primary focus:border-brand-600 focus:outline-none w-40"
         >
-          <option value="">Global</option>
           {profiles.map((p) => (
             <option key={p.name} value={p.name}>
               {p.name}
@@ -128,7 +127,7 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
         >
           + New
         </button>
-        {selectedProfile && !creating && !renaming && (
+        {!creating && !renaming && (
           <>
             <button
               onClick={startRename}
@@ -150,7 +149,6 @@ export function ProfileSelector({ selectedProfile, onSelect }: Props) {
         )}
       </div>
 
-      {/* Inline create/rename input */}
       {(creating || renaming) && (
         <div className="absolute right-0 top-full mt-1 z-10 bg-surface-850 border border-surface-700 rounded-lg p-3 shadow-lg min-w-[280px]">
           <div className="flex gap-2">
