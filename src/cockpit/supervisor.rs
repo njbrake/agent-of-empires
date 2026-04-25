@@ -144,6 +144,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             cwd,
             additional_dirs,
             provider_env: env,
+            socket_path: None,
         };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());

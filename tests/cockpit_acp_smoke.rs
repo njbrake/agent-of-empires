@@ -57,6 +57,7 @@ async fn shim_agent_round_trips_prompt() {
         cwd,
         additional_dirs: vec![],
         provider_env: vec![],
+        socket_path: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("smoke".into()))
@@ -176,6 +177,7 @@ async fn shim_agent_round_trips_approval_allow() {
         cwd,
         additional_dirs: vec![],
         provider_env: vec![],
+        socket_path: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("approve".into()))
@@ -258,6 +260,7 @@ async fn shim_agent_round_trips_fs() {
         cwd: cwd.clone(),
         additional_dirs: vec![],
         provider_env: vec![],
+        socket_path: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("fs".into()))
@@ -323,6 +326,7 @@ async fn shim_agent_round_trips_terminal() {
         cwd: cwd.clone(),
         additional_dirs: vec![],
         provider_env: vec![],
+        socket_path: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("term".into()))
@@ -360,5 +364,71 @@ async fn shim_agent_round_trips_terminal() {
     assert!(
         saw_terminal,
         "shim should echo terminal_output=...;exit=0; got {events:?}"
+    );
+}
+
+/// Socket-transport round-trip: aoe creates a unix socket, exports
+/// AOE_ACP_SOCKET, the shim connects to it, the same prompt round-trip
+/// works end-to-end. Validates the path used by sandboxed cockpit
+/// sessions where the agent runs inside a container with a mounted
+/// socket instead of inherited stdio.
+#[tokio::test]
+async fn shim_agent_round_trips_via_unix_socket() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let shim = shim_path();
+    if !shim.exists() {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path().to_path_buf();
+    let socket_path = temp.path().join("acp.sock");
+    let config = SpawnConfig {
+        spec: AgentSpec {
+            command: "node".into(),
+            args: vec![shim.to_string_lossy().to_string()],
+            description: "test shim (socket)".into(),
+            env_allowlist: None,
+        },
+        cwd: cwd.clone(),
+        additional_dirs: vec![],
+        provider_env: vec![],
+        socket_path: Some(socket_path.clone()),
+    };
+
+    let mut client = AcpClient::spawn(config, CockpitSessionId("sock".into()))
+        .await
+        .expect("spawn shim");
+
+    client
+        .send_prompt("hello over socket")
+        .await
+        .expect("send_prompt");
+
+    let mut events: Vec<Event> = Vec::new();
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < drain_deadline {
+        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
+            Ok(Some(event)) => {
+                let stopped = matches!(event, Event::Stopped { .. });
+                events.push(event);
+                if stopped {
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => continue,
+        }
+    }
+    let _ = client.shutdown().await;
+
+    let saw_received = events.iter().any(|e| match e {
+        Event::AgentMessageChunk { text } => text.contains("received: hello over socket"),
+        _ => false,
+    });
+    assert!(
+        saw_received,
+        "shim should echo received: hello over socket via the socket transport; got {events:?}"
     );
 }

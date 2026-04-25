@@ -67,6 +67,13 @@ pub struct SpawnConfig {
     pub additional_dirs: Vec<PathBuf>,
     /// Provider env vars to forward (after applying the agent's allowlist).
     pub provider_env: Vec<(String, String)>,
+    /// When set, aoe creates a unix socket at this path BEFORE spawning
+    /// the agent and exports `AOE_ACP_SOCKET=<path>` to the agent's env.
+    /// The agent connects to the socket instead of using stdio. Used
+    /// for sandboxed cockpit sessions: the same socket path is bind-
+    /// mounted into the container so the in-container agent can reach
+    /// the host-side aoe.
+    pub socket_path: Option<PathBuf>,
 }
 
 /// Commands sent from `AcpClient` methods to the background connection task.
@@ -136,9 +143,72 @@ impl AcpClient {
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
         let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
 
+        // Choose transport: if a socket path is set, bind a listener
+        // first, then spawn the agent with AOE_ACP_SOCKET pointing at
+        // it. Otherwise fall back to stdio over the child's stdin/out.
+        let socket_listener = if let Some(socket_path) = &config.socket_path {
+            // Remove any stale socket so bind succeeds.
+            let _ = tokio::fs::remove_file(socket_path).await;
+            if let Some(parent) = socket_path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| AcpError::Spawn(format!("socket parent: {e}")))?;
+            }
+            let listener = tokio::net::UnixListener::bind(socket_path)
+                .map_err(|e| AcpError::Spawn(format!("bind unix socket: {e}")))?;
+            Some(listener)
+        } else {
+            None
+        };
+
         let child = spawn_subprocess(&config)?;
         let child = Arc::new(Mutex::new(child));
 
+        match socket_listener {
+            None => Self::start_with_stdio(
+                config.cwd,
+                config.additional_dirs,
+                session_id,
+                child,
+                pending_responders,
+                cmd_tx,
+                cmd_rx,
+                event_tx,
+                event_rx,
+            )
+            .await,
+            Some(listener) => {
+                let socket_path = config.socket_path.clone();
+                Self::start_with_socket(
+                    config.cwd,
+                    config.additional_dirs,
+                    session_id,
+                    child,
+                    pending_responders,
+                    cmd_tx,
+                    cmd_rx,
+                    event_tx,
+                    event_rx,
+                    listener,
+                    socket_path,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_with_stdio(
+        cwd: PathBuf,
+        additional_dirs: Vec<PathBuf>,
+        session_id: CockpitSessionId,
+        child: Arc<Mutex<tokio::process::Child>>,
+        pending_responders: PendingResponders,
+        cmd_tx: mpsc::Sender<ClientCmd>,
+        cmd_rx: mpsc::Receiver<ClientCmd>,
+        event_tx: mpsc::Sender<Event>,
+        event_rx: mpsc::Receiver<Event>,
+    ) -> Result<Self, AcpError> {
         let (stdin, stdout) = {
             let mut guard = child.lock().await;
             let stdin = guard
@@ -153,14 +223,13 @@ impl AcpClient {
         };
 
         let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
-        let cwd = config.cwd.clone();
         let session_label = session_id.0.clone();
         let child_for_task = child.clone();
         let pending_for_task = pending_responders.clone();
 
         // Allowed fs roots: cwd + any explicit additional directories.
-        let mut roots = vec![config.cwd.clone()];
-        roots.extend(config.additional_dirs.clone());
+        let mut roots = vec![cwd.clone()];
+        roots.extend(additional_dirs);
         let resources = SessionResources {
             fs_policy: Arc::new(FsPolicy::new(roots)),
             terminals: TerminalManager::new(),
@@ -177,6 +246,65 @@ impl AcpClient {
             child_for_task,
             pending_for_task,
             resources,
+            None,
+        ));
+
+        Ok(Self {
+            session_id,
+            inbound: event_rx,
+            cmd_tx: Some(cmd_tx),
+            pending_responders,
+            _child: Some(child),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_with_socket(
+        cwd: PathBuf,
+        additional_dirs: Vec<PathBuf>,
+        session_id: CockpitSessionId,
+        child: Arc<Mutex<tokio::process::Child>>,
+        pending_responders: PendingResponders,
+        cmd_tx: mpsc::Sender<ClientCmd>,
+        cmd_rx: mpsc::Receiver<ClientCmd>,
+        event_tx: mpsc::Sender<Event>,
+        event_rx: mpsc::Receiver<Event>,
+        listener: tokio::net::UnixListener,
+        socket_path: Option<PathBuf>,
+    ) -> Result<Self, AcpError> {
+        // Wait for the agent to connect. Bound the wait so a wedged
+        // agent doesn't park spawn() forever.
+        let accept = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+            .await
+            .map_err(|_| AcpError::Spawn("agent did not connect to socket within 10s".into()))?
+            .map_err(|e| AcpError::Spawn(format!("accept: {e}")))?;
+        let (stream, _addr) = accept;
+        let (read_half, write_half) = stream.into_split();
+        let transport = ByteStreams::new(write_half.compat_write(), read_half.compat());
+
+        let mut roots = vec![cwd.clone()];
+        roots.extend(additional_dirs);
+        let resources = SessionResources {
+            fs_policy: Arc::new(FsPolicy::new(roots)),
+            terminals: TerminalManager::new(),
+            cwd: cwd.clone(),
+            label: session_id.0.clone(),
+        };
+
+        let session_label = session_id.0.clone();
+        let child_for_task = child.clone();
+        let pending_for_task = pending_responders.clone();
+
+        tokio::spawn(run_connection_task(
+            transport,
+            event_tx,
+            cmd_rx,
+            cwd,
+            session_label,
+            child_for_task,
+            pending_for_task,
+            resources,
+            socket_path,
         ));
 
         Ok(Self {
@@ -270,6 +398,13 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
             continue;
         }
         cmd.env(key, value);
+    }
+
+    // Socket-transport agents need to know where to connect. Pass the
+    // path via env so the agent's bootstrap can `connect()` to it
+    // instead of falling back to stdio.
+    if let Some(socket_path) = &config.socket_path {
+        cmd.env("AOE_ACP_SOCKET", socket_path);
     }
 
     cmd.spawn().map_err(|e| AcpError::Spawn(e.to_string()))
@@ -423,11 +558,8 @@ fn extract_diff_from_locations(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_connection_task(
-    transport: ByteStreams<
-        tokio_util::compat::Compat<tokio::process::ChildStdin>,
-        tokio_util::compat::Compat<tokio::process::ChildStdout>,
-    >,
+async fn run_connection_task<W, R>(
+    transport: ByteStreams<W, R>,
     event_tx: mpsc::Sender<Event>,
     cmd_rx: mpsc::Receiver<ClientCmd>,
     cwd: PathBuf,
@@ -435,7 +567,11 @@ async fn run_connection_task(
     child: Arc<Mutex<tokio::process::Child>>,
     pending_responders: PendingResponders,
     resources: SessionResources,
-) {
+    socket_path: Option<PathBuf>,
+) where
+    W: futures_util::AsyncWrite + Send + 'static,
+    R: futures_util::AsyncRead + Send + 'static,
+{
     let event_tx_for_notif = event_tx.clone();
     let event_tx_for_perm = event_tx.clone();
     let pending_for_perm = pending_responders.clone();
@@ -598,6 +734,10 @@ async fn run_connection_task(
     }
     let mut guard = child.lock().await;
     let _ = guard.kill().await;
+    // Clean up socket file on exit when this transport was socket-based.
+    if let Some(path) = socket_path {
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }
 
 async fn handle_read_text_file(

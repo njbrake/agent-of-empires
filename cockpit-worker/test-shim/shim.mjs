@@ -208,11 +208,42 @@ class ShimAgent {
   }
 }
 
-const input = Writable.toWeb(process.stdout);
-const output = Readable.toWeb(process.stdin);
-const stream = acp.ndJsonStream(input, output);
-new acp.AgentSideConnection((conn) => new ShimAgent(conn), stream);
+// AOE_ACP_SOCKET: when set, connect to that unix socket as the
+// transport instead of using stdio. Used by sandboxed cockpit sessions
+// (Docker bind-mounts the socket into the container) and for
+// integration tests that exercise the socket transport.
+import net from "node:net";
+import { Duplex } from "node:stream";
 
-process.stdin.on("end", () => process.exit(0));
-process.on("SIGTERM", () => process.exit(0));
-process.on("SIGINT", () => process.exit(0));
+async function bootstrap() {
+  let inputWeb;
+  let outputWeb;
+  if (process.env.AOE_ACP_SOCKET) {
+    const sock = await new Promise((resolve, reject) => {
+      const s = net.createConnection(process.env.AOE_ACP_SOCKET, () =>
+        resolve(s),
+      );
+      s.on("error", reject);
+    });
+    // The unix socket is a single bidirectional stream. acp.ndJsonStream
+    // expects (writable, readable) so we hand it the socket twice via
+    // Duplex.toWeb on both halves.
+    inputWeb = Duplex.toWeb(sock).writable;
+    outputWeb = Duplex.toWeb(sock).readable;
+    sock.on("end", () => process.exit(0));
+  } else {
+    inputWeb = Writable.toWeb(process.stdout);
+    outputWeb = Readable.toWeb(process.stdin);
+  }
+  const stream = acp.ndJsonStream(inputWeb, outputWeb);
+  new acp.AgentSideConnection((conn) => new ShimAgent(conn), stream);
+
+  process.stdin.on("end", () => process.exit(0));
+  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGINT", () => process.exit(0));
+}
+
+bootstrap().catch((err) => {
+  console.error("[shim] bootstrap failed:", err);
+  process.exit(1);
+});
