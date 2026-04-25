@@ -135,6 +135,50 @@ export function TerminalView({ session }: Props) {
     };
   }, [keyboardHeight, keyboardOpen, termRef]);
 
+  // wterm sometimes resets scrollTop=0 mid-session when its renderer
+  // redraws (observed on backspace), and its post-render scroll-to-
+  // bottom skips because _isScrolledToBottom() reads stale dimensions
+  // on the same task. Result: scrollHeight grows past clientHeight
+  // while scrollTop stays at 0, so the cursor falls below the visible
+  // region until the next keyboard open/close kicks the fix above.
+  //
+  // The reset fires a scroll event, so listen at document level
+  // (capture phase, since scroll events don't bubble) and resolve
+  // termRef.current.element at scroll time. State.connected can flip
+  // true before wterm finishes init, and the scroll's target may be a
+  // descendant of wterm's root, so attach-time element resolution
+  // misses both cases. The rAF debounce lets wterm's own scroll
+  // handler flip isInScrollback first when the user actually scrolls,
+  // so we don't fight legitimate scrollback entry.
+  const isInScrollbackRef = useRef(state.isInScrollback);
+  useEffect(() => {
+    isInScrollbackRef.current = state.isInScrollback;
+  }, [state.isInScrollback]);
+  useEffect(() => {
+    let raf = 0;
+    const onScroll = (e: Event) => {
+      const el = termRef.current?.element;
+      if (!el) return;
+      const target = e.target as Node | null;
+      if (target !== el && !(target && el.contains(target))) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (isInScrollbackRef.current) return;
+        const elNow = termRef.current?.element;
+        if (!elNow) return;
+        const max = Math.max(0, elNow.scrollHeight - elNow.clientHeight);
+        if (elNow.scrollTop < max - 1) {
+          elNow.scrollTop = elNow.scrollHeight;
+        }
+      });
+    };
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    return () => {
+      document.removeEventListener("scroll", onScroll, true);
+      cancelAnimationFrame(raf);
+    };
+  }, [termRef]);
+
   // On initial connect, auto-open the keyboard.
   useEffect(() => {
     if (!isMobile || !state.connected) return;
