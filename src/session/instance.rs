@@ -142,6 +142,24 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_on_error: Option<bool>,
 
+    /// Whether this session uses the ACP cockpit instead of a tmux pane.
+    /// When true, aoe spawns an ACP agent subprocess and renders structured
+    /// events natively; tmux integration is bypassed for this session.
+    #[cfg(feature = "cockpit")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cockpit_mode: bool,
+    /// Optional cockpit agent name (e.g., "claude-code", "aoe-agent",
+    /// "gemini"). When None, the cockpit picks the default for the
+    /// session's tool.
+    #[cfg(feature = "cockpit")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cockpit_agent: Option<String>,
+    /// Optional model id forwarded to aoe-agent (e.g., "claude-opus-4-7",
+    /// "gpt-5", "llama3.3:ollama").
+    #[cfg(feature = "cockpit")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cockpit_model: Option<String>,
+
     // Runtime state (not serialized)
     #[serde(skip)]
     pub last_error_check: Option<std::time::Instant>,
@@ -175,6 +193,12 @@ impl Instance {
             notify_on_waiting: None,
             notify_on_idle: None,
             notify_on_error: None,
+            #[cfg(feature = "cockpit")]
+            cockpit_mode: false,
+            #[cfg(feature = "cockpit")]
+            cockpit_agent: None,
+            #[cfg(feature = "cockpit")]
+            cockpit_model: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,

@@ -20,6 +20,7 @@ pub mod node;
 pub mod permissions;
 pub mod replay_buffer;
 pub mod state;
+pub mod supervisor;
 pub mod terminal_handler;
 
 pub use agent_registry::{AgentRegistry, AgentSpec};

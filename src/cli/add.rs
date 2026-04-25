@@ -332,6 +332,26 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         }
     }
 
+    // Cockpit mode: explicit --cockpit overrides config; --no-cockpit
+    // forces terminal mode; otherwise honor the config default for
+    // claude on supported platforms.
+    #[cfg(feature = "cockpit")]
+    {
+        let user_picked_cockpit = args.cockpit || args.agent.is_some();
+        let user_forced_terminal = args.no_cockpit;
+        instance.cockpit_mode = if user_forced_terminal {
+            false
+        } else if user_picked_cockpit {
+            true
+        } else {
+            config.cockpit.enabled
+                && config.cockpit.default_for_claude
+                && instance.tool == "claude"
+        };
+        instance.cockpit_agent = args.agent.clone();
+        instance.cockpit_model = args.model.clone();
+    }
+
     // Handle sandbox setup
     let use_sandbox = args.sandbox || args.sandbox_image.is_some();
 
