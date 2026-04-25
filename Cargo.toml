@@ -22,7 +22,7 @@ clap_complete = "4.5"
 ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 ansi-to-tui = "8.0"
-ratatui-textarea = "0.8"
+ratatui-textarea = "0.9"
 tui-input = "0.15"
 
 # Async runtime
