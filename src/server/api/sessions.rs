@@ -1532,3 +1532,225 @@ mod tests {
         assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
     }
 }
+
+// ============================================================================
+// Send + read-output endpoints
+//
+// Together these are the minimum primitive an external orchestrator needs to
+// run an aoe session as a controlled subagent: push a prompt in, read the
+// pane back. Mirrors what the TUI's send-message dialog and pane preview do,
+// without requiring keyboard or websocket attach.
+// ============================================================================
+
+#[derive(Deserialize)]
+pub struct SendMessageRequest {
+    pub message: String,
+}
+
+pub async fn send_message(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SendMessageRequest>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "read_only"})),
+        )
+            .into_response();
+    }
+
+    if req.message.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "message_empty"})),
+        )
+            .into_response();
+    }
+
+    let instances = state.instances.read().await;
+    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response();
+    };
+    drop(instances);
+
+    let tool = instance.tool.clone();
+    let message = req.message;
+    let send_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let tmux_session = instance.tmux_session()?;
+        if !tmux_session.exists() {
+            anyhow::bail!("session_not_running");
+        }
+        let delay = crate::agents::send_keys_enter_delay(&tool);
+        tmux_session.send_keys_with_delay(&message, delay)?;
+        Ok(())
+    })
+    .await;
+
+    match send_result {
+        Ok(Ok(())) => {
+            // Stamp last_accessed_at so the activity column reflects API-driven
+            // interaction the same way TUI/web interaction does.
+            let mut instances = state.instances.write().await;
+            if let Some(i) = instances.iter_mut().find(|i| i.id == id) {
+                i.touch_last_accessed();
+            }
+            // Best-effort persist; tmux send already succeeded so a save miss
+            // shouldn't fail the whole call.
+            let profile = state.profile.clone();
+            let snapshot: Vec<Instance> = instances.clone();
+            drop(instances);
+            tokio::task::spawn_blocking(move || {
+                if let Ok(storage) = Storage::new(&profile) {
+                    if let Err(e) = storage.save(&snapshot) {
+                        tracing::warn!("send_message: persist failed: {e}");
+                    }
+                }
+            });
+            (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response()
+        }
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            if msg.contains("session_not_running") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"error": "session_not_running"})),
+                )
+                    .into_response()
+            } else {
+                tracing::error!("send_message: tmux error for {id}: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "tmux_error"})),
+                )
+                    .into_response()
+            }
+        }
+        Err(e) => {
+            tracing::error!("send_message: blocking task panicked for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct OutputQuery {
+    #[serde(default = "default_output_lines")]
+    pub lines: u32,
+    #[serde(default = "default_output_format")]
+    pub format: String,
+}
+
+fn default_output_lines() -> u32 {
+    200
+}
+
+fn default_output_format() -> String {
+    "text".to_string()
+}
+
+pub async fn read_output(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<OutputQuery>,
+) -> impl IntoResponse {
+    let lines = (q.lines as usize).clamp(1, 2000);
+    let want_ansi = match q.format.as_str() {
+        "ansi" => true,
+        "text" => false,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "format_invalid",
+                    "allowed": ["text", "ansi"]
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let instances = state.instances.read().await;
+    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response();
+    };
+    drop(instances);
+
+    let capture_result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let tmux_session = instance.tmux_session()?;
+        if !tmux_session.exists() {
+            return Ok(String::new());
+        }
+        let raw = tmux_session.capture_pane(lines)?;
+        if want_ansi {
+            Ok(raw)
+        } else {
+            Ok(crate::tmux::utils::strip_ansi(&raw))
+        }
+    })
+    .await;
+
+    match capture_result {
+        Ok(Ok(content)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": id,
+                "lines": lines,
+                "format": q.format,
+                "content": content,
+            })),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("read_output: tmux error for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "tmux_error"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("read_output: blocking task panicked for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod send_output_tests {
+    use super::*;
+
+    #[test]
+    fn output_query_default_constants() {
+        assert_eq!(default_output_lines(), 200);
+        assert_eq!(default_output_format(), "text");
+    }
+
+    #[test]
+    fn send_message_request_requires_message_field() {
+        let r: Result<SendMessageRequest, _> = serde_json::from_str("{}");
+        assert!(r.is_err(), "missing message must reject");
+    }
+
+    #[test]
+    fn send_message_request_accepts_message() {
+        let r: SendMessageRequest = serde_json::from_str("{\"message\":\"hello\"}").unwrap();
+        assert_eq!(r.message, "hello");
+    }
+}
