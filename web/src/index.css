@@ -159,7 +159,7 @@ select:focus-visible,
 }
 
 /* wterm overrides: strip default chrome for embedded use.
-   `overflow: hidden` (not auto) — wterm's content matches the container,
+   `overflow: hidden` (not auto): wterm's content matches the container,
    and `auto` gives iOS Safari a target for native rubber-band on small
    touches that haven't yet crossed our gesture-lock threshold. */
 .wterm {

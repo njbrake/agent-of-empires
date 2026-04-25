@@ -300,7 +300,7 @@ export function useTerminal(
         // works) but a race with focus/visibility events could delay it.
         ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
         // Send initial PTY dimensions. Routed through sendResize so the
-        // scrollback gate applies even on reconnect — claude must not
+        // scrollback gate applies even on reconnect; claude must not
         // redraw while the user is reading scrollback.
         if (term.cols > 0 && term.rows > 0) {
           sendResize(term.cols, term.rows);
