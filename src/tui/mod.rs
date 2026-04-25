@@ -15,12 +15,41 @@ pub use app::*;
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    Command,
 };
 use ratatui::prelude::*;
 use std::io::{self, IsTerminal, Write};
+
+/// Mouse capture without drag tracking. Enables xterm modes 1000
+/// (button press/release, which delivers wheel events as button codes
+/// 64/65) and 1006 (SGR extended coordinates). Skipping modes 1002
+/// (button-motion) and 1003 (any-motion) leaves the terminal's native
+/// drag-to-select intact so users can still copy text from the TUI.
+///
+/// `DisableMouseCapture` cleans up the full mode set, so it's safe to
+/// keep using on teardown even though we never enabled 1002/1003/1015.
+pub(crate) struct ScrollOnlyMouseCapture;
+
+impl Command for ScrollOnlyMouseCapture {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1B[?1000h\x1B[?1006h")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        // The Windows console doesn't expose separate drag-tracking modes,
+        // so fall back to crossterm's full capture there.
+        crossterm::event::EnableMouseCapture.execute_winapi()
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        false
+    }
+}
 
 use crate::migrations;
 use crate::session::get_update_settings;
@@ -93,7 +122,7 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
         stdout,
         EnterAlternateScreen,
         EnableBracketedPaste,
-        EnableMouseCapture
+        ScrollOnlyMouseCapture
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;

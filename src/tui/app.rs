@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event, EventStream, KeyCode,
+    KeyEvent, KeyModifiers, MouseEventKind,
 };
 use futures_util::StreamExt;
 use ratatui::prelude::*;
@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
 use super::styles::Theme;
+use super::ScrollOnlyMouseCapture;
 use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
@@ -134,7 +135,7 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::EnterAlternateScreen,
             EnableBracketedPaste,
-            EnableMouseCapture,
+            ScrollOnlyMouseCapture,
             crossterm::cursor::Hide
         )?;
         std::io::Write::flush(terminal.backend_mut())?;
