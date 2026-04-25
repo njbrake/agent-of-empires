@@ -109,6 +109,38 @@ function PairedTerminal({
     };
   }, [keyboardHeight, keyboardOpen, termRef]);
 
+  // Pin scrollTop on wterm scrollTop=0 mid-session resets (same fix
+  // as TerminalView). See that file for the rationale; this mirror
+  // covers the side terminal pane in the diff viewer.
+  const isInScrollbackRef = useRef(state.isInScrollback);
+  useEffect(() => {
+    isInScrollbackRef.current = state.isInScrollback;
+  }, [state.isInScrollback]);
+  useEffect(() => {
+    let raf = 0;
+    const onScroll = (e: Event) => {
+      const el = termRef.current?.element;
+      if (!el) return;
+      const target = e.target as Node | null;
+      if (target !== el && !(target && el.contains(target))) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (isInScrollbackRef.current) return;
+        const elNow = termRef.current?.element;
+        if (!elNow) return;
+        const max = Math.max(0, elNow.scrollHeight - elNow.clientHeight);
+        if (elNow.scrollTop < max - 1) {
+          elNow.scrollTop = elNow.scrollHeight;
+        }
+      });
+    };
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    return () => {
+      document.removeEventListener("scroll", onScroll, true);
+      cancelAnimationFrame(raf);
+    };
+  }, [termRef]);
+
   const toggleKeyboard = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
