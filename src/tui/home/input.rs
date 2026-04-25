@@ -1,7 +1,6 @@
 //! Input handling for HomeView
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
@@ -20,22 +19,6 @@ use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
 
 impl HomeView {
-    pub fn is_diff_open(&self) -> bool {
-        self.diff_view.is_some()
-    }
-
-    pub fn has_selected_session(&self) -> bool {
-        self.selected_session.is_some()
-    }
-
-    pub fn hit_preview(&self, col: u16, row: u16) -> bool {
-        self.preview_area.contains(Position::from((col, row)))
-    }
-
-    pub fn hit_diff(&self, col: u16, row: u16) -> bool {
-        self.diff_area.contains(Position::from((col, row)))
-    }
-
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
         // Handle unsaved changes confirmation for settings (shown over settings view)
         if self.settings_close_confirm {
@@ -1010,6 +993,17 @@ impl HomeView {
             }
             KeyCode::Char('L') => {
                 self.grow_list();
+            }
+            // Shift+K / Shift+J scroll the preview pane (or diff view, when
+            // open) up and down. Bound to the shifted keys instead of bare
+            // j/k because j/k navigate the session list, and to a modifier
+            // instead of mouse-wheel because terminals refuse to do native
+            // drag-to-select while any mouse-tracking mode is enabled.
+            KeyCode::Char('K') => {
+                let _ = self.handle_scroll_up();
+            }
+            KeyCode::Char('J') => {
+                let _ = self.handle_scroll_down();
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 if let Some(Item::Group {

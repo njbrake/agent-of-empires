@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event, EventStream, KeyCode,
-    KeyEvent, KeyModifiers, MouseEventKind,
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyModifiers,
 };
 use futures_util::StreamExt;
 use ratatui::prelude::*;
@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
 use super::styles::Theme;
-use super::ScrollOnlyMouseCapture;
 use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
@@ -114,7 +113,6 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
-            DisableMouseCapture,
             crossterm::cursor::Show
         )?;
         std::io::Write::flush(terminal.backend_mut())?;
@@ -135,7 +133,6 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::EnterAlternateScreen,
             EnableBracketedPaste,
-            ScrollOnlyMouseCapture,
             crossterm::cursor::Hide
         )?;
         std::io::Write::flush(terminal.backend_mut())?;
@@ -248,24 +245,6 @@ impl App {
 
                             if self.should_quit {
                                 break;
-                            }
-                            continue;
-                        }
-                        Some(Ok(Event::Mouse(mouse))) => {
-                            let hit_scroll_target = if self.home.is_diff_open() {
-                                self.home.hit_diff(mouse.column, mouse.row)
-                            } else if self.home.has_selected_session() {
-                                self.home.hit_preview(mouse.column, mouse.row)
-                            } else {
-                                false
-                            };
-                            let handled = match mouse.kind {
-                                MouseEventKind::ScrollUp if hit_scroll_target => self.home.handle_scroll_up(),
-                                MouseEventKind::ScrollDown if hit_scroll_target => self.home.handle_scroll_down(),
-                                _ => false,
-                            };
-                            if handled {
-                                terminal.draw(|f| self.render(f))?;
                             }
                             continue;
                         }

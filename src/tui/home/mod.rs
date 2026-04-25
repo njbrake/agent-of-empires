@@ -10,7 +10,6 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use ratatui::prelude::Rect;
 use tui_input::Input;
 
 use crate::session::{
@@ -216,11 +215,9 @@ pub struct HomeView {
     pub(super) terminal_preview_cache: PreviewCache,
     pub(super) container_terminal_preview_cache: PreviewCache,
 
-    /// Mouse wheel offset for the preview pane, in lines back from the bottom.
+    /// Scroll offset for the preview pane, in lines back from the bottom.
     /// Reset to 0 whenever the selected session changes.
     pub(super) preview_scroll_offset: u16,
-    pub(super) preview_area: Rect,
-    pub(super) diff_area: Rect,
 
     // Terminal mode for sandboxed sessions (per-session, ephemeral)
     pub(super) terminal_modes: HashMap<String, TerminalMode>,
@@ -374,8 +371,6 @@ impl HomeView {
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
             preview_scroll_offset: 0,
-            preview_area: Rect::default(),
-            diff_area: Rect::default(),
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
