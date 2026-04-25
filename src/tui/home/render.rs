@@ -197,6 +197,11 @@ impl HomeView {
             profile_picker_dialog,
             send_message_dialog,
         );
+
+        #[cfg(feature = "cockpit")]
+        if let Some(dialog) = &self.cockpit_intro_dialog {
+            dialog.render(frame, area, theme);
+        }
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {

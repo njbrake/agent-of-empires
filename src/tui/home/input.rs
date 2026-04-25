@@ -162,6 +162,19 @@ impl HomeView {
             return None;
         }
 
+        #[cfg(feature = "cockpit")]
+        {
+            if let Some(dialog) = &mut self.cockpit_intro_dialog {
+                match dialog.handle_key(key) {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel | DialogResult::Submit(_) => {
+                        self.cockpit_intro_dialog = None;
+                    }
+                }
+                return None;
+            }
+        }
+
         if let Some(dialog) = &mut self.info_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}

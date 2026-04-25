@@ -86,6 +86,18 @@ impl App {
             save_config(&config)?;
         }
 
+        // Cockpit-feature first-run intro: show once, after the welcome
+        // and changelog flows. Tracked separately so it survives across
+        // version bumps that don't change cockpit semantics.
+        #[cfg(feature = "cockpit")]
+        {
+            if !config.app_state.has_seen_cockpit_intro {
+                home.show_cockpit_intro();
+                config.app_state.has_seen_cockpit_intro = true;
+                save_config(&config)?;
+            }
+        }
+
         Ok(Self {
             home,
             should_quit: false,

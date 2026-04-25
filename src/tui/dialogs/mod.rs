@@ -1,6 +1,8 @@
 //! TUI dialog components
 
 mod changelog;
+#[cfg(feature = "cockpit")]
+mod cockpit_intro;
 mod confirm;
 mod custom_instruction;
 mod delete_options;
@@ -18,6 +20,8 @@ mod serve;
 mod welcome;
 
 pub use changelog::ChangelogDialog;
+#[cfg(feature = "cockpit")]
+pub use cockpit_intro::CockpitIntroDialog;
 pub use confirm::ConfirmDialog;
 pub use custom_instruction::CustomInstructionDialog;
 pub use delete_options::{DeleteDialogConfig, DeleteOptions, UnifiedDeleteDialog};

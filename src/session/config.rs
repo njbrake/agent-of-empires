@@ -209,6 +209,13 @@ pub struct AppStateConfig {
     #[serde(default)]
     pub has_acknowledged_agent_hooks: bool,
 
+    /// True after the user has seen the one-time cockpit-mode intro
+    /// dialog. Only reached when the binary was built with the
+    /// cockpit feature.
+    #[cfg(feature = "cockpit")]
+    #[serde(default)]
+    pub has_seen_cockpit_intro: bool,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<SortOrder>,
 
