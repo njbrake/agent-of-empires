@@ -33,7 +33,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 
 - **Multi-agent support**: Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi.dev, and Factory Droid
 - **TUI app**: visual interface to create, monitor, and manage sessions
-- **Web app**: create, monitor, and control your agents from any browser, installable as a PWA ([guide](docs/guides/web-dashboard.md))
+- **Web app** (Beta, stabilization in progress): create, monitor, and control your agents from any browser, installable as a PWA ([guide](docs/guides/web-dashboard.md))
 - **CLI app**: create, monitor, and control agents from the command line (integrates with tools like OpenClaw)
 - **Remote access from your phone**: press `R` in the TUI to expose the web dashboard over HTTPS with QR + passphrase auth. Uses Tailscale Funnel when available (stable URL, installable PWAs keep working across restarts) or Cloudflare Tunnel as a fallback ([guide](docs/guides/remote-phone-access.md))
 - **Status detection**: see which agents are running, waiting for input, or idle
@@ -42,7 +42,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 - **Diff view**: review git changes and edit files without leaving the TUI
 - **Profiles**: separate workspaces for different projects or clients
 
-## Web Dashboard
+## Web Dashboard (Beta, stabilization in progress)
 
 Access your agents from any browser. The real agent terminal renders in the page; switch sessions, type into the terminal, and review diffs without leaving the tab. Press `R` in the TUI to start the server, or see the [web dashboard guide](docs/guides/web-dashboard.md) for details.
 
