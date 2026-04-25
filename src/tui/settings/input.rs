@@ -763,6 +763,52 @@ impl SettingsView {
             | FieldKey::WebNotifyOnWaiting
             | FieldKey::WebNotifyOnIdle
             | FieldKey::WebNotifyOnError => {}
+            // Cockpit overrides clear by setting the override field to None.
+            FieldKey::CockpitEnabled => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.enabled = None;
+                }
+            }
+            FieldKey::CockpitDefaultForClaude => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.default_for_claude = None;
+                }
+            }
+            FieldKey::CockpitDefaultAgent => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.default_agent = None;
+                }
+            }
+            FieldKey::CockpitApprovalTimeoutSecs => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.approval_timeout_secs = None;
+                }
+            }
+            FieldKey::CockpitDestructiveDoubleConfirm => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.destructive_require_double_confirm = None;
+                }
+            }
+            FieldKey::CockpitMaxConcurrentWorkers => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.max_concurrent_workers = None;
+                }
+            }
+            FieldKey::CockpitReplayEvents => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.replay_events = None;
+                }
+            }
+            FieldKey::CockpitReplayBytes => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.replay_bytes = None;
+                }
+            }
+            FieldKey::CockpitNodePath => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.node_path = None;
+                }
+            }
         }
 
         // Sync repo_config when in Repo scope

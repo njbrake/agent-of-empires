@@ -42,6 +42,34 @@ pub struct ProfileConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<crate::sound::SoundConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cockpit: Option<CockpitConfigOverride>,
+}
+
+/// Per-profile overrides for the [cockpit] config section. Every field
+/// is `Option<T>`; when `None`, the global value wins. The TUI's
+/// "Clear override" action sets the field to None.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CockpitConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_for_claude: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_timeout_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_require_double_confirm: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_workers: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_events: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -447,6 +475,36 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
 
     if let Some(ref sound_override) = profile.sound {
         crate::sound::apply_sound_overrides(&mut global.sound, sound_override);
+    }
+
+    if let Some(ref cockpit_override) = profile.cockpit {
+        if let Some(v) = cockpit_override.enabled {
+            global.cockpit.enabled = v;
+        }
+        if let Some(v) = cockpit_override.default_for_claude {
+            global.cockpit.default_for_claude = v;
+        }
+        if let Some(ref v) = cockpit_override.default_agent {
+            global.cockpit.default_agent = v.clone();
+        }
+        if let Some(v) = cockpit_override.approval_timeout_secs {
+            global.cockpit.approval_timeout_secs = v;
+        }
+        if let Some(v) = cockpit_override.destructive_require_double_confirm {
+            global.cockpit.destructive_require_double_confirm = v;
+        }
+        if let Some(v) = cockpit_override.max_concurrent_workers {
+            global.cockpit.max_concurrent_workers = v;
+        }
+        if let Some(v) = cockpit_override.replay_events {
+            global.cockpit.replay_events = v;
+        }
+        if let Some(v) = cockpit_override.replay_bytes {
+            global.cockpit.replay_bytes = v;
+        }
+        if let Some(ref v) = cockpit_override.node_path {
+            global.cockpit.node_path = v.clone();
+        }
     }
 
     global

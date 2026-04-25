@@ -23,6 +23,7 @@ pub enum SettingsCategory {
     Sound,
     Hooks,
     Web,
+    Cockpit,
 }
 
 impl SettingsCategory {
@@ -37,6 +38,7 @@ impl SettingsCategory {
             Self::Sound => "Sound",
             Self::Hooks => "Hooks",
             Self::Web => "Web",
+            Self::Cockpit => "Cockpit",
         }
     }
 }
@@ -101,6 +103,18 @@ pub enum FieldKey {
     WebNotifyOnWaiting,
     WebNotifyOnIdle,
     WebNotifyOnError,
+    // Cockpit (gated on the cockpit feature; the variants are always
+    // present in the enum so external callers don't have to cfg-gate
+    // their match arms)
+    CockpitEnabled,
+    CockpitDefaultForClaude,
+    CockpitDefaultAgent,
+    CockpitApprovalTimeoutSecs,
+    CockpitDestructiveDoubleConfirm,
+    CockpitMaxConcurrentWorkers,
+    CockpitReplayEvents,
+    CockpitReplayBytes,
+    CockpitNodePath,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -262,7 +276,143 @@ pub fn build_fields_for_category(
         SettingsCategory::Sound => build_sound_fields(scope, global, profile),
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
         SettingsCategory::Web => build_web_fields(scope, global, profile),
+        SettingsCategory::Cockpit => build_cockpit_fields(scope, global, profile),
     }
+}
+
+fn build_cockpit_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let p = profile.cockpit.as_ref();
+
+    let (enabled, enabled_override) =
+        resolve_value(scope, global.cockpit.enabled, p.and_then(|c| c.enabled));
+    let (default_for_claude, dfc_override) = resolve_value(
+        scope,
+        global.cockpit.default_for_claude,
+        p.and_then(|c| c.default_for_claude),
+    );
+    let (default_agent, da_override) = resolve_value(
+        scope,
+        global.cockpit.default_agent.clone(),
+        p.and_then(|c| c.default_agent.clone()),
+    );
+    let (approval_timeout_secs, ats_override) = resolve_value(
+        scope,
+        global.cockpit.approval_timeout_secs,
+        p.and_then(|c| c.approval_timeout_secs),
+    );
+    let (destructive_double, dd_override) = resolve_value(
+        scope,
+        global.cockpit.destructive_require_double_confirm,
+        p.and_then(|c| c.destructive_require_double_confirm),
+    );
+    let (max_workers, mw_override) = resolve_value(
+        scope,
+        global.cockpit.max_concurrent_workers,
+        p.and_then(|c| c.max_concurrent_workers),
+    );
+    let (replay_events, re_override) = resolve_value(
+        scope,
+        global.cockpit.replay_events,
+        p.and_then(|c| c.replay_events),
+    );
+    let (replay_bytes, rb_override) = resolve_value(
+        scope,
+        global.cockpit.replay_bytes,
+        p.and_then(|c| c.replay_bytes),
+    );
+    let (node_path, np_override) = resolve_value(
+        scope,
+        global.cockpit.node_path.clone(),
+        p.and_then(|c| c.node_path.clone()),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::CockpitEnabled,
+            label: "Cockpit enabled",
+            description: "Master switch for cockpit (ACP-based native agent rendering). When off, sessions use the terminal/PTY view even with --cockpit.",
+            value: FieldValue::Bool(enabled),
+            category: SettingsCategory::Cockpit,
+            has_override: enabled_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitDefaultForClaude,
+            label: "Default for Claude (mobile)",
+            description: "On mobile clients, default new Claude sessions to cockpit mode.",
+            value: FieldValue::Bool(default_for_claude),
+            category: SettingsCategory::Cockpit,
+            has_override: dfc_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitDefaultAgent,
+            label: "Default agent",
+            description: "Cockpit agent to use when --agent is not specified (e.g., aoe-agent, claude-code, gemini).",
+            value: FieldValue::Text(default_agent),
+            category: SettingsCategory::Cockpit,
+            has_override: da_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitApprovalTimeoutSecs,
+            label: "Approval timeout (s)",
+            description: "Seconds a pending tool-call approval waits before auto-cancelling.",
+            value: FieldValue::Number(u64::from(approval_timeout_secs)),
+            category: SettingsCategory::Cockpit,
+            has_override: ats_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitDestructiveDoubleConfirm,
+            label: "Double-confirm destructive",
+            description: "Require a second confirm step on mobile for destructive tool calls (rm -rf, git push --force, etc.).",
+            value: FieldValue::Bool(destructive_double),
+            category: SettingsCategory::Cockpit,
+            has_override: dd_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitMaxConcurrentWorkers,
+            label: "Max concurrent workers",
+            description: "Hard cap on simultaneously running cockpit agent subprocesses; additional sessions queue.",
+            value: FieldValue::Number(u64::from(max_workers)),
+            category: SettingsCategory::Cockpit,
+            has_override: mw_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitReplayEvents,
+            label: "Replay buffer events",
+            description: "Maximum number of cockpit events kept in the per-session replay buffer.",
+            value: FieldValue::Number(u64::from(replay_events)),
+            category: SettingsCategory::Cockpit,
+            has_override: re_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitReplayBytes,
+            label: "Replay buffer bytes",
+            description: "Maximum bytes of cockpit events kept in the per-session replay buffer.",
+            value: FieldValue::Number(replay_bytes),
+            category: SettingsCategory::Cockpit,
+            has_override: rb_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitNodePath,
+            label: "Node path",
+            description: "Override Node.js binary location. Empty -> auto-resolve via AOE_COCKPIT_NODE / PATH / bundled.",
+            value: FieldValue::Text(node_path),
+            category: SettingsCategory::Cockpit,
+            has_override: np_override,
+            inherited_display: None,
+        },
+    ]
 }
 
 fn build_web_fields(
@@ -1528,6 +1678,32 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::WebNotifyOnError, FieldValue::Bool(v)) => {
             config.web.notify_on_error = *v;
         }
+        // Cockpit
+        (FieldKey::CockpitEnabled, FieldValue::Bool(v)) => config.cockpit.enabled = *v,
+        (FieldKey::CockpitDefaultForClaude, FieldValue::Bool(v)) => {
+            config.cockpit.default_for_claude = *v
+        }
+        (FieldKey::CockpitDefaultAgent, FieldValue::Text(v)) => {
+            config.cockpit.default_agent = v.clone()
+        }
+        (FieldKey::CockpitApprovalTimeoutSecs, FieldValue::Number(v)) => {
+            config.cockpit.approval_timeout_secs = (*v).max(0) as u32
+        }
+        (FieldKey::CockpitDestructiveDoubleConfirm, FieldValue::Bool(v)) => {
+            config.cockpit.destructive_require_double_confirm = *v
+        }
+        (FieldKey::CockpitMaxConcurrentWorkers, FieldValue::Number(v)) => {
+            config.cockpit.max_concurrent_workers = (*v).max(1) as u32
+        }
+        (FieldKey::CockpitReplayEvents, FieldValue::Number(v)) => {
+            config.cockpit.replay_events = (*v).max(1) as u32
+        }
+        (FieldKey::CockpitReplayBytes, FieldValue::Number(v)) => {
+            config.cockpit.replay_bytes = (*v).max(1024) as u64
+        }
+        (FieldKey::CockpitNodePath, FieldValue::Text(v)) => {
+            config.cockpit.node_path = v.clone()
+        }
         _ => {}
     }
 }
@@ -1788,6 +1964,46 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::HookOnDestroy, FieldValue::List(v)) => {
             set_profile_override(v.clone(), &mut config.hooks, |s, val| s.on_destroy = val);
+        }
+        // Cockpit
+        (FieldKey::CockpitEnabled, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.cockpit, |s, val| s.enabled = val);
+        }
+        (FieldKey::CockpitDefaultForClaude, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.cockpit, |s, val| s.default_for_claude = val);
+        }
+        (FieldKey::CockpitDefaultAgent, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.cockpit, |s, val| {
+                s.default_agent = val
+            });
+        }
+        (FieldKey::CockpitApprovalTimeoutSecs, FieldValue::Number(v)) => {
+            set_profile_override((*v).max(0) as u32, &mut config.cockpit, |s, val| {
+                s.approval_timeout_secs = val
+            });
+        }
+        (FieldKey::CockpitDestructiveDoubleConfirm, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.cockpit, |s, val| {
+                s.destructive_require_double_confirm = val
+            });
+        }
+        (FieldKey::CockpitMaxConcurrentWorkers, FieldValue::Number(v)) => {
+            set_profile_override((*v).max(1) as u32, &mut config.cockpit, |s, val| {
+                s.max_concurrent_workers = val
+            });
+        }
+        (FieldKey::CockpitReplayEvents, FieldValue::Number(v)) => {
+            set_profile_override((*v).max(1) as u32, &mut config.cockpit, |s, val| {
+                s.replay_events = val
+            });
+        }
+        (FieldKey::CockpitReplayBytes, FieldValue::Number(v)) => {
+            set_profile_override((*v).max(1024) as u64, &mut config.cockpit, |s, val| {
+                s.replay_bytes = val
+            });
+        }
+        (FieldKey::CockpitNodePath, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.cockpit, |s, val| s.node_path = val);
         }
         _ => {}
     }
