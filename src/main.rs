@@ -111,6 +111,8 @@ async fn main() -> Result<()> {
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
         #[cfg(feature = "serve")]
         Some(Commands::Serve(args)) => cli::serve::run(&profile, args).await,
+        #[cfg(feature = "cockpit")]
+        Some(Commands::Cockpit { command }) => cli::cockpit::run(command),
         None => tui::run(&profile, debug_log_warning).await,
         _ => unreachable!(),
     }

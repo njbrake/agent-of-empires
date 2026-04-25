@@ -2,6 +2,8 @@
 
 pub mod add;
 pub mod agents;
+#[cfg(feature = "cockpit")]
+pub mod cockpit;
 pub mod definition;
 pub mod group;
 pub mod init;

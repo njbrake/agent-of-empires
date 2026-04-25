@@ -48,6 +48,76 @@ pub struct Config {
 
     #[serde(default)]
     pub web: WebConfig,
+
+    #[serde(default)]
+    pub cockpit: CockpitConfig,
+}
+
+/// Configuration for the cockpit (ACP-based native rendering of agent
+/// state). Defaults match the documented v4 design and v005 migration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CockpitConfig {
+    /// Master kill switch for cockpit mode. When false, every session
+    /// runs as plain tmux even if --cockpit is passed.
+    #[serde(default)]
+    pub enabled: bool,
+    /// On mobile viewports, default new Claude sessions to cockpit mode.
+    #[serde(default = "default_true")]
+    pub default_for_claude: bool,
+    /// The agent name to use when --agent is not specified.
+    #[serde(default = "default_agent")]
+    pub default_agent: String,
+    /// Approval timeout in seconds before a pending permission auto-cancels.
+    #[serde(default = "default_approval_timeout")]
+    pub approval_timeout_secs: u32,
+    /// Require a second confirm step on mobile for destructive tool calls.
+    #[serde(default = "default_true")]
+    pub destructive_require_double_confirm: bool,
+    /// Hard cap on simultaneously running agent worker subprocesses.
+    #[serde(default = "default_max_workers")]
+    pub max_concurrent_workers: u32,
+    /// Replay buffer event-count cap (per session).
+    #[serde(default = "default_replay_events")]
+    pub replay_events: u32,
+    /// Replay buffer byte cap (per session).
+    #[serde(default = "default_replay_bytes")]
+    pub replay_bytes: u64,
+    /// Optional path to the Node runtime used to spawn aoe-agent. If
+    /// empty, aoe resolves Node via PATH then bundled fallback.
+    #[serde(default)]
+    pub node_path: String,
+}
+
+impl Default for CockpitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_for_claude: true,
+            default_agent: default_agent(),
+            approval_timeout_secs: default_approval_timeout(),
+            destructive_require_double_confirm: true,
+            max_concurrent_workers: default_max_workers(),
+            replay_events: default_replay_events(),
+            replay_bytes: default_replay_bytes(),
+            node_path: String::new(),
+        }
+    }
+}
+
+fn default_agent() -> String {
+    "aoe-agent".to_string()
+}
+fn default_approval_timeout() -> u32 {
+    300
+}
+fn default_max_workers() -> u32 {
+    5
+}
+fn default_replay_events() -> u32 {
+    500
+}
+fn default_replay_bytes() -> u64 {
+    5_242_880
 }
 
 /// Session list sort order

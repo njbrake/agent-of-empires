@@ -7,6 +7,8 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
 use super::add::AddArgs;
+#[cfg(feature = "cockpit")]
+use super::cockpit::CockpitCommands;
 use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
@@ -113,6 +115,13 @@ pub enum Commands {
     /// Start a web dashboard for remote session access
     #[cfg(feature = "serve")]
     Serve(ServeArgs),
+
+    /// Cockpit (ACP-based native agent rendering) management.
+    #[cfg(feature = "cockpit")]
+    Cockpit {
+        #[command(subcommand)]
+        command: CockpitCommands,
+    },
 
     /// Uninstall Agent of Empires
     Uninstall(UninstallArgs),
