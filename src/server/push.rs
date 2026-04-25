@@ -597,7 +597,7 @@ async fn fire_due_pushes(
         let payload = super::push_send::PushPayload {
             title: title.to_string(),
             body,
-            url: format!("/?session={}", instance_id),
+            url: format!("/session/{}", instance_id),
             tag: format!("session-{}", instance_id),
             session_id: instance_id.clone(),
         };

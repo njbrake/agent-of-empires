@@ -59,16 +59,24 @@ const TABS = SIDEBAR.filter((s): s is { kind: "tab"; id: TabId; label: string } 
 
 interface Props {
   onClose: () => void;
+  tab: string | null;
+  onSelectTab: (tab: TabId) => void;
 }
 
-export function SettingsView({ onClose }: Props) {
+const TAB_IDS = new Set<TabId>(TABS.map((t) => t.id));
+
+function isTabId(value: unknown): value is TabId {
+  return typeof value === "string" && TAB_IDS.has(value as TabId);
+}
+
+export function SettingsView({ onClose, tab, onSelectTab }: Props) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(
     null,
   );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState("default");
-  const [activeTab, setActiveTab] = useState<TabId>("session");
+  const activeTab: TabId = isTabId(tab) ? tab : "session";
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
 
   useEffect(() => {
@@ -434,7 +442,7 @@ export function SettingsView({ onClose }: Props) {
             ) : (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => onSelectTab(item.id)}
                 className={`px-4 py-2.5 text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
                   activeTab === item.id
                     ? "text-brand-500 border-b-2 border-brand-500"
@@ -463,7 +471,7 @@ export function SettingsView({ onClose }: Props) {
             ) : (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => onSelectTab(item.id)}
                 className={`px-4 py-2 text-sm text-left cursor-pointer transition-colors ${
                   activeTab === item.id
                     ? "text-brand-500 bg-surface-800 border-r-2 border-brand-500"
