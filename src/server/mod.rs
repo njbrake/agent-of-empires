@@ -5,6 +5,8 @@
 
 pub mod api;
 pub mod auth;
+#[cfg(feature = "cockpit")]
+pub mod cockpit_ws;
 pub mod login;
 pub mod push;
 pub mod push_send;
@@ -23,6 +25,20 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::info;
 
 use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
+
+#[cfg(feature = "cockpit")]
+const COCKPIT_CHANNEL_CAPACITY: usize = 256;
+
+/// One frame on the per-AppState cockpit broadcast channel: the cockpit
+/// session id plus the serialised cockpit Event JSON. Subscribed
+/// WebSocket clients filter on the session id.
+#[cfg(feature = "cockpit")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CockpitBroadcastFrame {
+    pub session_id: String,
+    pub seq: u64,
+    pub event: serde_json::Value,
+}
 
 use crate::session::Instance;
 use crate::session::Storage;
@@ -211,6 +227,12 @@ pub struct AppState {
     /// Snapshot of the resolved WebConfig at startup. Consumed by the
     /// push consumer task to evaluate per-event-type defaults.
     pub web_config: crate::session::config::WebConfig,
+    /// Broadcasts cockpit events to subscribed WebSocket clients. The
+    /// channel carries `(session_id, serialized event JSON)` frames so
+    /// clients can filter by session. Empty when no clients are
+    /// connected; senders never need to check before emitting.
+    #[cfg(feature = "cockpit")]
+    pub cockpit_events_tx: broadcast::Sender<CockpitBroadcastFrame>,
     /// Per-tmux-session primary WebSocket client. Maps tmux session name
     /// to the client ID that most recently sent keyboard input. Only the
     /// primary client's resize messages are applied to its PTY, preventing
@@ -386,6 +408,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         session_primaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
         session_pause_counts: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
+        #[cfg(feature = "cockpit")]
+        cockpit_events_tx: broadcast::channel(COCKPIT_CHANNEL_CAPACITY).0,
         push: push_state,
         push_enabled,
         web_config: config.web.clone(),
@@ -691,7 +715,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 fn build_router(state: Arc<AppState>) -> Router {
     use axum::routing::{delete, get, patch, post};
 
-    Router::new()
+    let app = Router::new()
         // Sessions
         .route(
             "/api/sessions",
@@ -766,7 +790,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/sessions/{id}/container-terminal/ws",
             get(ws::container_terminal_ws),
-        )
+        );
+
+    #[cfg(feature = "cockpit")]
+    let app = app.route(
+        "/sessions/{id}/cockpit/ws",
+        get(cockpit_ws::cockpit_ws),
+    );
+
+    app
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)
         .route("/assets/{*path}", get(serve_asset))
         .route("/manifest.json", get(serve_public_file))
