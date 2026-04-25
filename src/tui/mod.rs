@@ -23,11 +23,20 @@ use crossterm::{
 use ratatui::prelude::*;
 use std::io::{self, IsTerminal, Write};
 
+use crate::migrations;
+use crate::session::get_update_settings;
+use crate::update::check_for_update;
+
 /// Mouse capture without drag tracking. Enables xterm modes 1000
 /// (button press/release, which delivers wheel events as button codes
 /// 64/65) and 1006 (SGR extended coordinates). Skipping modes 1002
 /// (button-motion) and 1003 (any-motion) leaves the terminal's native
 /// drag-to-select intact so users can still copy text from the TUI.
+///
+/// We still capture single-click button events (mode 1000) and ignore
+/// them in the event loop. That's intentional: dropping mode 1000 too
+/// would also drop wheel-scroll reports, since terminals encode wheel
+/// ticks as button codes 64/65 under the same mode.
 ///
 /// `DisableMouseCapture` cleans up the full mode set, so it's safe to
 /// keep using on teardown even though we never enabled 1002/1003/1015.
@@ -50,10 +59,6 @@ impl Command for ScrollOnlyMouseCapture {
         false
     }
 }
-
-use crate::migrations;
-use crate::session::get_update_settings;
-use crate::update::check_for_update;
 
 pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     // Run pending migrations with a spinner so users see progress
@@ -147,4 +152,20 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_only_mouse_capture_emits_only_modes_1000_and_1006() {
+        // The whole point of ScrollOnlyMouseCapture is to omit the drag-tracking
+        // modes (1002/1003) that hijack the terminal's native drag-to-select.
+        // Snapshot the exact byte sequence so a future "tidy-up" can't silently
+        // re-introduce them.
+        let mut buf = String::new();
+        ScrollOnlyMouseCapture.write_ansi(&mut buf).unwrap();
+        assert_eq!(buf, "\x1B[?1000h\x1B[?1006h");
+    }
 }
