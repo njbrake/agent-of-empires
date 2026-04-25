@@ -158,12 +158,15 @@ select:focus-visible,
   outline-offset: 2px;
 }
 
-/* wterm overrides: strip default chrome for embedded use. */
+/* wterm overrides: strip default chrome for embedded use.
+   `overflow: hidden` (not auto) — wterm's content matches the container,
+   and `auto` gives iOS Safari a target for native rubber-band on small
+   touches that haven't yet crossed our gesture-lock threshold. */
 .wterm {
   padding: 4px 8px;
   border-radius: 0;
   box-shadow: none;
-  overflow-y: auto;
+  overflow: hidden;
   --term-row-height: calc(var(--term-font-size) * var(--term-line-height));
 }
 

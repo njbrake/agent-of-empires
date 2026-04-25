@@ -68,6 +68,16 @@ export function useTerminal(
   // Populated inside the effect; `exitScrollback()` uses it to reset the
   // mobile scroll-depth counter when the user escapes copy-mode.
   const resetScrollbackDepthRef = useRef<(() => void) | null>(null);
+  // Mirror of state.isInScrollback so the resize callback (which lives
+  // inside the WTerm options closure) can read the latest value without
+  // re-creating the terminal. Updated by an effect below.
+  const isInScrollbackRef = useRef(false);
+  // Latest pending resize that was deferred because the user was reading
+  // scrollback. Drained when scrollback exits.
+  const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  // Set inside the effect; the scrollback-watch effect calls it to flush
+  // a deferred resize without poking React state.
+  const flushPendingResizeRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<TerminalState>({
     connected: false,
     reconnecting: false,
@@ -140,6 +150,22 @@ export function useTerminal(
     // animation (ResizeObserver fires multiple times with intermediate
     // sizes). 50ms settles after the animation ends.
     let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // All client-initiated resize sends route through this helper so the
+    // scrollback gate is impossible to bypass. While the user is reading
+    // scrollback, hold the latest size and drain it on exit. Without the
+    // gate, claude redraws on every SIGWINCH and stacks banners into
+    // tmux scrollback while the user is trying to read it.
+    const sendResize = (cols: number, rows: number) => {
+      if (isInScrollbackRef.current) {
+        pendingResizeRef.current = { cols, rows };
+        return;
+      }
+      const ws = wsRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "resize", cols, rows } as ResizeMessage));
+    };
+
     const term = new WTerm(termEl, {
       autoResize: true,
       cursorBlink: true,
@@ -147,14 +173,20 @@ export function useTerminal(
         if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
         resizeDebounceTimer = setTimeout(() => {
           resizeDebounceTimer = null;
-          const ws = wsRef.current;
-          if (ws?.readyState === WebSocket.OPEN) {
-            const msg: ResizeMessage = { type: "resize", cols, rows };
-            ws.send(JSON.stringify(msg));
-          }
+          sendResize(cols, rows);
         }, RESIZE_DEBOUNCE_MS);
       },
     });
+
+    // Drain handler: sends the latest deferred size when the user
+    // exits scrollback. Routes through sendResize, but by this point
+    // isInScrollbackRef is false so it takes the live-send path.
+    flushPendingResizeRef.current = () => {
+      const pending = pendingResizeRef.current;
+      pendingResizeRef.current = null;
+      if (!pending) return;
+      sendResize(pending.cols, pending.rows);
+    };
 
     termRef.current = term;
 
@@ -267,32 +299,16 @@ export function useTerminal(
         // Without this, the first resize lands in "vacant" state (which
         // works) but a race with focus/visibility events could delay it.
         ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
-        // Send initial PTY dimensions from the already-autoresized terminal.
-        if (
-          term.cols > 0 &&
-          term.rows > 0 &&
-          ws.readyState === WebSocket.OPEN
-        ) {
-          const msg: ResizeMessage = {
-            type: "resize",
-            cols: term.cols,
-            rows: term.rows,
-          };
-          ws.send(JSON.stringify(msg));
+        // Send initial PTY dimensions. Routed through sendResize so the
+        // scrollback gate applies even on reconnect — claude must not
+        // redraw while the user is reading scrollback.
+        if (term.cols > 0 && term.rows > 0) {
+          sendResize(term.cols, term.rows);
         }
         // Re-send after layout settles
         requestAnimationFrame(() => {
-          if (
-            term.cols > 0 &&
-            term.rows > 0 &&
-            ws.readyState === WebSocket.OPEN
-          ) {
-            const msg: ResizeMessage = {
-              type: "resize",
-              cols: term.cols,
-              rows: term.rows,
-            };
-            ws.send(JSON.stringify(msg));
+          if (term.cols > 0 && term.rows > 0) {
+            sendResize(term.cols, term.rows);
           }
         });
       };
@@ -482,7 +498,6 @@ export function useTerminal(
     let singleLastTs = 0;
     let suppressNextClick = false;
     const GESTURE_LOCK_PX = 12;
-    const LONG_PRESS_MS = 300;
     const LINES_PER_WHEEL = 2;
     const MAX_VELOCITY = 2.0;
     const MAX_WHEELS_PER_FRAME = 6;
@@ -606,8 +621,6 @@ export function useTerminal(
             singleLastTs = now;
             return;
           }
-          // Long-press then drag is text selection, not scroll.
-          if (now - singleStartTs > LONG_PRESS_MS) return;
           gestureMode = "single-scroll";
           singleY = y;
         }
@@ -722,10 +735,12 @@ export function useTerminal(
       momentumRaf = requestAnimationFrame(decay);
     };
 
-    // Attach touch handlers to the .wterm element. We do NOT set
-    // touch-action: none; our non-passive capture-phase handlers call
-    // preventDefault() when scrolling, which is sufficient.
+    // Attach touch handlers to the .wterm element. `touch-action: none`
+    // tells the browser we own all touch behavior here, so iOS Safari
+    // won't engage native scroll/rubber-band on the dead-zone frames
+    // before our handler decides whether to preventDefault.
     const viewport = term.element;
+    viewport.style.touchAction = "none";
     const touchOpts = { passive: false, capture: true } as const;
     viewport.addEventListener("touchstart", onTouchStart, touchOpts);
     viewport.addEventListener("touchmove", onTouchMove, touchOpts);
@@ -841,6 +856,17 @@ export function useTerminal(
       term.element.style.setProperty("--term-font-size", `${size}px`);
     }
   }, [settings.mobileFontSize, settings.desktopFontSize]);
+
+  // Mirror state.isInScrollback into a ref so the resize callback can read
+  // the latest value, and drain any pending deferred resize when the user
+  // exits scrollback (so claude redraws once at the final size).
+  useEffect(() => {
+    const wasInScrollback = isInScrollbackRef.current;
+    isInScrollbackRef.current = state.isInScrollback;
+    if (wasInScrollback && !state.isInScrollback) {
+      flushPendingResizeRef.current?.();
+    }
+  }, [state.isInScrollback]);
 
   const manualReconnect = () => {
     retryCountRef.current = 0;
