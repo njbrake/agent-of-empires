@@ -86,6 +86,40 @@ class ShimAgent {
       },
     });
 
+    // Optional permission request, controlled by prompt content so tests
+    // can opt into exercising the approval round-trip.
+    if (userText.includes("REQUEST_PERMISSION")) {
+      const response = await this.connection.requestPermission({
+        sessionId: params.sessionId,
+        toolCall: {
+          toolCallId: "tc-2",
+          title: "Modify shim config",
+          kind: "edit",
+          status: "pending",
+          locations: [{ path: "/tmp/shim-config.json" }],
+          rawInput: {
+            path: "/tmp/shim-config.json",
+            content: '{"x":1}',
+          },
+        },
+        options: [
+          { kind: "allow_once", name: "Allow once", optionId: "yes" },
+          { kind: "reject_once", name: "Reject", optionId: "no" },
+        ],
+      });
+      const verdict =
+        response.outcome.outcome === "selected"
+          ? response.outcome.optionId
+          : "cancelled";
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `permission_outcome=${verdict}` },
+        },
+      });
+    }
+
     await this.connection.sessionUpdate({
       sessionId: params.sessionId,
       update: {
