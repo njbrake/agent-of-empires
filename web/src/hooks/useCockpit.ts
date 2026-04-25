@@ -126,5 +126,20 @@ export function useCockpit(sessionId: string | null) {
     [sessionId],
   );
 
-  return { state, status, resolveApproval };
+  const sendPrompt = useCallback(
+    async (text: string) => {
+      if (!sessionId) return;
+      await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/prompt`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        },
+      );
+    },
+    [sessionId],
+  );
+
+  return { state, status, resolveApproval, sendPrompt };
 }
