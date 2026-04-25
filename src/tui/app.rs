@@ -29,10 +29,10 @@ pub struct App {
     /// the two compete for stdin and tmux fails to initialize its client.
     event_stream: Option<EventStream>,
     /// Tracks whether we currently have xterm mouse-tracking enabled. The TUI
-    /// turns it off whenever the serve view is on screen so users can drag-
-    /// select the long token URL natively, then turns it back on when the
-    /// view dismisses. Default true to match the startup `EnableMouseCapture`
-    /// in `tui::run`.
+    /// turns it off while a copy-friendly surface is open (`HomeView::
+    /// wants_text_selection`) so users can drag-select natively, then turns
+    /// it back on when the surface dismisses. Default true to match the
+    /// startup `EnableMouseCapture` in `tui::run`.
     mouse_captured: bool,
 }
 
@@ -105,14 +105,17 @@ impl App {
     }
 
     /// Turn xterm mouse tracking on or off to match the current view state.
-    /// Called after handling each user input so that opening the serve view
-    /// releases the mouse for native drag-to-select, and dismissing it
-    /// restores wheel-scroll for the preview pane.
+    ///
+    /// **Contract**: must be called after any handler that may open or close
+    /// a surface counted by `HomeView::wants_text_selection`. Currently the
+    /// event-loop `Event::Key` arm and the tail of `with_raw_mode_disabled`
+    /// cover this; new event sources that mutate dialog state need to call
+    /// this too or mouse capture will lag a frame behind reality.
     fn sync_mouse_capture(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
-        let desired = !self.home.is_serve_view_open();
+        let desired = !self.home.wants_text_selection();
         if desired == self.mouse_captured {
             return Ok(());
         }
