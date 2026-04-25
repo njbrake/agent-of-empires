@@ -2228,6 +2228,154 @@ extra_volumes = ["/host/data:/container/data:ro"]
         );
     }
 
+    /// Regression test: when an instance was created under a non-default profile,
+    /// `build_container_config` must resolve sandbox overrides (extra_volumes here)
+    /// against THAT profile, not the user's globally configured default profile.
+    /// Pre-fix, the TUI's container creation flow always picked up the global
+    /// default's volumes regardless of which profile the session was launched under.
+    #[test]
+    #[serial_test::serial]
+    fn test_build_container_config_uses_passed_profile_not_global_default() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        #[cfg(target_os = "linux")]
+        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let app_dir = temp_home.path().join(".agent-of-empires");
+
+        let profiles_dir = app_dir.join("profiles");
+        fs::create_dir_all(profiles_dir.join("default")).unwrap();
+        fs::create_dir_all(profiles_dir.join("personal")).unwrap();
+
+        // Global config selects "default" as the user's currently-active profile.
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("config.toml"),
+            r#"default_profile = "default""#,
+        )
+        .unwrap();
+
+        // Two profiles with distinct extra_volumes so we can tell which one resolved.
+        fs::write(
+            profiles_dir.join("default").join("config.toml"),
+            r#"
+[sandbox]
+extra_volumes = ["/host/default-only:/container/default-only:ro"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            profiles_dir.join("personal").join("config.toml"),
+            r#"
+[sandbox]
+extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
+"#,
+        )
+        .unwrap();
+
+        let project_dir = TempDir::new().unwrap();
+        git2::Repository::init(project_dir.path()).unwrap();
+        let project_path_str = project_dir.path().to_str().unwrap();
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let has_volume = |config: &crate::containers::container_interface::ContainerConfig,
+                          host: &str,
+                          container: &str|
+         -> bool {
+            config
+                .volumes
+                .iter()
+                .any(|v| v.host_path == host && v.container_path == container)
+        };
+
+        // Passing "personal" must resolve the personal profile's extra_volumes
+        // and NOT the default profile's.
+        let cfg_personal = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+            "personal",
+        )
+        .unwrap();
+        assert!(
+            has_volume(
+                &cfg_personal,
+                "/host/personal-only",
+                "/container/personal-only"
+            ),
+            "personal profile mount missing for profile=personal, got volumes: {:?}",
+            cfg_personal
+                .volumes
+                .iter()
+                .map(|v| (&v.host_path, &v.container_path))
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            !has_volume(
+                &cfg_personal,
+                "/host/default-only",
+                "/container/default-only"
+            ),
+            "default profile mount must NOT leak into profile=personal, got volumes: {:?}",
+            cfg_personal
+                .volumes
+                .iter()
+                .map(|v| (&v.host_path, &v.container_path))
+                .collect::<Vec<_>>(),
+        );
+
+        // Passing "default" must resolve the default profile's extra_volumes.
+        let cfg_default = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+            "default",
+        )
+        .unwrap();
+        assert!(
+            has_volume(
+                &cfg_default,
+                "/host/default-only",
+                "/container/default-only"
+            ),
+            "default profile mount missing for profile=default",
+        );
+
+        // Empty profile must fall back to the user's globally configured default,
+        // preserving prior behavior for callers without a profile in hand.
+        let cfg_empty = build_container_config(
+            project_path_str,
+            &sandbox_info,
+            "claude",
+            false,
+            "test-instance-id",
+            None,
+            "",
+        )
+        .unwrap();
+        assert!(
+            has_volume(&cfg_empty, "/host/default-only", "/container/default-only"),
+            "empty profile must fall back to global default",
+        );
+    }
+
     /// Regression test for #597: volume_ignores must apply to the parent repo
     /// mount as well as the worktree mount in sibling-worktree sessions.
     #[test]

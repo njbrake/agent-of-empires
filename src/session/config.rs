@@ -697,6 +697,38 @@ pub fn get_claude_config_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_effective_profile_returns_input_when_non_empty() {
+        // Non-empty input is passed through verbatim, regardless of what's
+        // configured globally as the default. No filesystem access needed.
+        assert_eq!(effective_profile("personal"), "personal");
+        assert_eq!(effective_profile("default"), "default");
+        assert_eq!(effective_profile("alpha-beta_v2"), "alpha-beta_v2");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_effective_profile_falls_back_to_global_default_when_empty() {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        #[cfg(target_os = "linux")]
+        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let app_dir = temp_home.path().join(".agent-of-empires");
+
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("config.toml"), r#"default_profile = "alpha""#).unwrap();
+
+        assert_eq!(
+            effective_profile(""),
+            "alpha",
+            "empty profile must fall back to the user's globally configured default",
+        );
+    }
+
     // Tests for Config defaults
     #[test]
     fn test_config_default() {
