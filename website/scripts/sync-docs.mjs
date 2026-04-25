@@ -125,6 +125,13 @@ const PAGES = [
     description:
       "Complete command-line reference for the aoe CLI tool.",
   },
+  {
+    source: "docs/cockpit.md",
+    dest: "docs/cockpit.md",
+    title: "Cockpit (Native Agent Rendering)",
+    description:
+      "Mobile-first native rendering of AI agent state via the Agent Client Protocol (ACP). Plan panels, tool-call cards, swipe-to-approve, multi-provider support.",
+  },
 ];
 
 // Every known docs path → website URL, used for link rewriting.
@@ -137,6 +144,7 @@ const URL_MAP = {
   "docs/development.md": "/docs/development/",
   "docs/guides/configuration.md": "/docs/guides/configuration/",
   "docs/cli/reference.md": "/docs/cli/reference/",
+  "docs/cockpit.md": "/docs/cockpit/",
   // Guides
   "docs/guides/diff-view.md": "/guides/diff-view/",
   "docs/guides/repo-config.md": "/guides/repo-config/",
