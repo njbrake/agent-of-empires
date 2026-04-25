@@ -118,6 +118,13 @@ getrandom = { version = "0.3", optional = true }
 agent-client-protocol = { version = "0.11", optional = true }
 agent-client-protocol-tokio = { version = "0.11", optional = true }
 
+# Node tarball download + extraction (cockpit feature). xz2 needs the
+# system liblzma; we use it for tar.xz extraction. The `tar` crate
+# handles the tarball stream. Hex used for nonce display lives in the
+# cockpit/approvals module's local hex helper, no crate needed.
+tar = { version = "0.4", optional = true }
+xz2 = { version = "0.1", optional = true }
+
 [features]
 default = []
 serve = [
@@ -138,6 +145,8 @@ cockpit = [
     "serve",
     "agent-client-protocol",
     "agent-client-protocol-tokio",
+    "tar",
+    "xz2",
 ]
 
 [dev-dependencies]

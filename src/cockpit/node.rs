@@ -141,32 +141,162 @@ pub fn bundled_node_path(app_dir: &Path) -> PathBuf {
         .join("node")
 }
 
+/// Pinned platform-specific tarball SHA-256 values for
+/// `PINNED_NODE_VERSION`. Fetched once from nodejs.org's SHASUMS256.txt
+/// and committed here. Bumping `PINNED_NODE_VERSION` requires
+/// refreshing every entry in this table.
+struct PlatformTarball {
+    /// e.g., "linux-x64". Forms the filename: node-vX.Y.Z-{slug}.tar.xz
+    slug: &'static str,
+    /// Hex-encoded SHA-256 of the tarball.
+    sha256: &'static str,
+}
+
+const PINNED_TARBALLS: &[(NodePlatform, PlatformTarball)] = &[
+    (
+        NodePlatform::LinuxX64,
+        PlatformTarball {
+            slug: "linux-x64",
+            sha256: "71a04f4b9144870c9407b8019fe912514229e50246bc706862eded3ac8e9025d",
+        },
+    ),
+    (
+        NodePlatform::LinuxArm64,
+        PlatformTarball {
+            slug: "linux-arm64",
+            sha256: "fe3e371f6f72d07a3f75a94a54c97d652ace6bfcc48f82cc0867f0c0722b84bd",
+        },
+    ),
+    (
+        NodePlatform::DarwinX64,
+        PlatformTarball {
+            slug: "darwin-x64",
+            sha256: "8c61b1ab7b3a398717b3503fbd205d239079cac22402ee9327f4d3a240622d86",
+        },
+    ),
+    (
+        NodePlatform::DarwinArm64,
+        PlatformTarball {
+            slug: "darwin-arm64",
+            sha256: "54b884588727c9833cad6e4b902f922128b8da136ba845e76e878b0d2d08c8f4",
+        },
+    ),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodePlatform {
+    LinuxX64,
+    LinuxArm64,
+    DarwinX64,
+    DarwinArm64,
+    /// Windows uses a .zip; we don't support it via auto-download
+    /// today (would need a zip extractor). Users on Windows must
+    /// install Node themselves.
+    WindowsUnsupported,
+}
+
+pub fn detect_platform() -> NodePlatform {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    match (os, arch) {
+        ("linux", "x86_64") => NodePlatform::LinuxX64,
+        ("linux", "aarch64") => NodePlatform::LinuxArm64,
+        ("macos", "x86_64") => NodePlatform::DarwinX64,
+        ("macos", "aarch64") => NodePlatform::DarwinArm64,
+        ("windows", _) => NodePlatform::WindowsUnsupported,
+        _ => NodePlatform::WindowsUnsupported,
+    }
+}
+
+fn pinned_for(platform: NodePlatform) -> Option<&'static PlatformTarball> {
+    PINNED_TARBALLS
+        .iter()
+        .find(|(p, _)| *p == platform)
+        .map(|(_, t)| t)
+}
+
 /// Download the pinned Node tarball from nodejs.org/dist and extract
-/// to the bundled location. Verifies SHA-256 against the value
-/// embedded in this binary.
+/// to the bundled location. Verifies SHA-256 against the embedded
+/// value before extracting.
 ///
-/// MVP: not yet wired into auto-download at first session-spawn (the
-/// design doc explicitly defers that to a follow-up to keep the spawn
-/// path synchronous and predictable). Exposed as a helper so
-/// `aoe cockpit doctor --fix` can invoke it explicitly.
-pub async fn download(_app_dir: &Path) -> Result<ResolvedNode, NodeError> {
-    // Implementation note: this requires choosing the platform tarball
-    // (linux-x64 / linux-arm64 / darwin-x64 / darwin-arm64 /
-    // win-x64 / win-arm64), pinning each SHA, fetching with reqwest,
-    // verifying, and extracting tar.xz. Each platform's tarball is
-    // 30-50 MB. The fetch + extract takes 10-30s on a typical
-    // connection.
-    //
-    // The follow-up slice will fill this in. For now we return a
-    // typed error so callers can fall back to a clear UX message
-    // ("install Node yourself, or run `aoe cockpit doctor --fix`
-    // when that lands").
-    warn!(
-        target: "cockpit.node",
-        "automated Node download is not yet wired; install Node {} on PATH or set AOE_COCKPIT_NODE",
-        MIN_NODE_MAJOR
+/// On Windows, returns NoNode because tarball auto-download is not
+/// implemented for .zip; users must install Node themselves.
+pub async fn download(app_dir: &Path) -> Result<ResolvedNode, NodeError> {
+    let platform = detect_platform();
+    let tarball = pinned_for(platform).ok_or_else(|| {
+        warn!(
+            target: "cockpit.node",
+            "automated Node download not supported on this platform; install Node {} on PATH or set AOE_COCKPIT_NODE",
+            MIN_NODE_MAJOR
+        );
+        NodeError::NoNode(MIN_NODE_MAJOR)
+    })?;
+
+    let url = format!(
+        "https://nodejs.org/dist/v{version}/node-v{version}-{slug}.tar.xz",
+        version = PINNED_NODE_VERSION,
+        slug = tarball.slug,
     );
-    Err(NodeError::NoNode(MIN_NODE_MAJOR))
+    info!(target: "cockpit.node", url = %url, "downloading Node runtime");
+
+    let bytes = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| NodeError::Io(std::io::Error::other(format!("fetch: {e}"))))?
+        .error_for_status()
+        .map_err(|e| NodeError::Io(std::io::Error::other(format!("status: {e}"))))?
+        .bytes()
+        .await
+        .map_err(|e| NodeError::Io(std::io::Error::other(format!("body: {e}"))))?;
+
+    let actual = sha256_hex(&bytes);
+    if !actual.eq_ignore_ascii_case(tarball.sha256) {
+        return Err(NodeError::Io(std::io::Error::other(format!(
+            "Node tarball SHA-256 mismatch: expected {} got {}",
+            tarball.sha256, actual
+        ))));
+    }
+    info!(target: "cockpit.node", "downloaded {} bytes; SHA-256 verified", bytes.len());
+
+    // Extract under app_dir/cockpit/. The tarball's top-level dir is
+    // `node-vX.Y.Z-{slug}` so we extract into the parent and then
+    // rename/symlink to `node-vX.Y.Z` for a stable bundled-path lookup.
+    let cockpit_dir = app_dir.join("cockpit");
+    std::fs::create_dir_all(&cockpit_dir)?;
+
+    let cursor = std::io::Cursor::new(bytes);
+    let xz_decoder = xz2::read::XzDecoder::new(cursor);
+    let mut archive = tar::Archive::new(xz_decoder);
+    archive.unpack(&cockpit_dir)?;
+
+    // Move/rename the extracted dir to the stable name.
+    let extracted = cockpit_dir.join(format!(
+        "node-v{}-{}",
+        PINNED_NODE_VERSION, tarball.slug
+    ));
+    let stable = cockpit_dir.join(format!("node-v{}", PINNED_NODE_VERSION));
+    if stable.exists() {
+        std::fs::remove_dir_all(&stable)?;
+    }
+    std::fs::rename(&extracted, &stable)?;
+
+    let bundled = bundled_node_path(app_dir);
+    verify_path(&bundled, NodeSource::Bundled)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for b in digest {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xF) as usize] as char);
+    }
+    out
 }
 
 /// Resolve Node, attempting an automated download if nothing is found
@@ -196,6 +326,39 @@ mod tests {
         assert_eq!(parse_major("v20.0.0"), Some(20));
         assert_eq!(parse_major("18.17.1"), Some(18));
         assert_eq!(parse_major("not a version"), None);
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        // SHA-256 of the empty string per RFC 6234 / Wikipedia.
+        let hex = sha256_hex(b"");
+        assert_eq!(
+            hex,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn pinned_tarballs_cover_all_supported_platforms() {
+        for platform in [
+            NodePlatform::LinuxX64,
+            NodePlatform::LinuxArm64,
+            NodePlatform::DarwinX64,
+            NodePlatform::DarwinArm64,
+        ] {
+            let tarball = pinned_for(platform);
+            assert!(
+                tarball.is_some(),
+                "missing pinned SHA for {platform:?}"
+            );
+            let sha = tarball.unwrap().sha256;
+            assert_eq!(sha.len(), 64, "SHA must be 64 hex chars");
+            assert!(
+                sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "SHA must be hex"
+            );
+        }
+        assert!(pinned_for(NodePlatform::WindowsUnsupported).is_none());
     }
 
     #[test]

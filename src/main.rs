@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
         #[cfg(feature = "serve")]
         Some(Commands::Serve(args)) => cli::serve::run(&profile, args).await,
         #[cfg(feature = "cockpit")]
-        Some(Commands::Cockpit { command }) => cli::cockpit::run(command),
+        Some(Commands::Cockpit { command }) => cli::cockpit::run(command).await,
         None => tui::run(&profile, debug_log_warning).await,
         _ => unreachable!(),
     }

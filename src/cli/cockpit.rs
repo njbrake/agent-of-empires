@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::cockpit::agent_registry::AgentRegistry;
+use crate::cockpit::node;
 
 #[derive(Subcommand)]
 pub enum CockpitCommands {
@@ -45,9 +46,9 @@ pub enum CockpitCommands {
     },
 }
 
-pub fn run(command: CockpitCommands) -> Result<()> {
+pub async fn run(command: CockpitCommands) -> Result<()> {
     match command {
-        CockpitCommands::Doctor { json, fix } => doctor(json, fix),
+        CockpitCommands::Doctor { json, fix } => doctor(json, fix).await,
         CockpitCommands::Agents => agents(),
         CockpitCommands::Logs { session, follow } => logs(session, follow),
         CockpitCommands::Restart { session } => restart(session),
@@ -76,7 +77,32 @@ struct AgentDoctorEntry {
     description: String,
 }
 
-fn doctor(json: bool, _fix: bool) -> Result<()> {
+async fn doctor(json: bool, fix: bool) -> Result<()> {
+    if fix {
+        // Auto-remediate: download the bundled Node runtime if Node is
+        // missing or the wrong version on PATH.
+        if let Ok(app_dir) = crate::session::get_app_dir() {
+            match node::resolve("", &app_dir) {
+                Ok(_) => println!("Node already available; skipping download."),
+                Err(node::NodeError::NoNode(_)) | Err(node::NodeError::TooOld { .. }) => {
+                    println!("Downloading Node {} runtime...", node::PINNED_NODE_VERSION);
+                    match node::download(&app_dir).await {
+                        Ok(resolved) => {
+                            println!(
+                                "Installed Node {} at {}",
+                                resolved.version,
+                                resolved.path.display()
+                            );
+                        }
+                        Err(e) => {
+                            println!("Download failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => println!("Cannot probe Node: {e}"),
+            }
+        }
+    }
     let registry = AgentRegistry::with_defaults();
 
     let node_status = check_node();
