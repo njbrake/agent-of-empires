@@ -86,6 +86,78 @@ class ShimAgent {
       },
     });
 
+    // Optional fs round-trip exercised by tests via prompt keywords.
+    if (userText.includes("FS_READ_WRITE")) {
+      try {
+        // Write a fresh file inside the session cwd.
+        await this.connection.writeTextFile({
+          sessionId: params.sessionId,
+          path: process.cwd() + "/shim-roundtrip.txt",
+          content: "hello from shim",
+        });
+        // Read it back.
+        const read = await this.connection.readTextFile({
+          sessionId: params.sessionId,
+          path: process.cwd() + "/shim-roundtrip.txt",
+        });
+        await this.connection.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `fs_read=${read.content}` },
+          },
+        });
+      } catch (err) {
+        await this.connection.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `fs_error=${err.message ?? err}` },
+          },
+        });
+      }
+    }
+
+    // Optional terminal round-trip exercised by tests.
+    if (userText.includes("TERMINAL_RUN")) {
+      try {
+        const term = await this.connection.createTerminal({
+          sessionId: params.sessionId,
+          command: "echo",
+          args: ["terminal-roundtrip-ok"],
+        });
+        const exit = await term.waitForExit();
+        const out = await term.currentOutput();
+        // WaitForTerminalExitResponse flattens TerminalExitStatus, so
+        // exitCode is at the top level. Fall back to nested in case the
+        // SDK wraps it differently in a future version.
+        const code =
+          exit.exitCode ??
+          exit.exit_code ??
+          exit.exitStatus?.exitCode ??
+          "?";
+        await this.connection.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: `terminal_output=${out.output.trim()};exit=${code}`,
+            },
+          },
+        });
+        await term.release();
+      } catch (err) {
+        await this.connection.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `terminal_error=${err.message ?? err}` },
+          },
+        });
+      }
+    }
+
     // Optional permission request, controlled by prompt content so tests
     // can opt into exercising the approval round-trip.
     if (userText.includes("REQUEST_PERMISSION")) {

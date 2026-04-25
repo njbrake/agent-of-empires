@@ -17,9 +17,14 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PermissionOptionKind, ProtocolVersion,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
+    ClientCapabilities, ContentBlock, CreateTerminalRequest, CreateTerminalResponse,
+    FileSystemCapabilities, InitializeRequest, KillTerminalRequest, KillTerminalResponse,
+    NewSessionRequest, PermissionOptionKind, ProtocolVersion, PromptRequest, ReadTextFileRequest,
+    ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TerminalId,
+    TerminalOutputRequest, TerminalOutputResponse, TextContent, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
 use thiserror::Error;
@@ -29,10 +34,12 @@ use tracing::{debug, error, info, warn};
 
 use super::agent_registry::AgentSpec;
 use super::approvals::{is_destructive, ApprovalDecision, Nonce};
+use super::fs_handler::{self, FsPolicy};
 use super::permissions::build_approval;
 use super::state::{
     CockpitSessionId, DiffPreview, Event, Plan, PlanStep, PlanStepStatus, SessionMode, ToolCall,
 };
+use super::terminal_handler::TerminalManager;
 
 #[derive(Debug, Error)]
 pub enum AcpError {
@@ -94,6 +101,16 @@ pub struct AcpClient {
     _child: Option<Arc<Mutex<tokio::process::Child>>>,
 }
 
+/// Per-session resources the connection task uses to handle ACP fs/* and
+/// terminal/* requests delegated by the agent.
+#[derive(Clone)]
+struct SessionResources {
+    fs_policy: Arc<FsPolicy>,
+    terminals: TerminalManager,
+    cwd: PathBuf,
+    label: String,
+}
+
 impl AcpClient {
     /// Construct a client that does not actually spawn anything. Useful
     /// for unit tests of cockpit state without a real agent.
@@ -141,6 +158,16 @@ impl AcpClient {
         let child_for_task = child.clone();
         let pending_for_task = pending_responders.clone();
 
+        // Allowed fs roots: cwd + any explicit additional directories.
+        let mut roots = vec![config.cwd.clone()];
+        roots.extend(config.additional_dirs.clone());
+        let resources = SessionResources {
+            fs_policy: Arc::new(FsPolicy::new(roots)),
+            terminals: TerminalManager::new(),
+            cwd: cwd.clone(),
+            label: session_label.clone(),
+        };
+
         tokio::spawn(run_connection_task(
             transport,
             event_tx,
@@ -149,6 +176,7 @@ impl AcpClient {
             session_label,
             child_for_task,
             pending_for_task,
+            resources,
         ));
 
         Ok(Self {
@@ -406,11 +434,19 @@ async fn run_connection_task(
     session_label: String,
     child: Arc<Mutex<tokio::process::Child>>,
     pending_responders: PendingResponders,
+    resources: SessionResources,
 ) {
     let event_tx_for_notif = event_tx.clone();
     let event_tx_for_perm = event_tx.clone();
     let pending_for_perm = pending_responders.clone();
     let cmd_rx = Arc::new(Mutex::new(cmd_rx));
+    let res_read = resources.clone();
+    let res_write = resources.clone();
+    let res_term_create = resources.clone();
+    let res_term_output = resources.clone();
+    let res_term_wait = resources.clone();
+    let res_term_kill = resources.clone();
+    let res_term_release = resources.clone();
 
     let result = Client
         .builder()
@@ -441,10 +477,81 @@ async fn run_connection_task(
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            move |request: ReadTextFileRequest,
+                  responder: Responder<ReadTextFileResponse>,
+                  _conn| {
+                let res = res_read.clone();
+                async move { handle_read_text_file(request, responder, res).await }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            move |request: WriteTextFileRequest,
+                  responder: Responder<WriteTextFileResponse>,
+                  _conn| {
+                let res = res_write.clone();
+                async move { handle_write_text_file(request, responder, res).await }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            move |request: CreateTerminalRequest,
+                  responder: Responder<CreateTerminalResponse>,
+                  _conn| {
+                let res = res_term_create.clone();
+                async move { handle_create_terminal(request, responder, res).await }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            move |request: TerminalOutputRequest,
+                  responder: Responder<TerminalOutputResponse>,
+                  _conn| {
+                let res = res_term_output.clone();
+                async move { handle_terminal_output(request, responder, res).await }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            move |request: WaitForTerminalExitRequest,
+                  responder: Responder<WaitForTerminalExitResponse>,
+                  _conn| {
+                let res = res_term_wait.clone();
+                async move { handle_wait_for_terminal_exit(request, responder, res).await }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            move |request: KillTerminalRequest,
+                  responder: Responder<KillTerminalResponse>,
+                  _conn| {
+                let res = res_term_kill.clone();
+                async move { handle_kill_terminal(request, responder, res).await }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            move |request: ReleaseTerminalRequest,
+                  responder: Responder<ReleaseTerminalResponse>,
+                  _conn| {
+                let res = res_term_release.clone();
+                async move { handle_release_terminal(request, responder, res).await }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
             info!(target: "cockpit.acp", session = %session_label, "initializing ACP agent");
+            let capabilities = ClientCapabilities::new()
+                .fs(FileSystemCapabilities::new()
+                    .read_text_file(true)
+                    .write_text_file(true))
+                .terminal(true);
             let _init = connection
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(
+                    InitializeRequest::new(ProtocolVersion::V1)
+                        .client_capabilities(capabilities),
+                )
                 .block_task()
                 .await?;
 
@@ -491,6 +598,135 @@ async fn run_connection_task(
     }
     let mut guard = child.lock().await;
     let _ = guard.kill().await;
+}
+
+async fn handle_read_text_file(
+    request: ReadTextFileRequest,
+    responder: Responder<ReadTextFileResponse>,
+    res: SessionResources,
+) -> agent_client_protocol::Result<()> {
+    match fs_handler::handle_read(&res.fs_policy, &res.label, &request.path) {
+        Ok(content) => {
+            // Honor optional line/limit slicing for ACP semantics: 1-based.
+            let sliced = if request.line.is_some() || request.limit.is_some() {
+                let lines: Vec<&str> = content.lines().collect();
+                let start = request.line.map(|l| l.saturating_sub(1) as usize).unwrap_or(0);
+                let limit = request.limit.map(|n| n as usize).unwrap_or(usize::MAX);
+                let end = start.saturating_add(limit).min(lines.len());
+                if start >= lines.len() {
+                    String::new()
+                } else {
+                    lines[start..end].join("\n")
+                }
+            } else {
+                content
+            };
+            responder.respond(ReadTextFileResponse::new(sliced))
+        }
+        Err(e) => responder
+            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+    }
+}
+
+async fn handle_write_text_file(
+    request: WriteTextFileRequest,
+    responder: Responder<WriteTextFileResponse>,
+    res: SessionResources,
+) -> agent_client_protocol::Result<()> {
+    match fs_handler::handle_write(&res.fs_policy, &res.label, &request.path, &request.content) {
+        Ok(()) => responder.respond(WriteTextFileResponse::new()),
+        Err(e) => responder
+            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+    }
+}
+
+async fn handle_create_terminal(
+    request: CreateTerminalRequest,
+    responder: Responder<CreateTerminalResponse>,
+    res: SessionResources,
+) -> agent_client_protocol::Result<()> {
+    let cwd = request.cwd.clone().unwrap_or_else(|| res.cwd.clone());
+    // Sandbox the cwd: must be inside session roots.
+    if let Err(e) = res.fs_policy.resolve_inside(&cwd) {
+        return responder.respond_with_error(agent_client_protocol::util::internal_error(format!(
+            "terminal cwd outside session roots: {e}"
+        )));
+    }
+    match res
+        .terminals
+        .create_and_run(&res.label, &request.command, request.args.clone(), cwd)
+        .await
+    {
+        Ok(id) => responder.respond(CreateTerminalResponse::new(TerminalId::new(id))),
+        Err(e) => responder
+            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+    }
+}
+
+fn build_exit_status(
+    exit_code: Option<i32>,
+) -> agent_client_protocol::schema::TerminalExitStatus {
+    use agent_client_protocol::schema::TerminalExitStatus;
+    let cast = exit_code.and_then(|c| u32::try_from(c).ok());
+    TerminalExitStatus::new().exit_code(cast)
+}
+
+async fn handle_terminal_output(
+    request: TerminalOutputRequest,
+    responder: Responder<TerminalOutputResponse>,
+    res: SessionResources,
+) -> agent_client_protocol::Result<()> {
+    match res.terminals.output(request.terminal_id.0.as_ref()).await {
+        Ok(out) => {
+            let combined = format!("{}{}", out.stdout, out.stderr);
+            responder.respond(
+                TerminalOutputResponse::new(combined, false)
+                    .exit_status(build_exit_status(out.exit_code)),
+            )
+        }
+        Err(e) => responder
+            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+    }
+}
+
+async fn handle_wait_for_terminal_exit(
+    request: WaitForTerminalExitRequest,
+    responder: Responder<WaitForTerminalExitResponse>,
+    res: SessionResources,
+) -> agent_client_protocol::Result<()> {
+    // For our one-shot terminal model, the command has already finished by
+    // the time `create_and_run` returns. So `output()` immediately yields
+    // the captured exit status.
+    match res.terminals.output(request.terminal_id.0.as_ref()).await {
+        Ok(out) => {
+            responder.respond(WaitForTerminalExitResponse::new(build_exit_status(
+                out.exit_code,
+            )))
+        }
+        Err(e) => responder
+            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+    }
+}
+
+async fn handle_kill_terminal(
+    _request: KillTerminalRequest,
+    responder: Responder<KillTerminalResponse>,
+    _res: SessionResources,
+) -> agent_client_protocol::Result<()> {
+    // One-shot terminals are already finished; kill is a no-op.
+    responder.respond(KillTerminalResponse::new())
+}
+
+async fn handle_release_terminal(
+    request: ReleaseTerminalRequest,
+    responder: Responder<ReleaseTerminalResponse>,
+    res: SessionResources,
+) -> agent_client_protocol::Result<()> {
+    match res.terminals.release(request.terminal_id.0.as_ref()).await {
+        Ok(()) => responder.respond(ReleaseTerminalResponse::new()),
+        Err(e) => responder
+            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+    }
 }
 
 async fn handle_permission_request(

@@ -7,24 +7,26 @@
  * against the user's chosen provider, and streams structured events
  * back as ACP `session/update` notifications.
  *
- * MVP scope (v0): text-only Anthropic. Tools (file IO + bash) delegate
- * back to aoe via ACP `fs/*` and `terminal/*` in the next slice.
+ * Tools are stubs that delegate back to aoe via ACP `fs/*` and
+ * `terminal/*` requests. aoe owns the disk; aoe-agent only orchestrates
+ * the model.
  *
  * Lifecycle: stdin closes -> exit 0. SIGTERM -> graceful shutdown.
  */
 
 import * as acp from "@agentclientprotocol/sdk";
 import { Readable, Writable } from "node:stream";
-import { streamText } from "ai";
+import { streamText, tool, stepCountIs, type ModelMessage } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
+import { z } from "zod";
 
 interface SessionState {
   pendingPrompt: AbortController | null;
   modelId: string;
   /** Conversation history accumulated across turns within this session. */
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  messages: ModelMessage[];
 }
 
 class AoeAgent implements acp.Agent {
@@ -44,7 +46,6 @@ class AoeAgent implements acp.Agent {
       agentCapabilities: {
         loadSession: false,
         promptCapabilities: {
-          // We accept text content blocks. Image/audio later.
           image: false,
           audio: false,
         },
@@ -62,7 +63,6 @@ class AoeAgent implements acp.Agent {
     _params: acp.NewSessionRequest,
   ): Promise<acp.NewSessionResponse> {
     const sessionId = randomHexId();
-    // Provider/model pick: env wins; default to Anthropic.
     const modelId = process.env.AOE_AGENT_MODEL ?? "claude-opus-4-7";
     this.sessions.set(sessionId, {
       pendingPrompt: null,
@@ -75,8 +75,6 @@ class AoeAgent implements acp.Agent {
   async setSessionMode(
     _params: acp.SetSessionModeRequest,
   ): Promise<acp.SetSessionModeResponse> {
-    // MVP: mode-switching is acknowledged but not enforced. Plan-mode
-    // wiring lands when Vercel AI SDK gates tool execution accordingly.
     return {};
   }
 
@@ -86,12 +84,10 @@ class AoeAgent implements acp.Agent {
       throw new Error(`Session ${params.sessionId} not found`);
     }
 
-    // Cancel any in-flight turn.
     session.pendingPrompt?.abort();
     session.pendingPrompt = new AbortController();
     const abortSignal = session.pendingPrompt.signal;
 
-    // Extract user prompt text.
     const userText = params.prompt
       .filter((c): c is acp.TextContentBlock => c.type === "text")
       .map((c) => c.text)
@@ -99,38 +95,91 @@ class AoeAgent implements acp.Agent {
 
     session.messages.push({ role: "user", content: userText });
 
+    const tools = this.buildTools(params.sessionId);
+
     try {
       const model = pickModel(session.modelId);
       const result = streamText({
         model,
         messages: session.messages,
+        tools,
+        // Allow up to ~16 tool-call rounds in a single user turn so the
+        // agent can compose multiple Read/Write/Bash steps before
+        // returning to the user.
+        stopWhen: stepCountIs(16),
         abortSignal,
       });
 
       let assistantBuffer = "";
+      const toolCallTitles = new Map<string, string>();
       for await (const part of result.fullStream) {
-        if (abortSignal.aborted) {
-          break;
-        }
-        if (part.type === "text-delta") {
-          // ai sdk 6 uses `text` field on text-delta parts.
-          // Older versions used `textDelta`. Support both at runtime.
-          const delta =
-            (part as { text?: string }).text ??
-            (part as { textDelta?: string }).textDelta ??
-            "";
-          if (!delta) continue;
-          assistantBuffer += delta;
-          await this.connection.sessionUpdate({
-            sessionId: params.sessionId,
-            update: {
-              sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: delta },
-            },
-          });
-        } else if (part.type === "error") {
-          const err = (part as { error: unknown }).error;
-          throw err instanceof Error ? err : new Error(String(err));
+        if (abortSignal.aborted) break;
+        switch (part.type) {
+          case "text-delta": {
+            const delta =
+              (part as { text?: string }).text ??
+              (part as { textDelta?: string }).textDelta ??
+              "";
+            if (!delta) break;
+            assistantBuffer += delta;
+            await this.connection.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: delta },
+              },
+            });
+            break;
+          }
+          case "tool-call": {
+            const id = part.toolCallId;
+            const name = part.toolName;
+            toolCallTitles.set(id, name);
+            await this.connection.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: id,
+                title: name,
+                kind: classifyKind(name),
+                status: "pending",
+                rawInput: part.input as Record<string, unknown>,
+              },
+            });
+            break;
+          }
+          case "tool-result": {
+            const id = part.toolCallId;
+            await this.connection.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: id,
+                status: "completed",
+                rawOutput: serialiseToolOutput(part.output),
+              },
+            });
+            break;
+          }
+          case "tool-error": {
+            const id = part.toolCallId;
+            await this.connection.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: id,
+                status: "failed",
+                rawOutput: { error: String(part.error) },
+              },
+            });
+            break;
+          }
+          case "error": {
+            const err = (part as { error: unknown }).error;
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+          default:
+            break;
         }
       }
 
@@ -146,8 +195,6 @@ class AoeAgent implements acp.Agent {
       if (abortSignal.aborted) {
         return { stopReason: "cancelled" };
       }
-      // Surface the error as an agent message chunk so the cockpit can
-      // render it instead of dropping the whole turn.
       const message = err instanceof Error ? err.message : String(err);
       await this.connection
         .sessionUpdate({
@@ -168,11 +215,101 @@ class AoeAgent implements acp.Agent {
   async cancel(params: acp.CancelNotification): Promise<void> {
     this.sessions.get(params.sessionId)?.pendingPrompt?.abort();
   }
+
+  /**
+   * Tool palette: Read, Write, Bash. Each tool's execute() body issues
+   * an ACP request back to aoe and returns the result. The model never
+   * sees the file system or shell directly.
+   */
+  private buildTools(sessionId: string) {
+    return {
+      Read: tool({
+        description:
+          "Read a text file from the session's working directory.",
+        inputSchema: z.object({
+          path: z.string().describe("Absolute path to the file to read."),
+        }),
+        execute: async ({ path }) => {
+          const result = await this.connection.readTextFile({
+            sessionId,
+            path,
+          });
+          return { content: result.content };
+        },
+      }),
+      Write: tool({
+        description:
+          "Write text contents to a file in the session's working directory.",
+        inputSchema: z.object({
+          path: z.string().describe("Absolute path of the file to write."),
+          content: z.string().describe("Full text content to write."),
+        }),
+        execute: async ({ path, content }) => {
+          await this.connection.writeTextFile({
+            sessionId,
+            path,
+            content,
+          });
+          return { ok: true };
+        },
+      }),
+      Bash: tool({
+        description:
+          "Run a shell command and capture its output. Used for one-shot tasks; long-running processes are not supported.",
+        inputSchema: z.object({
+          command: z.string().describe("Shell command to run."),
+          args: z
+            .array(z.string())
+            .optional()
+            .describe("Arguments passed to the command."),
+        }),
+        execute: async ({ command, args }) => {
+          const term = await this.connection.createTerminal({
+            sessionId,
+            command,
+            args: args ?? [],
+          });
+          try {
+            const exit = await term.waitForExit();
+            const out = await term.currentOutput();
+            const code =
+              (exit as { exitCode?: number }).exitCode ??
+              (exit as { exit_code?: number }).exit_code ??
+              null;
+            return {
+              stdout: out.output,
+              exitCode: code,
+            };
+          } finally {
+            await term.release().catch(() => undefined);
+          }
+        },
+      }),
+    };
+  }
+}
+
+function classifyKind(toolName: string): acp.ToolKind {
+  switch (toolName) {
+    case "Read":
+      return "read";
+    case "Write":
+      return "edit";
+    case "Bash":
+      return "execute";
+    default:
+      return "other";
+  }
+}
+
+function serialiseToolOutput(output: unknown): Record<string, unknown> {
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    return output as Record<string, unknown>;
+  }
+  return { value: output };
 }
 
 function pickModel(modelId: string) {
-  // Cheap dispatcher. Real impl will read aoe settings to pick provider
-  // explicitly; for now we sniff the id.
   if (modelId.startsWith("claude-") || modelId.startsWith("anthropic:")) {
     return anthropic(modelId.replace(/^anthropic:/, ""));
   }
@@ -182,7 +319,6 @@ function pickModel(modelId: string) {
   if (modelId.startsWith("gemini-") || modelId.startsWith("google:")) {
     return google(modelId.replace(/^google:/, ""));
   }
-  // Fallback to anthropic.
   return anthropic(modelId);
 }
 
@@ -192,14 +328,12 @@ function randomHexId(): string {
     .join("");
 }
 
-// Bootstrap: wire stdin/stdout, build the connection.
 function main() {
   const input = Writable.toWeb(process.stdout);
   const output = Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>;
   const stream = acp.ndJsonStream(input, output);
   new acp.AgentSideConnection((conn) => new AoeAgent(conn), stream);
 
-  // Exit cleanly on stdin close.
   process.stdin.on("end", () => process.exit(0));
   process.on("SIGTERM", () => process.exit(0));
   process.on("SIGINT", () => process.exit(0));

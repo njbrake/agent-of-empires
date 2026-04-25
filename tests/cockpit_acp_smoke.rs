@@ -232,3 +232,133 @@ async fn shim_agent_round_trips_approval_allow() {
         "shim should have echoed permission_outcome=yes; got {events:?}"
     );
 }
+
+/// fs round-trip: shim issues writeTextFile + readTextFile against a
+/// temp dir; aoe handles them via fs_handler with sandbox enforcement;
+/// shim echoes the read content back so we can assert the wire works.
+#[tokio::test]
+async fn shim_agent_round_trips_fs() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let shim = shim_path();
+    if !shim.exists() {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path().to_path_buf();
+    let config = SpawnConfig {
+        spec: AgentSpec {
+            command: "node".into(),
+            args: vec![shim.to_string_lossy().to_string()],
+            description: "test shim".into(),
+            env_allowlist: None,
+        },
+        cwd: cwd.clone(),
+        additional_dirs: vec![],
+        provider_env: vec![],
+    };
+
+    let mut client = AcpClient::spawn(config, CockpitSessionId("fs".into()))
+        .await
+        .expect("spawn shim");
+
+    client
+        .send_prompt("FS_READ_WRITE please")
+        .await
+        .expect("send_prompt");
+
+    let mut events: Vec<Event> = Vec::new();
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < drain_deadline {
+        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
+            Ok(Some(event)) => {
+                let stopped = matches!(event, Event::Stopped { .. });
+                events.push(event);
+                if stopped {
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => continue,
+        }
+    }
+
+    let _ = client.shutdown().await;
+
+    let saw_read = events.iter().any(|e| match e {
+        Event::AgentMessageChunk { text } => text.starts_with("fs_read=hello from shim"),
+        _ => false,
+    });
+    assert!(saw_read, "shim should echo fs_read=hello from shim; got {events:?}");
+    // And the file should actually exist on disk.
+    assert!(
+        cwd.join("shim-roundtrip.txt").exists(),
+        "shim-roundtrip.txt should exist in session cwd"
+    );
+}
+
+/// terminal round-trip: shim creates a terminal that runs `echo`, waits
+/// for exit, fetches output, and reports back. Validates the fs_policy
+/// + TerminalManager wiring end-to-end.
+#[tokio::test]
+async fn shim_agent_round_trips_terminal() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let shim = shim_path();
+    if !shim.exists() {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path().to_path_buf();
+    let config = SpawnConfig {
+        spec: AgentSpec {
+            command: "node".into(),
+            args: vec![shim.to_string_lossy().to_string()],
+            description: "test shim".into(),
+            env_allowlist: None,
+        },
+        cwd: cwd.clone(),
+        additional_dirs: vec![],
+        provider_env: vec![],
+    };
+
+    let mut client = AcpClient::spawn(config, CockpitSessionId("term".into()))
+        .await
+        .expect("spawn shim");
+
+    client
+        .send_prompt("TERMINAL_RUN please")
+        .await
+        .expect("send_prompt");
+
+    let mut events: Vec<Event> = Vec::new();
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < drain_deadline {
+        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
+            Ok(Some(event)) => {
+                let stopped = matches!(event, Event::Stopped { .. });
+                events.push(event);
+                if stopped {
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => continue,
+        }
+    }
+
+    let _ = client.shutdown().await;
+
+    let saw_terminal = events.iter().any(|e| match e {
+        Event::AgentMessageChunk { text } => {
+            text.contains("terminal_output=terminal-roundtrip-ok") && text.contains("exit=0")
+        }
+        _ => false,
+    });
+    assert!(
+        saw_terminal,
+        "shim should echo terminal_output=...;exit=0; got {events:?}"
+    );
+}
