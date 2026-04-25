@@ -2,6 +2,8 @@
 
 pub mod agents;
 pub mod cli;
+#[cfg(feature = "cockpit")]
+pub mod cockpit;
 pub mod containers;
 pub mod git;
 pub mod hooks;

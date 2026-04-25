@@ -65,8 +65,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # HTTP client (for updates)
 reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
 
-# Unix sockets
-tokio-util = { version = "0.7", features = ["codec"] }
+# Unix sockets + futures-compat for ACP byte streams
+tokio-util = { version = "0.7", features = ["codec", "compat"] }
 
 # Platform detection
 cfg-if = "1.0"
@@ -114,6 +114,10 @@ aes-gcm = { version = "0.10", optional = true }
 jsonwebtoken = { version = "9.3", optional = true }
 getrandom = { version = "0.3", optional = true }
 
+# Agent Client Protocol (cockpit feature)
+agent-client-protocol = { version = "0.11", optional = true }
+agent-client-protocol-tokio = { version = "0.11", optional = true }
+
 [features]
 default = []
 serve = [
@@ -129,6 +133,11 @@ serve = [
     "aes-gcm",
     "jsonwebtoken",
     "getrandom",
+]
+cockpit = [
+    "serve",
+    "agent-client-protocol",
+    "agent-client-protocol-tokio",
 ]
 
 [dev-dependencies]
