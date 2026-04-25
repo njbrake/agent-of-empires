@@ -766,6 +766,10 @@ pub(crate) fn refresh_agent_configs() {
 }
 
 /// Build a full `ContainerConfig` for creating a sandboxed container.
+///
+/// `profile` selects which profile's overrides (volumes, mount_ssh, volume_ignores)
+/// are merged on top of the global config. An empty `profile` falls back to the
+/// user's globally configured default profile.
 pub(crate) fn build_container_config(
     project_path_str: &str,
     sandbox_info: &SandboxInfo,
@@ -773,6 +777,7 @@ pub(crate) fn build_container_config(
     is_yolo_mode: bool,
     instance_id: &str,
     workspace_info: Option<&super::WorkspaceInfo>,
+    profile: &str,
 ) -> Result<ContainerConfig> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
 
@@ -802,8 +807,12 @@ pub(crate) fn build_container_config(
     let mut volumes = project_volumes;
 
     let sandbox_config = {
-        let profile = super::config::resolve_default_profile();
-        match super::repo_config::resolve_config_with_repo(&profile, project_path) {
+        let resolved_profile = if profile.is_empty() {
+            super::config::resolve_default_profile()
+        } else {
+            profile.to_string()
+        };
+        match super::repo_config::resolve_config_with_repo(&resolved_profile, project_path) {
             Ok(c) => {
                 tracing::debug!(
                     "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
@@ -2178,6 +2187,7 @@ extra_volumes = ["/host/data:/container/data:ro"]
             false,
             "test-instance-id",
             None,
+            "",
         )
         .unwrap();
 
@@ -2291,6 +2301,7 @@ volume_ignores = ["target", "node_modules"]
             false,
             "test-instance-id",
             None,
+            "",
         )
         .unwrap();
 
@@ -2381,6 +2392,7 @@ volume_ignores = ["target"]
             false,
             "test-instance-id",
             None,
+            "",
         )
         .unwrap();
 

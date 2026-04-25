@@ -25,7 +25,7 @@ interface Props {
   agents: AgentInfo[];
   profiles: ProfileInfo[];
   dockerAvailable: boolean;
-  onApplyProfileDefaults: (defaults: { yoloMode: boolean; sandboxEnabled: boolean; tool: string }) => void;
+  onApplyProfileDefaults: (defaults: { yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] }) => void;
 }
 
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
@@ -73,10 +73,17 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
       if (settings) {
         const session = settings.session as Record<string, unknown> | undefined;
         const sandbox = settings.sandbox as Record<string, unknown> | undefined;
+        // Pre-populate sandbox env from the profile so the user can see and edit
+        // it before submission; without this, an empty extra_env is sent and the
+        // backend falls back to the wrong (globally-default) profile's env vars.
+        const env = Array.isArray(sandbox?.environment)
+          ? (sandbox.environment as unknown[]).filter((v): v is string => typeof v === "string")
+          : [];
         onApplyProfileDefaults({
           yoloMode: (session?.yolo_mode_default as boolean) ?? false,
           sandboxEnabled: (sandbox?.enabled_by_default as boolean) ?? false,
           tool: (session?.default_tool as string) || data.tool,
+          extraEnv: env,
         });
       }
     } catch {

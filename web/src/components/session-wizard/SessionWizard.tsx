@@ -47,7 +47,7 @@ type Action =
   | { type: "SET_GROUPS"; groups: GroupInfo[] }
   | { type: "SET_PROFILES"; profiles: ProfileInfo[] }
   | { type: "SET_DOCKER"; available: boolean }
-  | { type: "APPLY_PROFILE_DEFAULTS"; yoloMode: boolean; sandboxEnabled: boolean; tool: string };
+  | { type: "APPLY_PROFILE_DEFAULTS"; yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] };
 
 const initialData: WizardData = {
   path: "", title: "", group: "", tool: "claude", profile: "",
@@ -61,7 +61,7 @@ function reducer(state: WizardState, action: Action): WizardState {
     case "SET_FIELD": {
       const newData = { ...state.data, [action.field]: action.value };
       // Mark as dirty when user manually edits agent-step fields after a profile was chosen
-      if (state.data.profile && ["yoloMode", "sandboxEnabled", "tool"].includes(action.field)) {
+      if (state.data.profile && ["yoloMode", "sandboxEnabled", "tool", "extraEnv"].includes(action.field)) {
         newData.profileDirty = true;
       }
       return { ...state, data: newData, error: null };
@@ -90,6 +90,7 @@ function reducer(state: WizardState, action: Action): WizardState {
           yoloMode: action.yoloMode,
           sandboxEnabled: action.sandboxEnabled,
           tool: action.tool || state.data.tool,
+          extraEnv: action.extraEnv,
           profileDirty: false,
         },
       };
@@ -170,7 +171,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
     dispatch({ type: "SET_FIELD", field, value });
   }, []);
 
-  const handleApplyProfileDefaults = useCallback((defaults: { yoloMode: boolean; sandboxEnabled: boolean; tool: string }) => {
+  const handleApplyProfileDefaults = useCallback((defaults: { yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] }) => {
     dispatch({ type: "APPLY_PROFILE_DEFAULTS", ...defaults });
   }, []);
 
