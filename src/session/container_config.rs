@@ -807,11 +807,7 @@ pub(crate) fn build_container_config(
     let mut volumes = project_volumes;
 
     let sandbox_config = {
-        let resolved_profile = if profile.is_empty() {
-            super::config::resolve_default_profile()
-        } else {
-            profile.to_string()
-        };
+        let resolved_profile = super::config::effective_profile(profile);
         match super::repo_config::resolve_config_with_repo(&resolved_profile, project_path) {
             Ok(c) => {
                 tracing::debug!(

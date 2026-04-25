@@ -314,17 +314,13 @@ pub(crate) fn collect_environment(
 }
 
 /// Resolve the effective sandbox config by merging global + the given profile + repo.
-/// An empty `profile` falls back to the user's globally configured default profile,
-/// preserving prior behavior for callers that don't track per-instance profile (e.g. tests).
+/// An empty `profile` falls back to the user's globally configured default profile
+/// via [`super::config::effective_profile`].
 fn resolved_sandbox_config(
     profile: &str,
     project_path: &std::path::Path,
 ) -> super::config::SandboxConfig {
-    let resolved = if profile.is_empty() {
-        super::config::resolve_default_profile()
-    } else {
-        profile.to_string()
-    };
+    let resolved = super::config::effective_profile(profile);
     super::repo_config::resolve_config_with_repo(&resolved, project_path)
         .map(|c| c.sandbox)
         .unwrap_or_default()
@@ -458,7 +454,7 @@ environment = ["GH_TOKEN=write_token"]
         .unwrap();
 
         // Sandbox info with no per-session overrides forces the fallback path
-        // through `sandbox_config.environment` — the buggy path pre-fix.
+        // through `sandbox_config.environment`, which is the buggy path pre-fix.
         let sandbox = SandboxInfo {
             enabled: true,
             container_id: None,
@@ -471,7 +467,9 @@ environment = ["GH_TOKEN=write_token"]
 
         let result_personal = build_docker_env_args("personal", &sandbox, &project_path);
         assert!(
-            result_personal.docker_args.contains("GH_TOKEN='write_token'"),
+            result_personal
+                .docker_args
+                .contains("GH_TOKEN='write_token'"),
             "passing profile=\"personal\" should resolve personal profile's env, got: {}",
             result_personal.docker_args,
         );

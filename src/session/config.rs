@@ -661,6 +661,18 @@ pub fn resolve_default_profile() -> String {
         .unwrap_or_else(|_| "default".to_string())
 }
 
+/// Return `profile` if non-empty, otherwise the user's globally configured
+/// default profile. Used at start-time config-resolution sites that prefer
+/// an instance's `source_profile` but tolerate it being unset (e.g. tests
+/// or pre-`source_profile`-wiring callers).
+pub fn effective_profile(profile: &str) -> String {
+    if profile.is_empty() {
+        resolve_default_profile()
+    } else {
+        profile.to_string()
+    }
+}
+
 pub fn get_update_settings() -> UpdatesConfig {
     load_config()
         .ok()

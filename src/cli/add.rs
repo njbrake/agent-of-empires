@@ -212,6 +212,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     };
 
     let mut instance = Instance::new(&final_title, path.to_str().unwrap_or(""));
+    instance.source_profile = profile.to_string();
 
     if let Some(group) = &group_path {
         instance.group_path = group.trim().to_string();

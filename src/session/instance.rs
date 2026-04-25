@@ -188,6 +188,13 @@ impl Instance {
         self.last_accessed_at = Some(Utc::now());
     }
 
+    /// Return the profile that should drive config resolution for this
+    /// instance, falling back to the user's globally configured default
+    /// when `source_profile` was never populated (e.g. legacy callers).
+    pub fn effective_profile(&self) -> String {
+        super::config::effective_profile(&self.source_profile)
+    }
+
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
     }
@@ -410,11 +417,7 @@ impl Instance {
             // source_profile so profile-specific on_launch hooks fire for sessions
             // created under that profile, not just whichever profile is currently
             // set as the global default.
-            let profile = if self.source_profile.is_empty() {
-                super::config::resolve_default_profile()
-            } else {
-                self.source_profile.clone()
-            };
+            let profile = self.effective_profile();
             let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
                 .map(|c| c.hooks.on_launch)
                 .unwrap_or_default();

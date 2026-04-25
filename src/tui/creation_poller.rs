@@ -122,6 +122,12 @@ impl CreationPoller {
         };
 
         let mut instance = build_result.instance;
+        // Tag the instance with its profile NOW, before container creation or any
+        // hook execution. Downstream config-resolution sites (build_container_config,
+        // on_launch hook resolution, build_docker_env_args) read source_profile to
+        // pick the right profile's overrides; if it's left blank they'd silently
+        // fall back to the global default profile.
+        instance.source_profile = profile.clone();
         let created_worktree = build_result.created_worktree;
         let created_workspace_worktrees = build_result.created_workspace_worktrees;
 
