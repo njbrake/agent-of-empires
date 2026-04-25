@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
 };
 use futures_util::StreamExt;
 use ratatui::prelude::*;
@@ -28,6 +28,12 @@ pub struct App {
     /// reader thread on stdin; if it's alive when tmux attach-session starts,
     /// the two compete for stdin and tmux fails to initialize its client.
     event_stream: Option<EventStream>,
+    /// Tracks whether we currently have xterm mouse-tracking enabled. The TUI
+    /// turns it off whenever the serve view is on screen so users can drag-
+    /// select the long token URL natively, then turns it back on when the
+    /// view dismisses. Default true to match the startup `EnableMouseCapture`
+    /// in `tui::run`.
+    mouse_captured: bool,
 }
 
 /// Check if the app version changed and return the previous version if changelog should be shown.
@@ -94,7 +100,29 @@ impl App {
             update_info: None,
             update_rx: None,
             event_stream: Some(EventStream::new()),
+            mouse_captured: true,
         })
+    }
+
+    /// Turn xterm mouse tracking on or off to match the current view state.
+    /// Called after handling each user input so that opening the serve view
+    /// releases the mouse for native drag-to-select, and dismissing it
+    /// restores wheel-scroll for the preview pane.
+    fn sync_mouse_capture(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        let desired = !self.home.is_serve_view_open();
+        if desired == self.mouse_captured {
+            return Ok(());
+        }
+        if desired {
+            crossterm::execute!(terminal.backend_mut(), EnableMouseCapture)?;
+        } else {
+            crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
+        }
+        self.mouse_captured = desired;
+        Ok(())
     }
 
     /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
@@ -113,8 +141,10 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
+            DisableMouseCapture,
             crossterm::cursor::Show
         )?;
+        self.mouse_captured = false;
         std::io::Write::flush(terminal.backend_mut())?;
 
         // Drop the event stream so its background reader releases stdin.
@@ -135,6 +165,10 @@ impl App {
             EnableBracketedPaste,
             crossterm::cursor::Hide
         )?;
+        // Defer mouse-capture restore to sync_mouse_capture so we don't
+        // briefly enable it only to disable again when the user returned
+        // to the serve view.
+        self.sync_mouse_capture(terminal)?;
         std::io::Write::flush(terminal.backend_mut())?;
 
         terminal.clear()?;
@@ -234,6 +268,7 @@ impl App {
                     match event {
                         Some(Ok(Event::Key(key))) => {
                             self.handle_key(key, terminal).await?;
+                            self.sync_mouse_capture(terminal)?;
 
                             // Skip the draw when returning from tmux attach.
                             // needs_redraw triggers a clear + stale event drain
@@ -245,6 +280,24 @@ impl App {
 
                             if self.should_quit {
                                 break;
+                            }
+                            continue;
+                        }
+                        Some(Ok(Event::Mouse(mouse))) => {
+                            let hit_scroll_target = if self.home.is_diff_open() {
+                                self.home.hit_diff(mouse.column, mouse.row)
+                            } else if self.home.has_selected_session() {
+                                self.home.hit_preview(mouse.column, mouse.row)
+                            } else {
+                                false
+                            };
+                            let handled = match mouse.kind {
+                                MouseEventKind::ScrollUp if hit_scroll_target => self.home.handle_scroll_up(),
+                                MouseEventKind::ScrollDown if hit_scroll_target => self.home.handle_scroll_down(),
+                                _ => false,
+                            };
+                            if handled {
+                                terminal.draw(|f| self.render(f))?;
                             }
                             continue;
                         }

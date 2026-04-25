@@ -143,6 +143,11 @@ impl HomeView {
             return;
         }
 
+        // Diff view takes over the whole screen
+        if self.diff_view.is_some() {
+            self.preview_area = Rect::default();
+            self.diff_area = self.active_diff_area(area);
+        }
         if let Some(ref mut diff) = self.diff_view {
             // Compute diff for selected file if not cached
             let _ = diff.get_current_diff();
@@ -231,6 +236,34 @@ impl HomeView {
             profile_picker_dialog,
             send_message_dialog,
         );
+    }
+
+    fn active_diff_area(&self, area: Rect) -> Rect {
+        let Some(diff) = &self.diff_view else {
+            return Rect::default();
+        };
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(3),
+            ])
+            .split(area);
+        let content_area = layout[1];
+        let effective_file_list_width = diff
+            .file_list_width
+            .min(content_area.width.saturating_sub(40))
+            .max(5);
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(effective_file_list_width),
+                Constraint::Min(40),
+            ])
+            .split(content_area);
+        Block::default().borders(Borders::ALL).inner(panes[1])
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -684,6 +717,8 @@ impl HomeView {
             .padding(Padding::horizontal(1));
 
         let inner = block.inner(area);
+        self.preview_area = inner;
+        self.diff_area = Rect::default();
         frame.render_widget(block, area);
 
         match self.view_mode {
@@ -1005,8 +1040,11 @@ impl HomeView {
             Span::styled(" ?", key_style),
             Span::styled(" Help ", desc_style),
             Span::styled("│", sep_style),
-            Span::styled(" J/K", key_style),
-            Span::styled(" Scroll ", desc_style),
+            // Mouse capture is enabled globally, which disables the terminal's
+            // native drag-to-select. Surface the modifier-key workaround so
+            // users don't think copy-paste is broken.
+            Span::styled(" ⌥/Shift+drag", key_style),
+            Span::styled(" Select ", desc_style),
             Span::styled("│", sep_style),
             Span::styled(if strict { " Q" } else { " q" }, key_style),
             Span::styled(" Quit", desc_style),
