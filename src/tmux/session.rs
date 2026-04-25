@@ -303,7 +303,9 @@ impl Session {
 
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
-            Self::tmux_send(&target, &["-l", line])?;
+            // `--` ends option parsing so lines beginning with `-` (markdown
+            // bullets, CLI flags in prompts) are not misread as tmux flags.
+            Self::tmux_send(&target, &["-l", "--", line])?;
             if i < lines.len() - 1 {
                 // ESC + CR: what terminals send for Shift+Enter (inserts newline)
                 Self::tmux_send(&target, &["-H", "1b", "0d"])?;
