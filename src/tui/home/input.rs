@@ -1020,6 +1020,25 @@ impl HomeView {
             KeyCode::Char('o') => {
                 self.apply_sort_order(self.sort_order.cycle());
             }
+            // iPad-friendly ±10 aliases for PageUp/PageDown. iPads have no
+            // PageUp/PageDown keys, and Cmd combos are typically stripped by
+            // SSH/Mosh before reaching the TTY. Shift+Up/Down arrives intact
+            // on every terminal we test, and `{` / `}` (Shift+`[` / Shift+`]`)
+            // pass through as plain chars so Cmd+Shift+`[` / `]` works whether
+            // or not the terminal forwards Cmd. Both bind to the same step
+            // size as PageUp/PageDown to keep the mental model simple.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_cursor(-10);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_cursor(10);
+            }
+            KeyCode::Char('{') => {
+                self.move_cursor(-10);
+            }
+            KeyCode::Char('}') => {
+                self.move_cursor(10);
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_cursor(-1);
             }
