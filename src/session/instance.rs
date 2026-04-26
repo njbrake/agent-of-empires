@@ -508,11 +508,6 @@ impl Instance {
             if env_info.exports.is_empty() {
                 Some(wrapped)
             } else {
-                // Prepend shell exports for inherited env vars before the
-                // wrapped command. Do NOT use `exec` here: TERM and COLORTERM
-                // are always Inherit entries, so exports is never empty, and
-                // `exec {shell} -lc ...` inside a tmux session command produces
-                // a double-exec-into-login-shell that kills the pane on startup.
                 let exports = env_info.exports.join("; ");
                 Some(format!("{}; {}", exports, wrapped))
             }
