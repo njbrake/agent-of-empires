@@ -783,7 +783,6 @@ pub(crate) fn extract_vibe_session_id_from_meta(path: &std::path::Path) -> Optio
 /// ```typescript
 /// const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 /// ```
-#[cfg(test)]
 pub(crate) fn encode_pi_project_path(cwd: &str) -> String {
     let stripped = cwd
         .strip_prefix('/')
@@ -805,7 +804,6 @@ pub(crate) fn encode_pi_project_path(cwd: &str) -> String {
 ///
 /// The first line must be a JSON object with `"type": "session"` and an `"id"` field.
 /// Returns `None` if the file is empty, unreadable, or the header doesn't match.
-#[cfg(test)]
 pub(crate) fn extract_pi_session_id_from_header(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
@@ -821,7 +819,6 @@ pub(crate) fn extract_pi_session_id_from_header(path: &Path) -> Option<String> {
 ///
 /// The first line must be a JSON object with `"type": "session"` and a `"cwd"` field.
 /// Returns `None` if missing or empty.
-#[cfg(test)]
 pub(crate) fn extract_pi_cwd_from_header(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
@@ -847,6 +844,105 @@ pub(crate) fn extract_pi_uuid_from_filename(path: &Path) -> Option<String> {
     let uuid_part = stem.rsplit('_').next()?;
     Uuid::parse_str(uuid_part).ok()?;
     Some(uuid_part.to_string())
+}
+
+/// Capture Pi session ID by scanning the Pi agent sessions directory.
+///
+/// Looks for `.jsonl` session files under `~/.pi/agent/sessions/` (or
+/// `$PI_CODING_AGENT_DIR/sessions/`). The primary lookup uses the encoded
+/// project path as a directory name. Falls back to scanning all session
+/// directories and matching via the `cwd` header field. Session IDs present
+/// in `exclusion` are skipped.
+pub(crate) fn capture_pi_session_id(
+    project_path: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let pi_home = resolve_agent_home(Some("PI_CODING_AGENT_DIR"), ".pi/agent")?;
+    let sessions_dir = pi_home.join("sessions");
+
+    if !sessions_dir.exists() {
+        anyhow::bail!(
+            "Pi sessions directory not found: {}",
+            sessions_dir.display()
+        );
+    }
+
+    let encoded_name = encode_pi_project_path(project_path);
+    let project_dir = sessions_dir.join(&encoded_name);
+
+    // Primary path: scan the encoded project directory
+    if project_dir.is_dir() {
+        let mut candidates: Vec<(String, std::time::SystemTime)> = Vec::new();
+
+        for entry in resilient_read_dir(&project_dir)? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let session_id = match extract_pi_session_id_from_header(&path) {
+                Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
+                _ => continue,
+            };
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            candidates.push((session_id, modified));
+        }
+
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+        if let Some((id, _)) = candidates.first() {
+            return Ok(id.clone());
+        }
+
+        anyhow::bail!("No Pi session found matching project path");
+    }
+
+    // Fallback: scan all subdirectories and match via CWD header
+    let canonical_project = canonicalize_or_raw(project_path);
+
+    for subdir_entry in resilient_read_dir(&sessions_dir)? {
+        let subdir_path = subdir_entry.path();
+        if !subdir_path.is_dir() {
+            continue;
+        }
+        for file_entry in resilient_read_dir(&subdir_path)? {
+            let file_path = file_entry.path();
+            if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let cwd = match extract_pi_cwd_from_header(&file_path) {
+                Some(c) => c,
+                None => continue,
+            };
+            let canonical_cwd = canonicalize_or_raw(&cwd);
+            if canonical_cwd != canonical_project {
+                continue;
+            }
+            let session_id = match extract_pi_session_id_from_header(&file_path) {
+                Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
+                _ => continue,
+            };
+            return Ok(session_id);
+        }
+    }
+
+    anyhow::bail!("No Pi session found matching project path")
+}
+
+/// Polling closure for Pi session tracking.
+pub(crate) fn pi_poll_fn(
+    project_path: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        capture_pi_session_id(&project_path, &exclusion)
+            .map_err(|e| tracing::debug!("Pi poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
 }
 
 pub(crate) fn is_valid_session_id(id: &str) -> bool {
@@ -1739,5 +1835,258 @@ mod tests {
             extract_pi_uuid_from_filename(&path),
             Some("019342ab-1234-7def-8901-abcdef012345".to_string())
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid = "019342ab-1234-7def-8901-abcdef012345";
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_most_recent_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        std::fs::write(
+            project_dir.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_old}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid_new}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_new}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid_new);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_exclusion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_excluded = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_kept = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        std::fs::write(
+            project_dir.join(format!("2024-12-01T10-00-00-000Z_{uuid_excluded}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_excluded}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid_kept}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_kept}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert(uuid_excluded.to_string());
+
+        let result = capture_pi_session_id("/home/user/project", &exclusion);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid_kept);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_all_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert(uuid.to_string());
+
+        let result = capture_pi_session_id("/home/user/project", &exclusion);
+        assert!(result.is_err());
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_err());
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_no_matching_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let other_encoded = encode_pi_project_path("/home/user/other-project");
+        let other_dir = sessions_dir.join(&other_encoded);
+        std::fs::create_dir_all(&other_dir).unwrap();
+
+        let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        std::fs::write(
+            other_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/other-project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/my-project", &HashSet::new());
+        assert!(result.is_err());
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_invalid_jsonl_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        std::fs::write(
+            project_dir.join("2024-12-01T10-00-00-000Z_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl"),
+            "this is not valid json",
+        )
+        .unwrap();
+
+        let uuid_valid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid_valid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_valid}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid_valid);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_respects_env_var() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid);
+
+        std::env::remove_var("PI_CODING_AGENT_DIR");
+        let result_without_env = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result_without_env.is_err());
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
     }
 }

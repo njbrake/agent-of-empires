@@ -18,7 +18,7 @@ use super::poller::SessionPoller;
 use crate::session::capture::{
     build_exclusion_set, capture_codex_session_id, capture_gemini_session_id,
     capture_vibe_session_id, claude_poll_fn, codex_poll_fn, gemini_poll_fn,
-    generate_claude_session_id, is_valid_session_id, opencode_poll_fn,
+    generate_claude_session_id, is_valid_session_id, opencode_poll_fn, pi_poll_fn,
     try_capture_opencode_session_id, validated_session_id, vibe_poll_fn,
 };
 
@@ -1036,6 +1036,7 @@ impl Instance {
             "claude" => Box::new(claude_poll_fn(self.project_path.clone(), self.id.clone())),
             "codex" => Box::new(codex_poll_fn(self.project_path.clone(), self.id.clone())),
             "gemini" => Box::new(gemini_poll_fn(self.project_path.clone(), self.id.clone())),
+            "pi" => Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone())),
             "vibe" => Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone())),
             "opencode" => Box::new(opencode_poll_fn(
                 self.project_path.clone(),
@@ -2148,6 +2149,17 @@ mod tests {
 
         let flags_new = build_resume_flags("vibe", session_id, false);
         assert_eq!(flags_new, "--resume vibe-session-xyz");
+    }
+
+    #[test]
+    fn test_build_pi_resume_flags() {
+        // Pi uses Flag("--session") strategy
+        let flags = build_resume_flags("pi", "019342ab-1234-7def-8901-abcdef012345", true);
+        assert_eq!(flags, "--session 019342ab-1234-7def-8901-abcdef012345");
+
+        // Flag variant doesn't distinguish existing vs new sessions
+        let flags_new = build_resume_flags("pi", "019342ab-1234-7def-8901-abcdef012345", false);
+        assert_eq!(flags_new, "--session 019342ab-1234-7def-8901-abcdef012345");
     }
 
     #[test]
