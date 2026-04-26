@@ -2108,6 +2108,51 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_capture_pi_session_id_cwd_fallback_most_recent_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        // Two sessions in DIFFERENT wrongly-encoded subdirs, both with CWD
+        // matching our project. The fallback must pick the most recent.
+        let dir_a = sessions_dir.join("--wrong-name-a--");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::write(
+            dir_a.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_old}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let dir_b = sessions_dir.join("--wrong-name-b--");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(
+            dir_b.join(format!("2024-12-03T14-00-00-000Z_{uuid_new}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_new}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(
+            result.is_ok(),
+            "Fallback should find sessions via CWD header"
+        );
+        assert_eq!(result.unwrap(), uuid_new);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
     fn test_capture_pi_session_id_cwd_fallback_succeeds() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions_dir = tmp.path().join("sessions");
