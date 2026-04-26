@@ -731,12 +731,7 @@ impl Instance {
             let env_part = format!("{} ", docker_args);
             let wrapped =
                 wrap_command_ignore_suspend(&container.exec_command(Some(&env_part), &tool_cmd));
-            if env_info.exports.is_empty() {
-                Some(wrapped)
-            } else {
-                let exports = env_info.exports.join("; ");
-                Some(format!("{}; exec {}", exports, wrapped))
-            }
+            Some(prepend_exports(&env_info.exports, wrapped))
         } else {
             self.build_host_command(agent, &on_launch_hooks)
         };
@@ -1439,6 +1434,23 @@ fn wrap_command_ignore_suspend(cmd: &str) -> String {
     )
 }
 
+/// Prepend shell `export` statements to an already-wrapped sandbox command.
+///
+/// `wrapped` MUST be the output of `wrap_command_ignore_suspend`, which
+/// guarantees a leading `exec`. This function therefore MUST NOT add another
+/// `exec` of its own: in bash, `exec exec <cmd>` searches PATH for a binary
+/// literally named `exec`, fails with exit 127, and kills the tmux pane on
+/// every sandboxed launch. zsh-on-macOS happens to tolerate the double-exec,
+/// which is why this regression hid for several days after #757 added the
+/// leading `exec` to `wrap_command_ignore_suspend`. See PR #819.
+fn prepend_exports(exports: &[String], wrapped: String) -> String {
+    if exports.is_empty() {
+        wrapped
+    } else {
+        format!("{}; {}", exports.join("; "), wrapped)
+    }
+}
+
 /// Check whether captured pane content indicates a living agent rather than
 /// a bare shell prompt. Used to prevent `is_shell_stale()` from producing
 /// false `Error` status when the agent binary is a shell wrapper or spawns
@@ -1561,6 +1573,42 @@ mod tests {
             "wrapped command should contain the escaped env var assignment: {}",
             wrapped,
         );
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_prepend_exports_does_not_double_exec() {
+        // Regression: `wrap_command_ignore_suspend` always emits a string
+        // starting with `exec` (since #757). `prepend_exports` MUST NOT add
+        // another `exec`, because bash interprets `exec exec <cmd>` as
+        // "exec a binary literally named `exec`", fails with exit 127, and
+        // kills the pane on every sandboxed launch. zsh-on-macOS happens
+        // to tolerate the double-exec, which is why this regression hid
+        // for several days after #757 merged. See PR #819.
+        std::env::set_var("SHELL", "/bin/bash");
+        let wrapped = wrap_command_ignore_suspend("docker exec -it container claude");
+        assert!(
+            wrapped.starts_with("exec "),
+            "test invariant: wrapped must start with `exec ` (else this test \
+             is misaligned with wrap_command_ignore_suspend's contract): {}",
+            wrapped,
+        );
+
+        let exports = vec![
+            "export TERM='xterm-256color'".to_string(),
+            "export COLORTERM='truecolor'".to_string(),
+        ];
+        let session_cmd = prepend_exports(&exports, wrapped);
+
+        assert!(
+            !session_cmd.contains("exec exec"),
+            "session cmd must not contain `exec exec` -- bash exits 127 on it: {}",
+            session_cmd,
+        );
+
+        // Empty exports must pass through unchanged.
+        let wrapped2 = wrap_command_ignore_suspend("docker exec -it container claude");
+        assert_eq!(prepend_exports(&[], wrapped2.clone()), wrapped2);
     }
 
     #[test]

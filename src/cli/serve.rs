@@ -58,6 +58,20 @@ pub struct ServeArgs {
     pub passphrase: Option<String>,
 }
 
+/// True when `aoe serve --remote` will route through Cloudflare and therefore
+/// needs `cloudflared` on PATH. That covers both an explicit named tunnel
+/// (`--tunnel-name`) and the quick-tunnel fallback path that runs when
+/// Tailscale isn't usable or the user passed `--no-tailscale`. Mirrors the
+/// transport selection inside `start_server()` so the early guard doesn't
+/// reject Tailscale-only setups (issue #813).
+fn cloudflared_required(
+    no_tailscale: bool,
+    has_tunnel_name: bool,
+    tailscale_available: bool,
+) -> bool {
+    no_tailscale || has_tunnel_name || !tailscale_available
+}
+
 pub fn pid_file_path() -> Result<PathBuf> {
     let dir = crate::session::get_app_dir()?;
     Ok(dir.join("serve.pid"))
@@ -181,6 +195,20 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         return stop_daemon();
     }
 
+    // Refuse to start a second instance (daemon or foreground) while another
+    // aoe serve is already running. Without this gate, a foreground
+    // `aoe serve` would overwrite the existing daemon's PID file in the
+    // non-daemon write below before its own port-bind eventually failed; the
+    // post-exit cleanup would then delete the (now-foreground) PID file and
+    // orphan the real daemon.
+    if let Some(existing) = daemon_pid() {
+        bail!(
+            "A serve daemon is already running (PID {}). \
+             Stop it first with `aoe serve --stop`.",
+            existing
+        );
+    }
+
     let is_localhost = args.host == "localhost"
         || args
             .host
@@ -218,10 +246,19 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         );
     }
 
-    // Remote mode: check cloudflared and force localhost binding
+    // Remote mode: check cloudflared (only when Tailscale Funnel can't carry the
+    // traffic) and force localhost binding. start_server() prefers Tailscale when
+    // it's available, so requiring cloudflared up front would falsely reject
+    // Tailscale-only setups (issue #813).
     let host = if args.remote {
-        crate::server::tunnel::check_cloudflared()?;
-        // Force localhost since cloudflared connects to localhost
+        if cloudflared_required(
+            args.no_tailscale,
+            args.tunnel_name.is_some(),
+            crate::server::tunnel::tailscale_available_sync(),
+        ) {
+            crate::server::tunnel::check_cloudflared()?;
+        }
+        // Force localhost since the tunnel connects to localhost
         "127.0.0.1".to_string()
     } else {
         args.host.clone()
@@ -243,7 +280,8 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         eprintln!("  public internet without TLS termination.");
         eprintln!();
         eprintln!("  Or use: aoe serve --remote");
-        eprintln!("  for automatic HTTPS via Cloudflare Tunnel.");
+        eprintln!("  for automatic HTTPS via Tailscale Funnel");
+        eprintln!("  (preferred) or Cloudflare Tunnel.");
         eprintln!();
         if args.read_only {
             eprintln!("  Read-only mode is ON: terminal input is disabled.");
@@ -306,6 +344,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
             let _ = std::fs::remove_file(&path);
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = std::fs::remove_file(dir.join("serve.url"));
+                let _ = std::fs::remove_file(dir.join("serve.log"));
                 let _ = std::fs::remove_file(dir.join("serve.mode"));
                 let _ = std::fs::remove_file(dir.join("serve.passphrase"));
             }
@@ -325,19 +364,6 @@ pub fn daemon_log_path() -> Result<PathBuf> {
 
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     use std::process::{Command, Stdio};
-
-    // Refuse to spawn if another daemon is already running. The TUI
-    // dialog checks daemon_pid() before reaching here, but a CLI user
-    // could call `aoe serve --daemon` twice, and a race between the
-    // TUI check and this function could overwrite the PID file and
-    // orphan the existing daemon.
-    if let Some(existing) = daemon_pid() {
-        bail!(
-            "A serve daemon is already running (PID {}). \
-             Stop it first with `aoe serve --stop`.",
-            existing
-        );
-    }
 
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
@@ -501,4 +527,32 @@ fn stop_daemon() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloudflared_skipped_when_tailscale_available_and_default_flags() {
+        // Regression: aoe serve --remote with Tailscale up and cloudflared
+        // missing was failing because of the unconditional check. Tailscale
+        // alone is enough.
+        assert!(!cloudflared_required(false, false, true));
+    }
+
+    #[test]
+    fn cloudflared_required_when_no_tailscale_flag_set() {
+        assert!(cloudflared_required(true, false, true));
+    }
+
+    #[test]
+    fn cloudflared_required_when_named_tunnel_pinned() {
+        assert!(cloudflared_required(false, true, true));
+    }
+
+    #[test]
+    fn cloudflared_required_when_tailscale_unavailable() {
+        assert!(cloudflared_required(false, false, false));
+    }
 }
