@@ -17,7 +17,7 @@ use super::poller::SessionPoller;
 
 use crate::session::capture::{
     build_exclusion_set, capture_codex_session_id, capture_gemini_session_id,
-    capture_vibe_session_id, claude_poll_fn, codex_poll_fn, gemini_poll_fn,
+    capture_pi_session_id, capture_vibe_session_id, claude_poll_fn, codex_poll_fn, gemini_poll_fn,
     generate_claude_session_id, is_valid_session_id, opencode_poll_fn, pi_poll_fn,
     try_capture_opencode_session_id, validated_session_id, vibe_poll_fn,
 };
@@ -450,6 +450,7 @@ impl Instance {
             "codex" => capture_codex_session_id(&self.project_path, &exclusion).ok(),
             "gemini" => capture_gemini_session_id(&self.project_path, &exclusion).ok(),
             "vibe" => capture_vibe_session_id(&self.project_path, &exclusion).ok(),
+            "pi" => capture_pi_session_id(&self.project_path, &exclusion).ok(),
             _ => None,
         };
         result.and_then(validated_session_id)

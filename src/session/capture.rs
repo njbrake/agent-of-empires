@@ -800,11 +800,8 @@ pub(crate) fn encode_pi_project_path(cwd: &str) -> String {
     format!("--{encoded}--")
 }
 
-/// Extract the session ID from the first line of a Pi `.jsonl` session file.
-///
-/// The first line must be a JSON object with `"type": "session"` and an `"id"` field.
-/// Returns `None` if the file is empty, unreadable, or the header doesn't match.
-pub(crate) fn extract_pi_session_id_from_header(path: &Path) -> Option<String> {
+/// Read a Pi session JSONL header once and return both session ID and CWD.
+fn extract_pi_header_fields(path: &Path) -> Option<(Option<String>, Option<String>)> {
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
     let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
@@ -812,26 +809,30 @@ pub(crate) fn extract_pi_session_id_from_header(path: &Path) -> Option<String> {
     if parsed.get("type")?.as_str()? != "session" {
         return None;
     }
-    parsed.get("id")?.as_str().map(String::from)
+    let session_id = parsed.get("id").and_then(|v| v.as_str()).map(String::from);
+    let cwd = parsed
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    Some((session_id, cwd))
+}
+
+/// Extract the session ID from the first line of a Pi `.jsonl` session file.
+///
+/// The first line must be a JSON object with `"type": "session"` and an `"id"` field.
+/// Returns `None` if the file is empty, unreadable, or the header doesn't match.
+pub(crate) fn extract_pi_session_id_from_header(path: &Path) -> Option<String> {
+    extract_pi_header_fields(path).and_then(|(id, _)| id)
 }
 
 /// Extract the working directory from the first line of a Pi `.jsonl` session file.
 ///
 /// The first line must be a JSON object with `"type": "session"` and a `"cwd"` field.
 /// Returns `None` if missing or empty.
+#[cfg(test)]
 pub(crate) fn extract_pi_cwd_from_header(path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let reader = std::io::BufReader::new(file);
-    let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&first_line).ok()?;
-    if parsed.get("type")?.as_str()? != "session" {
-        return None;
-    }
-    parsed
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+    extract_pi_header_fields(path).and_then(|(_, cwd)| cwd)
 }
 
 /// Extract a UUID from a Pi session filename.
@@ -901,6 +902,7 @@ pub(crate) fn capture_pi_session_id(
 
     // Fallback: scan all subdirectories and match via CWD header
     let canonical_project = canonicalize_or_raw(project_path);
+    let mut fallback_candidates: Vec<(String, std::time::SystemTime)> = Vec::new();
 
     for subdir_entry in resilient_read_dir(&sessions_dir)? {
         let subdir_path = subdir_entry.path();
@@ -912,20 +914,34 @@ pub(crate) fn capture_pi_session_id(
             if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let cwd = match extract_pi_cwd_from_header(&file_path) {
-                Some(c) => c,
+            let fields = match extract_pi_header_fields(&file_path) {
+                Some(f) => f,
                 None => continue,
+            };
+            let cwd = match fields.1 {
+                Some(c) if !c.is_empty() => c,
+                _ => continue,
             };
             let canonical_cwd = canonicalize_or_raw(&cwd);
             if canonical_cwd != canonical_project {
                 continue;
             }
-            let session_id = match extract_pi_session_id_from_header(&file_path) {
+            let session_id = match fields.0 {
                 Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
                 _ => continue,
             };
-            return Ok(session_id);
+            let modified = file_entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            fallback_candidates.push((session_id, modified));
         }
+    }
+
+    fallback_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    if let Some((id, _)) = fallback_candidates.first() {
+        return Ok(id.clone());
     }
 
     anyhow::bail!("No Pi session found matching project path")
@@ -2083,6 +2099,36 @@ mod tests {
         std::env::remove_var("PI_CODING_AGENT_DIR");
         let result_without_env = capture_pi_session_id("/home/user/project", &HashSet::new());
         assert!(result_without_env.is_err());
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_cwd_fallback_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+
+        let wrong_encoded = "--some-other-name--";
+        let wrong_dir = sessions_dir.join(wrong_encoded);
+        std::fs::create_dir_all(&wrong_dir).unwrap();
+
+        let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        std::fs::write(
+            wrong_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok(), "Fallback CWD scan should find the session");
+        assert_eq!(result.unwrap(), uuid);
 
         match old_val {
             Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
