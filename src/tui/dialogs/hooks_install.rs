@@ -104,7 +104,9 @@ impl HooksInstallDialog {
             "Each hook runs:",
             Style::default().bold(),
         )));
-        lines.push(Line::from("  printf {status} > /tmp/aoe-hooks/$ID/status"));
+        lines.push(Line::from(
+            "  printf {status} > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status",
+        ));
 
         lines.push(Line::from(""));
         lines.push(Line::from(
@@ -278,6 +280,8 @@ mod tests {
         assert!(text.contains("PreToolUse"));
         assert!(text.contains("Stop"));
         assert!(text.contains("Notification"));
+        assert!(text.contains("SessionStart"));
+        assert!(text.contains("SessionEnd"));
     }
 
     #[test]

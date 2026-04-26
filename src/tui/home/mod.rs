@@ -403,6 +403,65 @@ impl HomeView {
             let _ = view.save();
         }
 
+        // Synchronize tmux env with sessions.json so build_exclusion_set()
+        // sees current data instead of stale values from previous runs.
+        let mut env_batch: Vec<(String, String, String)> = Vec::new();
+        for inst in &view.instances {
+            let tmux_name = match inst.tmux_session() {
+                Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
+                _ => continue,
+            };
+
+            env_batch.push((
+                tmux_name.clone(),
+                crate::tmux::env::AOE_INSTANCE_ID_KEY.to_string(),
+                inst.id.clone(),
+            ));
+            // Set if known, clear if not. Pollers re-publish on discovery,
+            // so clearing is safe and prevents stale exclusion-set entries.
+            if let Some(ref sid) = inst.agent_session_id {
+                env_batch.push((
+                    tmux_name,
+                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY.to_string(),
+                    sid.clone(),
+                ));
+            } else {
+                let _ = crate::tmux::env::remove_hidden_env(
+                    &tmux_name,
+                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                );
+            }
+        }
+        if !env_batch.is_empty() {
+            let batch_refs: Vec<(&str, &str, &str)> = env_batch
+                .iter()
+                .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
+                .collect();
+            if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
+                tracing::warn!("Batch env sync failed: {}", e);
+            }
+        }
+
+        // Recover session IDs for pre-existing sessions via pollers.
+        for inst in &mut view.instances {
+            let has_live_tmux = inst
+                .tmux_session()
+                .map(|s| s.exists() && !s.is_pane_dead())
+                .unwrap_or(false);
+            if !has_live_tmux {
+                continue;
+            }
+
+            if inst.supports_session_poller() && inst.session_id_poller.is_none() {
+                inst.maybe_start_poller();
+            }
+        }
+        view.instance_map = view
+            .instances
+            .iter()
+            .map(|i| (i.id.clone(), i.clone()))
+            .collect();
+
         view.flat_items = view.build_flat_items();
         view.update_selected();
         Ok(view)
@@ -433,6 +492,14 @@ impl HomeView {
                     inst.last_error = prev.last_error.clone();
                     inst.last_error_check = prev.last_error_check;
                     inst.last_start_time = prev.last_start_time;
+                    inst.session_id_poller = prev.session_id_poller.clone();
+                    // Use in-memory session_id if present; fallback to disk.
+                    // In-memory state takes priority over disk: the poller
+                    // may have updated the ID since last save.
+                    inst.agent_session_id = prev
+                        .agent_session_id
+                        .clone()
+                        .or(inst.agent_session_id.take());
                 }
             }
             // Rebuild this profile's tree from disk, preserving any collapsed
@@ -582,6 +649,57 @@ impl HomeView {
             return true;
         }
         false
+    }
+
+    /// Apply any pending session ID updates from background pollers.
+    /// Returns true if any instance was updated.
+    pub fn apply_session_id_updates(&mut self) -> bool {
+        let mut updates: Vec<(String, String)> = Vec::new();
+
+        for inst in &self.instances {
+            // Poller channel (Claude, OpenCode, Codex, Gemini, Vibe)
+            if let Some((_id, session_id)) = inst
+                .session_id_poller
+                .as_ref()
+                .and_then(|p| p.lock().ok())
+                .and_then(|p| p.try_recv_session_update())
+            {
+                let Some(session_id) = crate::session::capture::validated_session_id(session_id)
+                else {
+                    continue;
+                };
+                if inst.agent_session_id.as_deref() != Some(session_id.as_str()) {
+                    updates.push((inst.id.clone(), session_id));
+                }
+                continue;
+            }
+        }
+
+        if !updates.is_empty() {
+            let prev: Vec<(String, Option<String>)> = updates
+                .iter()
+                .filter_map(|(id, _)| {
+                    self.get_instance(id)
+                        .map(|inst| (id.clone(), inst.agent_session_id.clone()))
+                })
+                .collect();
+
+            for (id, session_id) in &updates {
+                self.mutate_instance(id, |inst| {
+                    inst.agent_session_id = Some(session_id.clone());
+                });
+            }
+            if let Err(e) = self.save() {
+                tracing::error!("Failed to save after session ID update: {}", e);
+                for (id, old_val) in &prev {
+                    self.mutate_instance(id, |inst| {
+                        inst.agent_session_id = old_val.clone();
+                    });
+                }
+                return false;
+            }
+        }
+        !updates.is_empty()
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
@@ -1293,6 +1411,15 @@ impl HomeView {
         self.try_mutate_instance(id, |inst| inst.start_terminal_with_size(size))?;
         self.save()?;
         Ok(())
+    }
+
+    pub fn restart_instance_with_size_opts(
+        &mut self,
+        id: &str,
+        size: Option<(u16, u16)>,
+        skip_on_launch: bool,
+    ) -> anyhow::Result<()> {
+        self.try_mutate_instance(id, |inst| inst.restart_with_size_opts(size, skip_on_launch))
     }
 
     pub fn select_session_by_id(&mut self, session_id: &str) {

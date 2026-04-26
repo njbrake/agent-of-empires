@@ -1,5 +1,6 @@
 //! tmux integration module
 
+pub mod env;
 mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
@@ -425,6 +426,12 @@ aoe_proj_c_ghi11111|0|1|bash\n";
                 "-y",
                 "24",
                 &compound_cmd,
+                ";",
+                "set-option",
+                "-t",
+                &session_name,
+                "pane-base-index",
+                "0",
                 ";",
                 "set-option",
                 "-p",

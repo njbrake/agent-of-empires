@@ -1,6 +1,7 @@
 //! Session management module
 
 pub mod builder;
+pub(crate) mod capture;
 pub mod civilizations;
 pub mod config;
 pub(crate) mod container_config;
@@ -8,12 +9,14 @@ pub mod deletion;
 pub(crate) mod environment;
 mod groups;
 mod instance;
+pub mod poller;
 pub mod profile_config;
 pub mod repo_config;
 pub(crate) mod serde_helpers;
 mod storage;
 
 pub use crate::sound::{SoundConfig, SoundConfigOverride};
+pub(crate) use capture::is_valid_session_id;
 pub use config::{
     get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
     ContainerRuntimeName, DefaultTerminalMode, GroupByMode, SandboxConfig, SessionConfig,
