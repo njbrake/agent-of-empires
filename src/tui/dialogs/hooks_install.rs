@@ -280,6 +280,8 @@ mod tests {
         assert!(text.contains("PreToolUse"));
         assert!(text.contains("Stop"));
         assert!(text.contains("Notification"));
+        assert!(text.contains("SessionStart"));
+        assert!(text.contains("SessionEnd"));
     }
 
     #[test]

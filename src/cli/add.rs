@@ -237,9 +237,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
         }
         instance.tool = tool_name;
-        // Only store a custom command when the user passed extra args
-        // (e.g. "claude --resume xyz"). A bare tool name/alias should resolve
-        // through the agent definition so the correct binary is used.
+        // Store verbatim if the command contains spaces (e.g. "claude --resume xyz").
+        // A bare tool name resolves through the agent definition instead.
         if cmd.trim().contains(' ') {
             instance.command = cmd.clone();
         }

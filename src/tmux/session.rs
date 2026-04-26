@@ -38,6 +38,10 @@ impl Session {
         format!("{}{}_{}", SESSION_PREFIX, safe_title, truncate_id(id, 8))
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn exists(&self) -> bool {
         if let Some(exists) = session_exists_from_cache(&self.name) {
             return exists;
