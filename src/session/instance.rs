@@ -717,7 +717,10 @@ impl Instance {
 
             self.apply_session_flags(&mut tool_cmd, "sandboxed");
 
-            let sandbox = self.sandbox_info.as_ref().unwrap();
+            let sandbox = self
+                .sandbox_info
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("sandbox_info missing for sandboxed instance"))?;
             let env_info = build_docker_env_args(
                 &self.source_profile,
                 sandbox,
