@@ -317,10 +317,10 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_pi_status,
         container_env: &[("PI_CODING_AGENT_DIR", "/root/.pi/agent")],
         hook_config: None,
-        resume_strategy: ResumeStrategy::Unsupported,
+        resume_strategy: ResumeStrategy::Flag("--session"),
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "pip install pi-agent",
+        install_hint: "npm install -g @mariozechner/pi-coding-agent",
     },
     AgentDef {
         name: "droid",
