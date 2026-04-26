@@ -58,12 +58,12 @@ pub struct ServeArgs {
     pub passphrase: Option<String>,
 }
 
-/// True when `aoe serve --remote` must fall back to Cloudflare Tunnel and
-/// therefore needs `cloudflared` on PATH. We require it when the user opts
-/// out of Tailscale (`--no-tailscale`), pins a named Cloudflare tunnel
-/// (`--tunnel-name`), or when Tailscale isn't usable on this host. Mirrors
-/// the transport selection inside `start_server()` so the early guard
-/// doesn't reject Tailscale-only setups (issue #813).
+/// True when `aoe serve --remote` will route through Cloudflare and therefore
+/// needs `cloudflared` on PATH. That covers both an explicit named tunnel
+/// (`--tunnel-name`) and the quick-tunnel fallback path that runs when
+/// Tailscale isn't usable or the user passed `--no-tailscale`. Mirrors the
+/// transport selection inside `start_server()` so the early guard doesn't
+/// reject Tailscale-only setups (issue #813).
 fn cloudflared_required(
     no_tailscale: bool,
     has_tunnel_name: bool,
@@ -197,9 +197,10 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
 
     // Refuse to start a second instance (daemon or foreground) while another
     // aoe serve is already running. Without this gate, a foreground
-    // `aoe serve` would overwrite the existing daemon's PID file at line ~330
-    // before its own port-bind eventually failed; the post-exit cleanup would
-    // then delete the (now-foreground) PID file and orphan the real daemon.
+    // `aoe serve` would overwrite the existing daemon's PID file in the
+    // non-daemon write below before its own port-bind eventually failed; the
+    // post-exit cleanup would then delete the (now-foreground) PID file and
+    // orphan the real daemon.
     if let Some(existing) = daemon_pid() {
         bail!(
             "A serve daemon is already running (PID {}). \
