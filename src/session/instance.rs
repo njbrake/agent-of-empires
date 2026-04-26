@@ -817,11 +817,6 @@ impl Instance {
         }
     }
 
-    /// Build the tmux command for a sandboxed (Docker) session.
-    ///
-    /// Runs on_launch hooks inside the container, constructs the tool command
-    /// with yolo mode / custom instructions / session flags, and wraps it in a
-    /// `docker exec` invocation.
     /// Build the tmux command for a host (non-sandboxed) session.
     ///
     /// Runs on_launch hooks on the host, then constructs the command from either
