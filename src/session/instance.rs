@@ -508,14 +508,13 @@ impl Instance {
             if env_info.exports.is_empty() {
                 Some(wrapped)
             } else {
-                // Prepend shell exports for secret env vars. The outer shell
-                // runs the exports (builtins), then `exec` replaces it with
-                // the wrapped command. This keeps secret values out of all
-                // long-lived process argv: the outer shell's argv (which
-                // contains the export values) disappears in milliseconds
-                // when exec replaces the process image.
+                // Prepend shell exports for inherited env vars before the
+                // wrapped command. Do NOT use `exec` here: TERM and COLORTERM
+                // are always Inherit entries, so exports is never empty, and
+                // `exec {shell} -lc ...` inside a tmux session command produces
+                // a double-exec-into-login-shell that kills the pane on startup.
                 let exports = env_info.exports.join("; ");
-                Some(format!("{}; exec {}", exports, wrapped))
+                Some(format!("{}; {}", exports, wrapped))
             }
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
