@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -52,32 +51,34 @@ const POLL_BACKOFF_FACTOR: f64 = 1.5;
 const POLL_STABLE_THRESHOLD: u32 = 3;
 
 /// Timeout for deferred capture completion, with margin for retry delays.
-#[allow(dead_code)]
+#[cfg(test)]
 const CAPTURE_GATE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Synchronization gate between deferred capture and polling threads.
 ///
 /// Ensures capture completes before polling starts, avoiding concurrent storage writes.
 /// The capture thread calls [`CaptureGate::complete`]; the poller calls [`CaptureGate::wait`].
-#[allow(dead_code)]
+#[cfg(test)]
 pub struct CaptureGate {
-    inner: Mutex<CaptureGateState>,
-    cond: Condvar,
+    inner: std::sync::Mutex<CaptureGateState>,
+    cond: std::sync::Condvar,
 }
 
+#[cfg(test)]
 struct CaptureGateState {
     done: bool,
     captured_id: Option<String>,
 }
 
+#[cfg(test)]
 impl CaptureGate {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(CaptureGateState {
+            inner: std::sync::Mutex::new(CaptureGateState {
                 done: false,
                 captured_id: None,
             }),
-            cond: Condvar::new(),
+            cond: std::sync::Condvar::new(),
         }
     }
 
@@ -128,12 +129,14 @@ impl CaptureGate {
     }
 }
 
+#[cfg(test)]
 impl Default for CaptureGate {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl std::fmt::Debug for CaptureGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.inner.lock().ok();
@@ -409,7 +412,7 @@ impl Default for SessionPoller {
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_adaptive_interval_initial() {
@@ -551,8 +554,6 @@ mod tests {
 
     #[test]
     fn test_poller_detects_change() {
-        use std::sync::{Arc, Mutex};
-
         let call_count = Arc::new(Mutex::new(0u32));
         let call_count_clone = call_count.clone();
 
@@ -602,8 +603,6 @@ mod tests {
 
     #[test]
     fn test_poll_now_triggers_poll() {
-        use std::sync::{Arc, Mutex};
-
         let poll_count = Arc::new(Mutex::new(0u32));
         let poll_count_clone = poll_count.clone();
 
@@ -680,8 +679,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_poller_cleanup_decrements_counter() {
-        use std::sync::{Arc, Mutex};
-
         let entered = Arc::new(Mutex::new(false));
         let entered_clone = entered.clone();
 
