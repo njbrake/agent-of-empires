@@ -776,6 +776,79 @@ pub(crate) fn extract_vibe_session_id_from_meta(path: &std::path::Path) -> Optio
         .map(String::from)
 }
 
+/// Encode a project path into Pi's directory naming convention.
+///
+/// Replicates Pi's `getDefaultSessionDir` encoding from
+/// [`session-manager.ts#L428-L435`](https://github.com/badlogic/pi-mono/blob/main/packages/pi/src/session-manager.ts#L428-L435):
+/// ```typescript
+/// const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+/// ```
+#[cfg(test)]
+pub(crate) fn encode_pi_project_path(cwd: &str) -> String {
+    let stripped = cwd
+        .strip_prefix('/')
+        .or_else(|| cwd.strip_prefix('\\'))
+        .unwrap_or(cwd);
+
+    let encoded: String = stripped
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            _ => c,
+        })
+        .collect();
+
+    format!("--{encoded}--")
+}
+
+/// Extract the session ID from the first line of a Pi `.jsonl` session file.
+///
+/// The first line must be a JSON object with `"type": "session"` and an `"id"` field.
+/// Returns `None` if the file is empty, unreadable, or the header doesn't match.
+#[cfg(test)]
+pub(crate) fn extract_pi_session_id_from_header(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&first_line).ok()?;
+    if parsed.get("type")?.as_str()? != "session" {
+        return None;
+    }
+    parsed.get("id")?.as_str().map(String::from)
+}
+
+/// Extract the working directory from the first line of a Pi `.jsonl` session file.
+///
+/// The first line must be a JSON object with `"type": "session"` and a `"cwd"` field.
+/// Returns `None` if missing or empty.
+#[cfg(test)]
+pub(crate) fn extract_pi_cwd_from_header(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&first_line).ok()?;
+    if parsed.get("type")?.as_str()? != "session" {
+        return None;
+    }
+    parsed
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Extract a UUID from a Pi session filename.
+///
+/// Pi filenames follow the pattern `2024-12-03T14-00-00-000Z_<uuid>.jsonl`.
+/// The UUID is the substring after the last `_`, before `.jsonl`.
+#[cfg(test)]
+pub(crate) fn extract_pi_uuid_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let uuid_part = stem.rsplit('_').next()?;
+    Uuid::parse_str(uuid_part).ok()?;
+    Some(uuid_part.to_string())
+}
+
 pub(crate) fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 256
@@ -1544,5 +1617,127 @@ mod tests {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_basic() {
+        assert_eq!(
+            encode_pi_project_path("/home/user/project"),
+            "--home-user-project--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_with_dashes() {
+        assert_eq!(
+            encode_pi_project_path("/home/user/my-project"),
+            "--home-user-my-project--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_trailing_slash() {
+        assert_eq!(
+            encode_pi_project_path("/home/user/project/"),
+            "--home-user-project---"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_double_slash() {
+        assert_eq!(
+            encode_pi_project_path("/a//double/slash"),
+            "--a--double-slash--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_spaces() {
+        assert_eq!(
+            encode_pi_project_path("/path/with spaces"),
+            "--path-with spaces--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_windows_backslash() {
+        assert_eq!(
+            encode_pi_project_path("C:\\Users\\bob\\proj"),
+            "--C--Users-bob-proj--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_colon() {
+        assert_eq!(encode_pi_project_path("C:/Users/bob"), "--C--Users-bob--");
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_root() {
+        assert_eq!(encode_pi_project_path("/"), "----");
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"session","id":"019342ab-1234-7def-8901-abcdef012345","cwd":"/tmp"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_pi_session_id_from_header(&path),
+            Some("019342ab-1234-7def-8901-abcdef012345".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_missing_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, r#"{"type":"session","cwd":"/tmp"}"#).unwrap();
+        assert_eq!(extract_pi_session_id_from_header(&path), None);
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_invalid_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, "not valid json at all").unwrap();
+        assert_eq!(extract_pi_session_id_from_header(&path), None);
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_empty_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(extract_pi_session_id_from_header(&path), None);
+    }
+
+    #[test]
+    fn test_extract_pi_cwd_from_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"session","id":"aaa","cwd":"/home/user/project"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_pi_cwd_from_header(&path),
+            Some("/home/user/project".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_pi_uuid_from_filename() {
+        let path =
+            PathBuf::from("2024-12-03T14-00-00-000Z_019342ab-1234-7def-8901-abcdef012345.jsonl");
+        assert_eq!(
+            extract_pi_uuid_from_filename(&path),
+            Some("019342ab-1234-7def-8901-abcdef012345".to_string())
+        );
     }
 }
