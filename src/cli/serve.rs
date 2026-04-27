@@ -201,12 +201,18 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     // non-daemon write below before its own port-bind eventually failed; the
     // post-exit cleanup would then delete the (now-foreground) PID file and
     // orphan the real daemon.
+    //
+    // Skip the bail if the PID file already points to our own process: that
+    // means we are the daemonized child that start_daemon() just spawned and
+    // pre-populated the file for, not a competing instance.
     if let Some(existing) = daemon_pid() {
-        bail!(
-            "A serve daemon is already running (PID {}). \
-             Stop it first with `aoe serve --stop`.",
-            existing
-        );
+        if existing != std::process::id() {
+            bail!(
+                "A serve daemon is already running (PID {}). \
+                 Stop it first with `aoe serve --stop`.",
+                existing
+            );
+        }
     }
 
     let is_localhost = args.host == "localhost"
