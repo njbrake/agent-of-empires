@@ -220,7 +220,7 @@ pub async fn print_update_notice() {
     if let Ok(info) = check_for_update(version, false).await {
         if info.available {
             eprintln!(
-                "\n💡 Update available: v{} → v{} (run: brew update && brew upgrade aoe)",
+                "\n💡 Update available: v{} → v{} (run: aoe update)",
                 info.current_version, info.latest_version
             );
         }
