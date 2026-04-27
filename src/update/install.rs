@@ -207,7 +207,10 @@ pub fn sanity_check_binary(binary: &Path, expected_version: &str) -> Result<()> 
         );
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.contains(expected_version) {
+    let matched = stdout
+        .split_whitespace()
+        .any(|tok| tok == expected_version || tok.trim_start_matches('v') == expected_version);
+    if !matched {
         anyhow::bail!(
             "candidate binary reports {:?}, expected version {:?}",
             stdout.trim(),
