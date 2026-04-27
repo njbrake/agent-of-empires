@@ -1,5 +1,7 @@
 //! Update check functionality
 
+pub mod install;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
