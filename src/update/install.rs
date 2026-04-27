@@ -356,6 +356,34 @@ pub fn print_unknown_refusal(binary_path: &Path) {
     let _ = std::io::stdout().flush();
 }
 
+/// Render the four-line confirm-prompt block. Used by both the CLI and
+/// the TUI dialog. Produces no trailing newline; caller adds the
+/// "Proceed? [Y/n]" line.
+pub fn format_prompt_block(
+    current_version: &str,
+    latest_version: &str,
+    method: &InstallMethod,
+    needs_sudo: bool,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Update v{current_version} → v{latest_version}\n"));
+    let (method_label, location_label) = match method {
+        InstallMethod::Homebrew => ("homebrew", "managed by Homebrew".to_string()),
+        InstallMethod::Tarball { binary_path } => {
+            ("tarball install", binary_path.display().to_string())
+        }
+        InstallMethod::Nix => ("nix", "/nix/store (read-only)".to_string()),
+        InstallMethod::Cargo => ("cargo", "~/.cargo/bin/aoe".to_string()),
+        InstallMethod::Unknown { binary_path } => ("unknown", binary_path.display().to_string()),
+    };
+    out.push_str(&format!("  Method:    {method_label}\n"));
+    out.push_str(&format!("  Location:  {location_label}"));
+    if needs_sudo {
+        out.push_str("\n  Sudo:      required (write-protected directory)");
+    }
+    out
+}
+
 /// Top-level dispatch. The caller has already chosen the version and
 /// done the user confirmation. `on_progress` is forwarded to the
 /// tarball downloader (other paths ignore it).
@@ -530,5 +558,39 @@ mod tests {
             url,
             "https://github.com/njbrake/agent-of-empires/releases/download/v0.5.0/aoe-linux-amd64.tar.gz"
         );
+    }
+
+    #[test]
+    fn prompt_block_tarball_no_sudo() {
+        let m = InstallMethod::Tarball {
+            binary_path: PathBuf::from("/home/u/.local/bin/aoe"),
+        };
+        let s = format_prompt_block("0.4.5", "0.5.0", &m, false);
+        assert!(s.contains("Update v0.4.5 → v0.5.0"));
+        assert!(s.contains("Method:    tarball install"));
+        assert!(s.contains("Location:  /home/u/.local/bin/aoe"));
+        assert!(!s.contains("Sudo:"));
+    }
+
+    #[test]
+    fn prompt_block_tarball_sudo_required() {
+        let m = InstallMethod::Tarball {
+            binary_path: PathBuf::from("/usr/local/bin/aoe"),
+        };
+        let s = format_prompt_block("0.4.5", "0.5.0", &m, true);
+        assert!(s.contains("Sudo:      required (write-protected directory)"));
+    }
+
+    #[test]
+    fn prompt_block_homebrew_omits_location_path() {
+        let s = format_prompt_block("0.4.5", "0.5.0", &InstallMethod::Homebrew, false);
+        assert!(s.contains("Method:    homebrew"));
+        assert!(s.contains("Location:  managed by Homebrew"));
+    }
+
+    #[test]
+    fn prompt_block_nix() {
+        let s = format_prompt_block("0.4.5", "0.5.0", &InstallMethod::Nix, false);
+        assert!(s.contains("Method:    nix"));
     }
 }
