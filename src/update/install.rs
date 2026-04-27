@@ -100,6 +100,40 @@ fn probe_brew_aoe_path() -> Option<PathBuf> {
     None
 }
 
+/// Return the platform string used in release tarball asset names
+/// (e.g. `linux-amd64`). `os` matches `std::env::consts::OS`,
+/// `arch` matches `std::env::consts::ARCH`.
+pub fn platform_string_for(os: &str, arch: &str) -> Result<&'static str> {
+    let os_norm = match os {
+        "linux" => "linux",
+        "macos" => "darwin",
+        other => anyhow::bail!("unsupported OS: {other}"),
+    };
+    let arch_norm = match arch {
+        "x86_64" => "amd64",
+        "aarch64" | "arm64" => "arm64",
+        other => anyhow::bail!("unsupported architecture: {other}"),
+    };
+    // Static lookup so we can return &'static str.
+    Ok(match (os_norm, arch_norm) {
+        ("linux", "amd64") => "linux-amd64",
+        ("linux", "arm64") => "linux-arm64",
+        ("darwin", "amd64") => "darwin-amd64",
+        ("darwin", "arm64") => "darwin-arm64",
+        _ => unreachable!(),
+    })
+}
+
+pub fn current_platform_string() -> Result<&'static str> {
+    platform_string_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+pub fn release_tarball_url(version: &str, platform: &str) -> String {
+    format!(
+        "https://github.com/njbrake/agent-of-empires/releases/download/v{version}/aoe-{platform}.tar.gz"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +227,58 @@ mod tests {
         };
         let result = classify_with_brew(prefix_class.clone(), None, &exe);
         assert_eq!(result, prefix_class);
+    }
+
+    #[test]
+    fn platform_string_linux_x86_64() {
+        assert_eq!(
+            platform_string_for("linux", "x86_64").unwrap(),
+            "linux-amd64"
+        );
+    }
+
+    #[test]
+    fn platform_string_linux_aarch64() {
+        assert_eq!(
+            platform_string_for("linux", "aarch64").unwrap(),
+            "linux-arm64"
+        );
+    }
+
+    #[test]
+    fn platform_string_macos_amd64() {
+        assert_eq!(
+            platform_string_for("macos", "x86_64").unwrap(),
+            "darwin-amd64"
+        );
+    }
+
+    #[test]
+    fn platform_string_macos_arm64() {
+        assert_eq!(
+            platform_string_for("macos", "aarch64").unwrap(),
+            "darwin-arm64"
+        );
+    }
+
+    #[test]
+    fn platform_string_unsupported_arch_errors() {
+        let err = platform_string_for("linux", "riscv64").unwrap_err();
+        assert!(err.to_string().contains("riscv64"));
+    }
+
+    #[test]
+    fn platform_string_unsupported_os_errors() {
+        let err = platform_string_for("windows", "x86_64").unwrap_err();
+        assert!(err.to_string().contains("windows"));
+    }
+
+    #[test]
+    fn release_tarball_url_format() {
+        let url = release_tarball_url("0.5.0", "linux-amd64");
+        assert_eq!(
+            url,
+            "https://github.com/njbrake/agent-of-empires/releases/download/v0.5.0/aoe-linux-amd64.tar.gz"
+        );
     }
 }
