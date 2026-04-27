@@ -10,6 +10,7 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use ratatui::prelude::Rect;
 use tui_input::Input;
 
 use crate::session::{
@@ -82,6 +83,11 @@ pub(super) struct PreviewCache {
     pub(super) content: String,
     pub(super) last_refresh: Instant,
     pub(super) dimensions: (u16, u16),
+    /// Number of lines that were captured into `content`. Used together with
+    /// the BUFFER reserve so consecutive wheel ticks don't trigger a fresh
+    /// `tmux capture-pane` subprocess while the cached window still covers
+    /// the requested scroll.
+    pub(super) captured_lines: usize,
 }
 
 impl Default for PreviewCache {
@@ -91,6 +97,7 @@ impl Default for PreviewCache {
             content: String::new(),
             last_refresh: Instant::now(),
             dimensions: (0, 0),
+            captured_lines: 0,
         }
     }
 }
@@ -210,6 +217,12 @@ pub struct HomeView {
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
     pub(super) container_terminal_preview_cache: PreviewCache,
+
+    /// Mouse wheel offset for the preview pane, in lines back from the bottom.
+    /// Reset to 0 whenever the selected session changes.
+    pub(super) preview_scroll_offset: u16,
+    pub(super) preview_area: Rect,
+    pub(super) diff_area: Rect,
 
     // Terminal mode for sandboxed sessions (per-session, ephemeral)
     pub(super) terminal_modes: HashMap<String, TerminalMode>,
@@ -364,6 +377,9 @@ impl HomeView {
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
+            preview_scroll_offset: 0,
+            preview_area: Rect::default(),
+            diff_area: Rect::default(),
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
@@ -914,6 +930,25 @@ impl HomeView {
         changed
     }
 
+    /// Whether the user is currently looking at a surface where they're
+    /// likely to want to copy text (URLs, error messages, release notes).
+    /// The App uses this to release xterm mouse capture so the terminal's
+    /// native drag-to-select works without a modifier; mouse capture comes
+    /// back as soon as the surface is dismissed.
+    ///
+    /// Add new dialogs here only when their content is meant to be copied,
+    /// not for every modal: capture toggling has a small but visible cost
+    /// (the wheel-scroll on the dashboard preview won't work while it's
+    /// off).
+    pub fn wants_text_selection(&self) -> bool {
+        #[cfg(feature = "serve")]
+        let serve_open = self.serve_view.is_some();
+        #[cfg(not(feature = "serve"))]
+        let serve_open = false;
+
+        serve_open || self.info_dialog.is_some() || self.changelog_dialog.is_some()
+    }
+
     pub fn has_dialog(&self) -> bool {
         #[cfg(feature = "serve")]
         let serve_open = self.serve_view.is_some();
@@ -1073,6 +1108,7 @@ impl HomeView {
         self.preview_cache = PreviewCache::default();
         self.terminal_preview_cache = PreviewCache::default();
         self.container_terminal_preview_cache = PreviewCache::default();
+        self.preview_scroll_offset = 0;
         // Clear search since match indices are invalid with new flat_items
         if self.search_active {
             self.search_active = false;

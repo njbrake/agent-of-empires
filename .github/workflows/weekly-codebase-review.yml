@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Weekly codebase review
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@v1.0.101
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |

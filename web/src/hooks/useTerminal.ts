@@ -25,6 +25,13 @@ const MOBILE_BREAKPOINT_PX = 768;
 const WHEEL_ZOOM_SENSITIVITY = 0.05;
 const WHEEL_PERSIST_DEBOUNCE_MS = 400;
 const RESIZE_DEBOUNCE_MS = 50;
+// First-resize debounce: longer than the steady-state value so the
+// initial layout transition (sidebar mount, splitter snap, font swap)
+// settles into a single PTY resize instead of one per stable point.
+// CSS transitions in the dashboard run ~200ms; 250ms covers them with
+// a small margin. After the first resize lands the debounce drops to
+// RESIZE_DEBOUNCE_MS so live splitter drags still feel responsive.
+const INITIAL_SETTLE_MS = 250;
 
 export interface TerminalState {
   connected: boolean;
@@ -68,6 +75,25 @@ export function useTerminal(
   // Populated inside the effect; `exitScrollback()` uses it to reset the
   // mobile scroll-depth counter when the user escapes copy-mode.
   const resetScrollbackDepthRef = useRef<(() => void) | null>(null);
+  // Mirror of state.isInScrollback so the resize callback (which lives
+  // inside the WTerm options closure) can read the latest value without
+  // re-creating the terminal. Updated by an effect below.
+  const isInScrollbackRef = useRef(false);
+  // Latest pending resize that was deferred because the user was reading
+  // scrollback. Drained when scrollback exits.
+  const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  // Most recent size measured by wterm's ResizeObserver. Until this is
+  // populated, term.cols/term.rows hold wterm's hardcoded 80x24 default,
+  // and sending those over WS makes the server resize the PTY before
+  // wterm has measured the container. Each spurious resize fires
+  // SIGWINCH at the regular-screen TUI (opencode, Claude Code) and the
+  // previous frame ends up stacked into tmux scrollback as garbled
+  // output. Holding off until first measurement collapses the init
+  // storm to a single resize at the correct size.
+  const lastMeasuredRef = useRef<{ cols: number; rows: number } | null>(null);
+  // Set inside the effect; the scrollback-watch effect calls it to flush
+  // a deferred resize without poking React state.
+  const flushPendingResizeRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<TerminalState>({
     connected: false,
     reconnecting: false,
@@ -140,21 +166,149 @@ export function useTerminal(
     // animation (ResizeObserver fires multiple times with intermediate
     // sizes). 50ms settles after the animation ends.
     let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Flips true once the first measured resize has been sent. Until
+    // then, onResize uses INITIAL_SETTLE_MS so the dashboard's mount-
+    // time layout transitions coalesce into one PTY resize instead of
+    // one per stable point along the way.
+    let hasSentInitialResize = false;
+
+    // All client-initiated resize sends route through this helper so the
+    // scrollback gate is impossible to bypass. While the user is reading
+    // scrollback, hold the latest size and drain it on exit. Without the
+    // gate, claude redraws on every SIGWINCH and stacks banners into
+    // tmux scrollback while the user is trying to read it.
+    //
+    // Also dedupes consecutive identical sizes. The ws.onopen path and
+    // the rAF re-send both read from lastMeasuredRef, so back-to-back
+    // calls with the same cols/rows are common; sending both would
+    // produce two SIGWINCHes for one effective resize and re-introduce
+    // banner stacking that the rest of this fix is trying to avoid.
+    let lastSentCols = -1;
+    let lastSentRows = -1;
+    const sendResize = (cols: number, rows: number) => {
+      if (isInScrollbackRef.current) {
+        pendingResizeRef.current = { cols, rows };
+        return;
+      }
+      if (cols === lastSentCols && rows === lastSentRows) return;
+      const ws = wsRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "resize", cols, rows } as ResizeMessage));
+      lastSentCols = cols;
+      lastSentRows = rows;
+    };
+
+    // Pre-measure cell size and seed the WTerm constructor with the
+    // computed cols/rows so the WASM bridge initializes at the right
+    // size. wterm's own ResizeObserver also runs and will correct any
+    // drift, but seeding from this measurement guarantees that the very
+    // first byte processed lives in the correct grid (not 80x24). The
+    // .wterm class is added here so font-family / line-height resolve
+    // from the CSS variables we just set; WTerm's constructor will
+    // re-add it as a no-op.
+    //
+    // The measurement uses whatever font is currently rendering. With a
+    // cold cache, Geist Mono may not have loaded yet and the probe gets
+    // fallback-font metrics. wterm's ResizeObserver only re-measures the
+    // cell on outer-size changes, so a font swap that doesn't move the
+    // outer rect can leave wterm stuck with stale metrics. We schedule a
+    // post-fonts.ready re-measure below to dispatch term.resize() if the
+    // corrected size differs.
+    termEl.classList.add("wterm");
+    const computeSeedSize = (): { cols: number; rows: number } | null => {
+      const probe = document.createElement("span");
+      probe.textContent = "W";
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.whiteSpace = "pre";
+      termEl.appendChild(probe);
+      const cellRect = probe.getBoundingClientRect();
+      probe.remove();
+      const containerRect = termEl.getBoundingClientRect();
+      if (
+        cellRect.width <= 0 ||
+        cellRect.height <= 0 ||
+        containerRect.width <= 0 ||
+        containerRect.height <= 0
+      ) {
+        return null;
+      }
+      // wterm's ResizeObserver uses entry.contentRect (padding-excluded).
+      // Match that so the seeded size won't immediately conflict with the
+      // observer's first measurement.
+      const cs = getComputedStyle(termEl);
+      const padX =
+        (parseFloat(cs.paddingLeft) || 0) +
+        (parseFloat(cs.paddingRight) || 0);
+      const padY =
+        (parseFloat(cs.paddingTop) || 0) +
+        (parseFloat(cs.paddingBottom) || 0);
+      const contentW = Math.max(0, containerRect.width - padX);
+      const contentH = Math.max(0, containerRect.height - padY);
+      return {
+        cols: Math.max(1, Math.floor(contentW / cellRect.width)),
+        rows: Math.max(1, Math.floor(contentH / cellRect.height)),
+      };
+    };
+    const seedSize = computeSeedSize();
+
     const term = new WTerm(termEl, {
+      cols: seedSize?.cols,
+      rows: seedSize?.rows,
       autoResize: true,
       cursorBlink: true,
       onResize: (cols: number, rows: number) => {
+        lastMeasuredRef.current = { cols, rows };
         if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+        const delay = hasSentInitialResize
+          ? RESIZE_DEBOUNCE_MS
+          : INITIAL_SETTLE_MS;
         resizeDebounceTimer = setTimeout(() => {
           resizeDebounceTimer = null;
-          const ws = wsRef.current;
-          if (ws?.readyState === WebSocket.OPEN) {
-            const msg: ResizeMessage = { type: "resize", cols, rows };
-            ws.send(JSON.stringify(msg));
-          }
-        }, RESIZE_DEBOUNCE_MS);
+          hasSentInitialResize = true;
+          sendResize(cols, rows);
+        }, delay);
       },
     });
+    if (seedSize) {
+      lastMeasuredRef.current = { cols: seedSize.cols, rows: seedSize.rows };
+    }
+
+    // Once webfonts have fully loaded, re-measure and dispatch a resize
+    // if the cell metrics shifted. This catches the cold-cache case where
+    // the synchronous seed above used fallback-font metrics. term.resize
+    // routes through onResize so the same debounce + dedup applies; if
+    // the corrected size matches what was already sent, nothing goes out.
+    const fontsApi = (
+      document as Document & { fonts?: { ready: Promise<unknown> } }
+    ).fonts;
+    if (fontsApi?.ready) {
+      fontsApi.ready
+        .then(() => {
+          if (termRef.current !== term) return;
+          const remeasured = computeSeedSize();
+          if (
+            remeasured &&
+            (remeasured.cols !== term.cols || remeasured.rows !== term.rows)
+          ) {
+            term.resize(remeasured.cols, remeasured.rows);
+          }
+        })
+        .catch(() => {
+          // fonts.ready can reject in headless environments where no
+          // FontFaceSet is wired up; treat as no-op.
+        });
+    }
+
+    // Drain handler: sends the latest deferred size when the user
+    // exits scrollback. Routes through sendResize, but by this point
+    // isInScrollbackRef is false so it takes the live-send path.
+    flushPendingResizeRef.current = () => {
+      const pending = pendingResizeRef.current;
+      pendingResizeRef.current = null;
+      if (!pending) return;
+      sendResize(pending.cols, pending.rows);
+    };
 
     termRef.current = term;
 
@@ -249,6 +403,14 @@ export function useTerminal(
 
       ws.onopen = () => {
         retryCountRef.current = 0;
+        // Reset the dedup baseline so the first resize on a fresh
+        // connection always reaches the server, even if it matches
+        // the size we last sent on the previous (now-closed) socket.
+        // The new server-side handler may not share state with the
+        // old one (think tunnel restarts) and needs to learn the
+        // current PTY size from scratch.
+        lastSentCols = -1;
+        lastSentRows = -1;
         // Preserve isInScrollback across reconnects. Tmux's copy-mode
         // state is stored on the pane and survives client disconnects,
         // so the client-side flag should too — otherwise a WiFi blip
@@ -267,32 +429,26 @@ export function useTerminal(
         // Without this, the first resize lands in "vacant" state (which
         // works) but a race with focus/visibility events could delay it.
         ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
-        // Send initial PTY dimensions from the already-autoresized terminal.
-        if (
-          term.cols > 0 &&
-          term.rows > 0 &&
-          ws.readyState === WebSocket.OPEN
-        ) {
-          const msg: ResizeMessage = {
-            type: "resize",
-            cols: term.cols,
-            rows: term.rows,
-          };
-          ws.send(JSON.stringify(msg));
+        // Send initial PTY dimensions only if wterm has actually measured
+        // the container. Reading term.cols/term.rows directly would yield
+        // wterm's 80x24 default before ResizeObserver fires, and pushing
+        // that ahead of the real measurement causes a stale-default ->
+        // real-size resize storm at session open. The onResize callback
+        // (already wired through sendResize) delivers the correct size
+        // after the first measurement, so on the very first connect this
+        // branch is intentionally a no-op. On reconnect lastMeasuredRef
+        // is populated and we send immediately so the new server-side
+        // handler picks up the right size.
+        const measured = lastMeasuredRef.current;
+        if (measured) {
+          sendResize(measured.cols, measured.rows);
         }
-        // Re-send after layout settles
+        // Re-send after layout settles. Same gate; on first connect this
+        // still no-ops because ResizeObserver fires async.
         requestAnimationFrame(() => {
-          if (
-            term.cols > 0 &&
-            term.rows > 0 &&
-            ws.readyState === WebSocket.OPEN
-          ) {
-            const msg: ResizeMessage = {
-              type: "resize",
-              cols: term.cols,
-              rows: term.rows,
-            };
-            ws.send(JSON.stringify(msg));
+          const m = lastMeasuredRef.current;
+          if (m) {
+            sendResize(m.cols, m.rows);
           }
         });
       };
@@ -482,7 +638,6 @@ export function useTerminal(
     let singleLastTs = 0;
     let suppressNextClick = false;
     const GESTURE_LOCK_PX = 12;
-    const LONG_PRESS_MS = 300;
     const LINES_PER_WHEEL = 2;
     const MAX_VELOCITY = 2.0;
     const MAX_WHEELS_PER_FRAME = 6;
@@ -606,8 +761,6 @@ export function useTerminal(
             singleLastTs = now;
             return;
           }
-          // Long-press then drag is text selection, not scroll.
-          if (now - singleStartTs > LONG_PRESS_MS) return;
           gestureMode = "single-scroll";
           singleY = y;
         }
@@ -722,10 +875,12 @@ export function useTerminal(
       momentumRaf = requestAnimationFrame(decay);
     };
 
-    // Attach touch handlers to the .wterm element. We do NOT set
-    // touch-action: none; our non-passive capture-phase handlers call
-    // preventDefault() when scrolling, which is sufficient.
+    // Attach touch handlers to the .wterm element. `touch-action: none`
+    // tells the browser we own all touch behavior here, so iOS Safari
+    // won't engage native scroll/rubber-band on the dead-zone frames
+    // before our handler decides whether to preventDefault.
     const viewport = term.element;
+    viewport.style.touchAction = "none";
     const touchOpts = { passive: false, capture: true } as const;
     viewport.addEventListener("touchstart", onTouchStart, touchOpts);
     viewport.addEventListener("touchmove", onTouchMove, touchOpts);
@@ -841,6 +996,17 @@ export function useTerminal(
       term.element.style.setProperty("--term-font-size", `${size}px`);
     }
   }, [settings.mobileFontSize, settings.desktopFontSize]);
+
+  // Mirror state.isInScrollback into a ref so the resize callback can read
+  // the latest value, and drain any pending deferred resize when the user
+  // exits scrollback (so claude redraws once at the final size).
+  useEffect(() => {
+    const wasInScrollback = isInScrollbackRef.current;
+    isInScrollbackRef.current = state.isInScrollback;
+    if (wasInScrollback && !state.isInScrollback) {
+      flushPendingResizeRef.current?.();
+    }
+  }, [state.isInScrollback]);
 
   const manualReconnect = () => {
     retryCountRef.current = 0;

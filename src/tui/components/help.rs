@@ -27,6 +27,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("l/→", "Expand group"),
                     ("Home/End", "Go to top / bottom"),
                     ("PgUp/Dn", "Move 10 items up / down"),
+                    ("w", "Next waiting/idle session"),
                 ],
             ),
             (
@@ -62,6 +63,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("S", "Settings"),
                     ("P", "Profiles"),
                     ("Ctrl+R", "Serve (LAN / Tunnel)"),
+                    ("Shift+drag", "Select text in preview"),
                     ("?", "Toggle help"),
                     ("Q", "Quit"),
                 ],
@@ -78,6 +80,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("l/→", "Expand group"),
                     ("Home/End", "Go to top / bottom"),
                     ("PgUp/Dn", "Move 10 items up / down"),
+                    ("w", "Next waiting/idle session"),
                 ],
             ),
             (
@@ -113,6 +116,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("s", "Settings"),
                     ("P", "Profiles"),
                     ("R", "Serve (LAN / Tunnel)"),
+                    ("Shift+drag", "Select text in preview"),
                     ("?", "Toggle help"),
                     ("q", "Quit"),
                 ],
@@ -123,17 +127,21 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
 
 #[cfg(test)]
 fn content_line_count(strict: bool) -> usize {
+    let sections = shortcuts(strict);
+    let last_idx = sections.len().saturating_sub(1);
     let mut count = 0;
-    for (section, keys) in shortcuts(strict) {
+    for (idx, (section, keys)) in sections.iter().enumerate() {
         count += 1; // section header
         count += keys.len(); // shortcut lines
 
         // Add extra line for sort label after Views section
-        if section == "Views" {
+        if *section == "Views" {
             count += 1;
         }
 
-        count += 1; // empty line after section
+        if idx != last_idx {
+            count += 1; // blank separator between sections
+        }
     }
     count
 }
@@ -178,27 +186,31 @@ impl HelpOverlay {
         let mut lines: Vec<Line> = Vec::new();
         let sort_label = format!("(current sort: {})", sort_order.label());
 
-        for (section, keys) in shortcuts(strict_hotkeys) {
+        let sections = shortcuts(strict_hotkeys);
+        let last_idx = sections.len().saturating_sub(1);
+        for (idx, (section, keys)) in sections.iter().enumerate() {
             lines.push(Line::from(Span::styled(
-                section,
+                *section,
                 Style::default().fg(theme.accent).bold(),
             )));
             for (key, desc) in keys {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:10}", key), Style::default().fg(theme.waiting)),
-                    Span::styled(desc, Style::default().fg(theme.text)),
+                    Span::styled(*desc, Style::default().fg(theme.text)),
                 ]));
             }
 
             // Add sort label after "Views" section
-            if section == "Views" {
+            if *section == "Views" {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:10}", ""), Style::default().fg(theme.waiting)),
                     Span::styled(sort_label.as_str(), Style::default().fg(theme.text)),
                 ]));
             }
 
-            lines.push(Line::from(""));
+            if idx != last_idx {
+                lines.push(Line::from(""));
+            }
         }
 
         let paragraph = Paragraph::new(lines);

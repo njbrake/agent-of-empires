@@ -1,6 +1,7 @@
 //! Input handling for HomeView
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
@@ -19,6 +20,22 @@ use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
 
 impl HomeView {
+    pub fn is_diff_open(&self) -> bool {
+        self.diff_view.is_some()
+    }
+
+    pub fn has_selected_session(&self) -> bool {
+        self.selected_session.is_some()
+    }
+
+    pub fn hit_preview(&self, col: u16, row: u16) -> bool {
+        self.preview_area.contains(Position::from((col, row)))
+    }
+
+    pub fn hit_diff(&self, col: u16, row: u16) -> bool {
+        self.diff_area.contains(Position::from((col, row)))
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
         // Handle unsaved changes confirmation for settings (shown over settings view)
         if self.settings_close_confirm {
@@ -1029,10 +1046,80 @@ impl HomeView {
                     }
                 }
             }
+            KeyCode::Char('w') => {
+                self.jump_to_next_waiting();
+            }
             _ => {}
         }
 
         None
+    }
+
+    fn jump_to_next_waiting(&mut self) {
+        let len = self.flat_items.len();
+        if len == 0 {
+            return;
+        }
+
+        // Pass 1: forward-walk from cursor+1, wrapping, for the next Waiting session.
+        let start = (self.cursor + 1) % len;
+        for i in 0..len - 1 {
+            let idx = (start + i) % len;
+            let id = match self.flat_items.get(idx) {
+                Some(Item::Session { id, .. }) => id.clone(),
+                _ => continue,
+            };
+            if let Some(inst) = self.get_instance(&id) {
+                if inst.status == Status::Waiting {
+                    self.cursor = idx;
+                    self.update_selected();
+                    return;
+                }
+            }
+        }
+
+        // Pass 2: fall back to the most-recently-accessed Idle session, skipping
+        // the cursor. Sessions never attached (last_accessed_at == None) rank
+        // last but remain eligible.
+        let mut best: Option<(usize, Option<chrono::DateTime<chrono::Utc>>)> = None;
+        for idx in 0..len {
+            if idx == self.cursor {
+                continue;
+            }
+            let id = match self.flat_items.get(idx) {
+                Some(Item::Session { id, .. }) => id.clone(),
+                _ => continue,
+            };
+            let Some(inst) = self.get_instance(&id) else {
+                continue;
+            };
+            if inst.status != Status::Idle {
+                continue;
+            }
+            let ts = inst.last_accessed_at;
+            let beats = match best {
+                None => true,
+                Some((_, b)) => match (ts, b) {
+                    (Some(a), Some(b)) => a > b,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                },
+            };
+            if beats {
+                best = Some((idx, ts));
+            }
+        }
+
+        if let Some((idx, _)) = best {
+            self.cursor = idx;
+            self.update_selected();
+            return;
+        }
+
+        self.info_dialog = Some(InfoDialog::new(
+            "No Available Sessions",
+            "No sessions are currently waiting or idle.",
+        ));
     }
 
     pub(super) fn move_cursor(&mut self, delta: i32) {
@@ -1052,6 +1139,7 @@ impl HomeView {
 
     pub(super) fn update_selected(&mut self) {
         if let Some(item) = self.flat_items.get(self.cursor) {
+            let prev_session = self.selected_session.clone();
             match item {
                 Item::Session { id, .. } => {
                     self.selected_session = Some(id.clone());
@@ -1063,6 +1151,9 @@ impl HomeView {
                     self.selected_group = Some(path.clone());
                     self.selected_group_profile = self.profile_for_cursor(self.cursor);
                 }
+            }
+            if self.selected_session != prev_session {
+                self.preview_scroll_offset = 0;
             }
         }
     }
@@ -1125,6 +1216,72 @@ impl HomeView {
         if let Err(e) = self.save() {
             tracing::error!("Failed to save group state: {}", e);
         }
+    }
+
+    /// Scroll the preview pane up by one mouse-wheel step. Returns `true` if
+    /// the UI should redraw. When the diff view is open, scroll the diff
+    /// content instead.
+    pub fn handle_scroll_up(&mut self) -> bool {
+        const STEP: u16 = 3;
+        if let Some(ref mut diff) = self.diff_view {
+            diff.scroll_up(STEP);
+            return true;
+        }
+        if self.selected_session.is_none() || self.has_dialog() {
+            return false;
+        }
+
+        let active_cache = match self.view_mode {
+            ViewMode::Agent => &self.preview_cache,
+            ViewMode::Terminal => {
+                let terminal_mode = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|id| self.get_instance(id))
+                    .map(|inst| {
+                        if inst.is_sandboxed() {
+                            self.get_terminal_mode(&inst.id)
+                        } else {
+                            TerminalMode::Host
+                        }
+                    })
+                    .unwrap_or(TerminalMode::Host);
+                match terminal_mode {
+                    TerminalMode::Container => &self.container_terminal_preview_cache,
+                    TerminalMode::Host => &self.terminal_preview_cache,
+                }
+            }
+        };
+
+        let visible_height = active_cache.dimensions.1.saturating_sub(1) as usize;
+        let real_max = active_cache.captured_lines.saturating_sub(visible_height) as u16;
+
+        let new_offset = self.preview_scroll_offset.saturating_add(STEP);
+        let clamped = new_offset.min(real_max);
+        if clamped == self.preview_scroll_offset {
+            return false;
+        }
+        self.preview_scroll_offset = clamped;
+        true
+    }
+
+    /// Scroll the preview pane down by one mouse-wheel step. Returns `true`
+    /// if the UI should redraw. When the diff view is open, scroll the diff
+    /// content instead.
+    pub fn handle_scroll_down(&mut self) -> bool {
+        const STEP: u16 = 3;
+        if let Some(ref mut diff) = self.diff_view {
+            diff.scroll_down(STEP);
+            return true;
+        }
+        if self.selected_session.is_none() || self.has_dialog() {
+            return false;
+        }
+        if self.preview_scroll_offset == 0 {
+            return false;
+        }
+        self.preview_scroll_offset = self.preview_scroll_offset.saturating_sub(STEP);
+        true
     }
 
     /// Route a bracketed paste event to the active text input dialog.

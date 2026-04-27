@@ -738,6 +738,18 @@ pub fn resolve_default_profile() -> String {
         .unwrap_or_else(|_| "default".to_string())
 }
 
+/// Return `profile` if non-empty, otherwise the user's globally configured
+/// default profile. Used at start-time config-resolution sites that prefer
+/// an instance's `source_profile` but tolerate it being unset (e.g. tests
+/// or pre-`source_profile`-wiring callers).
+pub fn effective_profile(profile: &str) -> String {
+    if profile.is_empty() {
+        resolve_default_profile()
+    } else {
+        profile.to_string()
+    }
+}
+
 pub fn get_update_settings() -> UpdatesConfig {
     load_config()
         .ok()
@@ -761,6 +773,38 @@ pub fn get_claude_config_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_effective_profile_returns_input_when_non_empty() {
+        // Non-empty input is passed through verbatim, regardless of what's
+        // configured globally as the default. No filesystem access needed.
+        assert_eq!(effective_profile("personal"), "personal");
+        assert_eq!(effective_profile("default"), "default");
+        assert_eq!(effective_profile("alpha-beta_v2"), "alpha-beta_v2");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_effective_profile_falls_back_to_global_default_when_empty() {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        #[cfg(target_os = "linux")]
+        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let app_dir = temp_home.path().join(".agent-of-empires");
+
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("config.toml"), r#"default_profile = "alpha""#).unwrap();
+
+        assert_eq!(
+            effective_profile(""),
+            "alpha",
+            "empty profile must fall back to the user's globally configured default",
+        );
+    }
 
     // Tests for Config defaults
     #[test]

@@ -212,6 +212,13 @@ impl Instance {
         self.last_accessed_at = Some(Utc::now());
     }
 
+    /// Return the profile that should drive config resolution for this
+    /// instance, falling back to the user's globally configured default
+    /// when `source_profile` was never populated (e.g. legacy callers).
+    pub fn effective_profile(&self) -> String {
+        super::config::effective_profile(&self.source_profile)
+    }
+
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
     }
@@ -324,7 +331,11 @@ impl Instance {
         let container = self.get_container_for_instance()?;
         let sandbox = self.sandbox_info.as_ref().unwrap();
 
-        let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+        let env_info = build_docker_env_args(
+            &self.source_profile,
+            sandbox,
+            std::path::Path::new(&self.project_path),
+        );
         let env_part = if env_info.docker_args.is_empty() {
             String::new()
         } else {
@@ -426,8 +437,11 @@ impl Instance {
         let on_launch_hooks = if skip_on_launch {
             None
         } else {
-            // Start with global+profile hooks as the base
-            let profile = super::config::resolve_default_profile();
+            // Start with global+profile hooks as the base. Use the instance's
+            // source_profile so profile-specific on_launch hooks fire for sessions
+            // created under that profile, not just whichever profile is currently
+            // set as the global default.
+            let profile = self.effective_profile();
             let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
                 .map(|c| c.hooks.on_launch)
                 .unwrap_or_default();
@@ -523,24 +537,17 @@ impl Instance {
                 }
             }
 
-            let env_info = build_docker_env_args(sandbox, std::path::Path::new(&self.project_path));
+            let env_info = build_docker_env_args(
+                &self.source_profile,
+                sandbox,
+                std::path::Path::new(&self.project_path),
+            );
             // AOE_INSTANCE_ID is not secret, goes directly in docker args
             let docker_args = format!("{} -e AOE_INSTANCE_ID={}", env_info.docker_args, self.id);
             let env_part = format!("{} ", docker_args);
             let wrapped =
                 wrap_command_ignore_suspend(&container.exec_command(Some(&env_part), &tool_cmd));
-            if env_info.exports.is_empty() {
-                Some(wrapped)
-            } else {
-                // Prepend shell exports for secret env vars. The outer shell
-                // runs the exports (builtins), then `exec` replaces it with
-                // the wrapped command. This keeps secret values out of all
-                // long-lived process argv: the outer shell's argv (which
-                // contains the export values) disappears in milliseconds
-                // when exec replaces the process image.
-                let exports = env_info.exports.join("; ");
-                Some(format!("{}; exec {}", exports, wrapped))
-            }
+            Some(prepend_exports(&env_info.exports, wrapped))
         } else {
             // Run on_launch hooks on host for non-sandboxed sessions
             if let Some(ref hook_cmds) = on_launch_hooks {
@@ -684,6 +691,7 @@ impl Instance {
             self.is_yolo_mode(),
             &self.id,
             self.workspace_info.as_ref(),
+            &self.source_profile,
         )
     }
 
@@ -1035,6 +1043,23 @@ fn wrap_command_ignore_suspend(cmd: &str) -> String {
     )
 }
 
+/// Prepend shell `export` statements to an already-wrapped sandbox command.
+///
+/// `wrapped` MUST be the output of `wrap_command_ignore_suspend`, which
+/// guarantees a leading `exec`. This function therefore MUST NOT add another
+/// `exec` of its own: in bash, `exec exec <cmd>` searches PATH for a binary
+/// literally named `exec`, fails with exit 127, and kills the tmux pane on
+/// every sandboxed launch. zsh-on-macOS happens to tolerate the double-exec,
+/// which is why this regression hid for several days after #757 added the
+/// leading `exec` to `wrap_command_ignore_suspend`. See PR #819.
+fn prepend_exports(exports: &[String], wrapped: String) -> String {
+    if exports.is_empty() {
+        wrapped
+    } else {
+        format!("{}; {}", exports.join("; "), wrapped)
+    }
+}
+
 /// Check whether captured pane content indicates a living agent rather than
 /// a bare shell prompt. Used to prevent `is_shell_stale()` from producing
 /// false `Error` status when the agent binary is a shell wrapper or spawns
@@ -1157,6 +1182,42 @@ mod tests {
             "wrapped command should contain the escaped env var assignment: {}",
             wrapped,
         );
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_prepend_exports_does_not_double_exec() {
+        // Regression: `wrap_command_ignore_suspend` always emits a string
+        // starting with `exec` (since #757). `prepend_exports` MUST NOT add
+        // another `exec`, because bash interprets `exec exec <cmd>` as
+        // "exec a binary literally named `exec`", fails with exit 127, and
+        // kills the pane on every sandboxed launch. zsh-on-macOS happens
+        // to tolerate the double-exec, which is why this regression hid
+        // for several days after #757 merged. See PR #819.
+        std::env::set_var("SHELL", "/bin/bash");
+        let wrapped = wrap_command_ignore_suspend("docker exec -it container claude");
+        assert!(
+            wrapped.starts_with("exec "),
+            "test invariant: wrapped must start with `exec ` (else this test \
+             is misaligned with wrap_command_ignore_suspend's contract): {}",
+            wrapped,
+        );
+
+        let exports = vec![
+            "export TERM='xterm-256color'".to_string(),
+            "export COLORTERM='truecolor'".to_string(),
+        ];
+        let session_cmd = prepend_exports(&exports, wrapped);
+
+        assert!(
+            !session_cmd.contains("exec exec"),
+            "session cmd must not contain `exec exec` -- bash exits 127 on it: {}",
+            session_cmd,
+        );
+
+        // Empty exports must pass through unchanged.
+        let wrapped2 = wrap_command_ignore_suspend("docker exec -it container claude");
+        assert_eq!(prepend_exports(&[], wrapped2.clone()), wrapped2);
     }
 
     #[test]

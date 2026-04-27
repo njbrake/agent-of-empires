@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMatch, useNavigate } from "react-router-dom";
 import { isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
@@ -10,11 +11,7 @@ import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
-import {
-  OPEN_SESSION_EVENT,
-  readSessionFromUrl,
-  writeSessionToUrl,
-} from "./lib/sessionRoute";
+import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
@@ -88,25 +85,24 @@ export default function App() {
 }
 
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
+  const navigate = useNavigate();
+  const sessionMatch = useMatch("/session/:sessionId");
+  const settingsRootMatch = useMatch("/settings");
+  const settingsTabMatch = useMatch("/settings/:tab");
+  const activeSessionId = sessionMatch?.params.sessionId ?? null;
+  const showSettings = settingsRootMatch !== null || settingsTabMatch !== null;
+  const settingsTab = settingsTabMatch?.params.tab ?? null;
+
   const { sessions, error, injectSession, setSessionStatus } = useSessions();
   const workspaces = useWorkspaces(sessions);
   const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
 
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
-    null,
-  );
-  // Seed from `?session=<id>` so deep links and notification taps land on
-  // the right session before the sessions list has finished loading.
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(() =>
-    readSessionFromUrl(),
-  );
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [diffCollapsed, setDiffCollapsed] = useState(
     () => window.innerWidth < 768,
   );
   const [showAddProject, setShowAddProject] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
@@ -114,20 +110,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   );
   const keyboardProxyRef = useRef<HTMLTextAreaElement>(null);
 
-  // Prefer workspace lookup by ID; fall back to finding the workspace
-  // that contains activeSessionId so a URL-seeded session (notification
-  // tap) renders even before handleSelectSession has run to set the
-  // workspace ID explicitly.
   const activeWorkspace = useMemo(() => {
-    const byId = activeWorkspaceId
-      ? workspaces.find((w) => w.id === activeWorkspaceId)
-      : undefined;
-    if (byId) return byId;
     if (!activeSessionId) return undefined;
     return workspaces.find((w) =>
       w.sessions.some((s) => s.id === activeSessionId),
     );
-  }, [workspaces, activeWorkspaceId, activeSessionId]);
+  }, [workspaces, activeSessionId]);
   const activeSession = activeWorkspace?.sessions.find(
     (s) => s.id === activeSessionId,
   );
@@ -162,44 +150,28 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleSelectSession = useCallback((sessionId: string) => {
     const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
     if (ws) {
-      setActiveWorkspaceId(ws.id);
-      setActiveSessionId(sessionId);
-      writeSessionToUrl(sessionId);
+      navigate(`/session/${encodeURIComponent(sessionId)}`);
       focusKeyboardProxy();
-      setShowSettings(false);
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
-  }, [workspaces]);
+  }, [navigate, workspaces]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
-    setActiveWorkspaceId(workspaceId);
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
       const running = ws.sessions.find((s) => isSessionActive(s.status));
       const picked = running?.id ?? ws.sessions[0]?.id ?? null;
-      setActiveSessionId(picked);
-      writeSessionToUrl(picked);
+      if (picked) {
+        navigate(`/session/${encodeURIComponent(picked)}`);
+      } else {
+        navigate("/");
+      }
     }
     focusKeyboardProxy();
-    setShowSettings(false);
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
   };
-
-  // Sync browser back/forward to selection state. We always clear
-  // activeWorkspaceId so the activeWorkspace memo re-derives it from
-  // the URL-provided session. Otherwise back/forward across workspaces
-  // leaves a stale workspace ID, the memo returns the wrong workspace,
-  // the session lookup fails, and the app renders the dashboard.
-  useEffect(() => {
-    const onPop = () => {
-      setActiveSessionId(readSessionFromUrl());
-      setActiveWorkspaceId(null);
-    };
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
 
   // In-app toast forwarded from the service worker sets this event when
   // the user taps it; navigate to the session that triggered the push.
@@ -245,9 +217,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setSessionStatus(sessionId, "Deleting");
 
     if (wasActive) {
-      setActiveWorkspaceId(null);
-      setActiveSessionId(null);
-      writeSessionToUrl(null);
+      navigate("/");
     }
 
     const result = await deleteSession(sessionId, options);
@@ -259,7 +229,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
 
     toastBus.handler?.info("Session deleted");
-  }, [deletingSession, activeSessionId, setSessionStatus]);
+  }, [deletingSession, activeSessionId, setSessionStatus, navigate]);
 
   const handleCreateSession = useCallback((repoPath: string) => {
     const projectSessions = sessions
@@ -290,17 +260,22 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   }, []);
 
   const handleGoDashboard = useCallback(() => {
-    setActiveWorkspaceId(null);
-    setActiveSessionId(null);
-    writeSessionToUrl(null);
-    setShowSettings(false);
+    navigate("/");
     setSelectedFilePath(null);
-  }, []);
+  }, [navigate]);
 
   const handleOpenSettings = useCallback(() => {
-    setShowSettings(true);
+    navigate("/settings");
     if (window.innerWidth < 768) setSidebarOpen(false);
-  }, []);
+  }, [navigate]);
+
+  const handleCloseSettings = useCallback(() => {
+    if (activeSessionId) {
+      navigate(`/session/${encodeURIComponent(activeSessionId)}`);
+    } else {
+      navigate("/");
+    }
+  }, [navigate, activeSessionId]);
 
   const handleOpenHelp = useCallback(() => {
     setShowHelp(true);
@@ -354,17 +329,17 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           }
           setShowAddProject(false);
           setShowHelp(false);
-          setShowSettings(false);
+          if (showSettings) handleCloseSettings();
           setShowAbout(false);
           setSelectedFilePath(null);
         },
         onHelp: () => setShowHelp((h) => !h),
-        onSettings: () => setShowSettings((s) => !s),
+        onSettings: () => (showSettings ? handleCloseSettings() : navigate("/settings")),
         onPalette: () => setShowPalette((p) => !p),
         onToggleSidebar: () => setSidebarOpen((o) => !o),
         onToggleRightPanel: () => setDiffCollapsed((c) => !c),
       }),
-      [toggleDiff, showPalette, deletingWorkspaceId],
+      [toggleDiff, showPalette, deletingWorkspaceId, showSettings, handleCloseSettings, navigate],
     ),
   );
 
@@ -386,7 +361,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   const renderContent = () => {
     if (showSettings) {
-      return <SettingsView onClose={() => setShowSettings(false)} />;
+      return (
+        <SettingsView
+          tab={settingsTab}
+          onClose={handleCloseSettings}
+          onSelectTab={(t) => navigate(`/settings/${t}`)}
+        />
+      );
     }
 
     if (!activeWorkspace || !activeSession) {
@@ -477,7 +458,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             onToggleRepo={toggleRepoCollapsed}
             onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
             onCreateSession={handleCreateSession}
-            onSettings={() => { setShowSettings((s) => !s); if (window.innerWidth < 768) setSidebarOpen(false); }}
+            onSettings={handleOpenSettings}
             onDeleteSession={handleDeleteSession}
             readOnly={serverAbout?.read_only}
           />
@@ -494,12 +475,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           onCreated={(session?: SessionResponse) => {
             if (session) {
               injectSession(session);
-              setActiveSessionId(session.id);
-              writeSessionToUrl(session.id);
-              // Key format must match useWorkspaces grouping key
-              const repoPath = (session.main_repo_path ?? session.project_path).replace(/\/+$/, "");
-              const wsId = `${repoPath}::${session.branch ?? "__default__"}`;
-              setActiveWorkspaceId(wsId);
+              navigate(`/session/${encodeURIComponent(session.id)}`);
               if (window.innerWidth < 768) setSidebarOpen(false);
             }
             setShowAddProject(false);

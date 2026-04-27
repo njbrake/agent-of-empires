@@ -2600,3 +2600,37 @@ fn test_cursor_follows_session_after_deletion() {
     );
     assert_eq!(env.view.cursor, 1);
 }
+
+#[test]
+#[serial]
+fn wants_text_selection_tracks_copy_friendly_surfaces() {
+    use crate::tui::dialogs::ChangelogDialog;
+
+    let mut env = create_test_env_empty();
+
+    // Fresh dashboard: mouse capture should stay on (wheel-scroll works).
+    assert!(!env.view.wants_text_selection());
+
+    // info_dialog (e.g. an error message the user might want to copy).
+    env.view.info_dialog = Some(InfoDialog::new("Error", "something went wrong"));
+    assert!(env.view.wants_text_selection());
+    env.view.info_dialog = None;
+    assert!(!env.view.wants_text_selection());
+
+    // changelog_dialog (release notes).
+    env.view.changelog_dialog = Some(ChangelogDialog::new(Some("1.0.0".to_string())));
+    assert!(env.view.wants_text_selection());
+    env.view.changelog_dialog = None;
+    assert!(!env.view.wants_text_selection());
+
+    // serve_view is feature-gated; only assert it when the feature is on,
+    // since the field isn't present otherwise.
+    #[cfg(feature = "serve")]
+    {
+        use crate::tui::dialogs::ServeView;
+        env.view.serve_view = Some(ServeView::new());
+        assert!(env.view.wants_text_selection());
+        env.view.serve_view = None;
+        assert!(!env.view.wants_text_selection());
+    }
+}

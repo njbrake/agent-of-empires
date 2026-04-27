@@ -313,10 +313,15 @@ pub(crate) fn collect_environment(
     result
 }
 
-/// Resolve the effective sandbox config by merging global + active profile + repo.
-fn resolved_sandbox_config(project_path: &std::path::Path) -> super::config::SandboxConfig {
-    let profile = super::config::resolve_default_profile();
-    super::repo_config::resolve_config_with_repo(&profile, project_path)
+/// Resolve the effective sandbox config by merging global + the given profile + repo.
+/// An empty `profile` falls back to the user's globally configured default profile
+/// via [`super::config::effective_profile`].
+fn resolved_sandbox_config(
+    profile: &str,
+    project_path: &std::path::Path,
+) -> super::config::SandboxConfig {
+    let resolved = super::config::effective_profile(profile);
+    super::repo_config::resolve_config_with_repo(&resolved, project_path)
         .map(|c| c.sandbox)
         .unwrap_or_default()
 }
@@ -349,13 +354,15 @@ pub(crate) struct DockerExecEnv {
 /// The `docker run` path (container creation) is protected separately via
 /// `Command::env()` in `run_create`, which keeps secrets out of argv entirely.
 pub(crate) fn build_docker_env_args(
+    profile: &str,
     sandbox: &SandboxInfo,
     project_path: &std::path::Path,
 ) -> DockerExecEnv {
-    let sandbox_config = resolved_sandbox_config(project_path);
+    let sandbox_config = resolved_sandbox_config(profile, project_path);
 
     tracing::debug!(
-        "build_docker_env_args: config.sandbox.environment={:?}, extra_env={:?}",
+        "build_docker_env_args: profile={:?}, config.sandbox.environment={:?}, extra_env={:?}",
+        profile,
         sandbox_config.environment,
         sandbox.extra_env
     );
@@ -396,6 +403,97 @@ pub(crate) fn build_docker_env_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression test: when an instance is created under a non-default profile and
+    /// has no per-session `extra_env` overrides, the docker env args must come from
+    /// THAT profile's `sandbox.environment`, not from the user's globally configured
+    /// default profile. Pre-fix, the web flow surfaced this as "personal profile's
+    /// GH_TOKEN was ignored when launching from the web app."
+    #[test]
+    #[serial_test::serial]
+    fn test_build_docker_env_args_uses_passed_profile_not_global_default() {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        // Determine app dir layout (matches session::get_app_dir_path).
+        #[cfg(target_os = "linux")]
+        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let app_dir = temp_home.path().join(".agent-of-empires");
+
+        let profiles_dir = app_dir.join("profiles");
+        std::fs::create_dir_all(profiles_dir.join("default")).unwrap();
+        std::fs::create_dir_all(profiles_dir.join("personal")).unwrap();
+
+        // Global config sets the "currently active" default profile.
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"default_profile = "default""#,
+        )
+        .unwrap();
+
+        // Two profiles with distinct env values; both use literal values so the
+        // test does not depend on inherited host env vars.
+        std::fs::write(
+            profiles_dir.join("default").join("config.toml"),
+            r#"
+[sandbox]
+environment = ["GH_TOKEN=read_only_token"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            profiles_dir.join("personal").join("config.toml"),
+            r#"
+[sandbox]
+environment = ["GH_TOKEN=write_token"]
+"#,
+        )
+        .unwrap();
+
+        // Sandbox info with no per-session overrides forces the fallback path
+        // through `sandbox_config.environment`, which is the buggy path pre-fix.
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+        let project_path = temp_home.path().join("nonexistent_project");
+
+        let result_personal = build_docker_env_args("personal", &sandbox, &project_path);
+        assert!(
+            result_personal
+                .docker_args
+                .contains("GH_TOKEN='write_token'"),
+            "passing profile=\"personal\" should resolve personal profile's env, got: {}",
+            result_personal.docker_args,
+        );
+
+        let result_default = build_docker_env_args("default", &sandbox, &project_path);
+        assert!(
+            result_default
+                .docker_args
+                .contains("GH_TOKEN='read_only_token'"),
+            "passing profile=\"default\" should resolve default profile's env, got: {}",
+            result_default.docker_args,
+        );
+
+        // Empty profile must fall back to the user's globally configured default,
+        // preserving prior behavior for callers without a profile in hand.
+        let result_empty = build_docker_env_args("", &sandbox, &project_path);
+        assert!(
+            result_empty
+                .docker_args
+                .contains("GH_TOKEN='read_only_token'"),
+            "empty profile must fall back to global default, got: {}",
+            result_empty.docker_args,
+        );
+    }
 
     #[test]
     fn test_redact_env_values_docker_flags() {
@@ -718,7 +816,7 @@ mod tests {
             extra_env: Some(vec!["AOE_TEST_TOKEN=$AOE_TEST_TOKEN".to_string()]),
             custom_instruction: None,
         };
-        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
         // docker_args should have the key but NOT the secret value
         assert!(
             result.docker_args.contains("-e AOE_TEST_TOKEN"),
@@ -753,7 +851,7 @@ mod tests {
             extra_env: Some(vec!["MY_MAPPED=$AOE_TEST_SOURCE".to_string()]),
             custom_instruction: None,
         };
-        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
         assert!(
             result.docker_args.contains("-e MY_MAPPED"),
             "Expected -e MY_MAPPED in docker_args: {}",
@@ -788,7 +886,7 @@ mod tests {
             extra_env: Some(vec!["AOE_TEST_BARE".to_string()]),
             custom_instruction: None,
         };
-        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
         assert!(
             result.docker_args.contains("-e AOE_TEST_BARE"),
             "Expected -e AOE_TEST_BARE in docker_args: {}",
@@ -822,7 +920,7 @@ mod tests {
             extra_env: Some(vec!["MY_LITERAL=some_value".to_string()]),
             custom_instruction: None,
         };
-        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
         assert!(
             result.docker_args.contains("MY_LITERAL="),
             "Expected MY_LITERAL=value in docker_args: {}",
@@ -855,7 +953,7 @@ mod tests {
             ]),
             custom_instruction: None,
         };
-        let result = build_docker_env_args(&sandbox, std::path::Path::new("/nonexistent"));
+        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
         // Secret: key only in docker_args, value in exports
         assert!(result.docker_args.contains("-e AOE_TEST_SECRET"));
         assert!(!result.docker_args.contains("mysecret"));

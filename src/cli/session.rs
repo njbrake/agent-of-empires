@@ -142,6 +142,10 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
+    // `source_profile` is runtime-only (skip_serializing) so storage-loaded
+    // instances always come back blank; rehydrate it from the storage profile
+    // so start-time config resolution honors the right profile's overrides.
+    instances[idx].source_profile = profile.to_string();
     instances[idx].start_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
 

@@ -23,6 +23,41 @@ fn session_offset(created_at: &DateTime<Utc>) -> usize {
     created_at.timestamp_millis() as usize
 }
 
+/// Extra rows captured beyond the visible window so moderate scrolls don't
+/// force a fresh capture on every wheel tick. Cache invalidation uses the same
+/// reserve to decide when the captured window can no longer cover the
+/// requested scroll.
+const CAPTURE_BUFFER: u16 = 20;
+
+/// Number of pane lines to capture for the preview, accounting for the user's
+/// scrollback offset. A small buffer is added so moderate scrolls don't force a
+/// fresh capture on every wheel tick.
+fn capture_lines_for(height: u16, scroll_offset: u16) -> usize {
+    height
+        .saturating_add(scroll_offset)
+        .saturating_add(CAPTURE_BUFFER) as usize
+}
+
+/// Decide whether the cached capture window still covers the requested scroll.
+/// Returns true when the cache must be re-captured because the visible window
+/// (plus BUFFER headroom) would run past the end of the captured content.
+fn scroll_exceeds_cache(cache_captured_lines: usize, height: u16, scroll_offset: u16) -> bool {
+    let needed = (height as usize)
+        .saturating_add(scroll_offset as usize)
+        .saturating_add(CAPTURE_BUFFER as usize);
+    needed > cache_captured_lines
+}
+
+/// Clamp the user's preview scroll offset to what the freshly captured pane
+/// can actually render. Prevents the offset from drifting into "phantom"
+/// territory (M3 from the multi-AI review) when tmux history is shorter than
+/// `MAX_PREVIEW_SCROLL`.
+fn clamp_scroll_to_capture(scroll_offset: u16, captured_lines: usize, area_height: u16) -> u16 {
+    let visible = area_height.saturating_sub(1) as usize;
+    let real_max = captured_lines.saturating_sub(visible) as u16;
+    scroll_offset.min(real_max)
+}
+
 fn spinner_running(created_at: &DateTime<Utc>) -> &'static str {
     spinners::dots()
         .set_interval(Duration::from_millis(220))
@@ -109,6 +144,10 @@ impl HomeView {
         }
 
         // Diff view takes over the whole screen
+        if self.diff_view.is_some() {
+            self.preview_area = Rect::default();
+            self.diff_area = self.active_diff_area(area);
+        }
         if let Some(ref mut diff) = self.diff_view {
             // Compute diff for selected file if not cached
             let _ = diff.get_current_diff();
@@ -202,6 +241,34 @@ impl HomeView {
         if let Some(dialog) = &self.cockpit_intro_dialog {
             dialog.render(frame, area, theme);
         }
+    }
+
+    fn active_diff_area(&self, area: Rect) -> Rect {
+        let Some(diff) = &self.diff_view else {
+            return Rect::default();
+        };
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(3),
+            ])
+            .split(area);
+        let content_area = layout[1];
+        let effective_file_list_width = diff
+            .file_list_width
+            .min(content_area.width.saturating_sub(40))
+            .max(5);
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(effective_file_list_width),
+                Constraint::Min(40),
+            ])
+            .split(content_area);
+        Block::default().borders(Borders::ALL).inner(panes[1])
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -504,6 +571,7 @@ impl HomeView {
     fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250; // Refresh preview 4x/second max
 
+        let scroll_offset = self.preview_scroll_offset;
         let session_changed = match &self.selected_session {
             Some(id) => self.preview_cache.session_id.as_ref() != Some(id),
             None => false,
@@ -511,19 +579,32 @@ impl HomeView {
         let dims_changed = self.preview_cache.dimensions != (width, height);
         let timer_expired =
             self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS;
+        // Only re-capture for scroll when the cached window can no longer
+        // cover the requested offset. Wheel ticks inside the BUFFER headroom
+        // re-render from the existing content without forking tmux.
+        let scroll_exceeds =
+            scroll_exceeds_cache(self.preview_cache.captured_lines, height, scroll_offset);
 
-        let needs_refresh =
-            self.selected_session.is_some() && (session_changed || dims_changed || timer_expired);
+        let needs_refresh = self.selected_session.is_some()
+            && (session_changed || dims_changed || timer_expired || scroll_exceeds);
 
         if needs_refresh {
             if let Some(id) = &self.selected_session {
                 if let Some(inst) = self.get_instance(id) {
-                    self.preview_cache.content = inst
-                        .capture_output_with_size(height as usize, width, height)
+                    let capture_lines = capture_lines_for(height, scroll_offset);
+                    let content = inst
+                        .capture_output_with_size(capture_lines, width, height)
                         .unwrap_or_default();
+                    self.preview_cache.captured_lines = content.lines().count();
+                    self.preview_cache.content = content;
                     self.preview_cache.session_id = Some(id.clone());
                     self.preview_cache.dimensions = (width, height);
                     self.preview_cache.last_refresh = Instant::now();
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.preview_cache.captured_lines,
+                        height,
+                    );
                 }
             }
         }
@@ -533,10 +614,16 @@ impl HomeView {
     fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
+        let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
             Some(id) => {
                 self.terminal_preview_cache.session_id.as_ref() != Some(id)
                     || self.terminal_preview_cache.dimensions != (width, height)
+                    || scroll_exceeds_cache(
+                        self.terminal_preview_cache.captured_lines,
+                        height,
+                        scroll_offset,
+                    )
                     || self
                         .terminal_preview_cache
                         .last_refresh
@@ -550,13 +637,21 @@ impl HomeView {
         if needs_refresh {
             if let Some(id) = &self.selected_session {
                 if let Some(inst) = self.get_instance(id) {
-                    self.terminal_preview_cache.content = inst
+                    let capture_lines = capture_lines_for(height, scroll_offset);
+                    let content = inst
                         .terminal_tmux_session()
-                        .and_then(|s| s.capture_pane(height as usize))
+                        .and_then(|s| s.capture_pane(capture_lines))
                         .unwrap_or_default();
+                    self.terminal_preview_cache.captured_lines = content.lines().count();
+                    self.terminal_preview_cache.content = content;
                     self.terminal_preview_cache.session_id = Some(id.clone());
                     self.terminal_preview_cache.dimensions = (width, height);
                     self.terminal_preview_cache.last_refresh = Instant::now();
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.terminal_preview_cache.captured_lines,
+                        height,
+                    );
                 }
             }
         }
@@ -566,10 +661,16 @@ impl HomeView {
     fn refresh_container_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
+        let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
             Some(id) => {
                 self.container_terminal_preview_cache.session_id.as_ref() != Some(id)
                     || self.container_terminal_preview_cache.dimensions != (width, height)
+                    || scroll_exceeds_cache(
+                        self.container_terminal_preview_cache.captured_lines,
+                        height,
+                        scroll_offset,
+                    )
                     || self
                         .container_terminal_preview_cache
                         .last_refresh
@@ -583,13 +684,21 @@ impl HomeView {
         if needs_refresh {
             if let Some(id) = &self.selected_session {
                 if let Some(inst) = self.get_instance(id) {
-                    self.container_terminal_preview_cache.content = inst
+                    let capture_lines = capture_lines_for(height, scroll_offset);
+                    let content = inst
                         .container_terminal_tmux_session()
-                        .and_then(|s| s.capture_pane(height as usize))
+                        .and_then(|s| s.capture_pane(capture_lines))
                         .unwrap_or_default();
+                    self.container_terminal_preview_cache.captured_lines = content.lines().count();
+                    self.container_terminal_preview_cache.content = content;
                     self.container_terminal_preview_cache.session_id = Some(id.clone());
                     self.container_terminal_preview_cache.dimensions = (width, height);
                     self.container_terminal_preview_cache.last_refresh = Instant::now();
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.container_terminal_preview_cache.captured_lines,
+                        height,
+                    );
                 }
             }
         }
@@ -613,6 +722,8 @@ impl HomeView {
             .padding(Padding::horizontal(1));
 
         let inner = block.inner(area);
+        self.preview_area = inner;
+        self.diff_area = Rect::default();
         frame.render_widget(block, area);
 
         match self.view_mode {
@@ -637,6 +748,7 @@ impl HomeView {
                                 inner,
                                 inst,
                                 &self.preview_cache.content,
+                                self.preview_scroll_offset,
                                 theme,
                             );
                         }
@@ -705,6 +817,7 @@ impl HomeView {
                             inst,
                             terminal_running,
                             preview_content,
+                            self.preview_scroll_offset,
                             theme,
                         );
                     }
@@ -995,5 +1108,53 @@ mod tests {
     fn format_relative_age_months() {
         let ts = Utc::now() - chrono::Duration::days(60);
         assert_eq!(format_relative_age(Some(ts)), "2mo");
+    }
+
+    #[test]
+    fn capture_lines_for_adds_buffer_to_height() {
+        assert_eq!(capture_lines_for(30, 0), 50);
+    }
+
+    #[test]
+    fn capture_lines_for_extends_by_scroll_offset() {
+        assert_eq!(capture_lines_for(30, 200), 250);
+    }
+
+    #[test]
+    fn capture_lines_for_saturates_instead_of_overflowing() {
+        assert_eq!(capture_lines_for(u16::MAX, u16::MAX), u16::MAX as usize);
+    }
+
+    #[test]
+    fn scroll_exceeds_cache_false_when_buffer_covers_small_scroll() {
+        // Cache was captured at scroll=0 with height=30, so
+        // capture_lines_for(30, 0) = 30 + 0 + BUFFER(20) = 50 lines.
+        // A wheel tick to scroll_offset=3 needs 30 + 3 + 20 = 53, but the
+        // existing BUFFER reserve is what we check: the predicate should
+        // only trip when `height + scroll + BUFFER > captured_lines`.
+        //
+        // With captured_lines = 60 (capture returned extra pane history),
+        // small scroll increments must NOT force a re-capture.
+        let height = 30u16;
+        let captured = 60usize;
+        assert!(!scroll_exceeds_cache(captured, height, 0));
+        assert!(!scroll_exceeds_cache(captured, height, 3));
+        assert!(!scroll_exceeds_cache(captured, height, 9));
+    }
+
+    #[test]
+    fn scroll_exceeds_cache_true_when_scroll_runs_past_captured_window() {
+        // Once the requested visible window + BUFFER exceeds captured_lines,
+        // the cache can no longer cover the scroll and must be re-captured.
+        let height = 30u16;
+        let captured = 60usize;
+        // height(30) + scroll(20) + BUFFER(20) = 70 > 60 → recapture.
+        assert!(scroll_exceeds_cache(captured, height, 20));
+    }
+
+    #[test]
+    fn scroll_exceeds_cache_true_for_empty_cache() {
+        // First render: nothing captured yet, so any request forces capture.
+        assert!(scroll_exceeds_cache(0, 30, 0));
     }
 }

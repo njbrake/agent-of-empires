@@ -2,6 +2,44 @@ import { useCallback, useState } from "react";
 import type { WTerm } from "@wterm/dom";
 import type { RefObject } from "react";
 import { useLongPressDrag, type DragAxis } from "../hooks/useLongPressDrag";
+import { toastBus } from "../lib/toastBus";
+
+const CLIPBOARD_TEXT_TYPES = ["text/plain", "text/uri-list", "text/html"] as const;
+
+// Normalize clipboard payloads to plain text. Necessary because GitHub's
+// "Copy link" buttons (and many Mac copy-link UIs) write text/uri-list
+// only, no text/plain, so the browser's default paste handler ends up
+// with an empty payload.
+function normalizeClipboardData(type: string, raw: string): string {
+  if (type === "text/uri-list") {
+    // text/uri-list permits multiple URLs separated by CRLF, with
+    // comments starting with #. Drop comments, join with newlines.
+    return raw
+      .split(/\r?\n/)
+      .filter((l) => l && !l.startsWith("#"))
+      .join("\n");
+  }
+  if (type === "text/html") {
+    const doc = new DOMParser().parseFromString(raw, "text/html");
+    const anchor = doc.querySelector("a[href]");
+    const href = anchor?.getAttribute("href");
+    if (href) return href;
+    return doc.body?.textContent?.trim() ?? "";
+  }
+  return raw;
+}
+
+function extractClipboardText(cd: DataTransfer | null): string {
+  if (!cd) return "";
+  for (const ty of CLIPBOARD_TEXT_TYPES) {
+    const raw = cd.getData(ty);
+    if (raw) {
+      const normalized = normalizeClipboardData(ty, raw);
+      if (normalized) return normalized;
+    }
+  }
+  return "";
+}
 
 interface Props {
   sendData: (data: string) => void;
@@ -120,18 +158,116 @@ export function MobileTerminalToolbar({
         <span className="font-mono text-xs">^C</span>
       </button>
       <button type="button" aria-label="Paste from clipboard" className={btnBase}
-        onClick={() => {
+        onClick={async () => {
           haptic();
-          // Focus wterm's textarea and use execCommand('paste'). On
-          // Safari 13+, this shows a native "Paste" permission callout.
-          // When confirmed, wterm's handlePaste fires automatically.
-          // Works on non-HTTPS origins unlike navigator.clipboard.readText.
-          const ta = termRef.current?.element.querySelector("textarea");
-          if (ta) {
-            (ta as HTMLTextAreaElement).focus({ preventScroll: true });
-            document.execCommand("paste");
+          const t = toastBus.handler;
+
+          // Path A: Clipboard API. Doesn't require focus, so it doesn't
+          // pop the soft keyboard. Tries every MIME type the source app
+          // wrote (e.g. GitHub's Copy Link writes text/uri-list only,
+          // not text/plain, which is why the old execCommand path read
+          // empty). HTTPS-only on iOS.
+          if (window.isSecureContext) {
+            try {
+              if (navigator.clipboard?.read) {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                  for (const ty of CLIPBOARD_TEXT_TYPES) {
+                    if (!item.types.includes(ty)) continue;
+                    const blob = await item.getType(ty);
+                    const raw = await blob.text();
+                    const text = normalizeClipboardData(ty, raw);
+                    if (text) {
+                      sendData(text);
+                      return;
+                    }
+                  }
+                }
+              } else if (navigator.clipboard?.readText) {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                  sendData(text);
+                  return;
+                }
+              }
+            } catch {
+              // Permission denied, no focus, etc. Fall through to path B.
+            }
           }
-          refocusTerminal();
+
+          // Path B: execCommand-based fallback for insecure contexts.
+          //
+          // Keyboard-open branch: reuse whatever editable element is
+          // already focused as the paste target. We never call focus(),
+          // so iOS sees no focus transition and the soft keyboard stays
+          // up. execCommand("paste") fires the paste event on the active
+          // element, our listener reads clipboardData directly.
+          //
+          // Keyboard-closed branch: there's no editable focused, so we
+          // have to focus the wterm textarea ourselves. Flip it to
+          // readonly first so iOS doesn't pop the keyboard, then blur
+          // afterward so the next FAB tap is a real focus transition.
+          const activeEl = document.activeElement;
+          const activeIsEditable =
+            activeEl instanceof HTMLTextAreaElement ||
+            activeEl instanceof HTMLInputElement;
+
+          if (keyboardHeight > 0 && activeIsEditable) {
+            let recovered = "";
+            const onPaste: EventListener = (e: Event) => {
+              recovered = extractClipboardText(
+                (e as ClipboardEvent).clipboardData,
+              );
+            };
+            activeEl.addEventListener("paste", onPaste, { once: true });
+            try {
+              document.execCommand("paste");
+            } catch {
+              // continue to error toast
+            }
+            activeEl.removeEventListener("paste", onPaste);
+            if (recovered) {
+              sendData(recovered);
+              return;
+            }
+          } else {
+            const ta = termRef.current?.element.querySelector(
+              "textarea",
+            ) as HTMLTextAreaElement | null;
+            if (ta) {
+              let recovered = "";
+              const onPaste = (e: ClipboardEvent) => {
+                recovered = extractClipboardText(e.clipboardData);
+              };
+              ta.addEventListener("paste", onPaste, { once: true });
+              const prevReadOnly = ta.readOnly;
+              ta.readOnly = true;
+              try {
+                ta.focus({ preventScroll: true });
+                document.execCommand("paste");
+              } catch {
+                // continue to error toast
+              }
+              ta.readOnly = prevReadOnly;
+              ta.blur();
+              ta.removeEventListener("paste", onPaste);
+              if (recovered) {
+                sendData(recovered);
+                return;
+              }
+            }
+          }
+
+          // All paths failed. Tell the user what to try next.
+          if (!window.isSecureContext) {
+            t?.error(
+              "Paste needs HTTPS. Run `aoe serve --remote` for a Tailscale or Cloudflare HTTPS URL.",
+            );
+          } else {
+            t?.error(
+              "Couldn't read clipboard. Try copying again, or open this dashboard in Safari.",
+            );
+          }
         }}>
         <svg
           width="14"
