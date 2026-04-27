@@ -98,6 +98,9 @@ fs2 = "0.4"
 # Stream utilities (for crossterm EventStream)
 futures-util = "0.3"
 
+# Temporary files and directories
+tempfile = "3.14"
+
 # Web server (optional, behind "serve" feature)
 axum = { version = "0.8", features = ["ws"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
@@ -132,7 +135,6 @@ serve = [
 ]
 
 [dev-dependencies]
-tempfile = "3.14"
 serial_test = "3.4"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 

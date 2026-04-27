@@ -6,6 +6,7 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tempfile::TempDir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallMethod {
@@ -283,6 +284,32 @@ pub fn parent_is_writable(binary_path: &Path) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Perform an in-place tarball update at `binary_path`, fetching the
+/// release for `version`. Caller has already detected the install
+/// method and confirmed with the user.
+pub async fn update_via_tarball(
+    binary_path: &Path,
+    version: &str,
+    on_progress: Option<&mut dyn FnMut(u64, Option<u64>)>,
+) -> Result<()> {
+    let platform = current_platform_string()?;
+    let parent = binary_path
+        .parent()
+        .context("binary path has no parent directory")?;
+
+    // Same-filesystem temp dir so the rename in atomic_replace works.
+    let workdir = TempDir::new_in(parent).context("creating temp dir for update")?;
+
+    let tarball_path = workdir.path().join(format!("aoe-{platform}.tar.gz"));
+    let url = release_tarball_url(version, platform);
+    download_tarball(&url, &tarball_path, on_progress).await?;
+
+    let extracted = extract_tarball(&tarball_path, workdir.path(), platform)?;
+    sanity_check_binary(&extracted, version)?;
+    atomic_replace(&extracted, binary_path)?;
+    Ok(())
 }
 
 #[cfg(test)]
