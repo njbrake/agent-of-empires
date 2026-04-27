@@ -116,7 +116,13 @@ export interface CockpitState {
 
 export interface ActivityRow {
   id: string;
-  kind: "tool_start" | "tool_complete" | "tool_error" | "message" | "thinking";
+  kind:
+    | "tool_start"
+    | "tool_complete"
+    | "tool_error"
+    | "message"
+    | "thinking"
+    | "user_prompt";
   text: string;
   toolCallId?: string;
   at: string; // ISO-8601

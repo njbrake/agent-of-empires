@@ -21,6 +21,7 @@ import { getToken } from "../lib/token";
 type Action =
   | { kind: "frame"; frame: CockpitFrame }
   | { kind: "lagged"; skipped: number }
+  | { kind: "user_prompt"; text: string }
   | { kind: "reset" };
 
 function reducer(state: CockpitState, action: Action): CockpitState {
@@ -29,6 +30,25 @@ function reducer(state: CockpitState, action: Action): CockpitState {
   }
   if (action.kind === "lagged") {
     return { ...state, lagged: true };
+  }
+  if (action.kind === "user_prompt") {
+    // Echo the user's prompt into the activity feed so the conversation
+    // UI renders user/agent turns as a single ordered timeline. The
+    // assistant message bubble accumulates as the worker streams agent_
+    // message_chunk events back; the user's outgoing message lives only
+    // here.
+    return {
+      ...state,
+      activity: state.activity.concat({
+        id: `user-${Date.now()}-${state.activity.length}`,
+        kind: "user_prompt",
+        text: action.text,
+        at: new Date().toISOString(),
+      }),
+      // A new user turn implicitly starts a fresh assistant buffer for
+      // the next agent_message_chunk burst.
+      assistantMessage: "",
+    };
   }
   return emptyCockpitState();
 }
@@ -129,6 +149,10 @@ export function useCockpit(sessionId: string | null) {
   const sendPrompt = useCallback(
     async (text: string) => {
       if (!sessionId) return;
+      // Optimistically echo the user's message into the conversation
+      // timeline; the actual agent reply streams back as session/update
+      // events on the WebSocket.
+      dispatch({ kind: "user_prompt", text });
       await fetch(
         `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/prompt`,
         {

@@ -1,16 +1,24 @@
-// Top-level cockpit view: assembles ApprovalCard / PlanPanel /
-// ActivityStream and the connection chrome.
+// Cockpit view: a single-column chat conversation that fills the
+// middle pane of the app shell.
 //
-// Layout:
-// - mobile (<768px): single-column stack with chat drawer FAB
-// - desktop (>=768px): three-pane: plan left, activity center, chat dock right
+// The layout is the responsibility of <ContentSplit> in App.tsx (left
+// = workspace sidebar, right = terminal/diff). This component should
+// NOT introduce another layout — it's just the conversation feed,
+// pinned input, and a small sticky plan strip when the agent has one.
 
-import { useEffect, useState } from "react";
-import { useCockpit, type ConnectionStatus } from "../../hooks/useCockpit";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCockpit,
+  type ConnectionStatus,
+} from "../../hooks/useCockpit";
 import { ApprovalCard } from "./ApprovalCard";
-import { PlanPanel } from "./PlanPanel";
-import { ActivityStream } from "./ActivityStream";
-import { ChatDrawer } from "./ChatDrawer";
+import type {
+  ActivityRow,
+  Approval,
+  ApprovalDecision,
+  CockpitState,
+  Plan,
+} from "../../lib/cockpitTypes";
 
 interface Props {
   sessionId: string;
@@ -18,176 +26,464 @@ interface Props {
 
 export function CockpitView({ sessionId }: Props) {
   const { state, status, resolveApproval, sendPrompt } = useCockpit(sessionId);
-  const isDesktop = useIsDesktop();
 
   return (
-    <div className="flex h-full flex-col md:flex-row bg-slate-900">
-      <ConnectionAndApprovals
-        status={status}
-        lagged={state.lagged}
-        rateLimit={state.rateLimit}
-        approvals={state.pendingApprovals}
+    <div className="flex h-full flex-col bg-slate-900 text-slate-100">
+      <PlanStrip plan={state.plan} mode={state.mode} />
+
+      {(status !== "open" || state.lagged || state.rateLimit) && (
+        <SystemNotices
+          status={status}
+          lagged={state.lagged}
+          rateLimit={state.rateLimit}
+        />
+      )}
+
+      <ConversationFeed
+        state={state}
         onResolve={resolveApproval}
       />
 
-      {isDesktop ? (
-        <DesktopLayout
-          state={state}
-          sessionId={sessionId}
-          sendPrompt={sendPrompt}
-        />
-      ) : (
-        <MobileLayout
-          state={state}
-          sessionId={sessionId}
-          sendPrompt={sendPrompt}
-        />
+      <Composer
+        sessionId={sessionId}
+        sendPrompt={sendPrompt}
+        thinking={state.thinking}
+        inFlight={!!state.inFlightTool}
+      />
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+
+interface ConversationFeedProps {
+  state: CockpitState;
+  onResolve: (nonce: string, decision: ApprovalDecision) => Promise<void>;
+}
+
+/** Single scrollable column of message-style cells. Groups consecutive
+ *  agent text chunks into one bubble so streaming reads as one
+ *  paragraph; tool calls appear inline as cards between paragraphs;
+ *  approvals are pinned at the bottom of the feed. */
+function ConversationFeed({ state, onResolve }: ConversationFeedProps) {
+  const cells = useMemo(() => groupActivity(state.activity), [state.activity]);
+  const scroller = useRef<HTMLDivElement | null>(null);
+
+  // Auto-stick to bottom unless the user has scrolled up. Cheap heuristic:
+  // re-scroll on every state mutation iff the scroller is within ~80px of
+  // the bottom.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distance < 80) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [cells, state.pendingApprovals.length, state.thinking]);
+
+  return (
+    <div
+      ref={scroller}
+      className="flex-1 overflow-y-auto"
+    >
+      <div className="mx-auto max-w-3xl px-4 py-6 space-y-4">
+        {cells.length === 0 && state.pendingApprovals.length === 0 && (
+          <EmptyState />
+        )}
+        {cells.map((cell) => (
+          <Cell key={cell.id} cell={cell} />
+        ))}
+
+        {state.thinking && <ThinkingBubble />}
+
+        {state.pendingApprovals.map((approval) => (
+          <PendingApproval
+            key={approval.nonce}
+            approval={approval}
+            onResolve={onResolve}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Cell types ──────────────────────────────────────────────────── */
+
+type Cell =
+  | { id: string; kind: "user"; text: string }
+  | { id: string; kind: "agent"; text: string }
+  | { id: string; kind: "tool"; row: ActivityRow; result?: ActivityRow }
+  | { id: string; kind: "system"; text: string };
+
+/** Compact the raw activity stream into the message-cells the UI
+ *  renders. Consecutive agent_message_chunk rows fuse into one bubble.
+ *  tool_start/tool_complete pairs collapse into a single Cell. */
+function groupActivity(rows: ActivityRow[]): Cell[] {
+  const out: Cell[] = [];
+  for (const row of rows) {
+    if (row.kind === "message") {
+      const last = out[out.length - 1];
+      if (last && last.kind === "agent") {
+        last.text += row.text;
+        continue;
+      }
+      out.push({ id: row.id, kind: "agent", text: row.text });
+    } else if (row.kind === "user_prompt") {
+      out.push({ id: row.id, kind: "user", text: row.text });
+    } else if (row.kind === "tool_start") {
+      out.push({ id: row.id, kind: "tool", row });
+    } else if (row.kind === "tool_complete" || row.kind === "tool_error") {
+      // Attach to the most recent tool cell with the matching id.
+      const target = [...out]
+        .reverse()
+        .find(
+          (c) =>
+            c.kind === "tool" &&
+            (c.row.toolCallId === row.toolCallId ||
+              c.row.id === row.id.replace(/^done-/, "start-")),
+        );
+      if (target && target.kind === "tool") {
+        target.result = row;
+      } else {
+        out.push({ id: row.id, kind: "system", text: row.text });
+      }
+    } else if (row.kind === "thinking") {
+      // Suppressed; the bubble at the bottom of the feed handles the
+      // live state.
+    } else {
+      out.push({ id: row.id, kind: "system", text: row.text });
+    }
+  }
+  return out;
+}
+
+function Cell({ cell }: { cell: Cell }) {
+  if (cell.kind === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-full rounded-lg bg-slate-700 px-3 py-2 text-sm text-slate-100 whitespace-pre-wrap">
+          {cell.text}
+        </div>
+      </div>
+    );
+  }
+  if (cell.kind === "agent") {
+    return (
+      <div className="text-slate-100 leading-relaxed whitespace-pre-wrap">
+        {cell.text}
+      </div>
+    );
+  }
+  if (cell.kind === "tool") {
+    return <ToolCallCell row={cell.row} result={cell.result} />;
+  }
+  return (
+    <div className="text-xs text-slate-500 italic">{cell.text}</div>
+  );
+}
+
+function ToolCallCell({
+  row,
+  result,
+}: {
+  row: ActivityRow;
+  result?: ActivityRow;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const status: "running" | "ok" | "err" = !result
+    ? "running"
+    : result.kind === "tool_error"
+      ? "err"
+      : "ok";
+
+  const dot =
+    status === "running"
+      ? "bg-amber-400 animate-pulse"
+      : status === "ok"
+        ? "bg-emerald-500"
+        : "bg-red-500";
+
+  return (
+    <div className="rounded-md border border-slate-700 bg-slate-800/60 text-sm">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-800"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className={`h-2 w-2 rounded-full ${dot}`} />
+        <span className="font-mono text-xs text-slate-300">{row.text}</span>
+        <span className="ml-auto text-xs text-slate-500">
+          {status === "running" ? "running" : status === "ok" ? "✓" : "failed"}
+        </span>
+      </button>
+      {expanded && result?.text && (
+        <pre className="border-t border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-400 whitespace-pre-wrap break-all">
+          {result.text}
+        </pre>
       )}
     </div>
   );
 }
 
-interface MobileLayoutProps {
-  state: ReturnType<typeof useCockpit>["state"];
-  sessionId: string;
-  sendPrompt: (text: string) => Promise<void>;
+function ThinkingBubble() {
+  return (
+    <div className="flex items-center gap-2 text-sm italic text-slate-400">
+      <span className="flex gap-1" aria-hidden="true">
+        <span className="h-1.5 w-1.5 rounded-full bg-slate-500 animate-pulse" />
+        <span className="h-1.5 w-1.5 rounded-full bg-slate-500 animate-pulse [animation-delay:120ms]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-slate-500 animate-pulse [animation-delay:240ms]" />
+      </span>
+      <span>Thinking…</span>
+    </div>
+  );
 }
 
-function MobileLayout({ state, sessionId, sendPrompt }: MobileLayoutProps) {
+function EmptyState() {
   return (
-    <div className="flex flex-col w-full h-full overflow-y-auto p-4">
-      <PlanPanel plan={state.plan} />
+    <div className="text-center text-slate-500 italic mt-12">
+      Type a prompt below to start the conversation.
+    </div>
+  );
+}
 
-      <ActivityStream
-        rows={state.activity}
-        inFlightTool={state.inFlightTool}
-        thinking={state.thinking}
-      />
+/* ── Plan strip ──────────────────────────────────────────────────── */
 
-      {state.assistantMessage && (
-        <div className="rounded bg-slate-800 p-3 mb-3 text-slate-200 whitespace-pre-wrap leading-relaxed">
-          {state.assistantMessage}
+interface PlanStripProps {
+  plan: Plan | null;
+  mode: CockpitState["mode"];
+}
+
+function PlanStrip({ plan, mode }: PlanStripProps) {
+  const [expanded, setExpanded] = useState(false);
+  if (!plan && mode === "Default") return null;
+
+  const current = plan?.steps.find((s) => s.status === "InProgress");
+  const upcoming = plan?.steps.filter((s) => s.status === "Pending") ?? [];
+  const completed = plan?.steps.filter((s) => s.status === "Done") ?? [];
+  const totalSteps = plan?.steps.length ?? 0;
+
+  return (
+    <div className="border-b border-slate-800 bg-slate-900/95 backdrop-blur">
+      <button
+        type="button"
+        className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-slate-800/40"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="font-mono text-[11px] uppercase tracking-wide text-slate-500">
+          plan
+        </span>
+        <span className="truncate text-slate-200">
+          {current?.title ?? (plan ? "all steps complete" : "—")}
+        </span>
+        {plan && (
+          <span className="ml-auto text-xs text-slate-500">
+            {completed.length}/{totalSteps}
+          </span>
+        )}
+        {mode !== "Default" && (
+          <span className="rounded bg-amber-900/40 px-2 py-0.5 text-[11px] uppercase tracking-wide text-amber-300">
+            {mode}
+          </span>
+        )}
+      </button>
+
+      {expanded && plan && (
+        <div className="max-h-64 overflow-y-auto border-t border-slate-800 px-4 py-2 text-sm">
+          <ul className="space-y-1">
+            {plan.steps.map((step) => (
+              <li
+                key={step.id}
+                className="flex items-start gap-2 text-slate-300"
+              >
+                <StepGlyph status={step.status} />
+                <span
+                  className={
+                    step.status === "Done"
+                      ? "text-slate-500 line-through"
+                      : step.status === "InProgress"
+                        ? "text-slate-100 font-medium"
+                        : "text-slate-300"
+                  }
+                >
+                  {step.title}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {upcoming.length === 0 && current && (
+            <p className="mt-2 text-xs text-slate-500">
+              No upcoming steps after the current one.
+            </p>
+          )}
         </div>
       )}
+    </div>
+  );
+}
 
-      <ChatDrawer
-        sessionId={sessionId}
-        onSubmit={sendPrompt}
-        variant="mobile"
+function StepGlyph({ status }: { status: Plan["steps"][number]["status"] }) {
+  switch (status) {
+    case "Done":
+      return <span className="text-emerald-500">✓</span>;
+    case "InProgress":
+      return <span className="text-amber-400">●</span>;
+    case "Cancelled":
+      return <span className="text-slate-600">⊘</span>;
+    case "Pending":
+    default:
+      return <span className="text-slate-600">○</span>;
+  }
+}
+
+/* ── Composer (input area) ───────────────────────────────────────── */
+
+interface ComposerProps {
+  sessionId: string;
+  sendPrompt: (text: string) => Promise<void>;
+  thinking: boolean;
+  inFlight: boolean;
+}
+
+function Composer({ sendPrompt, thinking, inFlight }: ComposerProps) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-grow up to ~6 lines.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, [text]);
+
+  const submit = async () => {
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    try {
+      await sendPrompt(trimmed);
+      setText("");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void submit();
+    }
+  };
+
+  const placeholder = thinking
+    ? "Steer the agent…  (Enter to send)"
+    : inFlight
+      ? "Tool running. Your message will queue."
+      : "Send a message…  (Enter to send, Shift+Enter for newline)";
+
+  return (
+    <div className="border-t border-slate-800 bg-slate-900">
+      <div className="mx-auto max-w-3xl px-4 py-3">
+        <div className="flex items-end gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 focus-within:border-amber-600">
+          <textarea
+            ref={taRef}
+            className="flex-1 resize-none bg-transparent text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none"
+            rows={1}
+            placeholder={placeholder}
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={onKeyDown}
+            disabled={sending}
+          />
+          <button
+            type="button"
+            className={`shrink-0 rounded px-3 py-1.5 text-sm font-medium ${
+              sending || !text.trim()
+                ? "bg-slate-700 text-slate-500 cursor-not-allowed"
+                : "bg-amber-600 text-white hover:bg-amber-500"
+            }`}
+            disabled={sending || !text.trim()}
+            onClick={() => void submit()}
+          >
+            {sending ? "…" : "Send"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Pending approval card ───────────────────────────────────────── */
+
+function PendingApproval({
+  approval,
+  onResolve,
+}: {
+  approval: Approval;
+  onResolve: (nonce: string, decision: ApprovalDecision) => Promise<void>;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-3 shadow-md">
+      <div className="text-xs font-mono uppercase tracking-wide text-amber-400 mb-2">
+        agent is asking permission
+      </div>
+      <ApprovalCard
+        approval={approval}
+        onResolve={(decision) => onResolve(approval.nonce, decision)}
       />
     </div>
   );
 }
 
-function DesktopLayout({ state, sessionId, sendPrompt }: MobileLayoutProps) {
-  return (
-    <div className="grid grid-cols-[300px_minmax(0,1fr)_360px] w-full h-full overflow-hidden">
-      <aside className="overflow-y-auto p-4 border-r border-slate-700">
-        <PlanPanel plan={state.plan} />
-      </aside>
-      <section className="overflow-y-auto p-4">
-        <ActivityStream
-          rows={state.activity}
-          inFlightTool={state.inFlightTool}
-          thinking={state.thinking}
-        />
-        {state.assistantMessage && (
-          <div className="rounded bg-slate-800 p-3 mb-3 text-slate-200 whitespace-pre-wrap leading-relaxed">
-            {state.assistantMessage}
-          </div>
-        )}
-      </section>
-      <aside className="h-full">
-        <ChatDrawer
-          sessionId={sessionId}
-          onSubmit={sendPrompt}
-          variant="desktop"
-        />
-      </aside>
-    </div>
-  );
-}
+/* ── System notices ──────────────────────────────────────────────── */
 
-interface ChromeProps {
-  status: ConnectionStatus;
-  lagged: boolean;
-  rateLimit: ReturnType<typeof useCockpit>["state"]["rateLimit"];
-  approvals: ReturnType<typeof useCockpit>["state"]["pendingApprovals"];
-  onResolve: (
-    nonce: string,
-    decision: import("../../lib/cockpitTypes").ApprovalDecision,
-  ) => Promise<void>;
-}
-
-function ConnectionAndApprovals({
+function SystemNotices({
   status,
   lagged,
   rateLimit,
-  approvals,
-  onResolve,
-}: ChromeProps) {
-  const showChrome = status !== "open" || lagged || !!rateLimit || approvals.length > 0;
-  if (!showChrome) return null;
-  return (
-    <div className="absolute md:static inset-x-0 top-0 z-20 md:z-auto p-4 bg-slate-900/95 backdrop-blur md:bg-transparent md:p-2 md:border-b md:border-slate-700">
-      <ConnectionChrome status={status} lagged={lagged} />
-      {rateLimit && (
-        <div
-          role="status"
-          className="mb-3 rounded bg-amber-900/40 border border-amber-700 p-3 text-sm text-amber-200"
-        >
-          Rate-limited ({rateLimit.kind}); resets at{" "}
-          {new Date(rateLimit.resets_at).toLocaleTimeString()}.
-        </div>
-      )}
-      {approvals.map((approval) => (
-        <ApprovalCard
-          key={approval.nonce}
-          approval={approval}
-          onResolve={(decision) => onResolve(approval.nonce, decision)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ConnectionChrome({
-  status,
-  lagged,
 }: {
   status: ConnectionStatus;
   lagged: boolean;
+  rateLimit: CockpitState["rateLimit"];
 }) {
-  if (status === "open" && !lagged) return null;
-  const message =
-    status === "connecting"
-      ? "Connecting to cockpit…"
-      : status === "error"
-        ? "Cockpit connection error. Retrying…"
-        : status === "closed"
-          ? "Cockpit disconnected."
-          : lagged
-            ? "Reconnected; some events were missed (snapshot recommended)."
-            : "";
-  if (!message) return null;
+  const messages: { kind: string; text: string }[] = [];
+  if (status === "connecting") {
+    messages.push({ kind: "info", text: "Connecting to cockpit…" });
+  }
+  if (status === "error") {
+    messages.push({ kind: "warn", text: "Cockpit connection error. Retrying…" });
+  }
+  if (status === "closed") {
+    messages.push({ kind: "warn", text: "Cockpit disconnected." });
+  }
+  if (lagged) {
+    messages.push({
+      kind: "warn",
+      text: "Some events were missed during reconnect.",
+    });
+  }
+  if (rateLimit) {
+    const reset = new Date(rateLimit.resets_at).toLocaleTimeString();
+    messages.push({
+      kind: "warn",
+      text: `Rate-limited (${rateLimit.kind}); resets at ${reset}.`,
+    });
+  }
+  if (messages.length === 0) return null;
   return (
-    <div className="mb-3 rounded bg-slate-800 border border-slate-700 p-3 text-sm text-slate-300">
-      {message}
+    <div className="border-b border-slate-800 px-4 py-2 space-y-1">
+      {messages.map((m, i) => (
+        <div
+          key={i}
+          className={`text-xs ${
+            m.kind === "warn" ? "text-amber-300" : "text-slate-400"
+          }`}
+        >
+          {m.text}
+        </div>
+      ))}
     </div>
   );
-}
-
-function useIsDesktop(): boolean {
-  const [isDesktop, setIsDesktop] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.matchMedia("(min-width: 768px)").matches;
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(min-width: 768px)");
-    const handler = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-  return isDesktop;
 }
