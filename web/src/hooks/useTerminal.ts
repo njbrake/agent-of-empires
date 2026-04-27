@@ -206,8 +206,16 @@ export function useTerminal(
     // .wterm class is added here so font-family / line-height resolve
     // from the CSS variables we just set; WTerm's constructor will
     // re-add it as a no-op.
+    //
+    // The measurement uses whatever font is currently rendering. With a
+    // cold cache, Geist Mono may not have loaded yet and the probe gets
+    // fallback-font metrics. wterm's ResizeObserver only re-measures the
+    // cell on outer-size changes, so a font swap that doesn't move the
+    // outer rect can leave wterm stuck with stale metrics. We schedule a
+    // post-fonts.ready re-measure below to dispatch term.resize() if the
+    // corrected size differs.
     termEl.classList.add("wterm");
-    const seedSize = (() => {
+    const computeSeedSize = (): { cols: number; rows: number } | null => {
       const probe = document.createElement("span");
       probe.textContent = "W";
       probe.style.position = "absolute";
@@ -241,7 +249,8 @@ export function useTerminal(
         cols: Math.max(1, Math.floor(contentW / cellRect.width)),
         rows: Math.max(1, Math.floor(contentH / cellRect.height)),
       };
-    })();
+    };
+    const seedSize = computeSeedSize();
 
     const term = new WTerm(termEl, {
       cols: seedSize?.cols,
@@ -263,6 +272,32 @@ export function useTerminal(
     });
     if (seedSize) {
       lastMeasuredRef.current = { cols: seedSize.cols, rows: seedSize.rows };
+    }
+
+    // Once webfonts have fully loaded, re-measure and dispatch a resize
+    // if the cell metrics shifted. This catches the cold-cache case where
+    // the synchronous seed above used fallback-font metrics. term.resize
+    // routes through onResize so the same debounce + dedup applies; if
+    // the corrected size matches what was already sent, nothing goes out.
+    const fontsApi = (
+      document as Document & { fonts?: { ready: Promise<unknown> } }
+    ).fonts;
+    if (fontsApi?.ready) {
+      fontsApi.ready
+        .then(() => {
+          if (termRef.current !== term) return;
+          const remeasured = computeSeedSize();
+          if (
+            remeasured &&
+            (remeasured.cols !== term.cols || remeasured.rows !== term.rows)
+          ) {
+            term.resize(remeasured.cols, remeasured.rows);
+          }
+        })
+        .catch(() => {
+          // fonts.ready can reject in headless environments where no
+          // FontFaceSet is wired up; treat as no-op.
+        });
     }
 
     // Drain handler: sends the latest deferred size when the user

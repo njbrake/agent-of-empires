@@ -70,4 +70,45 @@ test.describe("Init resize storm regression (#807)", () => {
         JSON.stringify(resizes),
     ).toHaveLength(0);
   });
+
+  test("init storm is bounded: small msg count, no duplicate sizes", async ({
+    page,
+  }) => {
+    const handle = await mockTerminalApis(page);
+    await page.goto("/");
+    await openSession(page, handle);
+    await page.waitForTimeout(1000);
+
+    const resizes = extractResizes(handle);
+    expect(resizes.length).toBeGreaterThan(0);
+
+    // The dashboard mounts two terminals (TerminalView + RightPanel),
+    // each with its own useTerminal/WebSocket. With seed + dedup +
+    // longer initial debounce, each pane should send exactly one
+    // resize during init (its real measured size). Two panes -> 2
+    // messages. We allow up to 4 to absorb test-environment timing
+    // jitter, but anything higher means the storm has crept back.
+    expect(
+      resizes.length,
+      `Init resize storm not bounded: got ${resizes.length} msgs. ` +
+        `Expected <= 4 (one per terminal pane, plus jitter). ` +
+        JSON.stringify(resizes),
+    ).toBeLessThanOrEqual(4);
+
+    // sendResize dedupes consecutive identical (cols,rows) on the same
+    // socket. Both terminals' messages interleave into one captured
+    // list, so we can't strictly group by socket. But each pane has a
+    // distinct container width, so each unique (cols,rows) should land
+    // at most once per pane. The number of distinct sizes is therefore
+    // a tight upper bound on total messages: any extras are dedup
+    // failures.
+    const distinct = new Set(resizes.map((r) => `${r.cols}x${r.rows}`));
+    expect(
+      resizes.length,
+      `Saw ${resizes.length} resize msgs but only ${distinct.size} ` +
+        `distinct sizes — dedup must filter consecutive duplicates ` +
+        `from the rAF + onResize race. Sequence: ` +
+        JSON.stringify(resizes),
+    ).toBeLessThanOrEqual(distinct.size);
+  });
 });
