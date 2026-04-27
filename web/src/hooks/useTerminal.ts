@@ -57,6 +57,7 @@ export function useTerminal(
   sessionId: string | null,
   wsPath: string = "ws",
   autoFocus: boolean = true,
+  claudeFullscreen: boolean = false,
 ) {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -566,6 +567,23 @@ export function useTerminal(
     const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
     let scrollbackDepth = 0;
     const sendWheel = (dir: "up" | "down", count: number) => {
+      const ws = wsRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return;
+
+      // Fullscreen renderer path: Claude Code manages its own virtualized
+      // scrollback inside the alt screen, so tmux copy-mode is never
+      // engaged. Skip the depth tracking and the pause/resume dance —
+      // just emit raw wheel sequences and let Claude's renderer handle
+      // them. isInScrollback stays false; downstream UI (BackToLiveButton)
+      // hides itself accordingly.
+      if (claudeFullscreen) {
+        const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
+        for (let i = 0; i < count; i++) {
+          ws.send(new TextEncoder().encode(seq));
+        }
+        return;
+      }
+
       let sendCount = count;
       const clampForMobile = isMobileViewport();
       if (dir === "up") {
@@ -581,8 +599,6 @@ export function useTerminal(
         scrollbackDepth = Math.max(0, scrollbackDepth - sendCount);
       }
       const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
-      const ws = wsRef.current;
-      if (ws?.readyState !== WebSocket.OPEN) return;
       for (let i = 0; i < sendCount; i++) {
         ws.send(new TextEncoder().encode(seq));
       }

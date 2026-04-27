@@ -36,7 +36,12 @@ export function TerminalView({ session }: Props) {
     exitScrollback,
     ctrlActiveRef,
     clearCtrlRef,
-  } = useTerminal(ensureState === "ready" ? session.id : null);
+  } = useTerminal(
+    ensureState === "ready" ? session.id : null,
+    "ws",
+    true,
+    session.claude_fullscreen,
+  );
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
   const [termFocused, setTermFocused] = useState(false);

@@ -1,6 +1,7 @@
 //! Agent of Empires library - Core functionality for the terminal session manager
 
 pub mod agents;
+pub mod claude_settings;
 pub mod cli;
 pub mod containers;
 pub mod git;
