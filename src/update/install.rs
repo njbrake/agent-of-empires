@@ -1,7 +1,9 @@
 //! Self-update: detect install method, perform update.
 
 use anyhow::{Context, Result};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -218,6 +220,69 @@ pub fn sanity_check_binary(binary: &Path, expected_version: &str) -> Result<()> 
         );
     }
     Ok(())
+}
+
+/// Atomically replace `target` with `source`. Both paths must be on the
+/// same filesystem (callers ensure this by placing the temp file in the
+/// same parent directory as the target). On `EACCES`, falls back to two
+/// sequential `sudo` invocations (`sudo mv` then `sudo chmod 0755`); the
+/// user gets one password prompt thanks to sudo's timestamp cache.
+///
+/// On Unix, this is safe to do while the target is the running binary -
+/// the kernel keeps the old inode alive for the running process.
+pub fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
+    match std::fs::rename(source, target) {
+        Ok(()) => {
+            #[cfg(unix)]
+            std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o755))?;
+            Ok(())
+        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => sudo_replace(source, target),
+        Err(e) => Err(e).with_context(|| format!("renaming to {}", target.display())),
+    }
+}
+
+fn sudo_replace(source: &Path, target: &Path) -> Result<()> {
+    let mv_status = Command::new("sudo")
+        .arg("mv")
+        .arg(source)
+        .arg(target)
+        .status()
+        .context("invoking `sudo mv`")?;
+    if !mv_status.success() {
+        anyhow::bail!("sudo mv failed (exit {})", mv_status);
+    }
+    let chmod_status = Command::new("sudo")
+        .arg("chmod")
+        .arg("0755")
+        .arg(target)
+        .status()
+        .context("invoking `sudo chmod`")?;
+    if !chmod_status.success() {
+        anyhow::bail!("sudo chmod failed (exit {})", chmod_status);
+    }
+    Ok(())
+}
+
+/// Probe whether the parent directory of `binary_path` is writable
+/// without sudo. Used by the confirm prompt to warn users before
+/// they say yes.
+pub fn parent_is_writable(binary_path: &Path) -> bool {
+    let Some(parent) = binary_path.parent() else {
+        return false;
+    };
+    let probe = parent.join(".aoe-update-writability-probe");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
