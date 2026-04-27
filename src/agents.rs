@@ -157,7 +157,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "pip install vibe-tool",
+        install_hint: "pip install mistral-vibe",
     },
     AgentDef {
         name: "codex",
@@ -265,7 +265,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "pip install pi-agent",
+        install_hint: "npm install -g @mariozechner/pi-coding-agent",
     },
     AgentDef {
         name: "droid",
@@ -280,7 +280,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "npm install -g @anthropic-ai/droid",
+        install_hint: "npm install -g droid",
     },
     AgentDef {
         name: "settl",
@@ -480,6 +480,16 @@ mod tests {
             Some("npm install -g @anthropic-ai/claude-code")
         );
         assert_eq!(install_hint("codex"), Some("npm install -g @openai/codex"));
+        // Pi is distributed via npm, not pip (issue #818).
+        assert_eq!(
+            install_hint("pi"),
+            Some("npm install -g @mariozechner/pi-coding-agent")
+        );
+        // Mistral Vibe's PyPI package is `mistral-vibe`, not `vibe-tool`.
+        assert_eq!(install_hint("vibe"), Some("pip install mistral-vibe"));
+        // Factory's Droid CLI npm package is `droid`; `@anthropic-ai/droid`
+        // does not exist on the registry.
+        assert_eq!(install_hint("droid"), Some("npm install -g droid"));
         assert!(install_hint("unknown").is_none());
     }
 }
