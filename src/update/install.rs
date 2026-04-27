@@ -1,6 +1,8 @@
 //! Self-update: detect install method, perform update.
 
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallMethod {
@@ -68,6 +70,34 @@ fn paths_canonicalize_equal(a: &Path, b: &Path) -> bool {
         (Some(a), Some(b)) => a == b,
         _ => a == b, // fall back to literal equality if canonicalize fails
     }
+}
+
+pub fn detect_install_method() -> Result<InstallMethod> {
+    let exe = std::env::current_exe().context("locating current executable")?;
+    let exe = exe.canonicalize().unwrap_or(exe);
+    let home = dirs::home_dir().context("locating home directory")?;
+    let prefix = classify_path_prefix(&exe, &home);
+    let brew_path = probe_brew_aoe_path();
+    Ok(classify_with_brew(prefix, brew_path.as_deref(), &exe))
+}
+
+/// Run `brew list aoe` and return the path to the installed binary, if any.
+/// We parse the output (one path per line) and pick the line that ends in
+/// `/aoe` or `/bin/aoe`. If brew is not installed, the formula is not installed,
+/// or the command fails for any other reason, return `None`.
+fn probe_brew_aoe_path() -> Option<PathBuf> {
+    let output = Command::new("brew").args(["list", "aoe"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.ends_with("/aoe") || trimmed.ends_with("/bin/aoe") {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
