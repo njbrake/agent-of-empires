@@ -1,6 +1,7 @@
 //! Self-update: detect install method, perform update.
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -132,6 +133,40 @@ pub fn release_tarball_url(version: &str, platform: &str) -> String {
     format!(
         "https://github.com/njbrake/agent-of-empires/releases/download/v{version}/aoe-{platform}.tar.gz"
     )
+}
+
+/// Download a release tarball to `dest`. Streams bytes; reports
+/// progress via the optional callback (current bytes, total bytes
+/// if known).
+pub async fn download_tarball(
+    url: &str,
+    dest: &Path,
+    mut on_progress: Option<&mut dyn FnMut(u64, Option<u64>)>,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .user_agent("agent-of-empires")
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("download failed: HTTP {} from {}", response.status(), url);
+    }
+    let total = response.content_length();
+    let mut stream = response.bytes_stream();
+    let mut file = std::fs::File::create(dest)
+        .with_context(|| format!("creating download file at {}", dest.display()))?;
+    let mut downloaded: u64 = 0;
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk)?;
+        downloaded += chunk.len() as u64;
+        if let Some(cb) = on_progress.as_deref_mut() {
+            cb(downloaded, total);
+        }
+    }
+    file.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
