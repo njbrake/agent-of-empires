@@ -120,6 +120,16 @@ pub async fn terminal_ws(
     }
 }
 
+/// Defence-in-depth cap that mirrors the client-side cap in
+/// `web/src/hooks/useTerminal.ts`. The browser's wterm WASM grid is fixed
+/// at 256x256 (vercel-labs/wterm@0.1.x); resizing the PTY past this lets
+/// the agent draw past wterm's render cap, producing visible corruption.
+/// The client should never send a larger resize, but if a future client
+/// regression slips through, clamp here so the PTY is never larger than
+/// the in-browser grid. Remove when wterm raises or removes the cap.
+const WTERM_MAX_COLS: u16 = 256;
+const WTERM_MAX_ROWS: u16 = 256;
+
 /// Unique client ID counter for primary-client tracking.
 static CLIENT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -321,6 +331,8 @@ async fn handle_terminal_ws(
                     if let Ok(control) = serde_json::from_str::<ControlMessage>(&text) {
                         match control {
                             ControlMessage::Resize { cols, rows } if cols > 0 && rows > 0 => {
+                                let cols = cols.min(WTERM_MAX_COLS);
+                                let rows = rows.min(WTERM_MAX_ROWS);
                                 pending_size = Some((cols, rows));
 
                                 let dominated = is_primary_or_vacant(

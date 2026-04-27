@@ -32,6 +32,17 @@ const RESIZE_DEBOUNCE_MS = 50;
 // a small margin. After the first resize lands the debounce drops to
 // RESIZE_DEBOUNCE_MS so live splitter drags still feel responsive.
 const INITIAL_SETTLE_MS = 250;
+// wterm's WASM grid (@wterm/core 0.1.x) is fixed at 256x256 and silently
+// clamps any larger resize. If the host-side PTY is resized past this cap,
+// the agent draws into a viewport bigger than wterm renders: long lines
+// wrap inside wterm but not in the agent's mental model, displacing every
+// subsequent row and producing visible corruption (overlapping menus,
+// duplicated status bars). Capping the size we send to the PTY keeps the
+// agent's mental model aligned with what wterm will actually render.
+// Filed upstream at vercel-labs/wterm#NN; remove when wterm raises or
+// removes the cap.
+const WTERM_MAX_COLS = 256;
+const WTERM_MAX_ROWS = 256;
 
 export interface TerminalState {
   connected: boolean;
@@ -186,16 +197,26 @@ export function useTerminal(
     let lastSentCols = -1;
     let lastSentRows = -1;
     const sendResize = (cols: number, rows: number) => {
+      // Clamp to wterm's render-grid cap before we tell the server. See
+      // WTERM_MAX_COLS comment for the failure mode this prevents.
+      const clampedCols = Math.min(cols, WTERM_MAX_COLS);
+      const clampedRows = Math.min(rows, WTERM_MAX_ROWS);
       if (isInScrollbackRef.current) {
-        pendingResizeRef.current = { cols, rows };
+        pendingResizeRef.current = { cols: clampedCols, rows: clampedRows };
         return;
       }
-      if (cols === lastSentCols && rows === lastSentRows) return;
+      if (clampedCols === lastSentCols && clampedRows === lastSentRows) return;
       const ws = wsRef.current;
       if (ws?.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: "resize", cols, rows } as ResizeMessage));
-      lastSentCols = cols;
-      lastSentRows = rows;
+      ws.send(
+        JSON.stringify({
+          type: "resize",
+          cols: clampedCols,
+          rows: clampedRows,
+        } as ResizeMessage),
+      );
+      lastSentCols = clampedCols;
+      lastSentRows = clampedRows;
     };
 
     // Pre-measure cell size and seed the WTerm constructor with the
