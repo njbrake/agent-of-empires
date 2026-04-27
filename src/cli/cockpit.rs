@@ -156,7 +156,11 @@ async fn doctor(json: bool, fix: bool) -> Result<()> {
     println!();
     println!("Configured agents:");
     for entry in &report.agents {
-        let mark = if entry.command_present { "[OK]" } else { "[!! ]" };
+        let mark = if entry.command_present {
+            "[OK]"
+        } else {
+            "[!! ]"
+        };
         println!("{} {}  ({})", mark, entry.name, entry.description);
     }
     println!();
@@ -180,9 +184,7 @@ fn check_node() -> NodeStatus {
             };
         }
     };
-    let output = std::process::Command::new(&path)
-        .arg("--version")
-        .output();
+    let output = std::process::Command::new(&path).arg("--version").output();
     let (version, meets_minimum) = match output {
         Ok(out) if out.status.success() => {
             let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();

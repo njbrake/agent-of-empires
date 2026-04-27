@@ -41,6 +41,11 @@ pub struct SessionResponse {
     pub notify_on_waiting: Option<bool>,
     pub notify_on_idle: Option<bool>,
     pub notify_on_error: Option<bool>,
+    /// True when this session uses ACP cockpit rendering instead of a
+    /// tmux-backed PTY. The web dashboard branches on this to pick
+    /// between the cockpit panels and the terminal view.
+    #[cfg(feature = "cockpit")]
+    pub cockpit_mode: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -84,6 +89,8 @@ impl From<&Instance> for SessionResponse {
             notify_on_waiting: inst.notify_on_waiting,
             notify_on_idle: inst.notify_on_idle,
             notify_on_error: inst.notify_on_error,
+            #[cfg(feature = "cockpit")]
+            cockpit_mode: inst.cockpit_mode,
         }
     }
 }
@@ -481,6 +488,25 @@ pub struct CreateSessionBody {
     #[serde(default)]
     pub custom_instruction: Option<String>,
     pub profile: Option<String>,
+    /// Whether the new session should run in cockpit mode. When the
+    /// web dashboard creates a session, the request omits this field
+    /// and the server defaults to true so the browser experience is
+    /// the structured cockpit UI by default. CLI/TUI callers control
+    /// this explicitly.
+    #[cfg(feature = "cockpit")]
+    #[serde(default = "default_cockpit_for_web")]
+    pub cockpit_mode: bool,
+    #[cfg(feature = "cockpit")]
+    #[serde(default)]
+    pub cockpit_agent: Option<String>,
+    #[cfg(feature = "cockpit")]
+    #[serde(default)]
+    pub cockpit_model: Option<String>,
+}
+
+#[cfg(feature = "cockpit")]
+fn default_cockpit_for_web() -> bool {
+    true
 }
 
 pub async fn create_session(
@@ -623,14 +649,34 @@ pub async fn create_session(
             }
         }
 
+        // Apply cockpit fields from the request body. The web UI
+        // defaults `cockpit_mode = true` (see default_cockpit_for_web)
+        // so browser-created sessions land in the cockpit; CLI/TUI
+        // callers control this explicitly.
+        #[cfg(feature = "cockpit")]
+        {
+            instance.cockpit_mode = body.cockpit_mode;
+            instance.cockpit_agent = body.cockpit_agent;
+            instance.cockpit_model = body.cockpit_model;
+        }
+
         // Save to disk
         let storage = Storage::new(&profile)?;
         let mut all = storage.load().unwrap_or_default();
         all.push(instance.clone());
         storage.save(&all)?;
 
-        // Start the session
-        instance.start()?;
+        // Cockpit-mode sessions are not backed by tmux; the cockpit
+        // supervisor spawns the ACP agent on demand. Skip the tmux
+        // `start()` to avoid creating an empty pane that no one will
+        // attach to.
+        #[cfg(feature = "cockpit")]
+        let skip_tmux_start = instance.cockpit_mode;
+        #[cfg(not(feature = "cockpit"))]
+        let skip_tmux_start = false;
+        if !skip_tmux_start {
+            instance.start()?;
+        }
 
         Ok::<Instance, anyhow::Error>(instance)
     })
@@ -639,8 +685,47 @@ pub async fn create_session(
     match result {
         Ok(Ok(instance)) => {
             let resp = SessionResponse::from(&instance);
+            #[cfg(feature = "cockpit")]
+            let cockpit_spawn_target = if instance.cockpit_mode {
+                Some((
+                    instance.id.clone(),
+                    instance.tool.clone(),
+                    instance.cockpit_agent.clone(),
+                    instance.cockpit_model.clone(),
+                    instance.project_path.clone(),
+                ))
+            } else {
+                None
+            };
             let mut instances = state.instances.write().await;
             instances.push(instance);
+            drop(instances);
+
+            #[cfg(feature = "cockpit")]
+            if let Some((id, tool, agent_override, model, project_path)) = cockpit_spawn_target {
+                let agent = agent_override.unwrap_or_else(|| {
+                    if tool == "claude" {
+                        "claude-code".into()
+                    } else {
+                        "aoe-agent".into()
+                    }
+                });
+                let cwd = std::path::PathBuf::from(project_path);
+                let supervisor = state.cockpit_supervisor.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = supervisor
+                        .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
+                        .await
+                    {
+                        tracing::warn!(
+                            target: "cockpit.supervisor",
+                            session = %id,
+                            "auto-spawn after create failed: {e}"
+                        );
+                    }
+                });
+            }
+
             (
                 StatusCode::CREATED,
                 Json(serde_json::to_value(resp).expect("SessionResponse is always serializable")),

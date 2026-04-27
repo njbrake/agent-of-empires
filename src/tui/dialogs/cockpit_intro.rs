@@ -12,6 +12,7 @@ use ratatui::widgets::*;
 use super::DialogResult;
 use crate::tui::styles::Theme;
 
+#[derive(Default)]
 pub struct CockpitIntroDialog;
 
 impl CockpitIntroDialog {
@@ -62,10 +63,7 @@ impl CockpitIntroDialog {
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled(
-                    "Verify: ",
-                    Style::default().fg(theme.title).bold(),
-                ),
+                Span::styled("Verify: ", Style::default().fg(theme.title).bold()),
                 Span::styled("aoe cockpit doctor", Style::default().fg(theme.text)),
             ]),
             Line::from(""),
@@ -89,10 +87,7 @@ impl CockpitIntroDialog {
         frame.render_widget(para, chunks[0]);
 
         let footer = Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Enter / Esc / q ",
-                Style::default().fg(theme.title).bold(),
-            ),
+            Span::styled("Enter / Esc / q ", Style::default().fg(theme.title).bold()),
             Span::styled("to dismiss", Style::default().fg(theme.dimmed)),
         ]))
         .alignment(Alignment::Center);

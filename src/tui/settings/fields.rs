@@ -1687,7 +1687,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.cockpit.default_agent = v.clone()
         }
         (FieldKey::CockpitApprovalTimeoutSecs, FieldValue::Number(v)) => {
-            config.cockpit.approval_timeout_secs = (*v).max(0) as u32
+            config.cockpit.approval_timeout_secs = (*v) as u32
         }
         (FieldKey::CockpitDestructiveDoubleConfirm, FieldValue::Bool(v)) => {
             config.cockpit.destructive_require_double_confirm = *v
@@ -1699,11 +1699,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.cockpit.replay_events = (*v).max(1) as u32
         }
         (FieldKey::CockpitReplayBytes, FieldValue::Number(v)) => {
-            config.cockpit.replay_bytes = (*v).max(1024) as u64
+            config.cockpit.replay_bytes = (*v).max(1024)
         }
-        (FieldKey::CockpitNodePath, FieldValue::Text(v)) => {
-            config.cockpit.node_path = v.clone()
-        }
+        (FieldKey::CockpitNodePath, FieldValue::Text(v)) => config.cockpit.node_path = v.clone(),
         _ => {}
     }
 }
@@ -1978,7 +1976,7 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             });
         }
         (FieldKey::CockpitApprovalTimeoutSecs, FieldValue::Number(v)) => {
-            set_profile_override((*v).max(0) as u32, &mut config.cockpit, |s, val| {
+            set_profile_override((*v) as u32, &mut config.cockpit, |s, val| {
                 s.approval_timeout_secs = val
             });
         }
@@ -1998,7 +1996,7 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             });
         }
         (FieldKey::CockpitReplayBytes, FieldValue::Number(v)) => {
-            set_profile_override((*v).max(1024) as u64, &mut config.cockpit, |s, val| {
+            set_profile_override((*v).max(1024), &mut config.cockpit, |s, val| {
                 s.replay_bytes = val
             });
         }

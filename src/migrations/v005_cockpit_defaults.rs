@@ -65,11 +65,7 @@ mod tests {
     fn seeding_is_idempotent_and_preserves_other_sections() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
-        fs::write(
-            &path,
-            "[other]\nkey = \"value\"\n",
-        )
-        .unwrap();
+        fs::write(&path, "[other]\nkey = \"value\"\n").unwrap();
 
         // Run the inner migration logic directly against this file. The
         // public `run` reads the app_dir, so we simulate by calling the

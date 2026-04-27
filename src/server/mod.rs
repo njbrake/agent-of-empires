@@ -398,30 +398,31 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     let cockpit_supervisor = {
         let push_for_sink = push_state.clone();
         let push_enabled_for_sink = push_enabled;
-        let on_approval = std::sync::Arc::new(move |session_id: &str, title: &str, destructive: bool| {
-            let session_id = session_id.to_string();
-            let title = title.to_string();
-            let push = push_for_sink.clone();
-            tokio::spawn(async move {
-                if let Some(_push) = push {
-                    if push_enabled_for_sink {
-                        // We re-enter the cockpit_ws helper when we have
-                        // an AppState in scope; the standalone trigger
-                        // here just logs intent. The full server-driven
-                        // path lives at cockpit_ws::trigger_approval_push,
-                        // invoked from the API handler that receives
-                        // the cockpit broadcast.
-                        tracing::debug!(
-                            target: "cockpit.supervisor",
-                            session = %session_id,
-                            title = %title,
-                            destructive,
-                            "approval event observed (push delivery handled via api layer)"
-                        );
+        let on_approval =
+            std::sync::Arc::new(move |session_id: &str, title: &str, destructive: bool| {
+                let session_id = session_id.to_string();
+                let title = title.to_string();
+                let push = push_for_sink.clone();
+                tokio::spawn(async move {
+                    if let Some(_push) = push {
+                        if push_enabled_for_sink {
+                            // We re-enter the cockpit_ws helper when we have
+                            // an AppState in scope; the standalone trigger
+                            // here just logs intent. The full server-driven
+                            // path lives at cockpit_ws::trigger_approval_push,
+                            // invoked from the API handler that receives
+                            // the cockpit broadcast.
+                            tracing::debug!(
+                                target: "cockpit.supervisor",
+                                session = %session_id,
+                                title = %title,
+                                destructive,
+                                "approval event observed (push delivery handled via api layer)"
+                            );
+                        }
                     }
-                }
-            });
-        }) as std::sync::Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
+                });
+            }) as std::sync::Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
         let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
             tx: cockpit_events_tx.clone(),
             on_approval,
@@ -460,6 +461,57 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     });
 
     let app = build_router(state.clone());
+
+    // Auto-spawn cockpit workers for persisted sessions that have
+    // cockpit_mode enabled. Best-effort: failures (e.g. missing Node)
+    // are logged and the session still appears in the list, just
+    // without a running worker until the user retries via REST or
+    // restarts serve. Each spawn runs on its own task so a slow agent
+    // doesn't delay startup.
+    #[cfg(feature = "cockpit")]
+    {
+        let cockpit_targets: Vec<_> = {
+            let instances = state.instances.read().await;
+            instances
+                .iter()
+                .filter(|i| i.cockpit_mode)
+                .map(|i| {
+                    (
+                        i.id.clone(),
+                        i.tool.clone(),
+                        i.cockpit_agent.clone(),
+                        i.cockpit_model.clone(),
+                        i.project_path.clone(),
+                    )
+                })
+                .collect()
+        };
+        for (id, tool, agent_override, model, project_path) in cockpit_targets {
+            let agent = agent_override.unwrap_or_else(|| {
+                if tool == "claude" {
+                    "claude-code".into()
+                } else {
+                    "aoe-agent".into()
+                }
+            });
+            let cwd = std::path::PathBuf::from(project_path);
+            let supervisor = state.cockpit_supervisor.clone();
+            tokio::spawn(async move {
+                if let Err(e) = supervisor
+                    .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
+                    .await
+                {
+                    tracing::warn!(
+                        target: "cockpit.supervisor",
+                        session = %id,
+                        agent = %agent,
+                        "auto-spawn at serve startup failed: {e}"
+                    );
+                }
+            });
+        }
+    }
+
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let local_port = listener.local_addr()?.port();
@@ -837,18 +889,9 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     #[cfg(feature = "cockpit")]
     let app = app
-        .route(
-            "/sessions/{id}/cockpit/ws",
-            get(cockpit_ws::cockpit_ws),
-        )
-        .route(
-            "/api/sessions/{id}/cockpit/spawn",
-            post(api::spawn_cockpit),
-        )
-        .route(
-            "/api/sessions/{id}/cockpit",
-            delete(api::shutdown_cockpit),
-        )
+        .route("/sessions/{id}/cockpit/ws", get(cockpit_ws::cockpit_ws))
+        .route("/api/sessions/{id}/cockpit/spawn", post(api::spawn_cockpit))
+        .route("/api/sessions/{id}/cockpit", delete(api::shutdown_cockpit))
         .route(
             "/api/sessions/{id}/cockpit/prompt",
             post(api::cockpit_prompt),

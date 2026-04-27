@@ -219,16 +219,28 @@ async fn shim_agent_round_trips_approval_allow() {
     let saw_request = events
         .iter()
         .any(|e| matches!(e, Event::ApprovalRequested { .. }));
-    let saw_resolved = events
-        .iter()
-        .any(|e| matches!(e, Event::ApprovalResolved { decision: ApprovalDecision::Allow, .. }));
+    let saw_resolved = events.iter().any(|e| {
+        matches!(
+            e,
+            Event::ApprovalResolved {
+                decision: ApprovalDecision::Allow,
+                ..
+            }
+        )
+    });
     let saw_yes_outcome = events.iter().any(|e| match e {
         Event::AgentMessageChunk { text } => text.contains("permission_outcome=yes"),
         _ => false,
     });
 
-    assert!(saw_request, "expected ApprovalRequested in events; got {events:?}");
-    assert!(saw_resolved, "expected ApprovalResolved Allow in events; got {events:?}");
+    assert!(
+        saw_request,
+        "expected ApprovalRequested in events; got {events:?}"
+    );
+    assert!(
+        saw_resolved,
+        "expected ApprovalResolved Allow in events; got {events:?}"
+    );
     assert!(
         saw_yes_outcome,
         "shim should have echoed permission_outcome=yes; got {events:?}"
@@ -293,7 +305,10 @@ async fn shim_agent_round_trips_fs() {
         Event::AgentMessageChunk { text } => text.starts_with("fs_read=hello from shim"),
         _ => false,
     });
-    assert!(saw_read, "shim should echo fs_read=hello from shim; got {events:?}");
+    assert!(
+        saw_read,
+        "shim should echo fs_read=hello from shim; got {events:?}"
+    );
     // And the file should actually exist on disk.
     assert!(
         cwd.join("shim-roundtrip.txt").exists(),

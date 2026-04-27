@@ -23,6 +23,9 @@ export interface SessionResponse {
   notify_on_waiting: boolean | null;
   notify_on_idle: boolean | null;
   notify_on_error: boolean | null;
+  /** True when this session uses ACP cockpit rendering instead of a
+   *  tmux-backed PTY. Absent on builds without the cockpit feature. */
+  cockpit_mode?: boolean;
 }
 
 export interface CleanupDefaults {

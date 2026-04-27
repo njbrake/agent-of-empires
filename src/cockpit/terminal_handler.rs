@@ -103,11 +103,7 @@ impl TerminalManager {
             exit_code: status.code(),
         };
 
-        self.inner
-            .lock()
-            .await
-            .outputs
-            .insert(id.clone(), output);
+        self.inner.lock().await.outputs.insert(id.clone(), output);
         Ok(id)
     }
 

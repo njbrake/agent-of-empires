@@ -51,12 +51,7 @@ pub enum SupervisorError {
 /// tested without pulling in the server module.
 pub trait BroadcastSink: Send + Sync + 'static {
     fn publish(&self, session_id: &str, seq: u64, event: &Event);
-    fn approval_requested(
-        &self,
-        _session_id: &str,
-        _approval_title: &str,
-        _destructive: bool,
-    ) {
+    fn approval_requested(&self, _session_id: &str, _approval_title: &str, _destructive: bool) {
         // Default: no-op. The server impl fires a push notification.
     }
 }
@@ -274,9 +269,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
         let now = Instant::now();
         let window_start = now - RESTART_WINDOW;
-        handle
-            .restart_history
-            .retain(|t| *t >= window_start);
+        handle.restart_history.retain(|t| *t >= window_start);
         handle.restart_history.push(now);
         if handle.restart_history.len() as u32 > MAX_RESTARTS_IN_WINDOW {
             warn!(
@@ -291,12 +284,17 @@ impl<S: BroadcastSink> Supervisor<S> {
     }
 }
 
+/// Callback fired when the supervisor observes an ApprovalRequested
+/// event for a session. The server impl uses this to trigger a Web
+/// Push notification; the test impl just records the call.
+pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
+
 /// A `BroadcastSink` impl backed by a tokio broadcast channel. The
 /// AppState in the server module wires this so cockpit events flow
 /// straight into the existing WebSocket fanout.
 pub struct ChannelSink {
     pub tx: broadcast::Sender<crate::server::CockpitBroadcastFrame>,
-    pub on_approval: Arc<dyn Fn(&str, &str, bool) + Send + Sync>,
+    pub on_approval: ApprovalHook,
 }
 
 impl BroadcastSink for ChannelSink {
@@ -310,12 +308,7 @@ impl BroadcastSink for ChannelSink {
         let _ = self.tx.send(frame);
     }
 
-    fn approval_requested(
-        &self,
-        session_id: &str,
-        approval_title: &str,
-        destructive: bool,
-    ) {
+    fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
         (self.on_approval)(session_id, approval_title, destructive);
     }
 }
@@ -339,11 +332,10 @@ mod tests {
     }
     impl BroadcastSink for VecSink {
         fn publish(&self, session_id: &str, seq: u64, event: &Event) {
-            self.frames.lock().unwrap().push((
-                session_id.to_string(),
-                seq,
-                event.clone(),
-            ));
+            self.frames
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), seq, event.clone()));
         }
         fn approval_requested(&self, session: &str, title: &str, destructive: bool) {
             self.approvals.lock().unwrap().push((
@@ -432,9 +424,15 @@ mod tests {
         }
 
         for i in 0..MAX_RESTARTS_IN_WINDOW {
-            assert!(sup.record_restart("s-1").await, "restart #{i} should succeed");
+            assert!(
+                sup.record_restart("s-1").await,
+                "restart #{i} should succeed"
+            );
         }
         // Fourth restart in the window: budget burned.
-        assert!(!sup.record_restart("s-1").await, "fourth restart should be denied");
+        assert!(
+            !sup.record_restart("s-1").await,
+            "fourth restart should be denied"
+        );
     }
 }

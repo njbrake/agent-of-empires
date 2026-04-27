@@ -38,10 +38,7 @@ impl AgentRegistry {
             "claude-code".into(),
             AgentSpec {
                 command: "npx".into(),
-                args: vec![
-                    "-y".into(),
-                    "@agentclientprotocol/claude-agent-acp".into(),
-                ],
+                args: vec!["-y".into(), "@agentclientprotocol/claude-agent-acp".into()],
                 description: "Anthropic Claude via the official ACP adapter".into(),
                 env_allowlist: None,
             },

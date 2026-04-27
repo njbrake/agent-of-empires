@@ -271,10 +271,7 @@ pub async fn download(app_dir: &Path) -> Result<ResolvedNode, NodeError> {
     archive.unpack(&cockpit_dir)?;
 
     // Move/rename the extracted dir to the stable name.
-    let extracted = cockpit_dir.join(format!(
-        "node-v{}-{}",
-        PINNED_NODE_VERSION, tarball.slug
-    ));
+    let extracted = cockpit_dir.join(format!("node-v{}-{}", PINNED_NODE_VERSION, tarball.slug));
     let stable = cockpit_dir.join(format!("node-v{}", PINNED_NODE_VERSION));
     if stable.exists() {
         std::fs::remove_dir_all(&stable)?;
@@ -347,10 +344,7 @@ mod tests {
             NodePlatform::DarwinArm64,
         ] {
             let tarball = pinned_for(platform);
-            assert!(
-                tarball.is_some(),
-                "missing pinned SHA for {platform:?}"
-            );
+            assert!(tarball.is_some(), "missing pinned SHA for {platform:?}");
             let sha = tarball.unwrap().sha256;
             assert_eq!(sha.len(), 64, "SHA must be 64 hex chars");
             assert!(

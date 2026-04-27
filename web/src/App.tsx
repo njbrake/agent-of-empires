@@ -17,6 +17,7 @@ import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
+import { CockpitView } from "./components/cockpit/CockpitView";
 import { RightPanel } from "./components/RightPanel";
 import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
@@ -397,7 +398,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                     : "flex-1 flex flex-col min-h-0 overflow-hidden"
                 }
               >
-                <TerminalView key={activeSessionId} session={activeSession} />
+                {activeSession?.cockpit_mode ? (
+                  <CockpitView key={activeSessionId} sessionId={activeSessionId!} />
+                ) : (
+                  <TerminalView key={activeSessionId} session={activeSession} />
+                )}
               </div>
 
               {selectedFilePath && activeSessionId && (

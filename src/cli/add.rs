@@ -345,9 +345,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         } else if user_picked_cockpit {
             true
         } else {
-            config.cockpit.enabled
-                && config.cockpit.default_for_claude
-                && instance.tool == "claude"
+            config.cockpit.enabled && config.cockpit.default_for_claude && instance.tool == "claude"
         };
         instance.cockpit_agent = args.agent.clone();
         instance.cockpit_model = args.model.clone();

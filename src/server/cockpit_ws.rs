@@ -115,7 +115,11 @@ pub async fn trigger_approval_push(
     if !state.push_enabled {
         return;
     }
-    let badge = if destructive { "DESTRUCTIVE" } else { "approval" };
+    let badge = if destructive {
+        "DESTRUCTIVE"
+    } else {
+        "approval"
+    };
     let title = format!("{} needs approval", session_id);
     let body = if destructive {
         format!("{badge}: {approval_title}")

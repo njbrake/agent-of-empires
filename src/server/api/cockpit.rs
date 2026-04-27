@@ -191,11 +191,9 @@ pub async fn resolve_approval(
         Err(SupervisorError::UnknownSession(_)) => {
             (StatusCode::NOT_FOUND, "session has no running cockpit").into_response()
         }
-        Err(SupervisorError::Acp(crate::cockpit::acp_client::AcpError::UnknownNonce)) => (
-            StatusCode::NOT_FOUND,
-            "no pending approval with that nonce",
-        )
-            .into_response(),
+        Err(SupervisorError::Acp(crate::cockpit::acp_client::AcpError::UnknownNonce)) => {
+            (StatusCode::NOT_FOUND, "no pending approval with that nonce").into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("resolve failed: {e}"),

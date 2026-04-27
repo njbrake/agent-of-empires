@@ -19,7 +19,7 @@ use std::sync::Arc;
 use agent_client_protocol::schema::{
     ClientCapabilities, ContentBlock, CreateTerminalRequest, CreateTerminalResponse,
     FileSystemCapabilities, InitializeRequest, KillTerminalRequest, KillTerminalResponse,
-    NewSessionRequest, PermissionOptionKind, ProtocolVersion, PromptRequest, ReadTextFileRequest,
+    NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion, ReadTextFileRequest,
     ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, SessionUpdate, TerminalId,
@@ -165,18 +165,20 @@ impl AcpClient {
         let child = Arc::new(Mutex::new(child));
 
         match socket_listener {
-            None => Self::start_with_stdio(
-                config.cwd,
-                config.additional_dirs,
-                session_id,
-                child,
-                pending_responders,
-                cmd_tx,
-                cmd_rx,
-                event_tx,
-                event_rx,
-            )
-            .await,
+            None => {
+                Self::start_with_stdio(
+                    config.cwd,
+                    config.additional_dirs,
+                    session_id,
+                    child,
+                    pending_responders,
+                    cmd_tx,
+                    cmd_rx,
+                    event_tx,
+                    event_rx,
+                )
+                .await
+            }
             Some(listener) => {
                 let socket_path = config.socket_path.clone();
                 Self::start_with_socket(
@@ -418,9 +420,18 @@ fn pick_option_id(
     decision: ApprovalDecision,
 ) -> Option<agent_client_protocol::schema::PermissionOptionId> {
     let preferred_kinds = match decision {
-        ApprovalDecision::Allow => &[PermissionOptionKind::AllowOnce, PermissionOptionKind::AllowAlways][..],
-        ApprovalDecision::AllowAlways => &[PermissionOptionKind::AllowAlways, PermissionOptionKind::AllowOnce][..],
-        ApprovalDecision::Deny => &[PermissionOptionKind::RejectOnce, PermissionOptionKind::RejectAlways][..],
+        ApprovalDecision::Allow => &[
+            PermissionOptionKind::AllowOnce,
+            PermissionOptionKind::AllowAlways,
+        ][..],
+        ApprovalDecision::AllowAlways => &[
+            PermissionOptionKind::AllowAlways,
+            PermissionOptionKind::AllowOnce,
+        ][..],
+        ApprovalDecision::Deny => &[
+            PermissionOptionKind::RejectOnce,
+            PermissionOptionKind::RejectAlways,
+        ][..],
     };
     for kind in preferred_kinds {
         if let Some(opt) = options.iter().find(|o| &o.kind == kind) {
@@ -750,7 +761,10 @@ async fn handle_read_text_file(
             // Honor optional line/limit slicing for ACP semantics: 1-based.
             let sliced = if request.line.is_some() || request.limit.is_some() {
                 let lines: Vec<&str> = content.lines().collect();
-                let start = request.line.map(|l| l.saturating_sub(1) as usize).unwrap_or(0);
+                let start = request
+                    .line
+                    .map(|l| l.saturating_sub(1) as usize)
+                    .unwrap_or(0);
                 let limit = request.limit.map(|n| n as usize).unwrap_or(usize::MAX);
                 let end = start.saturating_add(limit).min(lines.len());
                 if start >= lines.len() {
@@ -763,8 +777,9 @@ async fn handle_read_text_file(
             };
             responder.respond(ReadTextFileResponse::new(sliced))
         }
-        Err(e) => responder
-            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+        Err(e) => {
+            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
+        }
     }
 }
 
@@ -775,8 +790,9 @@ async fn handle_write_text_file(
 ) -> agent_client_protocol::Result<()> {
     match fs_handler::handle_write(&res.fs_policy, &res.label, &request.path, &request.content) {
         Ok(()) => responder.respond(WriteTextFileResponse::new()),
-        Err(e) => responder
-            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+        Err(e) => {
+            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
+        }
     }
 }
 
@@ -798,14 +814,13 @@ async fn handle_create_terminal(
         .await
     {
         Ok(id) => responder.respond(CreateTerminalResponse::new(TerminalId::new(id))),
-        Err(e) => responder
-            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+        Err(e) => {
+            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
+        }
     }
 }
 
-fn build_exit_status(
-    exit_code: Option<i32>,
-) -> agent_client_protocol::schema::TerminalExitStatus {
+fn build_exit_status(exit_code: Option<i32>) -> agent_client_protocol::schema::TerminalExitStatus {
     use agent_client_protocol::schema::TerminalExitStatus;
     let cast = exit_code.and_then(|c| u32::try_from(c).ok());
     TerminalExitStatus::new().exit_code(cast)
@@ -824,8 +839,9 @@ async fn handle_terminal_output(
                     .exit_status(build_exit_status(out.exit_code)),
             )
         }
-        Err(e) => responder
-            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+        Err(e) => {
+            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
+        }
     }
 }
 
@@ -838,13 +854,12 @@ async fn handle_wait_for_terminal_exit(
     // the time `create_and_run` returns. So `output()` immediately yields
     // the captured exit status.
     match res.terminals.output(request.terminal_id.0.as_ref()).await {
-        Ok(out) => {
-            responder.respond(WaitForTerminalExitResponse::new(build_exit_status(
-                out.exit_code,
-            )))
+        Ok(out) => responder.respond(WaitForTerminalExitResponse::new(build_exit_status(
+            out.exit_code,
+        ))),
+        Err(e) => {
+            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
-        Err(e) => responder
-            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
     }
 }
 
@@ -864,8 +879,9 @@ async fn handle_release_terminal(
 ) -> agent_client_protocol::Result<()> {
     match res.terminals.release(request.terminal_id.0.as_ref()).await {
         Ok(()) => responder.respond(ReleaseTerminalResponse::new()),
-        Err(e) => responder
-            .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+        Err(e) => {
+            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
+        }
     }
 }
 
@@ -937,9 +953,7 @@ async fn handle_permission_request(
                 RequestPermissionOutcome::Cancelled
             }
         }
-        Ok(ApprovalResolutionMessage::Cancelled) | Err(_) => {
-            RequestPermissionOutcome::Cancelled
-        }
+        Ok(ApprovalResolutionMessage::Cancelled) | Err(_) => RequestPermissionOutcome::Cancelled,
     };
 
     responder.respond(RequestPermissionResponse::new(outcome))

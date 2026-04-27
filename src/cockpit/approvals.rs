@@ -126,7 +126,10 @@ mod tests {
     #[test]
     fn destructive_heuristic_catches_classics() {
         assert!(is_destructive("Bash", r#"{"command":"rm -rf /tmp/foo"}"#));
-        assert!(is_destructive("Bash", r#"{"command":"git push --force origin main"}"#));
+        assert!(is_destructive(
+            "Bash",
+            r#"{"command":"git push --force origin main"}"#
+        ));
         assert!(!is_destructive("Bash", r#"{"command":"ls -la"}"#));
         assert!(is_destructive("Write", r#"{"path":"/etc/hosts"}"#));
         assert!(!is_destructive("Read", r#"{"path":"/etc/hosts"}"#));

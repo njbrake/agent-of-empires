@@ -147,28 +147,54 @@ pub enum StateError {
 /// become variants and flow through the same path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
-    PlanUpdated { plan: Plan },
-    TodoListUpdated { todos: Vec<Todo> },
-    ToolCallStarted { tool_call: ToolCall },
-    ToolCallCompleted { tool_call_id: String, is_error: bool },
-    ApprovalRequested { approval: Approval },
-    ApprovalResolved { nonce: Nonce, decision: ApprovalDecision },
-    DiffEmitted { diff: DiffPreview },
+    PlanUpdated {
+        plan: Plan,
+    },
+    TodoListUpdated {
+        todos: Vec<Todo>,
+    },
+    ToolCallStarted {
+        tool_call: ToolCall,
+    },
+    ToolCallCompleted {
+        tool_call_id: String,
+        is_error: bool,
+    },
+    ApprovalRequested {
+        approval: Approval,
+    },
+    ApprovalResolved {
+        nonce: Nonce,
+        decision: ApprovalDecision,
+    },
+    DiffEmitted {
+        diff: DiffPreview,
+    },
     ThinkingStarted,
     ThinkingEnded,
-    RateLimit { info: RateLimitInfo },
-    ModeChanged { mode: SessionMode },
+    RateLimit {
+        info: RateLimitInfo,
+    },
+    ModeChanged {
+        mode: SessionMode,
+    },
     /// Passthrough for an ACP `session/update` payload that we have not yet
     /// finished mapping to a typed variant. Useful while the cockpit's
     /// typed schema is still expanding to cover every ACP update kind.
     /// Carries the raw JSON so UI clients can render best-effort.
-    RawAgentUpdate { payload: serde_json::Value },
+    RawAgentUpdate {
+        payload: serde_json::Value,
+    },
     /// An assistant message chunk (text). In ACP this comes as an
     /// `agent_message_chunk` session update.
-    AgentMessageChunk { text: String },
+    AgentMessageChunk {
+        text: String,
+    },
     /// Final stop signal from the agent. Carries an opaque reason string
     /// so the UI can render "completed" / "ended early" / "cancelled".
-    Stopped { reason: String },
+    Stopped {
+        reason: String,
+    },
 }
 
 impl CockpitState {
@@ -222,7 +248,7 @@ impl CockpitState {
             Event::AgentMessageChunk { .. } => {}
             Event::Stopped { .. } => {}
         }
-        self.last_seq = self.last_seq.checked_add(1).unwrap_or(u64::MAX);
+        self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();
         Ok(self.last_seq)
     }
@@ -244,9 +270,7 @@ mod tests {
     fn apply_event_bumps_seq_and_timestamp() {
         let mut s = fresh_state();
         let before = s.updated_at;
-        let seq = s
-            .apply_event(Event::ThinkingStarted)
-            .expect("apply ok");
+        let seq = s.apply_event(Event::ThinkingStarted).expect("apply ok");
         assert_eq!(seq, 1);
         assert!(s.thinking.is_some());
         assert!(s.updated_at >= before);
@@ -290,8 +314,10 @@ mod tests {
             args_preview: "{\"path\":\"x\"}".into(),
             started_at: Utc::now(),
         };
-        s.apply_event(Event::ToolCallStarted { tool_call: tc.clone() })
-            .unwrap();
+        s.apply_event(Event::ToolCallStarted {
+            tool_call: tc.clone(),
+        })
+        .unwrap();
         assert!(s.in_flight_tool.is_some());
         s.apply_event(Event::ToolCallCompleted {
             tool_call_id: "tc-1".into(),

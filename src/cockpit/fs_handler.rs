@@ -46,7 +46,9 @@ pub struct FsPolicy {
 
 impl FsPolicy {
     pub fn new(roots: Vec<PathBuf>) -> Self {
-        Self { allowed_roots: roots }
+        Self {
+            allowed_roots: roots,
+        }
     }
 
     /// Returns the path canonicalized iff it is inside one of the allowed

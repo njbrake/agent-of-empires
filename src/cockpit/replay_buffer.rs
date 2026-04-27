@@ -51,7 +51,10 @@ impl ReplayBuffer {
         let mut dropped_through: Option<u64> = None;
         while self.items.len() > self.max_events || self.bytes > self.max_bytes {
             match self.items.pop_front() {
-                Some(BufferedEvent::Event { seq: dropped_seq, event }) => {
+                Some(BufferedEvent::Event {
+                    seq: dropped_seq,
+                    event,
+                }) => {
                     let dropped_len = serde_json::to_vec(&event).map(|v| v.len()).unwrap_or(0);
                     self.bytes = self.bytes.saturating_sub(dropped_len);
                     dropped_through = Some(dropped_seq);
@@ -177,7 +180,9 @@ mod tests {
         for i in 1..=3 {
             buf.push(i, Event::ThinkingStarted);
         }
-        let replay = buf.replay_from(100).expect("future seq is allowed (no gap)");
+        let replay = buf
+            .replay_from(100)
+            .expect("future seq is allowed (no gap)");
         assert!(replay.is_empty());
     }
 }
