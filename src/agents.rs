@@ -295,7 +295,7 @@ pub const AGENTS: &[AgentDef] = &[
         hook_config: None,
         host_only: true,
         send_keys_enter_delay_ms: 0,
-        install_hint: "see https://settl.dev/docs/install",
+        install_hint: "brew install --cask mozilla-ai/tap/settl",
     },
 ];
 
@@ -490,6 +490,11 @@ mod tests {
         // Factory's Droid CLI npm package is `droid`; `@anthropic-ai/droid`
         // does not exist on the registry.
         assert_eq!(install_hint("droid"), Some("npm install -g droid"));
+        // settl ships via the mozilla-ai Homebrew tap (settl.dev is unrelated).
+        assert_eq!(
+            install_hint("settl"),
+            Some("brew install --cask mozilla-ai/tap/settl")
+        );
         assert!(install_hint("unknown").is_none());
     }
 }
