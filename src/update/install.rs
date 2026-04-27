@@ -312,6 +312,78 @@ pub async fn update_via_tarball(
     Ok(())
 }
 
+pub fn update_via_brew() -> Result<()> {
+    let status = Command::new("brew")
+        .args(["update"])
+        .status()
+        .context("running `brew update`")?;
+    if !status.success() {
+        anyhow::bail!("`brew update` failed (exit {})", status);
+    }
+    let status = Command::new("brew")
+        .args(["upgrade", "aoe"])
+        .status()
+        .context("running `brew upgrade aoe`")?;
+    if !status.success() {
+        anyhow::bail!("`brew upgrade aoe` failed (exit {})", status);
+    }
+    Ok(())
+}
+
+pub fn print_nix_refusal() {
+    println!(
+        "aoe was installed via Nix. Update by running:\n\
+         \n    nix run github:njbrake/agent-of-empires\n\
+         \n(or rebuild your flake input)."
+    );
+}
+
+pub fn print_cargo_refusal() {
+    println!(
+        "aoe was installed via cargo. Update by running:\n\
+         \n    cargo install --git https://github.com/njbrake/agent-of-empires aoe\n\
+         \n(or `git pull && cargo install --path .` from a local clone)."
+    );
+}
+
+pub fn print_unknown_refusal(binary_path: &Path) {
+    println!(
+        "Couldn't determine how aoe was installed at {}.\n\
+         Reinstall with:\n\
+         \n    curl -fsSL https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh | bash\n",
+        binary_path.display()
+    );
+    let _ = std::io::stdout().flush();
+}
+
+/// Top-level dispatch. The caller has already chosen the version and
+/// done the user confirmation. `on_progress` is forwarded to the
+/// tarball downloader (other paths ignore it).
+pub async fn perform_update(
+    method: &InstallMethod,
+    version: &str,
+    on_progress: Option<&mut dyn FnMut(u64, Option<u64>)>,
+) -> Result<()> {
+    match method {
+        InstallMethod::Homebrew => update_via_brew(),
+        InstallMethod::Tarball { binary_path } => {
+            update_via_tarball(binary_path, version, on_progress).await
+        }
+        InstallMethod::Nix => {
+            print_nix_refusal();
+            Ok(())
+        }
+        InstallMethod::Cargo => {
+            print_cargo_refusal();
+            Ok(())
+        }
+        InstallMethod::Unknown { binary_path } => {
+            print_unknown_refusal(binary_path);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
