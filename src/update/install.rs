@@ -169,6 +169,54 @@ pub async fn download_tarball(
     Ok(())
 }
 
+/// Extract a `.tar.gz` into `dest_dir`. Shells out to `tar xzf`, which is
+/// universally available on macOS/Linux and matches what `scripts/install.sh`
+/// does. Returns the path to the extracted binary
+/// (`dest_dir/aoe-{platform}`).
+pub fn extract_tarball(tarball: &Path, dest_dir: &Path, platform: &str) -> Result<PathBuf> {
+    let status = Command::new("tar")
+        .arg("xzf")
+        .arg(tarball)
+        .arg("-C")
+        .arg(dest_dir)
+        .status()
+        .context("running `tar xzf`")?;
+    if !status.success() {
+        anyhow::bail!("tar extraction failed (exit {})", status);
+    }
+    let extracted = dest_dir.join(format!("aoe-{platform}"));
+    if !extracted.exists() {
+        anyhow::bail!("extracted tarball did not contain {}", extracted.display());
+    }
+    Ok(extracted)
+}
+
+/// Run the candidate binary with `--version` and confirm its output
+/// contains the expected version string. Defends against corrupt
+/// downloads and wrong-arch tarballs that downloaded successfully but
+/// won't run.
+pub fn sanity_check_binary(binary: &Path, expected_version: &str) -> Result<()> {
+    let output = Command::new(binary)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("running {} --version", binary.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "candidate binary failed --version: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.contains(expected_version) {
+        anyhow::bail!(
+            "candidate binary reports {:?}, expected version {:?}",
+            stdout.trim(),
+            expected_version
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
