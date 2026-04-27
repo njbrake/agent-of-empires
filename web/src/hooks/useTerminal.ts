@@ -75,6 +75,15 @@ export function useTerminal(
   // Latest pending resize that was deferred because the user was reading
   // scrollback. Drained when scrollback exits.
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  // Most recent size measured by wterm's ResizeObserver. Until this is
+  // populated, term.cols/term.rows hold wterm's hardcoded 80x24 default,
+  // and sending those over WS makes the server resize the PTY before
+  // wterm has measured the container. Each spurious resize fires
+  // SIGWINCH at the regular-screen TUI (opencode, Claude Code) and the
+  // previous frame ends up stacked into tmux scrollback as "garbled
+  // output" (issue #807). Holding off until first measurement collapses
+  // the init storm to a single resize at the correct size.
+  const lastMeasuredRef = useRef<{ cols: number; rows: number } | null>(null);
   // Set inside the effect; the scrollback-watch effect calls it to flush
   // a deferred resize without poking React state.
   const flushPendingResizeRef = useRef<(() => void) | null>(null);
@@ -170,6 +179,7 @@ export function useTerminal(
       autoResize: true,
       cursorBlink: true,
       onResize: (cols: number, rows: number) => {
+        lastMeasuredRef.current = { cols, rows };
         if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
         resizeDebounceTimer = setTimeout(() => {
           resizeDebounceTimer = null;
@@ -299,16 +309,26 @@ export function useTerminal(
         // Without this, the first resize lands in "vacant" state (which
         // works) but a race with focus/visibility events could delay it.
         ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
-        // Send initial PTY dimensions. Routed through sendResize so the
-        // scrollback gate applies even on reconnect; claude must not
-        // redraw while the user is reading scrollback.
-        if (term.cols > 0 && term.rows > 0) {
-          sendResize(term.cols, term.rows);
+        // Send initial PTY dimensions only if wterm has actually measured
+        // the container. Reading term.cols/term.rows directly would yield
+        // wterm's 80x24 default before ResizeObserver fires, and pushing
+        // that ahead of the real measurement causes a stale-default ->
+        // real-size resize storm at session open. The onResize callback
+        // (already wired through sendResize) delivers the correct size
+        // after the first measurement, so on the very first connect this
+        // branch is intentionally a no-op. On reconnect lastMeasuredRef
+        // is populated and we send immediately so the new server-side
+        // handler picks up the right size.
+        const measured = lastMeasuredRef.current;
+        if (measured) {
+          sendResize(measured.cols, measured.rows);
         }
-        // Re-send after layout settles
+        // Re-send after layout settles. Same gate; on first connect this
+        // still no-ops because ResizeObserver fires async.
         requestAnimationFrame(() => {
-          if (term.cols > 0 && term.rows > 0) {
-            sendResize(term.cols, term.rows);
+          const m = lastMeasuredRef.current;
+          if (m) {
+            sendResize(m.cols, m.rows);
           }
         });
       };
