@@ -197,7 +197,7 @@ pub const AGENTS: &[AgentDef] = &[
         resume_strategy: ResumeStrategy::Flag("--resume"),
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "pip install vibe-tool",
+        install_hint: "pip install mistral-vibe",
     },
     AgentDef {
         name: "codex",
@@ -336,7 +336,7 @@ pub const AGENTS: &[AgentDef] = &[
         resume_strategy: ResumeStrategy::Unsupported,
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "npm install -g @anthropic-ai/droid",
+        install_hint: "npm install -g droid",
     },
     AgentDef {
         name: "settl",
@@ -352,7 +352,7 @@ pub const AGENTS: &[AgentDef] = &[
         resume_strategy: ResumeStrategy::Unsupported,
         host_only: true,
         send_keys_enter_delay_ms: 0,
-        install_hint: "see https://settl.dev/docs/install",
+        install_hint: "brew install --cask mozilla-ai/tap/settl",
     },
 ];
 
@@ -537,6 +537,21 @@ mod tests {
             Some("npm install -g @anthropic-ai/claude-code")
         );
         assert_eq!(install_hint("codex"), Some("npm install -g @openai/codex"));
+        // Pi is distributed via npm, not pip (issue #818).
+        assert_eq!(
+            install_hint("pi"),
+            Some("npm install -g @mariozechner/pi-coding-agent")
+        );
+        // Mistral Vibe's PyPI package is `mistral-vibe`, not `vibe-tool`.
+        assert_eq!(install_hint("vibe"), Some("pip install mistral-vibe"));
+        // Factory's Droid CLI npm package is `droid`; `@anthropic-ai/droid`
+        // does not exist on the registry.
+        assert_eq!(install_hint("droid"), Some("npm install -g droid"));
+        // settl ships via the mozilla-ai Homebrew tap (settl.dev is unrelated).
+        assert_eq!(
+            install_hint("settl"),
+            Some("brew install --cask mozilla-ai/tap/settl")
+        );
         assert!(install_hint("unknown").is_none());
     }
 }
