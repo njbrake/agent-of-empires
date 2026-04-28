@@ -23,6 +23,8 @@ pub struct App {
     needs_redraw: bool,
     update_info: Option<UpdateInfo>,
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    update_status: Option<String>,
+    update_status_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<()>>>,
     /// Held in an Option so `with_raw_mode_disabled` can drop it before
     /// spawning child processes. Crossterm's EventStream runs a background
     /// reader thread on stdin; if it's alive when tmux attach-session starts,
@@ -99,6 +101,8 @@ impl App {
             needs_redraw: true,
             update_info: None,
             update_rx: None,
+            update_status: None,
+            update_status_rx: None,
             event_stream: Some(EventStream::new()),
             mouse_captured: true,
         })
@@ -363,6 +367,11 @@ impl App {
                 self.needs_redraw = true;
             }
 
+            // Check for in-progress update completion
+            if self.poll_update_status() {
+                self.needs_redraw = true;
+            }
+
             // Periodic refreshes (only when no input pending)
             let mut refresh_needed = false;
 
@@ -427,8 +436,13 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.home
-            .render(frame, frame.area(), &self.theme, self.update_info.as_ref());
+        self.home.render(
+            frame,
+            frame.area(),
+            &self.theme,
+            self.update_info.as_ref(),
+            self.update_status.as_deref(),
+        );
     }
 
     /// Poll for update check result (non-blocking).
@@ -439,6 +453,88 @@ impl App {
         self.update_info = update_info;
         self.update_rx = update_rx;
         received
+    }
+
+    /// Poll the in-progress update task for completion.
+    /// Returns true when the status line changed and a redraw is needed.
+    fn poll_update_status(&mut self) -> bool {
+        let Some(mut rx) = self.update_status_rx.take() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                self.update_status =
+                    Some("update complete — restart aoe to use the new version".to_string());
+                true
+            }
+            Ok(Err(e)) => {
+                self.update_status = Some(format!("update failed: {e}"));
+                true
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                self.update_status_rx = Some(rx);
+                false
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.update_status = Some("update task ended unexpectedly".to_string());
+                true
+            }
+        }
+    }
+
+    /// Dispatch the confirmed update, choosing between a blocking suspend and a
+    /// background tokio task based on whether the method requires sudo.
+    fn spawn_update(
+        &mut self,
+        method: crate::update::install::InstallMethod,
+        version: String,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        use crate::update::install::InstallMethod;
+
+        let needs_sudo = matches!(
+            &method,
+            InstallMethod::Tarball { binary_path }
+                if !crate::update::install::parent_is_writable(binary_path)
+        );
+
+        if matches!(method, InstallMethod::Homebrew) || needs_sudo {
+            // Suspend the TUI so sudo's password prompt can use the terminal.
+            self.update_status = Some(format!("updating to v{version}…"));
+            let method_clone = method.clone();
+            let version_clone = version.clone();
+            let result = self.with_raw_mode_disabled(terminal, move || {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        crate::update::install::perform_update(&method_clone, &version_clone, None)
+                            .await
+                    })
+                })
+            })?;
+            match result {
+                Ok(()) => {
+                    self.update_status =
+                        Some("update complete — restart aoe to use the new version".to_string());
+                }
+                Err(e) => {
+                    self.update_status = Some(format!("update failed: {e}"));
+                }
+            }
+        } else {
+            // Background task for writable tarball installs. Spawn a blocking
+            // thread so we don't need perform_update's closure to be Send.
+            self.update_status = Some(format!("updating to v{version}…"));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.update_status_rx = Some(rx);
+            let handle = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                let result = handle.block_on(crate::update::install::perform_update(
+                    &method, &version, None,
+                ));
+                let _ = tx.send(result);
+            });
+        }
+        Ok(())
     }
 }
 
@@ -503,7 +599,7 @@ impl App {
             _ => {}
         }
 
-        if let Some(action) = self.home.handle_key(key) {
+        if let Some(action) = self.home.handle_key(key, self.update_info.as_ref()) {
             self.execute_action(action, terminal)?;
         }
 
@@ -554,6 +650,9 @@ impl App {
             }
             Action::SetTheme(name) => {
                 self.set_theme(&name);
+            }
+            Action::SpawnUpdate { method, version } => {
+                self.spawn_update(method, version, terminal)?;
             }
         }
         Ok(())
@@ -808,6 +907,10 @@ pub enum Action {
     EditFile(PathBuf),
     StopSession(String),
     SetTheme(String),
+    SpawnUpdate {
+        method: crate::update::install::InstallMethod,
+        version: String,
+    },
 }
 
 #[cfg(test)]

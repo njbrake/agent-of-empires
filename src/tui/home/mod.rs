@@ -27,7 +27,7 @@ use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, HooksInstallDialog,
     InfoDialog, NewSessionData, NewSessionDialog, NoAgentsDialog, ProfilePickerDialog,
-    RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
+    RenameDialog, UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -174,6 +174,7 @@ pub struct HomeView {
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     #[cfg(feature = "serve")]
     pub(super) serve_view: Option<ServeView>,
+    pub(super) update_confirm_dialog: Option<UpdateConfirmDialog>,
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
@@ -352,6 +353,7 @@ impl HomeView {
             profile_picker_dialog: None,
             #[cfg(feature = "serve")]
             serve_view: None,
+            update_confirm_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
             pending_attach_after_warning: None,
@@ -966,6 +968,7 @@ impl HomeView {
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
             || self.send_message_dialog.is_some()
+            || self.update_confirm_dialog.is_some()
             || serve_open
             || self.settings_view.is_some()
             || self.diff_view.is_some()
