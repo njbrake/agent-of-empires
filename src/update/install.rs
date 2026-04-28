@@ -946,6 +946,120 @@ mod tests {
         }
     }
 
+    /// Hermetic tests for `update_via_brew`: PATH-shim a brew script that
+    /// records its argv so we can assert the right commands ran in the
+    /// right order, and that failures are surfaced.
+    mod brew_upgrade_tests {
+        use super::*;
+        use serial_test::serial;
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        fn write_recording_brew_shim(dir: &Path, fail_on: Option<&str>) -> PathBuf {
+            let log = dir.join("brew.log");
+            let shim = dir.join("brew");
+            let body = if let Some(failing_cmd) = fail_on {
+                format!(
+                    "#!/bin/sh\necho \"$@\" >> {log}\nif [ \"$1\" = \"{failing_cmd}\" ]; then exit 2; fi\nexit 0\n",
+                    log = log.display()
+                )
+            } else {
+                format!(
+                    "#!/bin/sh\necho \"$@\" >> {log}\nexit 0\n",
+                    log = log.display()
+                )
+            };
+            std::fs::write(&shim, body).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+            log
+        }
+
+        fn with_path_prepended<F: FnOnce()>(prefix: &Path, f: F) {
+            let prev = std::env::var("PATH").unwrap_or_default();
+            unsafe {
+                std::env::set_var("PATH", format!("{}:{}", prefix.display(), prev));
+            }
+            f();
+            unsafe {
+                std::env::set_var("PATH", &prev);
+            }
+        }
+
+        #[test]
+        #[serial]
+        fn runs_update_then_upgrade_aoe() {
+            let dir = TempDir::new().unwrap();
+            let log = write_recording_brew_shim(dir.path(), None);
+
+            with_path_prepended(dir.path(), || {
+                update_via_brew().expect("brew upgrade should succeed");
+            });
+
+            let invocations = std::fs::read_to_string(&log).unwrap();
+            let lines: Vec<_> = invocations.lines().collect();
+            assert_eq!(lines.len(), 2, "expected 2 brew calls; got {invocations:?}");
+            assert_eq!(lines[0], "update");
+            assert_eq!(lines[1], "upgrade aoe");
+        }
+
+        #[test]
+        #[serial]
+        fn brew_update_failure_aborts_before_upgrade() {
+            let dir = TempDir::new().unwrap();
+            let log = write_recording_brew_shim(dir.path(), Some("update"));
+
+            let err = with_path_prepended_returning(dir.path(), update_via_brew);
+            let err = err.expect_err("brew update failure should propagate");
+            assert!(
+                err.to_string().contains("brew update"),
+                "expected `brew update` failure message; got: {err}"
+            );
+
+            let invocations = std::fs::read_to_string(&log).unwrap();
+            let lines: Vec<_> = invocations.lines().collect();
+            assert_eq!(
+                lines,
+                vec!["update"],
+                "upgrade should not run after update failure"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn brew_upgrade_failure_is_reported() {
+            let dir = TempDir::new().unwrap();
+            let log = write_recording_brew_shim(dir.path(), Some("upgrade"));
+
+            let err = with_path_prepended_returning(dir.path(), update_via_brew);
+            let err = err.expect_err("brew upgrade failure should propagate");
+            assert!(
+                err.to_string().contains("brew upgrade aoe"),
+                "expected `brew upgrade aoe` failure message; got: {err}"
+            );
+
+            let invocations = std::fs::read_to_string(&log).unwrap();
+            let lines: Vec<_> = invocations.lines().collect();
+            assert_eq!(lines.len(), 2, "expected both calls before failure");
+        }
+
+        // PATH-prepended runner that returns a value (Result, in this case).
+        // The plain `with_path_prepended` upstream is FnOnce() -> () which
+        // is fine for assert! but loses the Result.
+        fn with_path_prepended_returning<R, F: FnOnce() -> R>(prefix: &Path, f: F) -> R {
+            let prev = std::env::var("PATH").unwrap_or_default();
+            unsafe {
+                std::env::set_var("PATH", format!("{}:{}", prefix.display(), prev));
+            }
+            let result = f();
+            unsafe {
+                std::env::set_var("PATH", &prev);
+            }
+            result
+        }
+    }
+
     /// Hermetic test that the brew probe times out instead of blocking
     /// forever when `brew` hangs (locked formula DB, network-bound auto-
     /// update, etc.). Uses a sleep-forever shim on PATH.
