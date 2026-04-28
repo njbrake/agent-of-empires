@@ -623,16 +623,17 @@ impl App {
                     let config = load_config()?.unwrap_or_default();
                     if !config.app_state.has_seen_custom_instruction_warning {
                         self.home.info_dialog = Some(
-                        crate::tui::dialogs::InfoDialog::new(
-                            "Custom Instruction Not Supported",
-                            &format!(
-                                "'{}' does not support custom instruction injection. The session will launch without the custom instruction.",
-                                instance.tool
+                            crate::tui::dialogs::InfoDialog::new(
+                                "Custom Instruction Not Supported",
+                                &format!(
+                                    "'{}' does not support custom instruction injection. The session will launch without the custom instruction.",
+                                    instance.tool
+                                ),
                             ),
-                        ),
-                    );
+                        );
                         self.home.pending_attach_after_warning = Some(session_id.to_string());
 
+                        // Persist the "seen" flag so it only shows once
                         let mut config = config;
                         config.app_state.has_seen_custom_instruction_warning = true;
                         save_config(&config)?;
@@ -642,7 +643,11 @@ impl App {
                 }
             }
 
+            // Get terminal size to pass to tmux session creation
+            // This ensures the session starts at the correct size instead of 80x24 default
             let size = crate::terminal::get_size();
+
+            // Skip on_launch hooks if they already ran in the background creation poller
             let skip_on_launch = self.home.take_on_launch_hooks_ran(session_id);
 
             self.home

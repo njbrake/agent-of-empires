@@ -39,8 +39,8 @@ fn canonicalize_or_raw(path: &str) -> PathBuf {
 
 /// Validate a captured session ID, logging a warning if it fails.
 ///
-/// Single checkpoint used at every capture boundary (host, container,
-/// retroactive) so that invalid IDs never propagate into storage or tmux env.
+/// Single checkpoint at the capture boundary so that invalid IDs never
+/// propagate into storage.
 pub(crate) fn validated_session_id(id: String) -> Option<String> {
     if is_valid_session_id(&id) {
         Some(id)

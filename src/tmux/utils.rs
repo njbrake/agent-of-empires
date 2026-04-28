@@ -1,4 +1,4 @@
-//! Tmux utilities: ANSI stripping, session naming, pane state checks.
+//! tmux utility functions
 
 use std::process::Command;
 
@@ -73,8 +73,13 @@ pub fn append_pane_base_index_args(args: &mut Vec<String>, target: &str) {
 
 /// Append `; set-option -t <target> mouse on` to an in-flight tmux argument
 /// list so that mouse/wheel events are forwarded into tmux copy-mode.
-/// Required for the web dashboard's two-finger scroll on mobile, which
-/// emits SGR mouse-wheel escape sequences that tmux must interpret.
+///
+/// Required for the web dashboard's two-finger scroll on mobile when the
+/// underlying agent uses tmux copy-mode for scrollback (the default
+/// renderer for Claude Code, and all other agents). Claude Code's
+/// fullscreen renderer (`/tui fullscreen`) bypasses tmux copy-mode and
+/// handles wheel events itself, so the option is harmless but unused in
+/// that mode.
 pub fn append_mouse_on_args(args: &mut Vec<String>, target: &str) {
     args.extend([
         ";".to_string(),

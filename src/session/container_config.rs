@@ -476,6 +476,7 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
         return Ok(false);
     }
 
+    // Only overwrite if the keychain credential is fresher than what the sandbox already has.
     if dest.exists() {
         if let Ok(existing_content) = std::fs::read_to_string(dest) {
             if !should_overwrite_credential(&existing_content, trimmed) {
@@ -578,8 +579,14 @@ pub(crate) fn compute_volume_paths(
     project_path: &Path,
     project_path_str: &str,
 ) -> Result<(Vec<VolumeMount>, String)> {
-    // Only check for a main repo if .git exists locally to prevent mounting
-    // unrelated ancestor repos (e.g., $HOME for dotfiles).
+    // Only look for a main repo if the project path itself has a .git entry (file or
+    // directory). This prevents git2::Repository::discover from walking up the directory
+    // tree and finding an unrelated ancestor repo (e.g., a dotfile-managed home directory),
+    // which would cause aoe to mount that ancestor -- potentially the user's entire $HOME --
+    // into the container.
+    //
+    // Legitimate git repos have a .git directory; worktrees have a .git file containing a
+    // gitdir pointer. Both cases are covered by this check.
     if project_path.join(".git").exists() {
         if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
             // Canonicalize paths for reliable comparison (handles symlinks like /tmp -> /private/tmp)
@@ -595,6 +602,8 @@ pub(crate) fn compute_volume_paths(
             // resolves correctly inside the container.
             if main_repo_canonical != project_canonical {
                 if project_canonical.starts_with(&main_repo_canonical) {
+                    // Worktree is inside the main repo (bare repo layout) --
+                    // mounting the main repo is sufficient.
                     let name = main_repo_canonical
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -619,8 +628,11 @@ pub(crate) fn compute_volume_paths(
                         working_dir,
                     ));
                 } else {
-                    // Non-bare sibling worktree: mount main repo and worktree separately
-                    // under /workspace/ so .git file gitdir paths resolve.
+                    // Worktree is a sibling of the main repo (non-bare layout).
+                    // Mount each separately under /workspace/, preserving their
+                    // relative path structure from their common ancestor. This
+                    // ensures the worktree's .git file (which contains a relative
+                    // gitdir path) resolves correctly inside the container.
                     let common = common_ancestor(&main_repo_canonical, &project_canonical);
                     let repo_rel = main_repo_canonical
                         .strip_prefix(&common)
@@ -652,6 +664,7 @@ pub(crate) fn compute_volume_paths(
         }
     }
 
+    // Default behavior: mount project_path directly
     let dir_name = project_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -834,7 +847,9 @@ pub(crate) fn build_container_config(
         }
     }
 
-    // Mount only the active tool's config directory (read-write) into sandbox.
+    // Sync host agent config into a shared sandbox directory per agent and
+    // bind-mount it read-write. Only mount the config for the active tool.
+    // Agent definitions are in AGENT_CONFIG_MOUNTS -- add new agents there, not here.
     for mount in AGENT_CONFIG_MOUNTS.iter().filter(|m| m.tool_name == tool) {
         let container_path = format!("{}/{}", CONTAINER_HOME, mount.container_suffix);
 
@@ -862,6 +877,8 @@ pub(crate) fn build_container_config(
             read_only: false,
         });
 
+        // Home-level seed files are mounted as individual files at the container
+        // home directory (already written by prepare_sandbox_dir).
         for &(filename, _) in mount.home_seed_files {
             let file_path = sandbox_dir.join(filename);
             if file_path.exists() {

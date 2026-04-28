@@ -618,7 +618,6 @@ impl HomeView {
         let mut updates: Vec<(String, String)> = Vec::new();
 
         for inst in &self.instances {
-            // Poller channel (Claude, OpenCode, Codex, Gemini, Vibe)
             if let Some((_id, session_id)) = inst
                 .session_id_poller
                 .as_ref()

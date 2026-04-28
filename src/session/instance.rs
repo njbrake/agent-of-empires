@@ -1934,26 +1934,28 @@ mod tests {
     }
 
     #[test]
-    fn test_persisted_opencode_session_id_reused() {
+    fn test_persisted_session_id_reused_when_already_set() {
         let mut inst = Instance::new("Test", "/tmp/test");
-        inst.tool = "opencode".to_string();
-        inst.agent_session_id = Some("oc-session-42".to_string());
+        inst.tool = "claude".to_string();
+        inst.agent_session_id = Some("session-42".to_string());
 
         let (session_id, is_existing) = inst.acquire_session_id();
 
-        assert_eq!(session_id, Some("oc-session-42".to_string()));
+        assert_eq!(session_id, Some("session-42".to_string()));
         assert!(is_existing);
     }
 
     #[test]
-    fn test_persisted_codex_session_id_reused() {
+    fn test_persisted_session_id_reused_for_unsupported_agent() {
+        // The cache-hit path is generic across agents; a persisted ID is
+        // returned regardless of whether the agent supports resume yet.
         let mut inst = Instance::new("Test", "/tmp/test");
         inst.tool = "codex".to_string();
-        inst.agent_session_id = Some("codex-sess-99".to_string());
+        inst.agent_session_id = Some("sess-99".to_string());
 
         let (session_id, is_existing) = inst.acquire_session_id();
 
-        assert_eq!(session_id, Some("codex-sess-99".to_string()));
+        assert_eq!(session_id, Some("sess-99".to_string()));
         assert!(is_existing);
     }
 
