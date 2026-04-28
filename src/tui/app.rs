@@ -465,33 +465,35 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        use crate::session::config::AutoupdatePolicy;
         if self.update_status.as_ref().is_some_and(|s| s.is_expired()) {
             self.update_status = None;
         }
         let status_text = self.update_status.as_ref().map(|s| s.text.as_str());
-        // `autoupdate = Off` suppresses the update bar entirely. The async
-        // check still runs (and the manual `aoe update` CLI still works) so
-        // callers that opt back in later don't have to wait for the next
-        // cache window. We just hide the in-TUI notification.
-        let suppress_update_bar = matches!(get_update_settings().autoupdate, AutoupdatePolicy::Off)
-            && status_text.is_none();
-        let update_info = if suppress_update_bar {
-            None
-        } else {
-            self.update_info.as_ref()
-        };
-        self.home
-            .render(frame, frame.area(), &self.theme, update_info, status_text);
+        self.home.render(
+            frame,
+            frame.area(),
+            &self.theme,
+            self.update_info.as_ref(),
+            status_text,
+        );
     }
 
     /// Poll for update check result (non-blocking).
     /// Returns true if an update is available and was just received.
     fn poll_update_check(&mut self) -> bool {
+        use crate::session::config::AutoupdatePolicy;
         let (update_info, update_rx, received) =
             poll_update_receiver(self.update_rx.take(), self.update_info.take());
         self.update_info = update_info;
         self.update_rx = update_rx;
+        // `autoupdate = Off` means "don't notify, don't auto-apply". Drop the
+        // info now so render() and the `u` hotkey both see None without
+        // per-frame disk I/O. Toggling Off → Notify in settings takes effect
+        // on next startup; the cache TTL keeps it cheap.
+        if received && matches!(get_update_settings().autoupdate, AutoupdatePolicy::Off) {
+            self.update_info = None;
+            return false;
+        }
         received
     }
 
