@@ -1,5 +1,5 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
-# This image provides Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi in an isolated environment
+# This image provides Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi in an isolated environment
 
 FROM ubuntu:24.04
 
@@ -33,6 +33,10 @@ ENV PATH="/root/.local/bin:${PATH}"
 RUN curl -fsSL https://opencode.ai/install | bash
 ENV PATH="/root/.opencode/bin:${PATH}"
 
+# Install Hermes
+RUN mkdir -p /root/.hermes \
+    && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+
 # Install Codex CLI (OpenAI)
 RUN npm install -g @openai/codex
 
@@ -56,6 +60,7 @@ RUN npm install -g @mariozechner/pi-coding-agent
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \
     /root/.local/share/opencode \
+    /root/.hermes \
     /root/.vibe \
     /root/.codex \
     /root/.gemini \

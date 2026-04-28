@@ -193,6 +193,18 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         clean_files: &[],
     },
     AgentConfigMount {
+        tool_name: "hermes",
+        host_rel: ".hermes",
+        container_suffix: ".hermes",
+        skip_entries: &["sandbox", "logs", "checkpoints", "worktrees"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+        clean_files: &[],
+    },
+    AgentConfigMount {
         tool_name: "droid",
         host_rel: ".factory",
         container_suffix: ".factory",
@@ -1475,6 +1487,33 @@ mod tests {
     }
 
     #[test]
+    fn test_hermes_mount_skips_runtime_dirs() {
+        let dir = TempDir::new().unwrap();
+        let host = dir.path().join(".hermes");
+        fs::create_dir_all(&host).unwrap();
+        fs::write(host.join("settings.json"), "{}").unwrap();
+        fs::write(host.join("auth.json"), "token").unwrap();
+
+        for runtime_dir in ["sandbox", "logs", "checkpoints", "worktrees"] {
+            fs::create_dir_all(host.join(runtime_dir)).unwrap();
+            fs::write(host.join(runtime_dir).join("runtime.txt"), "runtime").unwrap();
+        }
+
+        let mount = AGENT_CONFIG_MOUNTS
+            .iter()
+            .find(|m| m.tool_name == "hermes")
+            .unwrap();
+        let sandbox = prepare_sandbox_dir(mount, dir.path()).unwrap();
+
+        assert!(sandbox.join("settings.json").exists());
+        assert!(sandbox.join("auth.json").exists());
+
+        for runtime_dir in ["sandbox", "logs", "checkpoints", "worktrees"] {
+            assert!(!sandbox.join(runtime_dir).exists());
+        }
+    }
+
+    #[test]
     fn test_writes_seed_files_when_missing() {
         let dir = TempDir::new().unwrap();
         let host = setup_host_dir(&dir);
@@ -1637,6 +1676,13 @@ mod tests {
             .collect();
         assert_eq!(cursor_mounts.len(), 1);
         assert_eq!(cursor_mounts[0].host_rel, ".cursor");
+
+        let hermes_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "hermes")
+            .collect();
+        assert_eq!(hermes_mounts.len(), 1);
+        assert_eq!(hermes_mounts[0].host_rel, ".hermes");
 
         // Unknown tool should match nothing
         let unknown_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
