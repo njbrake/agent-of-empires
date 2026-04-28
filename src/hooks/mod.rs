@@ -10,7 +10,7 @@ mod status_file;
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use status_file::{cleanup_hook_status_dir, hook_status_dir, read_hook_status};
@@ -331,10 +331,8 @@ pub fn install_hermes_hooks(config_path: &Path) -> Result<()> {
         if content.trim().is_empty() {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
         } else {
-            serde_yaml::from_str(&content).unwrap_or_else(|e| {
-                tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
-                serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
-            })
+            serde_yaml::from_str(&content)
+                .with_context(|| format!("Failed to parse {}", config_path.display()))?
         }
     } else {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
@@ -379,16 +377,21 @@ pub fn install_hermes_hooks(config_path: &Path) -> Result<()> {
         arr.push(serde_yaml::Value::Mapping(entry));
     }
 
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let formatted = serde_yaml::to_string(&config)?;
-    std::fs::write(config_path, formatted)?;
-
     let config_dir = config_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("config path has no parent"))?;
-    populate_hermes_allowlist(config_dir)?;
+    let (allowlist_path, allowlist_formatted) = render_hermes_allowlist(config_dir)?;
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(config_path, formatted)?;
+
+    if let Some(parent) = allowlist_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&allowlist_path, allowlist_formatted)?;
 
     tracing::info!("Installed AoE hooks in {}", config_path.display());
     Ok(())
@@ -404,10 +407,8 @@ pub fn uninstall_hermes_hooks(config_path: &Path) -> Result<bool> {
     let mut config: serde_yaml::Value = if content.trim().is_empty() {
         return Ok(false);
     } else {
-        serde_yaml::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
-        })
+        serde_yaml::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", config_path.display()))?
     };
 
     let Some(root) = config.as_mapping_mut() else {
@@ -467,16 +468,14 @@ pub fn uninstall_hermes_hooks(config_path: &Path) -> Result<bool> {
 /// Pre-populate Hermes's per-user shell-hook allowlist so registration runs
 /// without prompting on the first session. Hermes keys consent on the exact
 /// `(event, command)` pair, so we add one entry per status we install.
-fn populate_hermes_allowlist(config_dir: &Path) -> Result<()> {
+fn render_hermes_allowlist(config_dir: &Path) -> Result<(std::path::PathBuf, String)> {
     let allowlist_path = config_dir.join("shell-hooks-allowlist.json");
     let approved_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     let mut data: Value = if allowlist_path.exists() {
         let content = std::fs::read_to_string(&allowlist_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse {}: {}", allowlist_path.display(), e);
-            serde_json::json!({"approvals": []})
-        })
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", allowlist_path.display()))?
     } else {
         serde_json::json!({"approvals": []})
     };
@@ -504,12 +503,8 @@ fn populate_hermes_allowlist(config_dir: &Path) -> Result<()> {
         }));
     }
 
-    if let Some(parent) = allowlist_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let formatted = serde_json::to_string_pretty(&data)?;
-    std::fs::write(&allowlist_path, formatted)?;
-    Ok(())
+    Ok((allowlist_path, formatted))
 }
 
 /// Remove all AoE hooks from all known agent settings files and clean up
@@ -1096,6 +1091,43 @@ hooks_auto_accept: false
         assert!(is_aoe_hook_command(
             pre_tool[1]["command"].as_str().unwrap()
         ));
+    }
+
+    #[test]
+    fn test_install_hermes_hooks_rejects_invalid_yaml_without_overwrite() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        let original = "hooks:\n  pre_tool_call: [\n";
+        std::fs::write(&config_path, original).unwrap();
+
+        let result = install_hermes_hooks(&config_path);
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), original);
+        assert!(!tmp.path().join("shell-hooks-allowlist.json").exists());
+    }
+
+    #[test]
+    fn test_install_hermes_hooks_rejects_invalid_allowlist_without_overwrite() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        let allowlist_path = tmp.path().join("shell-hooks-allowlist.json");
+        let original_config = "model: claude-opus\n";
+        let original_allowlist = "{ invalid json";
+        std::fs::write(&config_path, original_config).unwrap();
+        std::fs::write(&allowlist_path, original_allowlist).unwrap();
+
+        let result = install_hermes_hooks(&config_path);
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            original_config
+        );
+        assert_eq!(
+            std::fs::read_to_string(&allowlist_path).unwrap(),
+            original_allowlist
+        );
     }
 
     #[test]

@@ -56,6 +56,21 @@ fn default_true() -> bool {
     true
 }
 
+fn status_hook_env_prefix(
+    instance_id: &str,
+    tool: &str,
+    agent: Option<&crate::agents::AgentDef>,
+) -> String {
+    let has_hooks =
+        agent.and_then(|a| a.hook_config.as_ref()).is_some() || tool == "settl" || tool == "hermes";
+
+    if has_hooks {
+        format!("AOE_INSTANCE_ID={} ", instance_id)
+    } else {
+        String::new()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub branch: String,
@@ -542,15 +557,8 @@ impl Instance {
                 }
             }
 
-            // Prepend AOE_INSTANCE_ID env var if this agent supports hooks
-            // (either JSON-based hook_config or settl's TOML hooks)
-            let has_hooks =
-                agent.and_then(|a| a.hook_config.as_ref()).is_some() || self.tool == "settl";
-            let env_prefix = if has_hooks {
-                format!("AOE_INSTANCE_ID={} ", self.id)
-            } else {
-                String::new()
-            };
+            // Prepend AOE_INSTANCE_ID env var if this agent supports hooks.
+            let env_prefix = status_hook_env_prefix(&self.id, &self.tool, agent);
 
             if self.command.is_empty() {
                 crate::agents::get_agent(&self.tool).map(|a| {
@@ -1571,6 +1579,26 @@ mod tests {
         inst.tool = "unknown_agent".to_string();
         inst.command = "some-binary".to_string();
         assert!(inst.has_custom_command());
+    }
+
+    #[test]
+    fn test_status_hook_env_prefix_includes_hermes() {
+        assert_eq!(
+            status_hook_env_prefix("abc123", "hermes", crate::agents::get_agent("hermes")),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "settl", crate::agents::get_agent("settl")),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "claude", crate::agents::get_agent("claude")),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "opencode", crate::agents::get_agent("opencode")),
+            ""
+        );
     }
 
     #[test]
