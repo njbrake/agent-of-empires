@@ -21,7 +21,7 @@ pub enum InstallMethod {
 /// Returns the method as far as path prefixes can determine; Homebrew
 /// detection requires running `brew list` and is layered on by
 /// `classify_with_brew`.
-pub fn classify_path_prefix(binary_path: &Path, home: &Path) -> InstallMethod {
+fn classify_path_prefix(binary_path: &Path, home: &Path) -> InstallMethod {
     let path = binary_path;
 
     if path.starts_with("/nix/store/") {
@@ -54,7 +54,7 @@ pub fn classify_path_prefix(binary_path: &Path, home: &Path) -> InstallMethod {
 /// only return `Homebrew` if `brew list aoe` produced a path that
 /// canonicalizes to the same file as the running binary. Otherwise
 /// keep the prefix classification.
-pub fn classify_with_brew(
+fn classify_with_brew(
     prefix: InstallMethod,
     brew_path: Option<&Path>,
     binary_path: &Path,
@@ -107,7 +107,7 @@ fn probe_brew_aoe_path() -> Option<PathBuf> {
 /// Return the platform string used in release tarball asset names
 /// (e.g. `linux-amd64`). `os` matches `std::env::consts::OS`,
 /// `arch` matches `std::env::consts::ARCH`.
-pub fn platform_string_for(os: &str, arch: &str) -> Result<&'static str> {
+fn platform_string_for(os: &str, arch: &str) -> Result<&'static str> {
     let os_norm = match os {
         "linux" => "linux",
         "macos" => "darwin",
@@ -134,7 +134,7 @@ pub fn current_platform_string() -> Result<&'static str> {
 
 const DEFAULT_RELEASE_BASE: &str = "https://github.com/njbrake/agent-of-empires/releases/download";
 
-pub fn release_tarball_url(version: &str, platform: &str) -> String {
+fn release_tarball_url(version: &str, platform: &str) -> String {
     let base =
         std::env::var("AOE_UPDATE_BASE_URL").unwrap_or_else(|_| DEFAULT_RELEASE_BASE.to_string());
     format!("{base}/v{version}/aoe-{platform}.tar.gz")
@@ -143,7 +143,7 @@ pub fn release_tarball_url(version: &str, platform: &str) -> String {
 /// Download a release tarball to `dest`. Streams bytes; reports
 /// progress via the optional callback (current bytes, total bytes
 /// if known).
-pub async fn download_tarball(
+async fn download_tarball(
     url: &str,
     dest: &Path,
     mut on_progress: Option<&mut dyn FnMut(u64, Option<u64>)>,
@@ -178,7 +178,7 @@ pub async fn download_tarball(
 /// universally available on macOS/Linux and matches what `scripts/install.sh`
 /// does. Returns the path to the extracted binary
 /// (`dest_dir/aoe-{platform}`).
-pub fn extract_tarball(tarball: &Path, dest_dir: &Path, platform: &str) -> Result<PathBuf> {
+fn extract_tarball(tarball: &Path, dest_dir: &Path, platform: &str) -> Result<PathBuf> {
     let status = Command::new("tar")
         .arg("xzf")
         .arg(tarball)
@@ -200,7 +200,7 @@ pub fn extract_tarball(tarball: &Path, dest_dir: &Path, platform: &str) -> Resul
 /// contains the expected version string. Defends against corrupt
 /// downloads and wrong-arch tarballs that downloaded successfully but
 /// won't run.
-pub fn sanity_check_binary(binary: &Path, expected_version: &str) -> Result<()> {
+fn sanity_check_binary(binary: &Path, expected_version: &str) -> Result<()> {
     let output = Command::new(binary)
         .arg("--version")
         .output()
@@ -233,7 +233,7 @@ pub fn sanity_check_binary(binary: &Path, expected_version: &str) -> Result<()> 
 ///
 /// On Unix, this is safe to do while the target is the running binary -
 /// the kernel keeps the old inode alive for the running process.
-pub fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
+fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
     match std::fs::rename(source, target) {
         Ok(()) => {
             #[cfg(unix)]
@@ -314,7 +314,7 @@ pub async fn update_via_tarball(
     Ok(())
 }
 
-pub fn update_via_brew() -> Result<()> {
+fn update_via_brew() -> Result<()> {
     let status = Command::new("brew")
         .args(["update"])
         .status()
@@ -332,29 +332,29 @@ pub fn update_via_brew() -> Result<()> {
     Ok(())
 }
 
-pub fn nix_refusal_message() -> String {
+fn nix_refusal_message() -> String {
     "aoe was installed via Nix. Update by running:\n\
      \n    nix run github:njbrake/agent-of-empires\n\
      \n(or rebuild your flake input)."
         .to_string()
 }
 
-pub fn print_nix_refusal() {
+fn print_nix_refusal() {
     println!("{}", nix_refusal_message());
 }
 
-pub fn cargo_refusal_message() -> String {
+fn cargo_refusal_message() -> String {
     "aoe was installed via cargo. Update by running:\n\
      \n    cargo install --git https://github.com/njbrake/agent-of-empires aoe\n\
      \n(or `git pull && cargo install --path .` from a local clone)."
         .to_string()
 }
 
-pub fn print_cargo_refusal() {
+fn print_cargo_refusal() {
     println!("{}", cargo_refusal_message());
 }
 
-pub fn unknown_refusal_message(binary_path: &Path) -> String {
+fn unknown_refusal_message(binary_path: &Path) -> String {
     format!(
         "Couldn't determine how aoe was installed at {}.\n\
          Reinstall with:\n\
@@ -363,7 +363,7 @@ pub fn unknown_refusal_message(binary_path: &Path) -> String {
     )
 }
 
-pub fn print_unknown_refusal(binary_path: &Path) {
+fn print_unknown_refusal(binary_path: &Path) {
     println!("{}", unknown_refusal_message(binary_path));
 }
 
