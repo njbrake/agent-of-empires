@@ -692,7 +692,7 @@ impl App {
             Action::SetTheme(name) => {
                 self.set_theme(&name);
             }
-            Action::SpawnUpdate { method, version } => {
+            Action::SpawnUpdate(method, version) => {
                 if self.update_status_rx.is_some() {
                     self.update_status =
                         Some(UpdateStatus::transient("update already in progress".into()));
@@ -953,10 +953,7 @@ pub enum Action {
     EditFile(PathBuf),
     StopSession(String),
     SetTheme(String),
-    SpawnUpdate {
-        method: crate::update::install::InstallMethod,
-        version: String,
-    },
+    SpawnUpdate(crate::update::install::InstallMethod, String),
 }
 
 #[cfg(test)]

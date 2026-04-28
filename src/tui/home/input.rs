@@ -530,7 +530,7 @@ impl HomeView {
                     let method = dialog.method.clone();
                     let version = dialog.latest_version.clone();
                     self.update_confirm_dialog = None;
-                    return Some(Action::SpawnUpdate { method, version });
+                    return Some(Action::SpawnUpdate(method, version));
                 }
             }
             return None;
