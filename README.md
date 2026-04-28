@@ -77,7 +77,7 @@ git clone https://github.com/njbrake/agent-of-empires
 cd agent-of-empires && cargo build --release
 ```
 
-To update an existing install, run `aoe update`. It detects how aoe was installed (Homebrew, curl-script tarball, Nix, Cargo) and uses the right upgrade mechanism, or prints instructions for methods it can't auto-update.
+To update an existing install, run `aoe update`. It detects how aoe was installed (Homebrew, curl-script tarball, Nix, Cargo) and uses the right upgrade mechanism, or prints instructions for methods it can't auto-update. The TUI Settings → Updates panel exposes an `Auto-update` policy (Off / Notify / Patch only / All) for unattended upgrades on the safe in-place tarball path; brew and write-protected installs always prompt.
 
 ## Quick Start
 

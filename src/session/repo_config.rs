@@ -208,8 +208,8 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
         if let Some(check_enabled) = updates_override.check_enabled {
             config.updates.check_enabled = check_enabled;
         }
-        if let Some(auto_update) = updates_override.auto_update {
-            config.updates.auto_update = auto_update;
+        if let Some(autoupdate) = updates_override.autoupdate {
+            config.updates.autoupdate = autoupdate;
         }
         if let Some(check_interval_hours) = updates_override.check_interval_hours {
             config.updates.check_interval_hours = check_interval_hours;

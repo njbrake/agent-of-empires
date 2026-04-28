@@ -392,6 +392,7 @@ impl App {
 
             // Check for update result (non-blocking)
             if self.poll_update_check() {
+                self.maybe_auto_apply_update();
                 self.needs_redraw = true;
             }
 
@@ -515,6 +516,46 @@ impl App {
                 true
             }
         }
+    }
+
+    /// If the user's `autoupdate` policy permits and the install method is the
+    /// safe in-place tarball path, kick off a background update without a
+    /// confirm dialog. Brew/sudo/refusal methods are never auto-applied: those
+    /// would either prompt for a password or print refusal text, neither of
+    /// which works without a TTY-bound dialog flow.
+    fn maybe_auto_apply_update(&mut self) {
+        let Some(info) = self.update_info.as_ref() else {
+            return;
+        };
+        if self.update_status_rx.is_some() {
+            return;
+        }
+        let settings = get_update_settings();
+        let kind = crate::update::release_kind(&info.current_version, &info.latest_version);
+        let method = match crate::update::install::detect_install_method() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("auto-update: install detection failed: {e}");
+                return;
+            }
+        };
+        if !crate::update::install::should_auto_apply(settings.autoupdate, kind, &method) {
+            return;
+        }
+
+        let version = info.latest_version.clone();
+        self.update_status = Some(UpdateStatus::transient(format!(
+            "auto-updating to v{version}…"
+        )));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.update_status_rx = Some(rx);
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let result = handle.block_on(crate::update::install::perform_update(
+                &method, &version, None,
+            ));
+            let _ = tx.send(result);
+        });
     }
 
     /// Dispatch the confirmed update, choosing between a blocking suspend and a

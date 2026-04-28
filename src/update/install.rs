@@ -270,6 +270,40 @@ fn sudo_replace(source: &Path, target: &Path) -> Result<()> {
 /// Probe whether the parent directory of `binary_path` is writable
 /// without sudo. Used by the confirm prompt to warn users before
 /// they say yes.
+/// Decide whether the TUI should silently apply an update without showing
+/// the confirm dialog. Policy gating is the policy + release-kind check;
+/// method gating ensures we never auto-trigger anything that would prompt
+/// for a sudo password while the TUI is suspended.
+///
+/// Returns `true` only when *all* of these hold:
+/// - policy allows this release kind (`Patch` covers patch only; `All`
+///   covers everything; `Off`/`Notify` never auto-apply)
+/// - install method is `Tarball` and its parent dir is writable without
+///   sudo (so `atomic_replace`'s `rename(2)` will succeed inline)
+///
+/// Brew, sudo-tarball, Nix, Cargo, and Unknown methods always return
+/// `false`; the user has to drive those interactively via the dialog.
+pub fn should_auto_apply(
+    policy: crate::session::config::AutoupdatePolicy,
+    kind: crate::update::ReleaseKind,
+    method: &InstallMethod,
+) -> bool {
+    use crate::session::config::AutoupdatePolicy;
+    use crate::update::ReleaseKind;
+    let policy_allows = match policy {
+        AutoupdatePolicy::Off | AutoupdatePolicy::Notify => false,
+        AutoupdatePolicy::Patch => matches!(kind, ReleaseKind::Patch),
+        AutoupdatePolicy::All => matches!(
+            kind,
+            ReleaseKind::Patch | ReleaseKind::Minor | ReleaseKind::Major
+        ),
+    };
+    if !policy_allows {
+        return false;
+    }
+    matches!(method, InstallMethod::Tarball { binary_path } if parent_is_writable(binary_path))
+}
+
 pub fn parent_is_writable(binary_path: &Path) -> bool {
     let Some(parent) = binary_path.parent() else {
         return false;
@@ -644,5 +678,143 @@ mod tests {
         let s = unknown_refusal_message(Path::new("/opt/weird/aoe"));
         assert!(s.contains("install.sh"));
         assert!(s.contains("/opt/weird/aoe"));
+    }
+
+    mod auto_apply {
+        use super::*;
+        use crate::session::config::AutoupdatePolicy;
+        use crate::update::ReleaseKind;
+        use tempfile::TempDir;
+
+        fn writable_tarball() -> (TempDir, InstallMethod) {
+            let dir = TempDir::new().unwrap();
+            let binary = dir.path().join("aoe");
+            std::fs::write(&binary, b"").unwrap();
+            (
+                dir,
+                InstallMethod::Tarball {
+                    binary_path: binary,
+                },
+            )
+        }
+
+        #[test]
+        fn off_never_auto_applies() {
+            let (_d, m) = writable_tarball();
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Off,
+                ReleaseKind::Patch,
+                &m
+            ));
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Off,
+                ReleaseKind::Minor,
+                &m
+            ));
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Off,
+                ReleaseKind::Major,
+                &m
+            ));
+        }
+
+        #[test]
+        fn notify_never_auto_applies() {
+            let (_d, m) = writable_tarball();
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Notify,
+                ReleaseKind::Patch,
+                &m
+            ));
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Notify,
+                ReleaseKind::Minor,
+                &m
+            ));
+        }
+
+        #[test]
+        fn patch_only_applies_to_patches() {
+            let (_d, m) = writable_tarball();
+            assert!(should_auto_apply(
+                AutoupdatePolicy::Patch,
+                ReleaseKind::Patch,
+                &m
+            ));
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Patch,
+                ReleaseKind::Minor,
+                &m
+            ));
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Patch,
+                ReleaseKind::Major,
+                &m
+            ));
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::Patch,
+                ReleaseKind::Unknown,
+                &m
+            ));
+        }
+
+        #[test]
+        fn all_applies_to_any_known_kind() {
+            let (_d, m) = writable_tarball();
+            assert!(should_auto_apply(
+                AutoupdatePolicy::All,
+                ReleaseKind::Patch,
+                &m
+            ));
+            assert!(should_auto_apply(
+                AutoupdatePolicy::All,
+                ReleaseKind::Minor,
+                &m
+            ));
+            assert!(should_auto_apply(
+                AutoupdatePolicy::All,
+                ReleaseKind::Major,
+                &m
+            ));
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::All,
+                ReleaseKind::Unknown,
+                &m
+            ));
+        }
+
+        #[test]
+        fn never_auto_applies_to_brew_or_refusal_methods() {
+            for m in [
+                InstallMethod::Homebrew,
+                InstallMethod::Nix,
+                InstallMethod::Cargo,
+                InstallMethod::Unknown {
+                    binary_path: PathBuf::from("/opt/weird/aoe"),
+                },
+            ] {
+                assert!(!should_auto_apply(
+                    AutoupdatePolicy::All,
+                    ReleaseKind::Patch,
+                    &m
+                ));
+            }
+        }
+
+        #[test]
+        fn never_auto_applies_when_parent_not_writable() {
+            // Use a path with a non-existent parent — no probe file can be
+            // created, so parent_is_writable returns false. (We can't chmod a
+            // tempdir to 0555 reliably here because tests sometimes run as
+            // root, where chmod is bypassed.)
+            let m = InstallMethod::Tarball {
+                binary_path: PathBuf::from("/this/path/does/not/exist/aoe"),
+            };
+            assert!(!should_auto_apply(
+                AutoupdatePolicy::All,
+                ReleaseKind::Patch,
+                &m
+            ));
+        }
     }
 }

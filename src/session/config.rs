@@ -348,13 +348,54 @@ pub struct ClaudeConfig {
     pub config_dir: Option<String>,
 }
 
+/// What to do when a new release is detected.
+///
+/// Composes with `check_enabled`: if checks are off, this setting has no effect.
+/// `Notify` matches pre-0.5 behavior (show the update bar / print the CLI notice
+/// and let the user run `aoe update` themselves). `Patch` and `All` only kick in
+/// for the safe in-place tarball path; brew/sudo updates still go through the
+/// confirm dialog because they need the terminal for a password prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoupdatePolicy {
+    /// Don't show update notifications and don't auto-apply.
+    Off,
+    /// Show notifications, never auto-apply (default).
+    #[default]
+    Notify,
+    /// Auto-apply patch releases (x.y.Z bumps); notify on minor/major.
+    Patch,
+    /// Auto-apply every release.
+    All,
+}
+
+impl AutoupdatePolicy {
+    pub fn cycle(self) -> Self {
+        match self {
+            AutoupdatePolicy::Off => AutoupdatePolicy::Notify,
+            AutoupdatePolicy::Notify => AutoupdatePolicy::Patch,
+            AutoupdatePolicy::Patch => AutoupdatePolicy::All,
+            AutoupdatePolicy::All => AutoupdatePolicy::Off,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AutoupdatePolicy::Off => "Off",
+            AutoupdatePolicy::Notify => "Notify",
+            AutoupdatePolicy::Patch => "Patch only",
+            AutoupdatePolicy::All => "All",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatesConfig {
     #[serde(default = "default_true")]
     pub check_enabled: bool,
 
     #[serde(default)]
-    pub auto_update: bool,
+    pub autoupdate: AutoupdatePolicy,
 
     #[serde(default = "default_check_interval")]
     pub check_interval_hours: u64,
@@ -367,7 +408,7 @@ impl Default for UpdatesConfig {
     fn default() -> Self {
         Self {
             check_enabled: true,
-            auto_update: false,
+            autoupdate: AutoupdatePolicy::default(),
             check_interval_hours: 24,
             notify_in_cli: true,
         }
@@ -778,7 +819,7 @@ mod tests {
     fn test_updates_config_default() {
         let updates = UpdatesConfig::default();
         assert!(updates.check_enabled);
-        assert!(!updates.auto_update);
+        assert_eq!(updates.autoupdate, AutoupdatePolicy::Notify);
         assert_eq!(updates.check_interval_hours, 24);
         assert!(updates.notify_in_cli);
     }
@@ -787,13 +828,13 @@ mod tests {
     fn test_updates_config_deserialize() {
         let toml = r#"
             check_enabled = false
-            auto_update = true
+            autoupdate = "patch"
             check_interval_hours = 12
             notify_in_cli = false
         "#;
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
         assert!(!updates.check_enabled);
-        assert!(updates.auto_update);
+        assert_eq!(updates.autoupdate, AutoupdatePolicy::Patch);
         assert_eq!(updates.check_interval_hours, 12);
         assert!(!updates.notify_in_cli);
     }
@@ -804,8 +845,39 @@ mod tests {
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
         assert!(!updates.check_enabled);
         // Defaults for other fields
-        assert!(!updates.auto_update);
+        assert_eq!(updates.autoupdate, AutoupdatePolicy::Notify);
         assert_eq!(updates.check_interval_hours, 24);
+    }
+
+    #[test]
+    fn test_autoupdate_policy_cycle() {
+        let p = AutoupdatePolicy::Off;
+        assert_eq!(p.cycle(), AutoupdatePolicy::Notify);
+        assert_eq!(p.cycle().cycle(), AutoupdatePolicy::Patch);
+        assert_eq!(p.cycle().cycle().cycle(), AutoupdatePolicy::All);
+        assert_eq!(p.cycle().cycle().cycle().cycle(), AutoupdatePolicy::Off);
+    }
+
+    #[test]
+    fn test_autoupdate_policy_serde_round_trip() {
+        for p in [
+            AutoupdatePolicy::Off,
+            AutoupdatePolicy::Notify,
+            AutoupdatePolicy::Patch,
+            AutoupdatePolicy::All,
+        ] {
+            let toml = format!(
+                "check_enabled = true\nautoupdate = \"{}\"\ncheck_interval_hours = 24\nnotify_in_cli = true\n",
+                match p {
+                    AutoupdatePolicy::Off => "off",
+                    AutoupdatePolicy::Notify => "notify",
+                    AutoupdatePolicy::Patch => "patch",
+                    AutoupdatePolicy::All => "all",
+                }
+            );
+            let parsed: UpdatesConfig = toml::from_str(&toml).unwrap();
+            assert_eq!(parsed.autoupdate, p);
+        }
     }
 
     // Tests for WorktreeConfig
