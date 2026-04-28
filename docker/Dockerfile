@@ -33,9 +33,11 @@ ENV PATH="/root/.local/bin:${PATH}"
 RUN curl -fsSL https://opencode.ai/install | bash
 ENV PATH="/root/.opencode/bin:${PATH}"
 
-# Install Hermes
-RUN mkdir -p /root/.hermes \
-    && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+# Install Hermes (NousResearch/hermes-agent)
+# --skip-setup avoids the interactive wizard; the FHS-style root install
+# places `hermes` at /usr/local/bin and leaves config under /root/.hermes.
+RUN curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \
+    | bash -s -- --skip-setup
 
 # Install Codex CLI (OpenAI)
 RUN npm install -g @openai/codex

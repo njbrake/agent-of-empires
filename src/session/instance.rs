@@ -450,6 +450,14 @@ impl Instance {
                 if let Err(e) = crate::hooks::install_settl_hooks() {
                     tracing::warn!("Failed to install settl hooks: {}", e);
                 }
+            } else if self.tool == "hermes" && !self.is_sandboxed() {
+                // Hermes uses YAML config; sandbox path is handled by build_container_config
+                if let Some(home) = dirs::home_dir() {
+                    let config_path = home.join(".hermes").join("config.yaml");
+                    if let Err(e) = crate::hooks::install_hermes_hooks(&config_path) {
+                        tracing::warn!("Failed to install hermes hooks: {}", e);
+                    }
+                }
             } else if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
                 if self.is_sandboxed() {
                     // For sandboxed sessions, hooks are installed via build_container_config

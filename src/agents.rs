@@ -305,8 +305,17 @@ pub const AGENTS: &[AgentDef] = &[
         yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
+        // Status is detected via Hermes's shell-hook system (YAML config),
+        // installed by hooks::install_hermes_hooks(); the stub here just
+        // returns Idle as a fallback before the first hook fires.
         detect_status: status_detection::detect_hermes_status,
-        container_env: &[],
+        // HERMES_ACCEPT_HOOKS bypasses the first-use TTY consent prompt for
+        // shell hooks. Hermes still gates each (event, command) on its
+        // allowlist file, which AoE pre-populates in install_hermes_hooks.
+        container_env: &[("HERMES_ACCEPT_HOOKS", "1")],
+        // Hermes uses YAML (`hooks: { event: [...] }`) rather than the
+        // JSON settings.json schema shared by Claude/Cursor/Gemini, so
+        // hook_config: None and install is special-cased like settl.
         hook_config: None,
         host_only: false,
         send_keys_enter_delay_ms: 0,

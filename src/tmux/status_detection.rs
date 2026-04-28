@@ -564,71 +564,11 @@ pub fn detect_droid_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
-/// Hermes status detection via tmux pane parsing.
-/// Hermes shows approval prompts for dangerous commands and a `❯` prompt when idle.
-pub fn detect_hermes_status(raw_content: &str) -> Status {
-    let content = raw_content.to_lowercase();
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    let last_lines: String = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect::<Vec<&str>>()
-        .join("\n");
-
-    let latest_prompt_index = non_empty_lines
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, line)| {
-            let clean_line = strip_ansi(line);
-            clean_line.trim().starts_with('❯').then_some(index)
-        });
-
-    let status_window = if let Some(prompt_index) = latest_prompt_index {
-        let after_prompt = non_empty_lines[prompt_index + 1..].join("\n");
-        if after_prompt.trim().is_empty() {
-            return Status::Idle;
-        }
-        after_prompt
-    } else {
-        last_lines
-    };
-
-    // WAITING: Dangerous command approval prompts
-    if status_window.contains("dangerous command")
-        || status_window.contains("choice [o/s/a/d]")
-        || status_window.contains("approve")
-        || status_window.contains("deny")
-    {
-        return Status::Waiting;
-    }
-
-    // RUNNING: Hermes shows activity words while the model is actively working.
-    let activity_indicators = ["thinking", "pondering", "executing", "tool feed"];
-    if activity_indicators
-        .iter()
-        .any(|indicator| status_window.contains(indicator))
-    {
-        return Status::Running;
-    }
-
-    // IDLE: Hermes uses a `❯` prompt when it is ready for input.
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line.starts_with('❯') {
-            return Status::Idle;
-        }
-    }
-
+/// Hermes status is detected via shell-script hooks (YAML-based) registered
+/// in `~/.hermes/config.yaml`, not tmux pane parsing. This stub exists so
+/// the agent registry has a valid function pointer; it only runs as a
+/// fallback when the hook hasn't written a status file yet.
+pub fn detect_hermes_status(_content: &str) -> Status {
     Status::Idle
 }
 
@@ -1015,58 +955,9 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_hermes_status_waiting() {
-        assert_eq!(
-            detect_hermes_status("DANGEROUS COMMAND\nChoice [o/s/a/D]"),
-            Status::Waiting
-        );
-        assert_eq!(
-            detect_hermes_status("approve this command or deny it"),
-            Status::Waiting
-        );
-    }
-
-    #[test]
-    fn test_detect_hermes_status_running() {
-        assert_eq!(
-            detect_hermes_status("thinking about the task"),
-            Status::Running
-        );
-        assert_eq!(
-            detect_hermes_status("pondering next steps"),
-            Status::Running
-        );
-        assert_eq!(detect_hermes_status("executing tool feed"), Status::Running);
-    }
-
-    #[test]
-    fn test_detect_hermes_status_idle() {
-        assert_eq!(detect_hermes_status("❯"), Status::Idle);
-        assert_eq!(detect_hermes_status("❯ git status"), Status::Idle);
-        assert_eq!(
-            detect_hermes_status("thinking about the task\n❯"),
-            Status::Idle
-        );
-        assert_eq!(
-            detect_hermes_status("DANGEROUS COMMAND\nChoice [o/s/a/D]\n❯"),
-            Status::Idle
-        );
-        assert_eq!(
-            detect_hermes_status(concat!(
-                "DANGEROUS COMMAND\nChoice [o/s/a/D]\n❯\n",
-                "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\n",
-                "line 7\nline 8\nline 9\nline 10\nline 11"
-            )),
-            Status::Idle
-        );
-        assert_eq!(
-            detect_hermes_status(concat!(
-                "thinking about the task\n❯\n",
-                "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\n",
-                "line 7\nline 8\nline 9\nline 10\nline 11"
-            )),
-            Status::Idle
-        );
+    fn test_detect_hermes_status_is_stub() {
+        // Hermes uses hook-based detection; the stub always returns Idle
+        assert_eq!(detect_hermes_status("anything"), Status::Idle);
     }
 
     #[test]
