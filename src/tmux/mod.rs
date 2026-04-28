@@ -1,6 +1,6 @@
 //! tmux integration module
 
-pub mod env;
+pub(crate) mod env;
 mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
@@ -11,6 +11,13 @@ pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
 pub use status_detection::detect_status_from_content;
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
+
+#[doc(hidden)]
+pub mod test_support {
+    pub use super::env::{
+        get_hidden_env, set_hidden_env, AOE_CAPTURED_SESSION_ID_KEY, AOE_INSTANCE_ID_KEY,
+    };
+}
 
 use std::collections::HashMap;
 use std::process::Command;

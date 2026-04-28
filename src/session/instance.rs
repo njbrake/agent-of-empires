@@ -315,16 +315,12 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
         return;
     };
 
-    let tmux_name = crate::tmux::Session::generate_name(instance_id, &inst.title);
     inst.agent_session_id = Some(session_id.to_string());
 
     if let Err(e) = storage.save(&instances) {
         tracing::warn!("Failed to save instances for session ID persistence: {}", e);
     } else {
         tracing::debug!("Session ID persisted for {}", instance_id);
-        if let Err(e) = publish_session_to_tmux_env(&tmux_name, session_id) {
-            tracing::warn!("{}", e);
-        }
     }
 }
 
@@ -335,13 +331,14 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
 /// `save()`. The tmux env is the source of truth for `build_exclusion_set()`
 /// (cross-instance dedup), while `sessions.json` is written exclusively by
 /// the TUI thread via `apply_session_id_updates()`.
-fn publish_session_to_tmux_env(tmux_session_name: &str, session_id: &str) -> Result<()> {
-    crate::tmux::env::set_hidden_env(
+fn publish_session_to_tmux_env(tmux_session_name: &str, session_id: &str) {
+    if let Err(e) = crate::tmux::env::set_hidden_env(
         tmux_session_name,
         crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
         session_id,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to write captured session ID to tmux env: {}", e))
+    ) {
+        tracing::warn!("Failed to write captured session ID to tmux env: {}", e);
+    }
 }
 
 impl Instance {
@@ -899,11 +896,7 @@ impl Instance {
         }
 
         self.persist_session_id(profile);
-        let poller_launch_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as f64)
-            .unwrap_or(0.0);
-        self.maybe_start_poller_with_time(Some(poller_launch_time));
+        self.maybe_start_poller();
 
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
@@ -1009,29 +1002,16 @@ impl Instance {
     }
 
     pub fn maybe_start_poller(&mut self) {
-        self.maybe_start_poller_with_time(None);
-    }
-
-    /// Start the session ID poller with an explicit launch time filter.
-    ///
-    /// When `launch_time_ms` is `Some(t)`, the OpenCode poll function only
-    /// considers sessions updated at or after `t` (used after freshly spawning
-    /// the agent so we don't pick up stale sessions). When `None`, no time
-    /// filter is applied -- the poller discovers any matching session for the
-    /// project, which is the correct behaviour when resuming monitoring of an
-    /// already-running agent on TUI restart.
-    fn maybe_start_poller_with_time(&mut self, launch_time_ms: Option<f64>) {
         if !self.supports_session_poller() {
             return;
         }
         let tool = self.tool.as_str();
 
-        let effective_launch_time = launch_time_ms.unwrap_or(0.0);
-
         let tmux_session_name = self
             .tmux_session()
             .map(|s| s.name().to_string())
             .unwrap_or_default();
+        let cb_tmux_name = tmux_session_name.clone();
         let mut poller = SessionPoller::new(tmux_session_name);
         let instance_id = self.id.clone();
         let initial_known = self.agent_session_id.clone();
@@ -1048,33 +1028,33 @@ impl Instance {
                         self.container_workdir(),
                     ))
                 } else {
-                    Box::new(claude_poll_fn(self.project_path.clone(), self.id.clone()))
+                    Box::new(claude_poll_fn(self.project_path.clone()))
                 }
             }
             "codex" => Box::new(codex_poll_fn(self.project_path.clone(), self.id.clone())),
             "gemini" => Box::new(gemini_poll_fn(self.project_path.clone(), self.id.clone())),
             "pi" => Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone())),
             "vibe" => Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone())),
-            "opencode" => Box::new(opencode_poll_fn(
-                self.project_path.clone(),
-                self.id.clone(),
-                effective_launch_time,
-            )),
+            "opencode" => {
+                let launch_time_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as f64)
+                    .unwrap_or(0.0);
+                Box::new(opencode_poll_fn(
+                    self.project_path.clone(),
+                    self.id.clone(),
+                    launch_time_ms,
+                ))
+            }
             _ => return,
         };
 
-        let cb_tmux_name = self
-            .tmux_session()
-            .map(|s| s.name().to_string())
-            .unwrap_or_default();
         let cb_instance_id = self.id.clone();
 
         let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id: &str| {
             tracing::info!("Session ID changed for {}: {}", cb_instance_id, new_id);
             if !cb_tmux_name.is_empty() {
-                if let Err(e) = publish_session_to_tmux_env(&cb_tmux_name, new_id) {
-                    tracing::warn!("{}", e);
-                }
+                publish_session_to_tmux_env(&cb_tmux_name, new_id);
             }
         });
 

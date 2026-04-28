@@ -79,15 +79,12 @@ fn encode_claude_project_path(project_path: &str) -> String {
 /// falling back to `~/.claude.json` if the dir scan result is stale.
 ///
 /// Used as a fallback when hooks don't fire (e.g. after `/clear` or `/new`).
-pub(crate) fn capture_claude_session_id(
-    project_path: &str,
-    exclusion: &HashSet<String>,
-) -> Result<String> {
+pub(crate) fn capture_claude_session_id(project_path: &str) -> Result<String> {
     let claude_home = resolve_agent_home(Some("CLAUDE_CONFIG_DIR"), ".claude")?;
     let canonical = canonicalize_or_raw(project_path);
 
     // Source 1: most recently modified .jsonl in the project dir
-    if let Some((id, modified)) = scan_claude_project_dir(&claude_home, &canonical, exclusion)? {
+    if let Some((id, modified)) = scan_claude_project_dir(&claude_home, &canonical)? {
         let age = modified.elapsed().unwrap_or(Duration::from_secs(u64::MAX));
         if age <= Duration::from_secs(5 * 60) {
             return Ok(id);
@@ -103,7 +100,7 @@ pub(crate) fn capture_claude_session_id(
         let is_fresh = claude_json
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age <= Duration::from_secs(5 * 60));
-        if is_fresh && Uuid::parse_str(&id).is_ok() && !exclusion.contains(&id) {
+        if is_fresh && Uuid::parse_str(&id).is_ok() {
             return Ok(id);
         }
     }
@@ -116,7 +113,6 @@ pub(crate) fn capture_claude_session_id(
 fn scan_claude_project_dir(
     claude_home: &Path,
     project_path: &Path,
-    exclusion: &HashSet<String>,
 ) -> Result<Option<(String, std::time::SystemTime)>> {
     let dir_name = encode_claude_project_path(&project_path.to_string_lossy());
     let project_dir = claude_home.join("projects").join(&dir_name);
@@ -137,9 +133,6 @@ fn scan_claude_project_dir(
             None => continue,
         };
         if Uuid::parse_str(stem).is_err() {
-            continue;
-        }
-        if exclusion.contains(stem) {
             continue;
         }
 
@@ -178,13 +171,9 @@ fn read_claude_json_session_id(project_path: &Path) -> Option<String> {
 }
 
 /// Polling closure for Claude Code session tracking.
-pub(crate) fn claude_poll_fn(
-    project_path: String,
-    instance_id: String,
-) -> impl Fn() -> Option<String> + Send + 'static {
+pub(crate) fn claude_poll_fn(project_path: String) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
-        capture_claude_session_id(&project_path, &exclusion)
+        capture_claude_session_id(&project_path)
             .map_err(|e| tracing::debug!("Claude disk scan failed: {}", e))
             .ok()
             .and_then(validated_session_id)
@@ -544,15 +533,17 @@ pub(crate) fn capture_codex_session_id(
 
     let canonical_project = canonicalize_or_raw(project_path);
 
-    // Prefer the most recent session whose CWD matches the project directory
-    let cwd_match = session_entries.iter().find(|(path, _)| {
-        extract_codex_cwd_from_file(path)
+    let chosen = session_entries.iter().find_map(|(path, _)| {
+        let cwd_matches = extract_codex_cwd_from_file(path)
             .and_then(|cwd| std::fs::canonicalize(&cwd).ok())
             .map(|cwd| cwd == canonical_project)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if cwd_matches {
+            extract_codex_uuid_from_filename(path)
+        } else {
+            None
+        }
     });
-
-    let chosen = cwd_match.and_then(|(path, _)| extract_codex_uuid_from_filename(path));
 
     chosen.ok_or_else(|| anyhow::anyhow!("No Codex session found matching project path"))
 }
@@ -777,7 +768,7 @@ pub(crate) fn capture_vibe_session_id(
         );
     }
 
-    let mut candidates: Vec<(String, std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    let mut candidates: Vec<(String, Option<String>, std::time::SystemTime)> = Vec::new();
 
     for entry in resilient_read_dir(&sessions_dir)? {
         let path = entry.path();
@@ -788,14 +779,14 @@ pub(crate) fn capture_vibe_session_id(
         if !meta_path.exists() {
             continue;
         }
-        let session_id = match extract_vibe_session_id_from_meta(&meta_path) {
-            Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
+        let (session_id, cwd) = match extract_vibe_meta(&meta_path) {
+            Some(pair) if !pair.0.is_empty() && !exclusion.contains(&pair.0) => pair,
             _ => continue,
         };
         let modified = std::fs::metadata(&meta_path)
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        candidates.push((session_id, meta_path, modified));
+        candidates.push((session_id, cwd, modified));
     }
 
     if candidates.is_empty() {
@@ -809,9 +800,9 @@ pub(crate) fn capture_vibe_session_id(
 
     let canonical_project = canonicalize_or_raw(project_path);
 
-    let project_match = candidates.iter().find(|(_, meta_path, _)| {
-        extract_vibe_cwd_from_meta(meta_path)
-            .and_then(|cwd| std::fs::canonicalize(&cwd).ok())
+    let project_match = candidates.iter().find(|(_, cwd, _)| {
+        cwd.as_ref()
+            .and_then(|cwd| std::fs::canonicalize(cwd).ok())
             .map(|cwd| cwd == canonical_project)
             .unwrap_or(false)
     });
@@ -821,31 +812,43 @@ pub(crate) fn capture_vibe_session_id(
         .ok_or_else(|| anyhow::anyhow!("No Vibe session found matching project path"))
 }
 
+/// Parse a Vibe `meta.json` once, returning both `session_id` and the working directory.
+fn extract_vibe_meta(path: &std::path::Path) -> Option<(String, Option<String>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let session_id = parsed
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)?;
+    let cwd = parsed
+        .get("environment")
+        .and_then(|env| env.get("working_directory"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| extract_cwd_from_json(&parsed, &["cwd", "working_directory", "project_path"]));
+    Some((session_id, cwd))
+}
+
 /// Extract CWD from a Vibe `meta.json`.
 ///
 /// The actual path lives at `environment.working_directory` (nested object).
 /// Falls back to top-level `cwd` / `working_directory` for forward compatibility.
+#[cfg(test)]
 pub(crate) fn extract_vibe_cwd_from_meta(path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    // Primary: nested under `environment`
     parsed
         .get("environment")
         .and_then(|env| env.get("working_directory"))
         .and_then(|v| v.as_str())
         .map(String::from)
-        // Fallback: top-level keys for forward compatibility
         .or_else(|| extract_cwd_from_json(&parsed, &["cwd", "working_directory", "project_path"]))
 }
 
 /// Extract the `session_id` UUID from a Vibe `meta.json` file.
+#[cfg(test)]
 pub(crate) fn extract_vibe_session_id_from_meta(path: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .map(String::from)
+    extract_vibe_meta(path).map(|(id, _)| id)
 }
 
 /// Encode a project path into Pi's directory naming convention.
@@ -911,7 +914,6 @@ pub(crate) fn extract_pi_cwd_from_header(path: &Path) -> Option<String> {
 ///
 /// Pi filenames follow the pattern `2024-12-03T14-00-00-000Z_<uuid>.jsonl`.
 /// The UUID is the substring after the last `_`, before `.jsonl`.
-#[cfg(test)]
 pub(crate) fn extract_pi_uuid_from_filename(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     let uuid_part = stem.rsplit('_').next()?;
@@ -1016,6 +1018,49 @@ pub(crate) fn capture_pi_session_id(
         return Ok(id.clone());
     }
 
+    // Tier 3: when all JSONL headers fail to parse, pick the most
+    // recently modified session directory and extract a UUID from its files.
+    let mut dirs_by_mtime: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+    if let Ok(entries) = resilient_read_dir(&sessions_dir) {
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let mtime = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            dirs_by_mtime.push((path, mtime));
+        }
+    }
+    dirs_by_mtime.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (dir, _) in &dirs_by_mtime {
+        if let Ok(entries) = resilient_read_dir(dir) {
+            let mut file_candidates: Vec<(String, std::time::SystemTime)> = Vec::new();
+            for entry in entries {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                if let Some(uuid) = extract_pi_uuid_from_filename(&path) {
+                    if !exclusion.contains(&uuid) {
+                        let mtime = entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        file_candidates.push((uuid, mtime));
+                    }
+                }
+            }
+            file_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+            if let Some((id, _)) = file_candidates.first() {
+                return Ok(id.clone());
+            }
+        }
+    }
+
     anyhow::bail!("No Pi session found matching project path")
 }
 
@@ -1110,12 +1155,15 @@ mod tests {
 
         let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
         let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-        std::fs::write(
-            sessions_dir.join(format!("rollout-2025-01-01T00-00-00-{}.jsonl", uuid_old)),
-            "{}",
-        )
-        .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let old_file = sessions_dir.join(format!("rollout-2025-01-01T00-00-00-{}.jsonl", uuid_old));
+        std::fs::write(&old_file, "{}").unwrap();
+        let old_time = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old_file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
         std::fs::write(
             sessions_dir.join(format!("rollout-2025-01-02T00-00-00-{}.jsonl", uuid_new)),
             "{}",
@@ -1687,32 +1735,8 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert_eq!(result.unwrap(), uuid_new);
-
-        match old_val {
-            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
-            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_capture_claude_session_respects_exclusion() {
-        let tmp = tempfile::tempdir().unwrap();
-        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
-        std::fs::create_dir_all(&project_dir).unwrap();
-
-        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        std::fs::write(project_dir.join(format!("{uuid}.jsonl")), "data\n").unwrap();
-
-        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
-        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
-
-        let mut exclusion = HashSet::new();
-        exclusion.insert(uuid.to_string());
-        let result = capture_claude_session_id("/tmp/myproject", &exclusion);
-        assert!(result.is_err(), "Excluded session should not be returned");
 
         match old_val {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
@@ -1736,7 +1760,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert!(result.is_err(), "Agent files should not be picked up");
 
         match old_val {
@@ -1768,7 +1792,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert!(result.is_err(), "Stale session file should be rejected");
         assert!(
             result
@@ -1794,7 +1818,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert!(result.is_err(), "Empty dir should return error");
 
         match old_val {
@@ -1971,7 +1995,13 @@ mod tests {
             format!(r#"{{"type":"session","id":"{uuid_old}","cwd":"/home/user/project"}}"#),
         )
         .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let old_time = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(project_dir.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
         std::fs::write(
             project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid_new}.jsonl")),
             format!(r#"{{"type":"session","id":"{uuid_new}","cwd":"/home/user/project"}}"#),
@@ -2091,10 +2121,10 @@ mod tests {
         let other_dir = sessions_dir.join(&other_encoded);
         std::fs::create_dir_all(&other_dir).unwrap();
 
-        let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        // Use a filename without a parseable UUID so tier 3 also fails
         std::fs::write(
-            other_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
-            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/other-project"}}"#),
+            other_dir.join("session-no-uuid.jsonl"),
+            r#"{"type":"session","id":"not-a-uuid","cwd":"/home/user/other-project"}"#,
         )
         .unwrap();
 
@@ -2168,7 +2198,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), uuid);
 
-        std::env::remove_var("PI_CODING_AGENT_DIR");
+        std::env::set_var("PI_CODING_AGENT_DIR", "/nonexistent-aoe-test-dir-xyz");
         let result_without_env = capture_pi_session_id("/home/user/project", &HashSet::new());
         assert!(result_without_env.is_err());
 
@@ -2191,13 +2221,19 @@ mod tests {
         // matching our project. The fallback must pick the most recent.
         let dir_a = sessions_dir.join("--wrong-name-a--");
         std::fs::create_dir_all(&dir_a).unwrap();
+        let old_file_a = dir_a.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl"));
         std::fs::write(
-            dir_a.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")),
+            &old_file_a,
             format!(r#"{{"type":"session","id":"{uuid_old}","cwd":"/home/user/project"}}"#),
         )
         .unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let old_time = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old_file_a)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
 
         let dir_b = sessions_dir.join("--wrong-name-b--");
         std::fs::create_dir_all(&dir_b).unwrap();
@@ -2254,11 +2290,277 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn test_capture_pi_session_id_fallback_by_dir_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        let dir_old = sessions_dir.join("--old-dir--");
+        std::fs::create_dir_all(&dir_old).unwrap();
+        std::fs::write(
+            dir_old.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")),
+            "not valid json\n",
+        )
+        .unwrap();
+
+        let dir_new = sessions_dir.join("--new-dir--");
+        std::fs::create_dir_all(&dir_new).unwrap();
+        std::fs::write(
+            dir_new.join(format!("2024-12-03T14-00-00-000Z_{uuid_new}.jsonl")),
+            "also not valid json\n",
+        )
+        .unwrap();
+
+        // Set old dir file mtime to the past
+        let old_time = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(dir_old.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/nonexistent/path/for/test", &HashSet::new());
+        assert!(
+            result.is_ok(),
+            "Dir-mtime fallback should find session: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), uuid_new);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
     fn test_capture_claude_session_in_container_returns_error_for_missing_container() {
         let result = capture_claude_session_id_in_container(
             "aoe-test-nonexistent-container-xyz",
             "/workspace/test",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_gemini_exclusion_uses_json_id_not_stem() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project_path = "/tmp/gemini-exclusion-test";
+        let digest = Sha256::digest(project_path.as_bytes());
+        let hash = digest
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+
+        let chats_dir = tmp.path().join("tmp").join(&hash).join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+
+        let file1 = chats_dir.join("session-1.json");
+        std::fs::write(
+            &file1,
+            format!(r#"{{"sessionId": "json-id-AAA", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+
+        let file2 = chats_dir.join("session-2.json");
+        std::fs::write(
+            &file2,
+            format!(r#"{{"sessionId": "json-id-BBB", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+        let older = std::time::SystemTime::now() - Duration::from_secs(10);
+        std::fs::File::options()
+            .write(true)
+            .open(&file2)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(older))
+            .unwrap();
+
+        let old_val = std::env::var("GEMINI_CLI_HOME").ok();
+        std::env::set_var("GEMINI_CLI_HOME", tmp.path());
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("json-id-AAA".to_string());
+
+        let result = capture_gemini_session_id(project_path, &exclusion);
+        assert_eq!(
+            result.unwrap(),
+            "json-id-BBB",
+            "Exclusion must use JSON sessionId, not filename stem"
+        );
+
+        let mut wrong_exclusion = HashSet::new();
+        wrong_exclusion.insert("session-1".to_string());
+
+        let result2 = capture_gemini_session_id(project_path, &wrong_exclusion);
+        assert_eq!(
+            result2.unwrap(),
+            "json-id-AAA",
+            "Filename stem in exclusion should have no effect"
+        );
+
+        match old_val {
+            Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
+            None => std::env::remove_var("GEMINI_CLI_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_gemini_capture_returns_most_recent_by_cwd() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project_path = "/tmp/gemini-test-project";
+        let digest = Sha256::digest(project_path.as_bytes());
+        let hash = digest
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+
+        let chats_dir = tmp.path().join("tmp").join(&hash).join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+
+        let old_file = chats_dir.join("session-1.json");
+        std::fs::write(
+            &old_file,
+            format!(r#"{{"sessionId": "old-id-111", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+        let ten_min_ago = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old_file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(ten_min_ago))
+            .unwrap();
+
+        let new_file = chats_dir.join("session-2.json");
+        std::fs::write(
+            &new_file,
+            format!(r#"{{"sessionId": "new-id-222", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("GEMINI_CLI_HOME").ok();
+        std::env::set_var("GEMINI_CLI_HOME", tmp.path());
+
+        let result = capture_gemini_session_id(project_path, &HashSet::new());
+        assert_eq!(result.unwrap(), "new-id-222");
+
+        match old_val {
+            Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
+            None => std::env::remove_var("GEMINI_CLI_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_vibe_capture_matches_by_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let sessions_dir = tmp.path().join("logs").join("session");
+
+        let s1_dir = sessions_dir.join("session-abc");
+        std::fs::create_dir_all(&s1_dir).unwrap();
+        let s1_meta = serde_json::json!({
+            "session_id": "vibe-sess-match",
+            "environment": {"working_directory": project_dir.to_str().unwrap()}
+        });
+        std::fs::write(s1_dir.join("meta.json"), s1_meta.to_string()).unwrap();
+
+        let s2_dir = sessions_dir.join("session-def");
+        std::fs::create_dir_all(&s2_dir).unwrap();
+        let s2_meta = serde_json::json!({
+            "session_id": "vibe-sess-other",
+            "environment": {"working_directory": "/somewhere/else"}
+        });
+        std::fs::write(s2_dir.join("meta.json"), s2_meta.to_string()).unwrap();
+
+        let old_val = std::env::var("VIBE_HOME").ok();
+        std::env::set_var("VIBE_HOME", tmp.path());
+
+        let result = capture_vibe_session_id(project_dir.to_str().unwrap(), &HashSet::new());
+        assert_eq!(result.unwrap(), "vibe-sess-match");
+
+        match old_val {
+            Some(v) => std::env::set_var("VIBE_HOME", v),
+            None => std::env::remove_var("VIBE_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_vibe_stale_session_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let sessions_dir = tmp.path().join("logs").join("session");
+        let s1_dir = sessions_dir.join("session-stale");
+        std::fs::create_dir_all(&s1_dir).unwrap();
+
+        let s1_meta = serde_json::json!({
+            "session_id": "vibe-sess-stale",
+            "environment": {"working_directory": "/nonexistent/path/that/wont/match"}
+        });
+        std::fs::write(s1_dir.join("meta.json"), s1_meta.to_string()).unwrap();
+
+        let old_val = std::env::var("VIBE_HOME").ok();
+        std::env::set_var("VIBE_HOME", tmp.path());
+
+        let result = capture_vibe_session_id(project_dir.to_str().unwrap(), &HashSet::new());
+        assert!(
+            result.is_err(),
+            "Session with non-matching CWD should not be returned"
+        );
+
+        match old_val {
+            Some(v) => std::env::set_var("VIBE_HOME", v),
+            None => std::env::remove_var("VIBE_HOME"),
+        }
+    }
+
+    #[test]
+    fn test_extract_codex_cwd_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"session_meta","payload":{"cwd":"/home/user/myproject"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_codex_cwd_from_file(&path),
+            Some("/home/user/myproject".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_codex_cwd_from_file_missing_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        std::fs::write(&path, r#"{"type":"session_meta","payload":{}}"#).unwrap();
+        assert_eq!(extract_codex_cwd_from_file(&path), None);
+    }
+
+    #[test]
+    fn test_extract_codex_cwd_from_file_invalid_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rollout.jsonl");
+        std::fs::write(&path, "not json at all").unwrap();
+        assert_eq!(extract_codex_cwd_from_file(&path), None);
     }
 }

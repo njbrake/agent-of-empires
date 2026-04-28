@@ -37,7 +37,13 @@ pub fn set_hidden_env(session_name: &str, key: &str, value: &str) -> anyhow::Res
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Failed to set hidden env var: {}", stderr);
+        bail!(
+            "tmux set-environment -h -t '{}' {}: exit {}: {}",
+            session_name,
+            key,
+            output.status,
+            stderr.trim()
+        );
     }
 
     invalidate_cache_entry(session_name, key);

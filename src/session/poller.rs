@@ -52,7 +52,7 @@ const POLL_STABLE_THRESHOLD: u32 = 3;
 
 /// Timeout for deferred capture completion, with margin for retry delays.
 #[cfg(test)]
-const CAPTURE_GATE_TIMEOUT: Duration = Duration::from_secs(120);
+const _CAPTURE_GATE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Synchronization gate between deferred capture and polling threads.
 ///
