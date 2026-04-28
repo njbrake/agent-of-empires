@@ -464,7 +464,7 @@ impl App {
         match rx.try_recv() {
             Ok(Ok(())) => {
                 self.update_status =
-                    Some("update complete — restart aoe to use the new version".to_string());
+                    Some("update complete. Restart aoe to use the new version.".to_string());
                 true
             }
             Ok(Err(e)) => {
@@ -514,7 +514,7 @@ impl App {
             match result {
                 Ok(()) => {
                     self.update_status =
-                        Some("update complete — restart aoe to use the new version".to_string());
+                        Some("update complete. Restart aoe to use the new version.".to_string());
                 }
                 Err(e) => {
                     self.update_status = Some(format!("update failed: {e}"));
@@ -652,6 +652,10 @@ impl App {
                 self.set_theme(&name);
             }
             Action::SpawnUpdate { method, version } => {
+                if self.update_status_rx.is_some() {
+                    self.update_status = Some("update already in progress".to_string());
+                    return Ok(());
+                }
                 self.spawn_update(method, version, terminal)?;
             }
         }
