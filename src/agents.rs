@@ -243,7 +243,7 @@ pub const AGENTS: &[AgentDef] = &[
                 },
             ],
         }),
-        resume_strategy: ResumeStrategy::Unsupported,
+        resume_strategy: ResumeStrategy::Flag("--resume"),
         host_only: false,
         send_keys_enter_delay_ms: 0,
         install_hint: "npm install -g @google/gemini-cli",
