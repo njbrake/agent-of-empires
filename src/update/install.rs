@@ -132,10 +132,12 @@ pub fn current_platform_string() -> Result<&'static str> {
     platform_string_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
+const DEFAULT_RELEASE_BASE: &str = "https://github.com/njbrake/agent-of-empires/releases/download";
+
 pub fn release_tarball_url(version: &str, platform: &str) -> String {
-    format!(
-        "https://github.com/njbrake/agent-of-empires/releases/download/v{version}/aoe-{platform}.tar.gz"
-    )
+    let base =
+        std::env::var("AOE_UPDATE_BASE_URL").unwrap_or_else(|_| DEFAULT_RELEASE_BASE.to_string());
+    format!("{base}/v{version}/aoe-{platform}.tar.gz")
 }
 
 /// Download a release tarball to `dest`. Streams bytes; reports
@@ -415,6 +417,7 @@ pub async fn perform_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn home() -> PathBuf {
         PathBuf::from("/home/kevin")
@@ -552,12 +555,35 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn release_tarball_url_format() {
         let url = release_tarball_url("0.5.0", "linux-amd64");
         assert_eq!(
             url,
             "https://github.com/njbrake/agent-of-empires/releases/download/v0.5.0/aoe-linux-amd64.tar.gz"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn release_tarball_url_respects_env_override() {
+        let key = "AOE_UPDATE_BASE_URL";
+        let prev = std::env::var(key).ok();
+        // SAFETY: single-threaded test context; serial_test ensures no concurrent mutation.
+        unsafe {
+            std::env::set_var(key, "http://127.0.0.1:9999/releases");
+        }
+        let url = release_tarball_url("0.5.0", "linux-amd64");
+        assert_eq!(
+            url,
+            "http://127.0.0.1:9999/releases/v0.5.0/aoe-linux-amd64.tar.gz"
+        );
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     #[test]

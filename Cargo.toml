@@ -137,6 +137,7 @@ serve = [
 [dev-dependencies]
 serial_test = "3.4"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
+axum = { version = "0.8", features = ["ws"] }
 
 [profile.release]
 lto = true
