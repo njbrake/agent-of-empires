@@ -849,6 +849,27 @@ mod tests {
         assert_eq!(updates.check_interval_hours, 24);
     }
 
+    /// Regression: pre-0.5 configs had `auto_update = bool`. The field was
+    /// removed when we introduced the autoupdate enum. Old configs must
+    /// still deserialize cleanly (serde silently drops unknown fields), and
+    /// the new `autoupdate` defaults to `Notify`, which matches the behavior
+    /// the dead bool produced (i.e., no auto-apply).
+    #[test]
+    fn test_old_auto_update_field_is_silently_ignored() {
+        let old_toml = r#"
+            check_enabled = true
+            auto_update = true
+            check_interval_hours = 12
+            notify_in_cli = true
+        "#;
+        let updates: UpdatesConfig =
+            toml::from_str(old_toml).expect("old auto_update field should not error");
+        assert_eq!(updates.autoupdate, AutoupdatePolicy::Notify);
+        assert_eq!(updates.check_interval_hours, 12);
+        assert!(updates.check_enabled);
+        assert!(updates.notify_in_cli);
+    }
+
     #[test]
     fn test_autoupdate_policy_cycle() {
         let p = AutoupdatePolicy::Off;
