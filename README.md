@@ -77,6 +77,8 @@ git clone https://github.com/njbrake/agent-of-empires
 cd agent-of-empires && cargo build --release
 ```
 
+To update an existing install, run `aoe update`. It detects how aoe was installed (Homebrew, curl-script tarball, Nix, Cargo) and uses the right upgrade mechanism, or prints instructions for methods it can't auto-update.
+
 ## Quick Start
 
 ```bash
