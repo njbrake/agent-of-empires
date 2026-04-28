@@ -1051,7 +1051,7 @@ impl HomeView {
     fn render_update_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme, info: &UpdateInfo) {
         let update_style = Style::default().fg(theme.waiting).bold();
         let text = format!(
-            " update available {} -> {}",
+            " update available {} → {}  press [u] to update",
             info.current_version, info.latest_version
         );
         let bar = Paragraph::new(Line::from(Span::styled(text, update_style)))
