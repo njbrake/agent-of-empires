@@ -10,7 +10,6 @@ mod home;
 pub mod settings;
 mod status_poller;
 pub(crate) mod styles;
-pub mod suspend;
 
 pub use app::*;
 
