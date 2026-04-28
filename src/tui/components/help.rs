@@ -7,7 +7,7 @@ use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 40;
+const DIALOG_HEIGHT: u16 = 41;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
