@@ -120,7 +120,7 @@ pub async fn terminal_ws(
     }
 }
 
-/// Defence-in-depth cap that mirrors the client-side cap in
+/// Defense-in-depth cap that mirrors the client-side cap in
 /// `web/src/hooks/useTerminal.ts`. The browser's wterm WASM grid is fixed
 /// at 256x256 (vercel-labs/wterm@0.1.x); resizing the PTY past this lets
 /// the agent draw past wterm's render cap, producing visible corruption.

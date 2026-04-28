@@ -39,7 +39,7 @@ const INITIAL_SETTLE_MS = 250;
 // subsequent row and producing visible corruption (overlapping menus,
 // duplicated status bars). Capping the size we send to the PTY keeps the
 // agent's mental model aligned with what wterm will actually render.
-// Filed upstream at vercel-labs/wterm#NN; remove when wterm raises or
+// Filed upstream at vercel-labs/wterm#56; remove when wterm raises or
 // removes the cap.
 const WTERM_MAX_COLS = 256;
 const WTERM_MAX_ROWS = 256;
