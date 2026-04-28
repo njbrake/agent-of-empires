@@ -55,8 +55,14 @@ pub struct CleanupDefaults {
     pub delete_sandbox: bool,
 }
 
-impl From<&Instance> for SessionResponse {
-    fn from(inst: &Instance) -> Self {
+impl SessionResponse {
+    /// Build a response from a session instance plus the user's current
+    /// Claude Code fullscreen-renderer preference.
+    ///
+    /// `claude_fullscreen` is the *user-level* setting (read once per
+    /// request via `crate::claude_settings::read_tui_fullscreen()`); it
+    /// surfaces on the response only when the session's agent is Claude.
+    pub fn from_instance(inst: &Instance, claude_fullscreen: bool) -> Self {
         Self {
             id: inst.id.clone(),
             title: inst.title.clone(),
@@ -89,19 +95,8 @@ impl From<&Instance> for SessionResponse {
             notify_on_waiting: inst.notify_on_waiting,
             notify_on_idle: inst.notify_on_idle,
             notify_on_error: inst.notify_on_error,
-            claude_fullscreen: false,
+            claude_fullscreen: claude_fullscreen && inst.tool == "claude",
         }
-    }
-}
-
-/// Set `claude_fullscreen` on a response when the session is a Claude
-/// Code session and the user has enabled Claude's fullscreen renderer.
-/// Callers compute `fullscreen` once via
-/// `crate::claude_settings::read_tui_fullscreen()` to avoid repeated file
-/// reads when enriching a list.
-fn apply_claude_fullscreen(resp: &mut SessionResponse, fullscreen: bool) {
-    if fullscreen && resp.tool == "claude" {
-        resp.claude_fullscreen = true;
     }
 }
 
@@ -110,11 +105,7 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
     let claude_fullscreen = crate::claude_settings::read_tui_fullscreen();
     let mut sessions: Vec<SessionResponse> = instances
         .iter()
-        .map(|inst| {
-            let mut resp = SessionResponse::from(inst);
-            apply_claude_fullscreen(&mut resp, claude_fullscreen);
-            resp
-        })
+        .map(|inst| SessionResponse::from_instance(inst, claude_fullscreen))
         .collect();
 
     // Resolve per-profile cleanup defaults with a TTL cache on AppState
@@ -249,8 +240,8 @@ pub async fn rename_session(
         wt.branch = title;
     }
 
-    let mut response = SessionResponse::from(&*inst);
-    apply_claude_fullscreen(&mut response, crate::claude_settings::read_tui_fullscreen());
+    let response =
+        SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
@@ -337,8 +328,8 @@ pub async fn update_session_notifications(
     apply(&mut inst.notify_on_idle, body.notify_on_idle);
     apply(&mut inst.notify_on_error, body.notify_on_error);
 
-    let mut response = SessionResponse::from(&*inst);
-    apply_claude_fullscreen(&mut response, crate::claude_settings::read_tui_fullscreen());
+    let response =
+        SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
@@ -665,8 +656,10 @@ pub async fn create_session(
 
     match result {
         Ok(Ok(instance)) => {
-            let mut resp = SessionResponse::from(&instance);
-            apply_claude_fullscreen(&mut resp, crate::claude_settings::read_tui_fullscreen());
+            let resp = SessionResponse::from_instance(
+                &instance,
+                crate::claude_settings::read_tui_fullscreen(),
+            );
             let mut instances = state.instances.write().await;
             instances.push(instance);
             (
@@ -1344,7 +1337,7 @@ mod tests {
     #[test]
     fn session_response_from_instance() {
         let inst = make_test_instance();
-        let resp = SessionResponse::from(&inst);
+        let resp = SessionResponse::from_instance(&inst, false);
 
         assert_eq!(resp.id, inst.id);
         assert_eq!(resp.title, "test-session");
@@ -1369,14 +1362,19 @@ mod tests {
             (Status::Starting, "Starting"),
         ] {
             inst.status = status;
-            assert_eq!(SessionResponse::from(&inst).status, expected);
+            assert_eq!(
+                SessionResponse::from_instance(&inst, false).status,
+                expected
+            );
         }
     }
 
     #[test]
     fn session_response_branch_from_worktree() {
         let mut inst = make_test_instance();
-        assert!(SessionResponse::from(&inst).branch.is_none());
+        assert!(SessionResponse::from_instance(&inst, false)
+            .branch
+            .is_none());
 
         inst.worktree_info = Some(crate::session::WorktreeInfo {
             branch: "feature/test".to_string(),
@@ -1385,7 +1383,9 @@ mod tests {
             created_at: chrono::Utc::now(),
         });
         assert_eq!(
-            SessionResponse::from(&inst).branch.as_deref(),
+            SessionResponse::from_instance(&inst, false)
+                .branch
+                .as_deref(),
             Some("feature/test")
         );
     }
@@ -1393,34 +1393,33 @@ mod tests {
     #[test]
     fn session_response_serializes_to_json() {
         let inst = make_test_instance();
-        let json = serde_json::to_value(SessionResponse::from(&inst)).unwrap();
+        let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
 
         assert!(json.get("id").is_some());
         assert_eq!(json["tool"], "claude");
         assert_eq!(json["status"], "Running");
         assert_eq!(json["is_sandboxed"], false);
-        // Default is false; populated only by handlers via apply_claude_fullscreen.
         assert_eq!(json["claude_fullscreen"], false);
     }
 
     #[test]
-    fn apply_claude_fullscreen_sets_only_for_claude() {
-        let mut resp = SessionResponse::from(&make_test_instance());
+    fn claude_fullscreen_set_for_claude_when_enabled() {
+        let resp = SessionResponse::from_instance(&make_test_instance(), true);
         assert_eq!(resp.tool, "claude");
-        apply_claude_fullscreen(&mut resp, true);
         assert!(resp.claude_fullscreen);
+    }
 
+    #[test]
+    fn claude_fullscreen_unset_for_non_claude_even_when_enabled() {
         let mut inst = make_test_instance();
         inst.tool = "cursor".to_string();
-        let mut resp = SessionResponse::from(&inst);
-        apply_claude_fullscreen(&mut resp, true);
+        let resp = SessionResponse::from_instance(&inst, true);
         assert!(!resp.claude_fullscreen);
     }
 
     #[test]
-    fn apply_claude_fullscreen_no_op_when_setting_disabled() {
-        let mut resp = SessionResponse::from(&make_test_instance());
-        apply_claude_fullscreen(&mut resp, false);
+    fn claude_fullscreen_unset_when_setting_disabled() {
+        let resp = SessionResponse::from_instance(&make_test_instance(), false);
         assert!(!resp.claude_fullscreen);
     }
     // ── validate_diff_path: security regression tests ──────────────────────────

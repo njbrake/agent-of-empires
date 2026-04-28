@@ -52,6 +52,12 @@ export interface TerminalState {
 /**
  * Manages a wterm terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
+ *
+ * `claudeFullscreen` is read at connect time (the connect effect's deps
+ * are intentionally only `[sessionId, wsPath]`). Toggling Claude's
+ * `/tui` setting mid-session won't take effect on the live wterm; the
+ * user has to reattach. That matches Claude Code itself, which also
+ * needs a restart to switch renderers.
  */
 export function useTerminal(
   sessionId: string | null,
@@ -572,8 +578,8 @@ export function useTerminal(
 
       // Fullscreen renderer path: Claude Code manages its own virtualized
       // scrollback inside the alt screen, so tmux copy-mode is never
-      // engaged. Skip the depth tracking and the pause/resume dance —
-      // just emit raw wheel sequences and let Claude's renderer handle
+      // engaged. Skip the depth tracking and the pause/resume dance.
+      // Just emit raw wheel sequences and let Claude's renderer handle
       // them. isInScrollback stays false; downstream UI (BackToLiveButton)
       // hides itself accordingly.
       if (claudeFullscreen) {
