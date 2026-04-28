@@ -12,7 +12,6 @@ use crate::update::install::InstallMethod;
 pub struct UpdateConfirmDialog {
     prompt_block: String,
     pub method: InstallMethod,
-    pub current_version: String,
     pub latest_version: String,
     pub needs_sudo: bool,
     selected: bool, // true = Yes, false = No
@@ -34,7 +33,6 @@ impl UpdateConfirmDialog {
         Self {
             prompt_block,
             method,
-            current_version,
             latest_version,
             needs_sudo,
             selected: false,
