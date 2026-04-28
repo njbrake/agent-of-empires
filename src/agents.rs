@@ -51,8 +51,6 @@ pub struct HookEvent {
     /// Optional matcher pattern (e.g. `"permission_prompt|elicitation_dialog"`).
     pub matcher: Option<&'static str>,
     /// AoE status to write when this event fires (`"running"`, `"idle"`, `"waiting"`).
-    /// `None` for lifecycle-only events (e.g. `SessionStart`/`SessionEnd`) that
-    /// are declared for future use but skipped by shell one-liner hooks.
     pub status: Option<&'static str>,
 }
 
@@ -126,16 +124,6 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
         name: "Notification",
         matcher: Some("permission_prompt|elicitation_dialog"),
         status: Some("waiting"),
-    },
-    HookEvent {
-        name: "SessionStart",
-        matcher: None,
-        status: None,
-    },
-    HookEvent {
-        name: "SessionEnd",
-        matcher: None,
-        status: None,
     },
     HookEvent {
         name: "ElicitationResult",
@@ -252,16 +240,6 @@ pub const AGENTS: &[AgentDef] = &[
                     name: "Notification",
                     matcher: Some("ToolPermission"),
                     status: Some("waiting"),
-                },
-                HookEvent {
-                    name: "SessionStart",
-                    matcher: None,
-                    status: None,
-                },
-                HookEvent {
-                    name: "SessionEnd",
-                    matcher: None,
-                    status: None,
                 },
             ],
         }),
