@@ -16,7 +16,8 @@ use super::environment::{build_docker_env_args, shell_escape};
 use super::poller::SessionPoller;
 
 use crate::session::capture::{
-    claude_poll_fn, claude_poll_fn_sandboxed, generate_claude_session_id, is_valid_session_id,
+    build_exclusion_set, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
+    generate_claude_session_id, is_valid_session_id, validated_session_id, vibe_poll_fn,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,6 +321,18 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
     }
 }
 
+/// Publish captured session ID to tmux hidden env so other instances
+/// can see it via `build_exclusion_set()` without racing the TUI save.
+fn publish_session_to_tmux_env(tmux_session_name: &str, session_id: &str) {
+    if let Err(e) = crate::tmux::env::set_hidden_env(
+        tmux_session_name,
+        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+        session_id,
+    ) {
+        tracing::warn!("Failed to write captured session ID to tmux env: {}", e);
+    }
+}
+
 impl Instance {
     pub fn new(title: &str, project_path: &str) -> Self {
         Self {
@@ -392,15 +405,22 @@ impl Instance {
         })
     }
 
-    /// Acquire a pre-launch session ID for the agent.
-    ///
-    /// Returns `(session_id, is_existing)`. If a persisted ID exists, returns it
-    /// with `is_existing = true`. Otherwise, only Claude gets a new UUID here
-    /// (it requires `--session-id <uuid>` at launch). Other agents do not yet
-    /// have resume support in this MVP.
     pub fn acquire_session_id(&mut self) -> (Option<String>, bool) {
         if self.agent_session_id.is_some() {
             return (self.agent_session_id.clone(), true);
+        }
+
+        let tmux_exists = self.tmux_session().is_ok_and(|s| s.exists());
+        if tmux_exists {
+            if let Some(id) = self.try_retroactive_capture() {
+                tracing::info!(
+                    "Retroactive capture found session ID for {}: {}",
+                    self.tool,
+                    id
+                );
+                self.agent_session_id = Some(id);
+                return (self.agent_session_id.clone(), true);
+            }
         }
 
         let session_id = match self.tool.as_str() {
@@ -414,6 +434,15 @@ impl Instance {
         }
 
         (session_id, false)
+    }
+
+    pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
+        let exclusion = build_exclusion_set(&self.id);
+        let result = match self.tool.as_str() {
+            "vibe" => capture_vibe_session_id(&self.project_path, &exclusion).ok(),
+            _ => None,
+        };
+        result.and_then(validated_session_id)
     }
 
     fn apply_session_flags(&mut self, cmd: &mut String, context: &str) {
@@ -677,7 +706,10 @@ impl Instance {
 
             self.apply_session_flags(&mut tool_cmd, "sandboxed");
 
-            let sandbox = self.sandbox_info.as_ref().unwrap();
+            let sandbox = self
+                .sandbox_info
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("sandbox_info missing for sandboxed instance"))?;
             let env_info = build_docker_env_args(
                 &self.source_profile,
                 sandbox,
@@ -838,6 +870,14 @@ impl Instance {
 
     /// Post-launch setup: persist state, start pollers, and apply tmux options.
     fn finalize_launch(&mut self, session_name: &str, profile: &str) {
+        if let Err(e) = crate::tmux::env::set_hidden_env(
+            session_name,
+            crate::tmux::env::AOE_INSTANCE_ID_KEY,
+            &self.id,
+        ) {
+            tracing::warn!("Failed to set AOE_INSTANCE_ID in tmux env: {}", e);
+        }
+
         self.persist_session_id(profile);
         self.maybe_start_poller();
 
@@ -975,13 +1015,21 @@ impl Instance {
                     Box::new(claude_poll_fn(self.project_path.clone()))
                 }
             }
+            "vibe" => Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone())),
             _ => return,
         };
 
         let cb_instance_id = self.id.clone();
+        let cb_tmux_name = self
+            .tmux_session()
+            .map(|s| s.name().to_string())
+            .unwrap_or_default();
 
         let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id: &str| {
             tracing::info!("Session ID changed for {}: {}", cb_instance_id, new_id);
+            if !cb_tmux_name.is_empty() {
+                publish_session_to_tmux_env(&cb_tmux_name, new_id);
+            }
         });
 
         if poller.start(instance_id.clone(), poll_fn, on_change, initial_known) {

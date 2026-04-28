@@ -1,5 +1,6 @@
 //! Session ID capture logic for all supported agent types.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -256,6 +257,182 @@ pub(crate) fn is_valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
+/// Build a set of session IDs already claimed by other AoE instances.
+///
+/// Lists all tmux sessions with the AoE prefix, reads each one's hidden env vars
+/// to find its instance ID and captured session ID, and collects all captured IDs
+/// from instances other than `current_instance_id`.
+pub(crate) fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> {
+    let output = match std::process::Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return HashSet::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let aoe_sessions: Vec<&str> = stdout
+        .lines()
+        .filter(|name| name.starts_with(crate::tmux::SESSION_PREFIX))
+        .collect();
+
+    if aoe_sessions.is_empty() {
+        return HashSet::new();
+    }
+
+    let instance_ids = crate::tmux::env::get_hidden_env_batch(
+        &aoe_sessions,
+        crate::tmux::env::AOE_INSTANCE_ID_KEY,
+    );
+
+    let other_sessions: Vec<&str> = instance_ids
+        .iter()
+        .filter(|(_, owner)| owner.as_deref() != Some(current_instance_id))
+        .map(|(name, _)| name.as_str())
+        .collect();
+
+    if other_sessions.is_empty() {
+        return HashSet::new();
+    }
+
+    let captured_ids = crate::tmux::env::get_hidden_env_batch(
+        &other_sessions,
+        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+    );
+
+    captured_ids.into_iter().filter_map(|(_, id)| id).collect()
+}
+
+/// Try the first matching key from a JSON object as a string.
+fn extract_cwd_from_json(parsed: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| parsed.get(*key).and_then(|v| v.as_str()))
+        .map(String::from)
+}
+
+/// Capture Vibe session ID from `meta.json` files in the session log directory.
+///
+/// Default path: `~/.vibe/logs/session/`; overridden by `VIBE_HOME` env var
+/// (resolves to `$VIBE_HOME/logs/session/`).
+/// Each session dir contains `meta.json` with `session_id` and
+/// `environment.working_directory`. Returns the most recent match for the project.
+pub(crate) fn capture_vibe_session_id(
+    project_path: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let vibe_home = resolve_agent_home(Some("VIBE_HOME"), ".vibe")?;
+    let sessions_dir = vibe_home.join("logs").join("session");
+
+    if !sessions_dir.exists() {
+        anyhow::bail!(
+            "Vibe sessions directory not found: {}",
+            sessions_dir.display()
+        );
+    }
+
+    let mut candidates: Vec<(String, Option<String>, std::time::SystemTime)> = Vec::new();
+
+    for entry in resilient_read_dir(&sessions_dir)? {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let meta_path = path.join("meta.json");
+        if !meta_path.exists() {
+            continue;
+        }
+        let (session_id, cwd) = match extract_vibe_meta(&meta_path) {
+            Some(pair) if !pair.0.is_empty() && !exclusion.contains(&pair.0) => pair,
+            _ => continue,
+        };
+        let modified = std::fs::metadata(&meta_path)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        candidates.push((session_id, cwd, modified));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!(
+            "No Vibe session directories found in {}",
+            sessions_dir.display()
+        );
+    }
+
+    candidates.sort_by(|a, b| b.2.cmp(&a.2));
+
+    let canonical_project = canonicalize_or_raw(project_path);
+
+    let project_match = candidates.iter().find(|(_, cwd, _)| {
+        cwd.as_ref()
+            .and_then(|cwd| std::fs::canonicalize(cwd).ok())
+            .map(|cwd| cwd == canonical_project)
+            .unwrap_or(false)
+    });
+
+    project_match
+        .map(|(id, _, _)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Vibe session found matching project path"))
+}
+
+/// Parse a Vibe `meta.json` once, returning both `session_id` and the working directory.
+fn extract_vibe_meta(path: &Path) -> Option<(String, Option<String>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let session_id = parsed
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)?;
+    let cwd = parsed
+        .get("environment")
+        .and_then(|env| env.get("working_directory"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| extract_cwd_from_json(&parsed, &["cwd", "working_directory", "project_path"]));
+    Some((session_id, cwd))
+}
+
+/// Extract CWD from a Vibe `meta.json`.
+///
+/// The actual path lives at `environment.working_directory` (nested object).
+/// Falls back to top-level `cwd` / `working_directory` for forward compatibility.
+#[cfg(test)]
+fn extract_vibe_cwd_from_meta(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    parsed
+        .get("environment")
+        .and_then(|env| env.get("working_directory"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| extract_cwd_from_json(&parsed, &["cwd", "working_directory", "project_path"]))
+}
+
+/// Extract the `session_id` from a Vibe `meta.json` file.
+#[cfg(test)]
+fn extract_vibe_session_id_from_meta(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    parsed
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Polling closure for Vibe (Mistral) session tracking.
+pub(crate) fn vibe_poll_fn(
+    project_path: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        capture_vibe_session_id(&project_path, &exclusion)
+            .map_err(|e| tracing::debug!("Vibe poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +621,145 @@ mod tests {
             "/workspace/test",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_vibe_cwd_from_meta_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("meta.json");
+        std::fs::write(
+            &path,
+            r#"{"session_id": "abc", "environment": {"working_directory": "/home/user/myrepo"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_vibe_cwd_from_meta(&path),
+            Some("/home/user/myrepo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_vibe_cwd_from_meta_top_level_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("meta.json");
+        std::fs::write(&path, r#"{"cwd": "/home/user/myrepo"}"#).unwrap();
+        assert_eq!(
+            extract_vibe_cwd_from_meta(&path),
+            Some("/home/user/myrepo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_vibe_session_id_from_meta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("meta.json");
+        std::fs::write(
+            &path,
+            r#"{"session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "environment": {"working_directory": "/tmp"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_vibe_session_id_from_meta(&path),
+            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_vibe_session_id_from_meta_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("meta.json");
+        std::fs::write(&path, r#"{"environment": {"working_directory": "/tmp"}}"#).unwrap();
+        assert_eq!(extract_vibe_session_id_from_meta(&path), None);
+    }
+
+    #[test]
+    fn test_extract_vibe_cwd_from_meta_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nonexistent.json");
+        assert_eq!(extract_vibe_cwd_from_meta(&path), None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_vibe_capture_matches_by_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let sessions_dir = tmp.path().join("logs").join("session");
+
+        // Session 1: matches our project
+        let s1_dir = sessions_dir.join("session-abc");
+        std::fs::create_dir_all(&s1_dir).unwrap();
+        let s1_meta = serde_json::json!({
+            "session_id": "vibe-sess-match",
+            "environment": {"working_directory": project_dir.to_str().unwrap()}
+        });
+        std::fs::write(s1_dir.join("meta.json"), s1_meta.to_string()).unwrap();
+
+        // Session 2: different project
+        let s2_dir = sessions_dir.join("session-def");
+        std::fs::create_dir_all(&s2_dir).unwrap();
+        let s2_meta = serde_json::json!({
+            "session_id": "vibe-sess-other",
+            "environment": {"working_directory": "/somewhere/else"}
+        });
+        std::fs::write(s2_dir.join("meta.json"), s2_meta.to_string()).unwrap();
+
+        let old_val = std::env::var("VIBE_HOME").ok();
+        std::env::set_var("VIBE_HOME", tmp.path());
+
+        let exclusion = HashSet::new();
+        let result = capture_vibe_session_id(project_dir.to_str().unwrap(), &exclusion);
+        assert_eq!(result.unwrap(), "vibe-sess-match");
+
+        match old_val {
+            Some(v) => std::env::set_var("VIBE_HOME", v),
+            None => std::env::remove_var("VIBE_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_vibe_stale_session_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let sessions_dir = tmp.path().join("logs").join("session");
+        let s1_dir = sessions_dir.join("session-stale");
+        std::fs::create_dir_all(&s1_dir).unwrap();
+
+        // CWD points to a directory that doesn't exist (so canonicalize won't match)
+        let s1_meta = serde_json::json!({
+            "session_id": "vibe-sess-stale",
+            "environment": {"working_directory": "/nonexistent/path/that/wont/match"}
+        });
+        std::fs::write(s1_dir.join("meta.json"), s1_meta.to_string()).unwrap();
+
+        let old_val = std::env::var("VIBE_HOME").ok();
+        std::env::set_var("VIBE_HOME", tmp.path());
+
+        let exclusion = HashSet::new();
+        let result = capture_vibe_session_id(project_dir.to_str().unwrap(), &exclusion);
+        assert!(
+            result.is_err(),
+            "Session with non-matching CWD should not be returned"
+        );
+
+        match old_val {
+            Some(v) => std::env::set_var("VIBE_HOME", v),
+            None => std::env::remove_var("VIBE_HOME"),
+        }
+    }
+
+    #[test]
+    fn test_build_exclusion_set_empty() {
+        let result = build_exclusion_set("nonexistent-instance-id-12345");
+        // The exclusion set should never contain our own instance ID
+        // (it collects OTHER instances' captured session IDs).
+        // On a machine with active AoE tmux sessions, the set may be
+        // non-empty, so we verify our own ID isn't self-excluded.
+        assert!(!result.contains("nonexistent-instance-id-12345"));
     }
 }
