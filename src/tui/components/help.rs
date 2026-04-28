@@ -63,7 +63,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("S", "Settings"),
                     ("P", "Profiles"),
                     ("Ctrl+R", "Serve (LAN / Tunnel)"),
-                    ("U", "Update aoe (when available)"),
+                    ("u", "Update aoe (when available)"),
                     ("Shift+drag", "Select text in preview"),
                     ("?", "Toggle help"),
                     ("Q", "Quit"),
