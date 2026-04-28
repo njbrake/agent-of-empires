@@ -17,9 +17,10 @@ use super::poller::SessionPoller;
 
 use crate::session::capture::{
     build_exclusion_set, capture_codex_session_id, capture_gemini_session_id,
-    capture_pi_session_id, capture_vibe_session_id, claude_poll_fn, codex_poll_fn, gemini_poll_fn,
-    generate_claude_session_id, is_valid_session_id, opencode_poll_fn, pi_poll_fn,
-    try_capture_opencode_session_id, validated_session_id, vibe_poll_fn,
+    capture_pi_session_id, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
+    codex_poll_fn, gemini_poll_fn, generate_claude_session_id, is_valid_session_id,
+    opencode_poll_fn, pi_poll_fn, try_capture_opencode_session_id, validated_session_id,
+    vibe_poll_fn,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +64,21 @@ pub struct WorkspaceRepo {
 
 fn default_true() -> bool {
     true
+}
+
+fn status_hook_env_prefix(
+    instance_id: &str,
+    tool: &str,
+    agent: Option<&crate::agents::AgentDef>,
+) -> String {
+    let has_hooks =
+        agent.and_then(|a| a.hook_config.as_ref()).is_some() || tool == "settl" || tool == "hermes";
+
+    if has_hooks {
+        format!("AOE_INSTANCE_ID={} ", instance_id)
+    } else {
+        String::new()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -793,15 +809,20 @@ impl Instance {
             return;
         }
         if self.tool == "settl" {
-            // settl uses TOML config, not JSON settings
             if let Err(e) = crate::hooks::install_settl_hooks() {
                 tracing::warn!("Failed to install settl hooks: {}", e);
+            }
+        } else if self.tool == "hermes" && !self.is_sandboxed() {
+            if let Some(home) = dirs::home_dir() {
+                let config_path = home.join(".hermes").join("config.yaml");
+                if let Err(e) = crate::hooks::install_hermes_hooks(&config_path) {
+                    tracing::warn!("Failed to install hermes hooks: {}", e);
+                }
             }
         } else if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
             if self.is_sandboxed() {
                 // For sandboxed sessions, hooks are installed via build_container_config
             } else {
-                // Install hooks in the user's home directory settings
                 if let Some(home) = dirs::home_dir() {
                     let settings_path = home.join(hook_cfg.settings_rel_path);
                     if let Err(e) = crate::hooks::install_hooks(&settings_path, hook_cfg.events) {
@@ -822,7 +843,6 @@ impl Instance {
         agent: Option<&'static crate::agents::AgentDef>,
         on_launch_hooks: &Option<Vec<String>>,
     ) -> Option<String> {
-        // Run on_launch hooks on host for non-sandboxed sessions
         if let Some(ref hook_cmds) = on_launch_hooks {
             if let Err(e) =
                 super::repo_config::execute_hooks(hook_cmds, Path::new(&self.project_path))
@@ -831,15 +851,7 @@ impl Instance {
             }
         }
 
-        // Prepend AOE_INSTANCE_ID env var if this agent supports hooks
-        // (either JSON-based hook_config or settl's TOML hooks)
-        let has_hooks =
-            agent.and_then(|a| a.hook_config.as_ref()).is_some() || self.tool == "settl";
-        let env_prefix = if has_hooks {
-            format!("AOE_INSTANCE_ID={} ", self.id)
-        } else {
-            String::new()
-        };
+        let env_prefix = status_hook_env_prefix(&self.id, &self.tool, agent);
 
         if self.command.is_empty() {
             crate::agents::get_agent(&self.tool).map(|a| {
@@ -896,8 +908,6 @@ impl Instance {
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
 
-        // Apply status bar options in a background thread to avoid blocking
-        // the TUI on the multiple tmux subprocess calls they require.
         let session_name = session_name.to_string();
         let instance_id_for_log = self.id.clone();
         let title = self.title.clone();
@@ -1027,7 +1037,20 @@ impl Instance {
         let initial_known = self.agent_session_id.clone();
 
         let poll_fn: Box<dyn Fn() -> Option<String> + Send + 'static> = match tool {
-            "claude" => Box::new(claude_poll_fn(self.project_path.clone(), self.id.clone())),
+            "claude" => {
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(claude_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                    ))
+                } else {
+                    Box::new(claude_poll_fn(self.project_path.clone(), self.id.clone()))
+                }
+            }
             "codex" => Box::new(codex_poll_fn(self.project_path.clone(), self.id.clone())),
             "gemini" => Box::new(gemini_poll_fn(self.project_path.clone(), self.id.clone())),
             "pi" => Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone())),
@@ -2257,6 +2280,26 @@ mod tests {
         inst.tool = "unknown_agent".to_string();
         inst.command = "some-binary".to_string();
         assert!(inst.has_custom_command());
+    }
+
+    #[test]
+    fn test_status_hook_env_prefix_includes_hermes() {
+        assert_eq!(
+            status_hook_env_prefix("abc123", "hermes", crate::agents::get_agent("hermes")),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "settl", crate::agents::get_agent("settl")),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "claude", crate::agents::get_agent("claude")),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "opencode", crate::agents::get_agent("opencode")),
+            ""
+        );
     }
 
     #[test]

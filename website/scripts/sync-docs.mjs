@@ -75,6 +75,13 @@ const PAGES = [
     description:
       "Override agent commands with custom scripts or sandboxed wrappers in Agent of Empires.",
   },
+  {
+    source: "docs/guides/session-resume.md",
+    dest: "guides/session-resume.md",
+    title: "Session Resume (Claude)",
+    description:
+      "Persist and resume Claude Code conversations across reboots, upgrades, and runtime rotations.",
+  },
 
   // --- Docs pages (docs/ → pages/docs/) ---
   {
@@ -146,6 +153,7 @@ const URL_MAP = {
   "docs/guides/remote-phone-access.md": "/guides/remote-phone-access/",
   "docs/guides/worktrees.md": "/guides/worktrees/",
   "docs/guides/agent-override.md": "/guides/agent-override/",
+  "docs/guides/session-resume.md": "/guides/session-resume/",
 };
 
 const GITHUB_BASE =

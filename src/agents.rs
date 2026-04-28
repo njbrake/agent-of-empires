@@ -51,8 +51,6 @@ pub struct HookEvent {
     /// Optional matcher pattern (e.g. `"permission_prompt|elicitation_dialog"`).
     pub matcher: Option<&'static str>,
     /// AoE status to write when this event fires (`"running"`, `"idle"`, `"waiting"`).
-    /// `None` for lifecycle-only events (e.g. `SessionStart`/`SessionEnd`) that
-    /// are declared for future use but skipped by shell one-liner hooks.
     pub status: Option<&'static str>,
 }
 
@@ -61,7 +59,7 @@ pub struct AgentHookConfig {
     /// Path relative to the home dir where the agent's settings live
     /// (e.g. `.claude/settings.json`).
     pub settings_rel_path: &'static str,
-    /// Hook events to register (status transitions and session lifecycle).
+    /// Hook events to register (status transitions).
     pub events: &'static [HookEvent],
 }
 
@@ -126,16 +124,6 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
         name: "Notification",
         matcher: Some("permission_prompt|elicitation_dialog"),
         status: Some("waiting"),
-    },
-    HookEvent {
-        name: "SessionStart",
-        matcher: None,
-        status: None,
-    },
-    HookEvent {
-        name: "SessionEnd",
-        matcher: None,
-        status: None,
     },
     HookEvent {
         name: "ElicitationResult",
@@ -253,16 +241,6 @@ pub const AGENTS: &[AgentDef] = &[
                     matcher: Some("ToolPermission"),
                     status: Some("waiting"),
                 },
-                HookEvent {
-                    name: "SessionStart",
-                    matcher: None,
-                    status: None,
-                },
-                HookEvent {
-                    name: "SessionEnd",
-                    matcher: None,
-                    status: None,
-                },
             ],
         }),
         resume_strategy: ResumeStrategy::Flag("--resume"),
@@ -354,6 +332,32 @@ pub const AGENTS: &[AgentDef] = &[
         send_keys_enter_delay_ms: 0,
         install_hint: "brew install --cask mozilla-ai/tap/settl",
     },
+    AgentDef {
+        name: "hermes",
+        binary: "hermes",
+        aliases: &[],
+        detection: DetectionMethod::Which("hermes"),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
+        instruction_flag: None,
+        set_default_command: false,
+        // Status is detected via Hermes's shell-hook system (YAML config),
+        // installed by hooks::install_hermes_hooks(); the stub here just
+        // returns Idle as a fallback before the first hook fires.
+        detect_status: status_detection::detect_hermes_status,
+        // HERMES_ACCEPT_HOOKS bypasses the first-use TTY consent prompt for
+        // shell hooks. Hermes still gates each (event, command) on its
+        // allowlist file, which AoE pre-populates in install_hermes_hooks.
+        container_env: &[("HERMES_ACCEPT_HOOKS", "1")],
+        // Hermes uses YAML (`hooks: { event: [...] }`) rather than the
+        // JSON settings.json schema shared by Claude/Cursor/Gemini, so
+        // hook_config: None and install is special-cased like settl.
+        hook_config: None,
+        resume_strategy: ResumeStrategy::Flag("--resume"),
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
+        install_hint:
+            "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash",
+    },
 ];
 
 /// Look up an agent by canonical name.
@@ -436,6 +440,24 @@ mod tests {
         assert_eq!(get_agent("pi").unwrap().binary, "pi");
         assert_eq!(get_agent("droid").unwrap().binary, "droid");
         assert_eq!(get_agent("settl").unwrap().binary, "settl");
+        assert_eq!(get_agent("hermes").unwrap().binary, "hermes");
+    }
+
+    #[test]
+    fn test_hermes_agent_definition() {
+        let hermes = get_agent("hermes").unwrap();
+        assert_eq!(hermes.binary, "hermes");
+        assert!(matches!(
+            &hermes.detection,
+            DetectionMethod::Which("hermes")
+        ));
+        assert!(matches!(&hermes.yolo, Some(YoloMode::CliFlag("--yolo"))));
+        assert!(!hermes.host_only);
+        assert_eq!(hermes.send_keys_enter_delay_ms, 0);
+        assert_eq!(
+            hermes.install_hint,
+            "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+        );
     }
 
     #[test]
@@ -450,7 +472,7 @@ mod tests {
             names,
             vec![
                 "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi",
-                "droid", "settl"
+                "droid", "settl", "hermes"
             ]
         );
     }
@@ -471,6 +493,7 @@ mod tests {
         assert_eq!(resolve_tool_name("settl"), Some("settl"));
         assert_eq!(resolve_tool_name("settlers"), Some("settl"));
         assert_eq!(resolve_tool_name("catan"), Some("settl"));
+        assert_eq!(resolve_tool_name("hermes"), Some("hermes"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -486,6 +509,7 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("pi")), 8);
         assert_eq!(settings_index_from_name(Some("droid")), 9);
         assert_eq!(settings_index_from_name(Some("settl")), 10);
+        assert_eq!(settings_index_from_name(Some("hermes")), 11);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
@@ -495,6 +519,7 @@ mod tests {
         assert_eq!(name_from_settings_index(8), Some("pi"));
         assert_eq!(name_from_settings_index(9), Some("droid"));
         assert_eq!(name_from_settings_index(10), Some("settl"));
+        assert_eq!(name_from_settings_index(11), Some("hermes"));
         assert_eq!(name_from_settings_index(99), None);
     }
 
@@ -516,6 +541,7 @@ mod tests {
         // Other agents should not delay
         assert_eq!(send_keys_enter_delay("claude"), 0);
         assert_eq!(send_keys_enter_delay("opencode"), 0);
+        assert_eq!(send_keys_enter_delay("hermes"), 0);
         assert_eq!(send_keys_enter_delay("unknown_agent"), 0);
     }
 
@@ -551,6 +577,10 @@ mod tests {
         assert_eq!(
             install_hint("settl"),
             Some("brew install --cask mozilla-ai/tap/settl")
+        );
+        assert_eq!(
+            install_hint("hermes"),
+            Some("curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
         );
         assert!(install_hint("unknown").is_none());
     }

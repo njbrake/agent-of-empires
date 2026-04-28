@@ -28,6 +28,7 @@ export const docsNav: NavSection[] = [
       { title: "Diff View", href: "/guides/diff-view/" },
       { title: "tmux Status Bar", href: "/guides/tmux-status-bar/" },
       { title: "Agent Command Overrides", href: "/guides/agent-override/" },
+      { title: "Session Resume (Claude)", href: "/guides/session-resume/" },
       { title: "Sound Effects", href: "/docs/sounds/" },
     ],
   },

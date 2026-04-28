@@ -461,7 +461,6 @@ impl HomeView {
             .iter()
             .map(|i| (i.id.clone(), i.clone()))
             .collect();
-
         view.flat_items = view.build_flat_items();
         view.update_selected();
         Ok(view)

@@ -191,6 +191,78 @@ pub(crate) fn claude_poll_fn(
     }
 }
 
+/// Capture Claude Code session ID inside a Docker container.
+///
+/// Claude in a sandboxed AoE session writes its `.jsonl` files to the
+/// container's `~/.claude/projects/{encoded-cwd}/` directory, not the host's.
+/// This shells `docker exec` into the running container to find the most
+/// recently modified UUID-named jsonl in that directory, with a 5-minute
+/// staleness guard.
+pub(crate) fn capture_claude_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+) -> Result<String> {
+    let dir_name = encode_claude_project_path(container_cwd);
+
+    // Shell snippet:
+    //   - resolve $CLAUDE_CONFIG_DIR or $HOME/.claude
+    //   - walk projects/<encoded>/ for *.jsonl files
+    //   - keep ones with mtime within 5 minutes
+    //   - emit basename (without .jsonl) of the most recent
+    //
+    // Using POSIX `find -mmin -5` and `ls -t` to avoid GNU-only `printf '%T@ %f'`.
+    let snippet = format!(
+        r#"
+CLAUDE_HOME="${{CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+DIR="$CLAUDE_HOME/projects/{dir_name}"
+[ -d "$DIR" ] || exit 0
+NEWEST=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
+[ -z "$NEWEST" ] && exit 0
+[ -n "$(find "$NEWEST" -mmin -5 2>/dev/null)" ] || exit 0
+basename "$NEWEST" .jsonl
+"#
+    );
+
+    let output = std::process::Command::new("docker")
+        .args(["exec", container_name, "sh", "-c", &snippet])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| anyhow::anyhow!("docker exec failed: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("docker exec returned non-zero: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id = stdout.trim();
+    if id.is_empty() {
+        anyhow::bail!(
+            "No active Claude session found in container {}",
+            container_name
+        );
+    }
+    if uuid::Uuid::parse_str(id).is_err() {
+        anyhow::bail!("Container returned non-UUID session ID: {:?}", id);
+    }
+
+    Ok(id.to_string())
+}
+
+/// Polling closure for sandboxed (Docker) Claude Code session tracking.
+pub(crate) fn claude_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        capture_claude_session_id_in_container(&container_name, &container_cwd)
+            .map_err(|e| tracing::debug!("Claude container scan failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
 /// Polling closure for Codex CLI session tracking.
 pub(crate) fn codex_poll_fn(
     project_path: String,
@@ -2179,5 +2251,14 @@ mod tests {
             Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
             None => std::env::remove_var("PI_CODING_AGENT_DIR"),
         }
+    }
+
+    #[test]
+    fn test_capture_claude_session_in_container_returns_error_for_missing_container() {
+        let result = capture_claude_session_id_in_container(
+            "aoe-test-nonexistent-container-xyz",
+            "/workspace/test",
+        );
+        assert!(result.is_err());
     }
 }
