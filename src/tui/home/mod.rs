@@ -403,6 +403,45 @@ impl HomeView {
             let _ = view.save();
         }
 
+        // Batch-sync instance IDs and captured session IDs to tmux hidden env
+        // so that build_exclusion_set() on other AoE instances can see them.
+        {
+            let mut env_batch: Vec<(String, String, String)> = Vec::new();
+            for inst in &view.instances {
+                let tmux_name = match inst.tmux_session() {
+                    Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
+                    _ => continue,
+                };
+
+                env_batch.push((
+                    tmux_name.clone(),
+                    crate::tmux::env::AOE_INSTANCE_ID_KEY.to_string(),
+                    inst.id.clone(),
+                ));
+                if let Some(ref sid) = inst.agent_session_id {
+                    env_batch.push((
+                        tmux_name,
+                        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY.to_string(),
+                        sid.clone(),
+                    ));
+                } else {
+                    let _ = crate::tmux::env::remove_hidden_env(
+                        &tmux_name,
+                        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                    );
+                }
+            }
+            if !env_batch.is_empty() {
+                let batch_refs: Vec<(&str, &str, &str)> = env_batch
+                    .iter()
+                    .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
+                    .collect();
+                if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
+                    tracing::warn!("Batch env sync failed: {}", e);
+                }
+            }
+        }
+
         // Recover session IDs for pre-existing sessions via pollers.
         for inst in &mut view.instances {
             let has_live_tmux = inst
