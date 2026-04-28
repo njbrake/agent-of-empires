@@ -32,6 +32,45 @@ const RESIZE_DEBOUNCE_MS = 50;
 // a small margin. After the first resize lands the debounce drops to
 // RESIZE_DEBOUNCE_MS so live splitter drags still feel responsive.
 const INITIAL_SETTLE_MS = 250;
+// DEC private mode 2026 (synchronized output, BSU/ESU). wterm doesn't
+// implement it: setPrivateMode falls through `else => {}`, and writes are
+// rendered as soon as wterm's internal rAF fires. Modern TUIs (codex,
+// claude, neovim, btop) bracket frame updates with `\x1b[?2026h` ...
+// `\x1b[?2026l` so a single frame paints atomically. When the bracketed
+// content spans multiple PTY reads (large frame, slow link, scroll-paint),
+// each WebSocket message lands in a separate JS task and triggers its own
+// rAF render — the user sees half-drawn frames.
+//
+// Workaround: parse incoming bytes for the BSU/ESU markers ourselves and
+// hold writes between them so wterm sees one term.write per frame. Filed
+// upstream at vercel-labs/wterm#57; remove when wterm ships native sync
+// support. Spec: gitlab.com/gnachman/iterm2/-/wikis/synchronized-updates-spec
+const BSU_BYTES = new TextEncoder().encode("\x1b[?2026h");
+const ESU_BYTES = new TextEncoder().encode("\x1b[?2026l");
+// Spec recommends ~150ms cap. If the agent opens a BSU and never closes
+// it (crash, missed flush), we force-flush so the terminal doesn't appear
+// frozen. 150ms is well above one-frame budgets on real agents.
+const SYNC_FLUSH_TIMEOUT_MS = 150;
+
+/**
+ * Find the first occurrence of `needle` in `haystack` starting at `start`.
+ * Returns -1 if not found. Plain bytewise scan; fine for the 8-byte BSU/ESU
+ * markers we look for.
+ */
+function indexOfBytes(
+  haystack: Uint8Array,
+  needle: Uint8Array,
+  start: number,
+): number {
+  if (needle.length === 0 || haystack.length - start < needle.length) return -1;
+  outer: for (let i = start; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
 
 export interface TerminalState {
   connected: boolean;
@@ -319,6 +358,63 @@ export function useTerminal(
 
     termRef.current = term;
 
+    // DEC ?2026 synchronized-output workaround. See top-of-file comment
+    // on BSU_BYTES for the failure mode this prevents. Holds bytes
+    // between BSU and ESU so wterm's internal rAF coalesces them into
+    // one paint. State is per-WebSocket-connection (re-created on every
+    // reconnect via the useEffect re-run).
+    let inSyncUpdate = false;
+    let syncBuffer: Uint8Array[] = [];
+    let syncTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushSyncBuffer = () => {
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+        syncTimer = null;
+      }
+      inSyncUpdate = false;
+      if (syncBuffer.length === 0) return;
+      let total = 0;
+      for (const c of syncBuffer) total += c.length;
+      const flat = new Uint8Array(total);
+      let off = 0;
+      for (const c of syncBuffer) {
+        flat.set(c, off);
+        off += c.length;
+      }
+      syncBuffer = [];
+      term.write(flat);
+    };
+    const writeWithSyncBuffer = (data: Uint8Array) => {
+      let cursor = 0;
+      while (cursor < data.length) {
+        if (!inSyncUpdate) {
+          const pos = indexOfBytes(data, BSU_BYTES, cursor);
+          if (pos < 0) {
+            term.write(data.subarray(cursor));
+            return;
+          }
+          // Pass through everything up to and including the BSU marker,
+          // then start buffering the rest of this chunk.
+          term.write(data.subarray(cursor, pos + BSU_BYTES.length));
+          cursor = pos + BSU_BYTES.length;
+          inSyncUpdate = true;
+          if (syncTimer) clearTimeout(syncTimer);
+          syncTimer = setTimeout(flushSyncBuffer, SYNC_FLUSH_TIMEOUT_MS);
+        } else {
+          const pos = indexOfBytes(data, ESU_BYTES, cursor);
+          if (pos < 0) {
+            // No ESU in this chunk: buffer the rest, wait for more.
+            syncBuffer.push(data.subarray(cursor));
+            return;
+          }
+          syncBuffer.push(data.subarray(cursor, pos + ESU_BYTES.length));
+          cursor = pos + ESU_BYTES.length;
+          flushSyncBuffer();
+          // Keep iterating: bytes after this ESU may contain another BSU.
+        }
+      }
+    };
+
     // Two iOS patches for wterm's textarea:
     // 1. Move from -9999px to 0,0 so iOS shows the soft keyboard on focus.
     // 2. Fix backspace repeat: wterm calls preventDefault() on all keydown
@@ -462,7 +558,7 @@ export function useTerminal(
 
       ws.onmessage = (event: MessageEvent) => {
         if (event.data instanceof ArrayBuffer) {
-          term.write(new Uint8Array(event.data));
+          writeWithSyncBuffer(new Uint8Array(event.data));
         } else if (typeof event.data === "string") {
           // Check for server control messages before writing to terminal
           try {
@@ -475,6 +571,9 @@ export function useTerminal(
           } catch {
             // Not JSON, treat as terminal text
           }
+          // String messages bypass the BSU/ESU buffer: the server only
+          // sends UTF-8 text for non-binary control messages; PTY bytes
+          // always arrive as ArrayBuffer.
           term.write(event.data);
         }
       };
@@ -992,6 +1091,7 @@ export function useTerminal(
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
+      if (syncTimer) clearTimeout(syncTimer);
       wsRef.current?.close();
       term.destroy();
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);

@@ -7,10 +7,18 @@ import type { Page } from "@playwright/test";
 export interface MockHandle {
   /** Raw bytes received from the page via WebSocket (PTY data + JSON messages). */
   wsMessages: Buffer[];
+  /**
+   * Push bytes to the page's WebSocket as if they came from the PTY. Set
+   * by the route handler once the page connects; before the first
+   * connection it is a no-op so tests can install it before navigating.
+   * If multiple PTY sockets are opened (the dashboard mounts two), this
+   * targets whichever connected most recently.
+   */
+  push: (data: Buffer | string) => void;
 }
 
 export async function mockTerminalApis(page: Page): Promise<MockHandle> {
-  const handle: MockHandle = { wsMessages: [] };
+  const handle: MockHandle = { wsMessages: [], push: () => {} };
   await page.route("**/api/login/status", (r) =>
     r.fulfill({ json: { required: false, authenticated: true } }),
   );
@@ -66,6 +74,13 @@ export async function mockTerminalApis(page: Page): Promise<MockHandle> {
       if (Buffer.isBuffer(msg)) handle.wsMessages.push(msg);
       else handle.wsMessages.push(Buffer.from(msg));
     });
+    handle.push = (data) => {
+      try {
+        ws.send(typeof data === "string" ? Buffer.from(data) : data);
+      } catch {
+        // socket already closed — safe to ignore
+      }
+    };
     setTimeout(() => {
       try {
         ws.send(Buffer.from("$ "));
