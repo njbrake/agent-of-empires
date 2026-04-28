@@ -15,12 +15,7 @@ use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
 use super::poller::SessionPoller;
 
-use crate::session::capture::{
-    build_exclusion_set, capture_codex_session_id, capture_gemini_session_id,
-    capture_vibe_session_id, claude_poll_fn, codex_poll_fn, gemini_poll_fn,
-    generate_claude_session_id, is_valid_session_id, opencode_poll_fn,
-    try_capture_opencode_session_id, validated_session_id, vibe_poll_fn,
-};
+use crate::session::capture::{claude_poll_fn, generate_claude_session_id, is_valid_session_id};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalInfo {
@@ -404,32 +399,13 @@ impl Instance {
     ///
     /// Returns `(session_id, is_existing)`. If a persisted ID exists, returns it
     /// with `is_existing = true`. Otherwise, only Claude gets a new UUID here
-    /// (it requires `--session-id <uuid>` at launch). Other agents create their
-    /// own sessions on startup; their IDs are captured post-launch by
-    /// `deferred_capture_session_id()`.
+    /// (it requires `--session-id <uuid>` at launch). Other agents do not yet
+    /// have resume support in this MVP.
     pub fn acquire_session_id(&mut self) -> (Option<String>, bool) {
         if self.agent_session_id.is_some() {
             return (self.agent_session_id.clone(), true);
         }
 
-        // Skip retroactive capture when the tmux session doesn't exist yet
-        // (the agent hasn't launched, so there's nothing to query).
-        let tmux_exists = self.tmux_session().is_ok_and(|s| s.exists());
-        if tmux_exists {
-            if let Some(id) = self.try_retroactive_capture() {
-                tracing::info!(
-                    "Retroactive capture found session ID for {}: {}",
-                    self.tool,
-                    id
-                );
-                self.agent_session_id = Some(id);
-                return (self.agent_session_id.clone(), true);
-            }
-        }
-
-        // Only Claude needs a pre-launch ID (--session-id <uuid> creates a new session).
-        // Other agents create their own sessions; the ID is captured post-launch
-        // via deferred_capture_session_id().
         let session_id = match self.tool.as_str() {
             "claude" => Some(generate_claude_session_id()),
             _ => None,
@@ -441,18 +417,6 @@ impl Instance {
         }
 
         (session_id, false)
-    }
-
-    pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
-        let exclusion = build_exclusion_set(&self.id);
-        let result = match self.tool.as_str() {
-            "opencode" => try_capture_opencode_session_id(&self.project_path, &exclusion, 0.0).ok(),
-            "codex" => capture_codex_session_id(&self.project_path, &exclusion).ok(),
-            "gemini" => capture_gemini_session_id(&self.project_path, &exclusion).ok(),
-            "vibe" => capture_vibe_session_id(&self.project_path, &exclusion).ok(),
-            _ => None,
-        };
-        result.and_then(validated_session_id)
     }
 
     fn apply_session_flags(&mut self, cmd: &mut String, context: &str) {
@@ -888,11 +852,7 @@ impl Instance {
         }
 
         self.persist_session_id(profile);
-        let poller_launch_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as f64)
-            .unwrap_or(0.0);
-        self.maybe_start_poller_with_time(Some(poller_launch_time));
+        self.maybe_start_poller();
 
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
@@ -1000,24 +960,10 @@ impl Instance {
     }
 
     pub fn maybe_start_poller(&mut self) {
-        self.maybe_start_poller_with_time(None);
-    }
-
-    /// Start the session ID poller with an explicit launch time filter.
-    ///
-    /// When `launch_time_ms` is `Some(t)`, the OpenCode poll function only
-    /// considers sessions updated at or after `t` (used after freshly spawning
-    /// the agent so we don't pick up stale sessions). When `None`, no time
-    /// filter is applied -- the poller discovers any matching session for the
-    /// project, which is the correct behaviour when resuming monitoring of an
-    /// already-running agent on TUI restart.
-    fn maybe_start_poller_with_time(&mut self, launch_time_ms: Option<f64>) {
         if !self.supports_session_poller() {
             return;
         }
         let tool = self.tool.as_str();
-
-        let effective_launch_time = launch_time_ms.unwrap_or(0.0);
 
         let tmux_session_name = self
             .tmux_session()
@@ -1029,14 +975,6 @@ impl Instance {
 
         let poll_fn: Box<dyn Fn() -> Option<String> + Send + 'static> = match tool {
             "claude" => Box::new(claude_poll_fn(self.project_path.clone(), self.id.clone())),
-            "codex" => Box::new(codex_poll_fn(self.project_path.clone(), self.id.clone())),
-            "gemini" => Box::new(gemini_poll_fn(self.project_path.clone(), self.id.clone())),
-            "vibe" => Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone())),
-            "opencode" => Box::new(opencode_poll_fn(
-                self.project_path.clone(),
-                self.id.clone(),
-                effective_launch_time,
-            )),
             _ => return,
         };
 
@@ -2002,20 +1940,6 @@ mod tests {
         assert_eq!(flags, "--session-id abc123-def456");
     }
 
-    #[test]
-    fn test_build_opencode_resume_flags() {
-        let session_id = "session-789";
-        let flags = build_resume_flags("opencode", session_id, false);
-        assert_eq!(flags, "--session session-789");
-    }
-
-    #[test]
-    fn test_build_codex_resume_flags() {
-        let session_id = "codex-session-xyz";
-        let flags = build_resume_flags("codex", session_id, false);
-        assert_eq!(flags, "resume codex-session-xyz");
-    }
-
     // Test that instance with agent_session_id can be serialized and deserialized
     #[test]
     fn test_instance_with_agent_session_id_roundtrip() {
@@ -2047,37 +1971,6 @@ mod tests {
         // Session ID should be None after switch
         assert!(inst.agent_session_id.is_none());
         assert_eq!(inst.tool, "opencode");
-    }
-
-    #[test]
-    fn test_opencode_acquire_returns_none_for_deferred_capture() {
-        let mut inst = Instance::new("Test", "/nonexistent/opencode/test");
-        inst.tool = "opencode".to_string();
-
-        let (session_id, is_existing) = inst.acquire_session_id();
-
-        // OpenCode never generates a pre-launch ID (unlike Claude).
-        // Retroactive capture may still find an existing session via
-        // fallback (opencode returns the most recent session regardless
-        // of project path), so we assert the invariant: any returned
-        // session must be flagged as existing, never generated.
-        assert!(
-            !is_existing || session_id.is_some(),
-            "is_existing=true requires a session ID"
-        );
-        assert_eq!(inst.agent_session_id, session_id);
-    }
-
-    #[test]
-    fn test_codex_acquire_returns_none_for_deferred_capture() {
-        let mut inst = Instance::new("Test", "/nonexistent/path");
-        inst.tool = "codex".to_string();
-
-        let (session_id, is_existing) = inst.acquire_session_id();
-
-        assert!(session_id.is_none());
-        assert!(!is_existing);
-        assert!(inst.agent_session_id.is_none());
     }
 
     #[test]
@@ -2129,13 +2022,6 @@ mod tests {
         assert_eq!(flags, "");
     }
 
-    #[test]
-    fn test_codex_append_resume_flags_ordering() {
-        let mut cmd = "codex --dangerously-auto-approve".to_string();
-        append_resume_flags("codex", Some("ses-abc"), true, &mut cmd, "test");
-        assert_eq!(cmd, "codex resume ses-abc --dangerously-auto-approve");
-    }
-
     // Test: backwards compatibility - load old JSON without agent_session_id
     #[test]
     fn test_backwards_compatibility() {
@@ -2176,26 +2062,6 @@ mod tests {
         let json = r#"{"id":"test123","title":"Test","project_path":"/tmp/test","group_path":"","command":"","tool":"claude","yolo_mode":false,"status":"idle","created_at":"2024-01-01T00:00:00Z","agent_session_id":"abc-123"}"#;
         let inst: Instance = serde_json::from_str(json).unwrap();
         assert_eq!(inst.agent_session_id, Some("abc-123".to_string()));
-    }
-
-    #[test]
-    fn test_build_gemini_resume_flags() {
-        let session_id = "gemini-session-abc";
-        let flags = build_resume_flags("gemini", session_id, true);
-        assert_eq!(flags, "--resume gemini-session-abc");
-
-        let flags_new = build_resume_flags("gemini", session_id, false);
-        assert_eq!(flags_new, "--resume gemini-session-abc");
-    }
-
-    #[test]
-    fn test_build_vibe_resume_flags() {
-        let session_id = "vibe-session-xyz";
-        let flags = build_resume_flags("vibe", session_id, true);
-        assert_eq!(flags, "--resume vibe-session-xyz");
-
-        let flags_new = build_resume_flags("vibe", session_id, false);
-        assert_eq!(flags_new, "--resume vibe-session-xyz");
     }
 
     #[test]
