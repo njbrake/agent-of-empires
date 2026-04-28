@@ -16,6 +16,34 @@ use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
+struct UpdateStatus {
+    text: String,
+    expires_at: Option<std::time::Instant>,
+}
+
+impl UpdateStatus {
+    fn persistent(text: String) -> Self {
+        Self {
+            text,
+            expires_at: None,
+        }
+    }
+
+    fn transient(text: String) -> Self {
+        Self {
+            text,
+            expires_at: Some(std::time::Instant::now() + std::time::Duration::from_secs(10)),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        match self.expires_at {
+            Some(deadline) => std::time::Instant::now() >= deadline,
+            None => false,
+        }
+    }
+}
+
 pub struct App {
     home: HomeView,
     should_quit: bool,
@@ -23,7 +51,7 @@ pub struct App {
     needs_redraw: bool,
     update_info: Option<UpdateInfo>,
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
-    update_status: Option<String>,
+    update_status: Option<UpdateStatus>,
     update_status_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<()>>>,
     /// Held in an Option so `with_raw_mode_disabled` can drop it before
     /// spawning child processes. Crossterm's EventStream runs a background
@@ -436,12 +464,16 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        if self.update_status.as_ref().is_some_and(|s| s.is_expired()) {
+            self.update_status = None;
+        }
+        let status_text = self.update_status.as_ref().map(|s| s.text.as_str());
         self.home.render(
             frame,
             frame.area(),
             &self.theme,
             self.update_info.as_ref(),
-            self.update_status.as_deref(),
+            status_text,
         );
     }
 
@@ -463,12 +495,13 @@ impl App {
         };
         match rx.try_recv() {
             Ok(Ok(())) => {
-                self.update_status =
-                    Some("update complete. Restart aoe to use the new version.".to_string());
+                self.update_status = Some(UpdateStatus::persistent(
+                    "update complete. Restart aoe to use the new version.".into(),
+                ));
                 true
             }
             Ok(Err(e)) => {
-                self.update_status = Some(format!("update failed: {e}"));
+                self.update_status = Some(UpdateStatus::transient(format!("update failed: {e}")));
                 true
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
@@ -476,7 +509,9 @@ impl App {
                 false
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                self.update_status = Some("update task ended unexpectedly".to_string());
+                self.update_status = Some(UpdateStatus::transient(
+                    "update task ended unexpectedly".into(),
+                ));
                 true
             }
         }
@@ -500,7 +535,7 @@ impl App {
 
         if matches!(method, InstallMethod::Homebrew) || needs_sudo {
             // Suspend the TUI so sudo's password prompt can use the terminal.
-            self.update_status = Some(format!("updating to v{version}…"));
+            self.update_status = Some(UpdateStatus::transient(format!("updating to v{version}…")));
             let method_clone = method.clone();
             let version_clone = version.clone();
             let result = self.with_raw_mode_disabled(terminal, move || {
@@ -513,17 +548,23 @@ impl App {
             })?;
             match result {
                 Ok(()) => {
-                    self.update_status =
-                        Some("update complete. Restart aoe to use the new version.".to_string());
+                    self.update_status = Some(UpdateStatus::persistent(
+                        "update complete. Restart aoe to use the new version.".into(),
+                    ));
                 }
                 Err(e) => {
-                    self.update_status = Some(format!("update failed: {e}"));
+                    self.update_status =
+                        Some(UpdateStatus::transient(format!("update failed: {e}")));
                 }
             }
         } else {
-            // Background task for writable tarball installs. Spawn a blocking
-            // thread so we don't need perform_update's closure to be Send.
-            self.update_status = Some(format!("updating to v{version}…"));
+            // Background task for writable tarball installs.
+            // `perform_update`'s future is !Send because its `on_progress` parameter is
+            // `Option<&mut dyn FnMut(...)>` (no Send bound on the trait object), so
+            // `tokio::spawn` won't accept it. A std::thread + Handle::block_on lets the
+            // async I/O still use the existing tokio runtime while sidestepping the
+            // Send constraint.
+            self.update_status = Some(UpdateStatus::transient(format!("updating to v{version}…")));
             let (tx, rx) = tokio::sync::oneshot::channel();
             self.update_status_rx = Some(rx);
             let handle = tokio::runtime::Handle::current();
@@ -653,7 +694,8 @@ impl App {
             }
             Action::SpawnUpdate { method, version } => {
                 if self.update_status_rx.is_some() {
-                    self.update_status = Some("update already in progress".to_string());
+                    self.update_status =
+                        Some(UpdateStatus::transient("update already in progress".into()));
                     return Ok(());
                 }
                 self.spawn_update(method, version, terminal)?;
