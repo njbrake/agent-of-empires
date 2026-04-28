@@ -15,7 +15,9 @@ use super::container_config;
 use super::environment::{build_docker_env_args, shell_escape};
 use super::poller::SessionPoller;
 
-use crate::session::capture::{claude_poll_fn, generate_claude_session_id, is_valid_session_id};
+use crate::session::capture::{
+    claude_poll_fn, claude_poll_fn_sandboxed, generate_claude_session_id, is_valid_session_id,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalInfo {
@@ -943,7 +945,20 @@ impl Instance {
         let initial_known = self.agent_session_id.clone();
 
         let poll_fn: Box<dyn Fn() -> Option<String> + Send + 'static> = match tool {
-            "claude" => Box::new(claude_poll_fn(self.project_path.clone())),
+            "claude" => {
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(claude_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                    ))
+                } else {
+                    Box::new(claude_poll_fn(self.project_path.clone()))
+                }
+            }
             _ => return,
         };
 

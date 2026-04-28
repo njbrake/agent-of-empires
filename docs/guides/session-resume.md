@@ -8,16 +8,17 @@ When you launch a Claude session through AoE, AoE generates a UUID and passes it
 
 A background poller checks `~/.claude/projects/<project>/` every 2 seconds for the most recently modified session file. If the session ID rotates at runtime — for example after `/clear`, `--fork-session`, or starting a fresh `claude` invocation in the same tmux pane — the poller catches the new ID and AoE persists it transparently. Next launch resumes the new conversation, not the stale one.
 
+For sandboxed (Docker) sessions, the poller runs the same scan inside the container via `docker exec`, since Claude writes its session files to the container's filesystem rather than the host's.
+
 ## What's covered
 
-- Launch, store, resume across reboots and `aoe` upgrades.
+- Launch, store, resume across reboots and `aoe` upgrades, in both host and sandboxed modes.
 - Runtime rotation via `/clear`, `--fork-session`, or fresh `claude` invocation in the same pane.
 - Manual override via the CLI when you want to point a session at a specific conversation.
 
 ## What's not covered (yet)
 
 - Other agents (OpenCode, Codex, Gemini, Vibe, Pi). They're tracked behind separate follow-up PRs; their sessions still launch fresh until then.
-- Sandboxed (Docker) sessions. The poller reads the host filesystem, so Claude session IDs running inside containers aren't currently captured.
 - Web dashboard. The web "restart session" path doesn't yet apply resume flags; use the TUI for resume-aware restarts.
 
 ## Manual override
@@ -42,7 +43,7 @@ There's no toggle. If you want a fresh conversation, clear the stored ID with th
 
 The session ID lives in `sessions.json` in your AoE config directory:
 
-- **Linux**: `$XDG_CONFIG_HOME/agent-of-empires/sessions.json`
-- **macOS/Windows**: `~/.agent-of-empires/sessions.json`
+- **Linux**: `$XDG_CONFIG_HOME/agent-of-empires/profiles/<profile>/sessions.json`
+- **macOS/Windows**: `~/.agent-of-empires/profiles/<profile>/sessions.json`
 
 Look for the `agent_session_id` field on each instance.
