@@ -5,7 +5,13 @@ use std::path::Path;
 use crate::containers::DockerContainer;
 use crate::session::Instance;
 
+use super::open_repo_at;
 use super::GitWorktree;
+
+/// Cap on the number of dirty file entries we list inline in error messages so
+/// the TUI output pane does not get blown out on a worktree with thousands of
+/// changes (e.g., `target/` accidentally tracked).
+const MAX_DIRTY_FILES_LISTED: usize = 30;
 
 /// Remove a worktree directory from the filesystem.
 ///
@@ -59,6 +65,104 @@ pub fn remove_worktree_dir(
         return result;
     }
     std::fs::remove_dir_all(worktree_path)
+}
+
+/// Returns true if a `git worktree remove` stderr indicates the failure was
+/// caused by modified or untracked files (i.e., re-running with `--force` would
+/// resolve it). Matches the wording git itself uses: "contains modified or
+/// untracked files, use --force to delete it".
+pub fn is_dirty_worktree_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("modified or untracked files")
+        || (lower.contains("--force") && lower.contains("contains"))
+}
+
+/// Enumerate modified, staged, and untracked files inside a worktree using
+/// libgit2. Returns a vec of `"<status> <path>"` entries (e.g.
+/// `"modified src/foo.rs"`, `"untracked debug.log"`).
+///
+/// Returns an empty vec if the path is not a git repo or the status walk fails;
+/// the caller treats this as "no list available" and falls back to the bare
+/// stderr.
+pub fn list_dirty_files(worktree_path: &Path) -> Vec<String> {
+    let Ok(repo) = open_repo_at(worktree_path) else {
+        return Vec::new();
+    };
+
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false);
+
+    let Ok(statuses) = repo.statuses(Some(&mut opts)) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for entry in statuses.iter() {
+        let path = entry.path().unwrap_or("<unreadable path>").to_string();
+        let label = describe_status(entry.status());
+        out.push(format!("{} {}", label, path));
+    }
+    out
+}
+
+fn describe_status(status: git2::Status) -> &'static str {
+    if status.contains(git2::Status::CONFLICTED) {
+        "conflicted"
+    } else if status.intersects(git2::Status::WT_NEW) {
+        "untracked"
+    } else if status.intersects(git2::Status::INDEX_NEW) {
+        "added   "
+    } else if status.intersects(git2::Status::WT_DELETED | git2::Status::INDEX_DELETED) {
+        "deleted "
+    } else if status.intersects(git2::Status::WT_RENAMED | git2::Status::INDEX_RENAMED) {
+        "renamed "
+    } else if status.intersects(git2::Status::WT_TYPECHANGE | git2::Status::INDEX_TYPECHANGE) {
+        "typechg "
+    } else if status.intersects(git2::Status::WT_MODIFIED | git2::Status::INDEX_MODIFIED) {
+        "modified"
+    } else {
+        "changed "
+    }
+}
+
+/// Build an enriched error message for a failed worktree removal. When the
+/// failure is caused by uncommitted/untracked files, list the offending paths
+/// (capped at `MAX_DIRTY_FILES_LISTED`) so the user can decide whether
+/// re-running with "force delete" is safe.
+pub fn enrich_worktree_remove_error(stderr: &str, worktree_path: &Path) -> String {
+    if !is_dirty_worktree_error(stderr) {
+        return stderr.to_string();
+    }
+
+    let dirty = list_dirty_files(worktree_path);
+    if dirty.is_empty() {
+        return stderr.to_string();
+    }
+
+    let total = dirty.len();
+    let mut out = String::with_capacity(stderr.len() + 64 + total * 32);
+    out.push_str(stderr);
+    out.push('\n');
+    out.push('\n');
+    out.push_str(&format!(
+        "Uncommitted changes ({}; force delete will discard these):",
+        total
+    ));
+    for entry in dirty.iter().take(MAX_DIRTY_FILES_LISTED) {
+        out.push('\n');
+        out.push_str("  ");
+        out.push_str(entry);
+    }
+    if total > MAX_DIRTY_FILES_LISTED {
+        out.push('\n');
+        out.push_str(&format!(
+            "  ... and {} more",
+            total - MAX_DIRTY_FILES_LISTED
+        ));
+    }
+    out
 }
 
 /// Check if a git error message indicates a permission problem.
@@ -151,7 +255,10 @@ pub fn remove_managed_worktree(
                         errors.push(format!("Worktree: {}", e2));
                     }
                 } else {
-                    errors.push(format!("Worktree: {}", e));
+                    errors.push(format!(
+                        "Worktree: {}",
+                        enrich_worktree_remove_error(&err_str, worktree_path)
+                    ));
                 }
             }
         }
@@ -230,5 +337,107 @@ mod tests {
         assert!(is_permission_error("operation not permitted"));
         assert!(is_permission_error("Access is denied"));
         assert!(!is_permission_error("file not found"));
+    }
+
+    #[test]
+    fn test_is_dirty_worktree_error_matches_git_message() {
+        assert!(is_dirty_worktree_error(
+            "fatal: '/tmp/wt' contains modified or untracked files, use --force to delete it"
+        ));
+        assert!(!is_dirty_worktree_error("permission denied"));
+        assert!(!is_dirty_worktree_error("file not found"));
+    }
+
+    fn init_repo_with_commit() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let path = dir.path().to_path_buf();
+        (dir, path)
+    }
+
+    #[test]
+    fn test_list_dirty_files_returns_untracked_and_modified() {
+        let (_dir, repo_path) = init_repo_with_commit();
+
+        // Untracked file
+        std::fs::write(repo_path.join("new.txt"), "hello").unwrap();
+
+        // Tracked + modified file: commit it first, then modify.
+        std::fs::write(repo_path.join("tracked.txt"), "v1").unwrap();
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("tracked.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add tracked", &tree, &[&parent])
+            .unwrap();
+        std::fs::write(repo_path.join("tracked.txt"), "v2-modified").unwrap();
+
+        let dirty = list_dirty_files(&repo_path);
+        assert!(
+            dirty.iter().any(|s| s.contains("new.txt")),
+            "expected untracked new.txt in {:?}",
+            dirty
+        );
+        assert!(
+            dirty.iter().any(|s| s.contains("tracked.txt")),
+            "expected modified tracked.txt in {:?}",
+            dirty
+        );
+        assert!(dirty.iter().any(|s| s.starts_with("untracked ")));
+        assert!(dirty.iter().any(|s| s.starts_with("modified ")));
+    }
+
+    #[test]
+    fn test_list_dirty_files_returns_empty_for_non_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(list_dirty_files(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_enrich_worktree_remove_error_appends_file_list() {
+        let (_dir, repo_path) = init_repo_with_commit();
+        std::fs::write(repo_path.join("scratch.log"), "data").unwrap();
+
+        let stderr =
+            "fatal: '/some/path' contains modified or untracked files, use --force to delete it";
+        let enriched = enrich_worktree_remove_error(stderr, &repo_path);
+
+        assert!(enriched.contains(stderr));
+        assert!(enriched.contains("Uncommitted changes"));
+        assert!(enriched.contains("scratch.log"));
+    }
+
+    #[test]
+    fn test_enrich_worktree_remove_error_passes_through_unrelated_errors() {
+        let (_dir, repo_path) = init_repo_with_commit();
+        std::fs::write(repo_path.join("scratch.log"), "data").unwrap();
+
+        let stderr = "fatal: permission denied";
+        let enriched = enrich_worktree_remove_error(stderr, &repo_path);
+        assert_eq!(enriched, stderr);
+    }
+
+    #[test]
+    fn test_enrich_worktree_remove_error_caps_long_lists() {
+        let (_dir, repo_path) = init_repo_with_commit();
+        for i in 0..(MAX_DIRTY_FILES_LISTED + 5) {
+            std::fs::write(repo_path.join(format!("f{}.txt", i)), "x").unwrap();
+        }
+        let stderr =
+            "fatal: '/some/path' contains modified or untracked files, use --force to delete it";
+        let enriched = enrich_worktree_remove_error(stderr, &repo_path);
+        assert!(enriched.contains("and 5 more"));
     }
 }

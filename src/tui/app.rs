@@ -379,6 +379,10 @@ impl App {
                 refresh_needed = true;
             }
 
+            if self.home.apply_session_id_updates() {
+                refresh_needed = true;
+            }
+
             if let Some(session_id) = self.home.apply_creation_results() {
                 self.attach_session(&session_id, terminal)?;
                 refresh_needed = true;
@@ -417,6 +421,7 @@ impl App {
             }
         }
 
+        self.home.apply_session_id_updates();
         self.home.cleanup_pending_creation();
 
         if let Err(e) = self.home.save() {
@@ -603,9 +608,6 @@ impl App {
             "attach_session: restart decision"
         );
         if needs_restart {
-            if tmux_session.exists() {
-                let _ = tmux_session.kill();
-            }
             // Show warning (once) if custom instruction is configured for an unsupported agent
             if instance.is_sandboxed() {
                 let has_instruction = instance
@@ -650,8 +652,10 @@ impl App {
 
             self.home
                 .set_instance_status(session_id, crate::session::Status::Starting);
-            let mut inst = instance.clone();
-            if let Err(e) = inst.start_with_size_opts(size, skip_on_launch) {
+            if let Err(e) =
+                self.home
+                    .restart_instance_with_size_opts(session_id, size, skip_on_launch)
+            {
                 self.home
                     .set_instance_error(session_id, Some(e.to_string()));
                 self.home
@@ -661,6 +665,10 @@ impl App {
             self.home.set_instance_error(session_id, None);
         }
 
+        let tmux_session = match self.home.get_instance(session_id) {
+            Some(inst) => inst.tmux_session()?,
+            None => return Ok(()),
+        };
         let attach_result = self.with_raw_mode_disabled(terminal, || tmux_session.attach())?;
 
         self.needs_redraw = true;

@@ -172,7 +172,36 @@ async fn handle_terminal_ws(
     };
 
     let mut cmd = CommandBuilder::new("tmux");
-    cmd.args(["attach-session", "-t", &tmux_name]);
+    // Workaround for vercel-labs/wterm#49 (SCS not implemented). Tmux uses
+    // the DEC alternate character set to draw '─', '│', and corner glyphs
+    // for pane separators (and Claude Code does the same for its dialog
+    // borders). Without SCS support wterm renders the literal 'q', 'x',
+    // and so on, producing the long "qqqq…" rows in the web dashboard.
+    //
+    // Strip smacs/rmacs/acsc so tmux can't pick the SCS encoding, and
+    // mark the terminal as U8 so tmux uses its UTF-8/ASCII fallback when
+    // rendering box-drawing cells. With wterm 0.1.x the practical effect
+    // is ASCII fallback ('-'/'+'/'|'), which is a clean separator glyph
+    // and a major improvement over the literal 'q'. `-a` appends to
+    // tmux's existing overrides; the pattern matches any 256-color
+    // terminal type aoe might attach as. Idempotent: the override is a
+    // server option, so reapplying on every attach is harmless.
+    //
+    // Affects all clients of this tmux server, including the user's TUI
+    // direct attach. Modern terminal emulators render '-'/'+'/'|' as
+    // recognizable separators, so the TUI experience degrades from
+    // "fancy box-drawing" to "ASCII box-drawing"; that's a worthwhile
+    // tradeoff while wterm is missing SCS. Remove when wterm ships it.
+    cmd.args([
+        "set-option",
+        "-as",
+        "terminal-overrides",
+        "*256col*:U8=1:smacs@:rmacs@:acsc@",
+        ";",
+        "attach-session",
+        "-t",
+        &tmux_name,
+    ]);
     cmd.env("TERM", "xterm-256color");
     // Allow nesting: unset TMUX so the attach works when aoe serve runs inside tmux
     cmd.env_remove("TMUX");
