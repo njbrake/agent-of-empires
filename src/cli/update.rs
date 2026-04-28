@@ -1,6 +1,6 @@
 //! `aoe update` command - self-update by detected install method.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 use std::io::{self, IsTerminal, Write};
 
@@ -9,19 +9,19 @@ use crate::update::install::{
     detect_install_method, format_prompt_block, parent_is_writable, perform_update, InstallMethod,
 };
 
-#[derive(Args, Debug)]
+#[derive(Args)]
 pub struct UpdateArgs {
     /// Skip confirmation prompt
     #[arg(short = 'y', long)]
-    pub yes: bool,
+    yes: bool,
 
     /// Print update status and exit (no install)
     #[arg(long)]
-    pub check: bool,
+    check: bool,
 
     /// Detect install method and print what would happen, no download
     #[arg(long)]
-    pub dry_run: bool,
+    dry_run: bool,
 }
 
 pub async fn run(args: UpdateArgs) -> Result<()> {
@@ -76,7 +76,7 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
 
     if !args.yes {
         if !io::stdin().is_terminal() {
-            anyhow::bail!("stdin is not a TTY; pass `-y` to confirm.");
+            bail!("stdin is not a TTY; pass `-y` to confirm.");
         }
         print!("Proceed? [Y/n] ");
         io::stdout().flush()?;
