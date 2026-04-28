@@ -85,15 +85,57 @@ pub fn detect_install_method() -> Result<InstallMethod> {
     Ok(classify_with_brew(prefix, brew_path.as_deref(), &exe))
 }
 
+/// How long we wait for `brew list aoe` to come back before assuming
+/// brew is hung (locked formula DB, network-bound auto-update, etc.)
+/// and giving up on the probe. Detection runs on TUI startup, so this
+/// directly bounds startup latency on machines with brew.
+const BREW_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Run `brew list aoe` and return the path to the installed binary, if any.
 /// We parse the output (one path per line) and pick the line that ends in
 /// `/aoe` or `/bin/aoe`. If brew is not installed, the formula is not installed,
 /// or the command fails for any other reason, return `None`.
+///
+/// Bounded by `BREW_PROBE_TIMEOUT`: if brew doesn't return in time we
+/// kill the child and treat it as "not a brew install" rather than
+/// blocking the TUI's startup-update path.
 fn probe_brew_aoe_path() -> Option<PathBuf> {
-    let output = Command::new("brew").args(["list", "aoe"]).output().ok()?;
-    if !output.status.success() {
-        return None;
+    probe_brew_aoe_path_with_timeout(BREW_PROBE_TIMEOUT)
+}
+
+fn probe_brew_aoe_path_with_timeout(timeout: std::time::Duration) -> Option<PathBuf> {
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    let mut child = Command::new("brew")
+        .args(["list", "aoe"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
     }
+
+    let output = child.wait_with_output().ok()?;
     let stdout = String::from_utf8(output.stdout).ok()?;
     for line in stdout.lines() {
         let trimmed = line.trim();
@@ -304,22 +346,21 @@ pub fn should_auto_apply(
     matches!(method, InstallMethod::Tarball { binary_path } if parent_is_writable(binary_path))
 }
 
+/// Probes whether the directory containing `binary_path` is writable
+/// without sudo by creating and removing a uniquely-named temp file.
+///
+/// Uses `tempfile::Builder` so a process killed mid-probe leaves no
+/// stale file behind that could poison subsequent calls. (An earlier
+/// version used a fixed name and would return `false` forever if the
+/// process died between create and unlink.)
 pub fn parent_is_writable(binary_path: &Path) -> bool {
     let Some(parent) = binary_path.parent() else {
         return false;
     };
-    let probe = parent.join(".aoe-update-writability-probe");
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)
-    {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
+    tempfile::Builder::new()
+        .prefix(".aoe-update-probe-")
+        .tempfile_in(parent)
+        .is_ok()
 }
 
 /// Perform an in-place tarball update at `binary_path`, fetching the
@@ -815,6 +856,135 @@ mod tests {
                 ReleaseKind::Patch,
                 &m
             ));
+        }
+    }
+
+    /// Tests for `sudo_replace` using a PATH-shimmed `sudo` that just
+    /// `exec`s its arguments. Avoids needing real root or a real sudo
+    /// password prompt while still exercising the actual code path.
+    mod sudo_replace_tests {
+        use super::*;
+        use serial_test::serial;
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        fn write_sudo_shim(dir: &Path) {
+            let shim = dir.join("sudo");
+            std::fs::write(&shim, "#!/bin/sh\nexec \"$@\"\n").unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fn write_failing_sudo_shim(dir: &Path) {
+            let shim = dir.join("sudo");
+            // Returns 1, never execs the wrapped command. Models the user
+            // entering the wrong password or hitting Ctrl+C at the prompt.
+            std::fs::write(&shim, "#!/bin/sh\nexit 1\n").unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fn with_path_prepended<F: FnOnce()>(prefix: &Path, f: F) {
+            let prev = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", prefix.display(), prev);
+            // SAFETY: serial_test ensures no concurrent env mutation.
+            unsafe {
+                std::env::set_var("PATH", &new_path);
+            }
+            f();
+            unsafe {
+                std::env::set_var("PATH", &prev);
+            }
+        }
+
+        #[test]
+        #[serial]
+        fn sudo_replace_moves_then_chmods() {
+            let dir = TempDir::new().unwrap();
+            write_sudo_shim(dir.path());
+
+            let source = dir.path().join("source");
+            std::fs::write(&source, b"new").unwrap();
+            let target = dir.path().join("target");
+            std::fs::write(&target, b"old").unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+            with_path_prepended(dir.path(), || {
+                sudo_replace(&source, &target).expect("sudo_replace should succeed");
+            });
+
+            assert!(!source.exists(), "source should be moved");
+            assert_eq!(std::fs::read(&target).unwrap(), b"new");
+            #[cfg(unix)]
+            {
+                let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o755, "chmod should set 0o755");
+            }
+        }
+
+        #[test]
+        #[serial]
+        fn sudo_replace_propagates_failure_from_mv() {
+            let dir = TempDir::new().unwrap();
+            write_failing_sudo_shim(dir.path());
+
+            let source = dir.path().join("source");
+            std::fs::write(&source, b"new").unwrap();
+            let target = dir.path().join("target");
+
+            with_path_prepended(dir.path(), || {
+                let err =
+                    sudo_replace(&source, &target).expect_err("failing sudo should propagate");
+                let s = err.to_string();
+                assert!(
+                    s.contains("sudo mv failed"),
+                    "expected mv-failed error, got: {s}"
+                );
+            });
+        }
+    }
+
+    /// Hermetic test that the brew probe times out instead of blocking
+    /// forever when `brew` hangs (locked formula DB, network-bound auto-
+    /// update, etc.). Uses a sleep-forever shim on PATH.
+    mod brew_probe_timeout_tests {
+        use super::*;
+        use serial_test::serial;
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+        use tempfile::TempDir;
+
+        #[test]
+        #[serial]
+        fn probe_returns_none_when_brew_hangs() {
+            let dir = TempDir::new().unwrap();
+            let shim = dir.path().join("brew");
+            std::fs::write(&shim, "#!/bin/sh\nsleep 30\n").unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let prev = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", dir.path().display(), prev);
+            unsafe {
+                std::env::set_var("PATH", &new_path);
+            }
+
+            let started = Instant::now();
+            let result = probe_brew_aoe_path_with_timeout(Duration::from_millis(300));
+            let elapsed = started.elapsed();
+
+            unsafe {
+                std::env::set_var("PATH", &prev);
+            }
+
+            assert!(result.is_none(), "hanging brew should return None");
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "probe should give up quickly; took {elapsed:?}"
+            );
         }
     }
 }

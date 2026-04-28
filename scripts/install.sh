@@ -92,6 +92,18 @@ main() {
 
     success "Installed $BINARY_NAME $version to $INSTALL_DIR/$BINARY_NAME"
 
+    # Detect a leftover binary at the legacy /usr/local/bin location. Older
+    # versions of this script defaulted there; if a user re-runs install.sh
+    # with the new ~/.local/bin default they end up with two binaries and
+    # whichever directory comes first on PATH wins, which is confusing.
+    LEGACY_PATH=/usr/local/bin/aoe
+    if [ -e "$LEGACY_PATH" ] && [ "$INSTALL_DIR/$BINARY_NAME" != "$LEGACY_PATH" ]; then
+        echo ""
+        warn "Found a previous install at $LEGACY_PATH."
+        warn "PATH order will decide which one runs. Remove the old copy with:"
+        warn "  sudo rm $LEGACY_PATH"
+    fi
+
     if ! command -v "$BINARY_NAME" >/dev/null 2>&1; then
         echo ""
         warn "$INSTALL_DIR is not on your PATH."
