@@ -783,11 +783,19 @@ impl HomeView {
                             &method,
                             InstallMethod::Homebrew | InstallMethod::Tarball { .. }
                         ) {
-                            tracing::info!(
-                                "update method {:?} requires manual upgrade; run `aoe update`",
-                                method
-                            );
-                            return None;
+                            let msg = match &method {
+                                InstallMethod::Nix => {
+                                    "Nix install: run `nix run github:njbrake/agent-of-empires` to update".to_string()
+                                }
+                                InstallMethod::Cargo => {
+                                    "Cargo install: run `cargo install --git https://github.com/njbrake/agent-of-empires aoe`".to_string()
+                                }
+                                InstallMethod::Unknown { .. } => {
+                                    "Unknown install method: run `aoe update` in a terminal for instructions".to_string()
+                                }
+                                _ => unreachable!(),
+                            };
+                            return Some(Action::SetTransientStatus(msg));
                         }
                         let needs_sudo = matches!(
                             &method,

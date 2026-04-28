@@ -700,6 +700,9 @@ impl App {
                 }
                 self.spawn_update(method, version, terminal)?;
             }
+            Action::SetTransientStatus(text) => {
+                self.update_status = Some(UpdateStatus::transient(text));
+            }
         }
         Ok(())
     }
@@ -954,6 +957,7 @@ pub enum Action {
     StopSession(String),
     SetTheme(String),
     SpawnUpdate(crate::update::install::InstallMethod, String),
+    SetTransientStatus(String),
 }
 
 #[cfg(test)]
