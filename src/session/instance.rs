@@ -294,33 +294,13 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
         return;
     };
 
-    let tmux_name = crate::tmux::Session::generate_name(instance_id, &inst.title);
     inst.agent_session_id = Some(session_id.to_string());
 
     if let Err(e) = storage.save(&instances) {
         tracing::warn!("Failed to save instances for session ID persistence: {}", e);
     } else {
         tracing::debug!("Session ID persisted for {}", instance_id);
-        if let Err(e) = publish_session_to_tmux_env(&tmux_name, session_id) {
-            tracing::warn!("{}", e);
-        }
     }
-}
-
-/// Publish a captured session ID to the tmux environment only.
-///
-/// Background threads (deferred capture, poller on_change) call this instead
-/// of `persist_session_to_storage` so they never race with the TUI thread's
-/// `save()`. The tmux env is the source of truth for `build_exclusion_set()`
-/// (cross-instance dedup), while `sessions.json` is written exclusively by
-/// the TUI thread via `apply_session_id_updates()`.
-fn publish_session_to_tmux_env(tmux_session_name: &str, session_id: &str) -> Result<()> {
-    crate::tmux::env::set_hidden_env(
-        tmux_session_name,
-        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
-        session_id,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to write captured session ID to tmux env: {}", e))
 }
 
 impl Instance {
@@ -840,17 +820,6 @@ impl Instance {
 
     /// Post-launch setup: persist state, start pollers, and apply tmux options.
     fn finalize_launch(&mut self, session_name: &str, profile: &str) {
-        // Publish AOE_INSTANCE_ID synchronously so that build_exclusion_set
-        // (called from the poller on its first tick) can correctly identify
-        // this session as "self" and avoid self-excluding its own captured ID.
-        if let Err(e) = crate::tmux::env::set_hidden_env(
-            session_name,
-            crate::tmux::env::AOE_INSTANCE_ID_KEY,
-            &self.id,
-        ) {
-            tracing::warn!("Failed to set AOE_INSTANCE_ID in tmux env: {}", e);
-        }
-
         self.persist_session_id(profile);
         self.maybe_start_poller();
 
@@ -974,23 +943,14 @@ impl Instance {
         let initial_known = self.agent_session_id.clone();
 
         let poll_fn: Box<dyn Fn() -> Option<String> + Send + 'static> = match tool {
-            "claude" => Box::new(claude_poll_fn(self.project_path.clone(), self.id.clone())),
+            "claude" => Box::new(claude_poll_fn(self.project_path.clone())),
             _ => return,
         };
 
-        let cb_tmux_name = self
-            .tmux_session()
-            .map(|s| s.name().to_string())
-            .unwrap_or_default();
         let cb_instance_id = self.id.clone();
 
         let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id: &str| {
             tracing::info!("Session ID changed for {}: {}", cb_instance_id, new_id);
-            if !cb_tmux_name.is_empty() {
-                if let Err(e) = publish_session_to_tmux_env(&cb_tmux_name, new_id) {
-                    tracing::warn!("{}", e);
-                }
-            }
         });
 
         if poller.start(instance_id.clone(), poll_fn, on_change, initial_known) {

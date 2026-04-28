@@ -1,6 +1,5 @@
 //! Session ID capture logic for all supported agent types.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -78,15 +77,12 @@ fn encode_claude_project_path(project_path: &str) -> String {
 /// falling back to `~/.claude.json` if the dir scan result is stale.
 ///
 /// Used as a fallback when hooks don't fire (e.g. after `/clear` or `/new`).
-pub(crate) fn capture_claude_session_id(
-    project_path: &str,
-    exclusion: &HashSet<String>,
-) -> Result<String> {
+pub(crate) fn capture_claude_session_id(project_path: &str) -> Result<String> {
     let claude_home = resolve_agent_home(Some("CLAUDE_CONFIG_DIR"), ".claude")?;
     let canonical = canonicalize_or_raw(project_path);
 
     // Source 1: most recently modified .jsonl in the project dir
-    if let Some((id, modified)) = scan_claude_project_dir(&claude_home, &canonical, exclusion)? {
+    if let Some((id, modified)) = scan_claude_project_dir(&claude_home, &canonical)? {
         let age = modified.elapsed().unwrap_or(Duration::from_secs(u64::MAX));
         if age <= Duration::from_secs(5 * 60) {
             return Ok(id);
@@ -102,7 +98,7 @@ pub(crate) fn capture_claude_session_id(
         let is_fresh = claude_json
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age <= Duration::from_secs(5 * 60));
-        if is_fresh && Uuid::parse_str(&id).is_ok() && !exclusion.contains(&id) {
+        if is_fresh && Uuid::parse_str(&id).is_ok() {
             return Ok(id);
         }
     }
@@ -111,11 +107,10 @@ pub(crate) fn capture_claude_session_id(
 }
 
 /// Scan `~/.claude/projects/{encoded-path}/` for the most recently modified
-/// UUID-named `.jsonl` file not owned by another AoE instance.
+/// UUID-named `.jsonl` file.
 fn scan_claude_project_dir(
     claude_home: &Path,
     project_path: &Path,
-    exclusion: &HashSet<String>,
 ) -> Result<Option<(String, std::time::SystemTime)>> {
     let dir_name = encode_claude_project_path(&project_path.to_string_lossy());
     let project_dir = claude_home.join("projects").join(&dir_name);
@@ -136,9 +131,6 @@ fn scan_claude_project_dir(
             None => continue,
         };
         if Uuid::parse_str(stem).is_err() {
-            continue;
-        }
-        if exclusion.contains(stem) {
             continue;
         }
 
@@ -177,71 +169,13 @@ fn read_claude_json_session_id(project_path: &Path) -> Option<String> {
 }
 
 /// Polling closure for Claude Code session tracking.
-pub(crate) fn claude_poll_fn(
-    project_path: String,
-    instance_id: String,
-) -> impl Fn() -> Option<String> + Send + 'static {
+pub(crate) fn claude_poll_fn(project_path: String) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
-        capture_claude_session_id(&project_path, &exclusion)
+        capture_claude_session_id(&project_path)
             .map_err(|e| tracing::debug!("Claude disk scan failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
-}
-
-/// Build a set of session IDs already claimed by other AoE instances.
-///
-/// Lists all tmux sessions with the AoE prefix, reads each one's hidden env vars
-/// to find its instance ID and captured session ID, and collects all captured IDs
-/// from instances other than `current_instance_id`.
-///
-/// NOTE: This is a point-in-time snapshot. Two instances that call this
-/// concurrently may both see an empty set and claim the same session (TOCTOU).
-/// The deferred capture loop mitigates this by re-reading on each attempt, and
-/// the poller provides an additional layer of correction. Full mutual exclusion
-/// would require a file lock or atomic tmux compare-and-set, which is not
-/// currently justified given the low collision probability in practice.
-pub(crate) fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> {
-    let output = match std::process::Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return HashSet::new(),
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let aoe_sessions: Vec<&str> = stdout
-        .lines()
-        .filter(|name| name.starts_with(crate::tmux::SESSION_PREFIX))
-        .collect();
-
-    if aoe_sessions.is_empty() {
-        return HashSet::new();
-    }
-
-    let instance_ids = crate::tmux::env::get_hidden_env_batch(
-        &aoe_sessions,
-        crate::tmux::env::AOE_INSTANCE_ID_KEY,
-    );
-
-    let other_sessions: Vec<&str> = instance_ids
-        .iter()
-        .filter(|(_, owner)| owner.as_deref() != Some(current_instance_id))
-        .map(|(name, _)| name.as_str())
-        .collect();
-
-    if other_sessions.is_empty() {
-        return HashSet::new();
-    }
-
-    let captured_ids = crate::tmux::env::get_hidden_env_batch(
-        &other_sessions,
-        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
-    );
-
-    captured_ids.into_iter().filter_map(|(_, id)| id).collect()
 }
 
 pub(crate) fn is_valid_session_id(id: &str) -> bool {
@@ -287,13 +221,6 @@ mod tests {
         assert!(!is_valid_session_id("back`tick"));
         assert!(!is_valid_session_id("path/slash"));
         assert!(!is_valid_session_id(&"x".repeat(257)));
-    }
-
-    #[test]
-    fn test_build_exclusion_set_empty() {
-        let result = build_exclusion_set("nonexistent-instance-id-12345");
-        // May be non-empty if other AoE tmux sessions are running.
-        assert!(!result.contains("nonexistent-instance-id-12345"));
     }
 
     #[test]
@@ -346,32 +273,8 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert_eq!(result.unwrap(), uuid_new);
-
-        match old_val {
-            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
-            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_capture_claude_session_respects_exclusion() {
-        let tmp = tempfile::tempdir().unwrap();
-        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
-        std::fs::create_dir_all(&project_dir).unwrap();
-
-        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        std::fs::write(project_dir.join(format!("{uuid}.jsonl")), "data\n").unwrap();
-
-        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
-        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
-
-        let mut exclusion = HashSet::new();
-        exclusion.insert(uuid.to_string());
-        let result = capture_claude_session_id("/tmp/myproject", &exclusion);
-        assert!(result.is_err(), "Excluded session should not be returned");
 
         match old_val {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
@@ -395,7 +298,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert!(result.is_err(), "Agent files should not be picked up");
 
         match old_val {
@@ -427,7 +330,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert!(result.is_err(), "Stale session file should be rejected");
         assert!(
             result
@@ -453,7 +356,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject", &HashSet::new());
+        let result = capture_claude_session_id("/tmp/myproject");
         assert!(result.is_err(), "Empty dir should return error");
 
         match old_val {
