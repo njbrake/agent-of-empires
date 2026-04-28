@@ -271,17 +271,19 @@ impl Preview {
         frame.render_widget(block, area);
 
         if let Some(error) = &instance.last_error {
-            let error_lines: Vec<Line> = vec![
+            let mut error_lines: Vec<Line> = vec![
                 Line::from(Span::styled(
                     "Error:",
                     Style::default().fg(theme.error).bold(),
                 )),
                 Line::from(""),
-                Line::from(Span::styled(
-                    error.as_str(),
-                    Style::default().fg(theme.error),
-                )),
             ];
+            for line in error.split('\n') {
+                error_lines.push(Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(theme.error),
+                )));
+            }
             let paragraph = Paragraph::new(error_lines).wrap(Wrap { trim: false });
             frame.render_widget(paragraph, inner);
             return;
