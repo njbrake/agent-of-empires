@@ -48,6 +48,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe theme dir`↴](#aoe-theme-dir)
 * [`aoe serve`↴](#aoe-serve)
 * [`aoe uninstall`↴](#aoe-uninstall)
+* [`aoe update`↴](#aoe-update)
 * [`aoe completion`↴](#aoe-completion)
 
 ## `aoe`
@@ -76,6 +77,7 @@ Run without arguments to launch the TUI dashboard.
 * `theme` — Manage color themes (list, export, customize)
 * `serve` — Start a web dashboard for remote session access
 * `uninstall` — Uninstall Agent of Empires
+* `update` — Update aoe to the latest release
 * `completion` — Generate shell completions
 
 ###### **Options:**
@@ -674,6 +676,20 @@ Uninstall Agent of Empires
 * `--keep-tmux-config` — Keep tmux configuration
 * `--dry-run` — Show what would be removed without removing
 * `-y` — Skip confirmation prompts
+
+
+
+## `aoe update`
+
+Update aoe to the latest release
+
+**Usage:** `aoe update [OPTIONS]`
+
+###### **Options:**
+
+* `-y`, `--yes` — Skip confirmation prompt
+* `--check` — Print update status and exit (no install)
+* `--dry-run` — Detect install method and print what would happen, no download
 
 
 

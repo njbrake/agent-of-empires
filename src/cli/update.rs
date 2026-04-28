@@ -48,6 +48,17 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
     }
 
     let method = detect_install_method()?;
+
+    // For non-auto-updatable install methods, just print the upgrade
+    // instructions and exit. No prompt, since there's nothing to confirm.
+    if matches!(
+        &method,
+        InstallMethod::Nix | InstallMethod::Cargo | InstallMethod::Unknown { .. }
+    ) {
+        perform_update(&method, &info.latest_version, None).await?;
+        return Ok(());
+    }
+
     let needs_sudo = matches!(&method, InstallMethod::Tarball { binary_path } if !parent_is_writable(binary_path));
 
     let prompt = format_prompt_block(
