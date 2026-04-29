@@ -1312,14 +1312,18 @@ const GEMINI_COMMAND_TIMEOUT_SECS: u64 = 5;
 
 /// Shell snippet executed via `docker exec` to enumerate Gemini session files
 /// inside the container. Each file is emitted as a `===GEMINI:<unix-mtime>===`
-/// header followed by the JSON body and a `===END===` trailer.
+/// header followed by the metadata-bearing first line and a `===END===` trailer.
+///
+/// Accepts both legacy `.json` (single-object) and current `.jsonl` (line-delimited)
+/// formats. For both, the `sessionId` and `projectHash` we need live in the first
+/// line, so `head -n 1` keeps the response small even for long conversations.
 const GEMINI_CONTAINER_LIST_SCRIPT: &str = r#"GEMINI_HOME="${GEMINI_CLI_HOME:-$HOME/.gemini}"
 TMP_DIR="$GEMINI_HOME/tmp"
 [ -d "$TMP_DIR" ] || exit 0
-find "$TMP_DIR" -path '*/chats/session-*.json' -type f | while read -r f; do
+find "$TMP_DIR" -type f \( -name 'session-*.json' -o -name 'session-*.jsonl' \) -path '*/chats/*' | while read -r f; do
   ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
   printf '===GEMINI:%s===\n' "$ts"
-  cat "$f"
+  head -n 1 "$f"
   printf '\n===END===\n'
 done
 "#;
@@ -1465,7 +1469,8 @@ pub(crate) fn capture_gemini_session_id(
 
         for chat_entry in resilient_read_dir(&chats_dir)? {
             let path = chat_entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json")
+            let ext = path.extension().and_then(|e| e.to_str());
+            if !matches!(ext, Some("json") | Some("jsonl"))
                 || !path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -1526,25 +1531,37 @@ pub(crate) fn extract_gemini_project_hash_from_file(path: &std::path::Path) -> O
     extract_gemini_fields(path).and_then(|(_, hash)| hash)
 }
 
-/// Parse the body of a Gemini session JSON (already in memory).
+/// Parse the metadata of a Gemini session file (already in memory).
 ///
-/// Shared by the host scanner and the container scanner, which receives
-/// session JSON contents via `docker exec` rather than direct filesystem reads.
+/// Handles both legacy single-object `.json` files (whole content is one object)
+/// and current line-delimited `.jsonl` files (the metadata header is the first
+/// line, with subsequent lines holding individual conversation records). Tries
+/// to parse the whole content first, falling back to just the first line.
+///
+/// Shared by the host scanner and the container scanner, which receives the
+/// metadata line via `docker exec` rather than a direct filesystem read.
 /// Returns `(sessionId, projectHash)`.
 fn parse_gemini_session_json(content: &str) -> Option<(Option<String>, Option<String>)> {
-    let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
-    let session_id = parsed
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let project_hash = parsed
-        .get("projectHash")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    Some((session_id, project_hash))
+    let extract = |v: &serde_json::Value| {
+        let session_id = v
+            .get("sessionId")
+            .and_then(|x| x.as_str())
+            .map(String::from);
+        let project_hash = v
+            .get("projectHash")
+            .and_then(|x| x.as_str())
+            .map(String::from);
+        (session_id, project_hash)
+    };
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
+        return Some(extract(&parsed));
+    }
+    let first_line = content.lines().next()?;
+    let parsed: serde_json::Value = serde_json::from_str(first_line).ok()?;
+    Some(extract(&parsed))
 }
 
-/// Read a Gemini session JSON file once and return both sessionId and projectHash.
+/// Read a Gemini session file once and return both sessionId and projectHash.
 /// Falls back to filename stem for sessionId if the JSON field is absent.
 fn extract_gemini_fields(path: &std::path::Path) -> Option<(Option<String>, Option<String>)> {
     let content = std::fs::read_to_string(path).ok()?;
@@ -2971,5 +2988,66 @@ mod tests {
     fn test_select_gemini_session_in_container_empty_input() {
         let result = select_gemini_session_in_container(b"", "abc123", &HashSet::new());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gemini_session_json_handles_jsonl_first_line() {
+        // current gemini-cli (>= 0.40) writes line-delimited files where the
+        // first line is the metadata header and subsequent lines are records
+        let content = "\
+{\"sessionId\":\"abc-123\",\"projectHash\":\"deadbeef\",\"startTime\":\"2026-04-29T19:06:25.028Z\",\"kind\":\"main\"}
+{\"role\":\"user\",\"content\":\"hello\"}
+{\"role\":\"assistant\",\"content\":\"hi\"}
+";
+        let (sid, hash) = parse_gemini_session_json(content).unwrap();
+        assert_eq!(sid.as_deref(), Some("abc-123"));
+        assert_eq!(hash.as_deref(), Some("deadbeef"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_gemini_capture_handles_jsonl_in_short_id_dir() {
+        // simulates current gemini-cli layout: $HOME/.gemini/tmp/<short-id>/chats/
+        // containing .jsonl files, where the project subdir name is *not* the
+        // sha256 of the cwd but a registry short-id. The fallback that scans all
+        // subdirs and matches by the file's `projectHash` field must still work.
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project_path = "/tmp/gemini-jsonl-test";
+        let digest = Sha256::digest(project_path.as_bytes());
+        let project_hash = digest
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+
+        let chats_dir = tmp.path().join("tmp").join("short-id-abc").join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+
+        let session_file = chats_dir.join("session-2026-04-29T19-06-deadbeef.jsonl");
+        let body = format!(
+            "{{\"sessionId\":\"jsonl-session-id\",\"projectHash\":\"{project_hash}\",\"startTime\":\"2026-04-29T19:06:25.028Z\",\"kind\":\"main\"}}\n\
+{{\"role\":\"user\",\"content\":\"hello\"}}\n"
+        );
+        std::fs::write(&session_file, body).unwrap();
+
+        let _guard = GeminiHomeGuard::set(tmp.path());
+
+        let result = capture_gemini_session_id(project_path, &HashSet::new());
+        assert_eq!(result.unwrap(), "jsonl-session-id");
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_jsonl_first_line() {
+        // container script now emits only the first line of each session file via
+        // `head -n 1`, so it works for both .json and .jsonl. Verify the parser
+        // handles a single metadata-line response.
+        let stdout = b"\
+===GEMINI:1700001000===
+{\"sessionId\":\"jsonl-id\",\"projectHash\":\"abc123\",\"kind\":\"main\"}
+===END===
+";
+        let result = select_gemini_session_in_container(stdout, "abc123", &HashSet::new()).unwrap();
+        assert_eq!(result, "jsonl-id");
     }
 }
