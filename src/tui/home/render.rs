@@ -307,7 +307,7 @@ impl HomeView {
                 Line::from("No sessions yet").style(Style::default().fg(theme.dimmed)),
                 Line::from(""),
                 Line::from("Press 'n' to create one").style(Style::default().fg(theme.hint)),
-                Line::from("or 'agent-of-empires add .'").style(Style::default().fg(theme.hint)),
+                Line::from("or 'aoe add .'").style(Style::default().fg(theme.hint)),
             ];
             let para = Paragraph::new(empty_text).alignment(Alignment::Center);
             frame.render_widget(para, inner);

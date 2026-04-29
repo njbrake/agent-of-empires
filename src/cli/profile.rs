@@ -70,7 +70,7 @@ async fn list_profiles() -> Result<()> {
 
     if profiles.is_empty() {
         println!("No profiles found.");
-        println!("Run 'agent-of-empires' to create the default profile automatically.");
+        println!("Run 'aoe' to create the default profile automatically.");
         return Ok(());
     }
 
@@ -90,7 +90,7 @@ async fn list_profiles() -> Result<()> {
 async fn create_profile(name: &str) -> Result<()> {
     session::create_profile(name)?;
     println!("✓ Created profile: {}", name);
-    println!("  Use with: agent-of-empires -p {}", name);
+    println!("  Use with: aoe -p {}", name);
     Ok(())
 }
 
