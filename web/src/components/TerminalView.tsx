@@ -12,6 +12,12 @@ import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
 import { ensureSession } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
+import {
+  FOCUS_TERMINAL_EVENT,
+  consumePendingTerminalFocus,
+  setPendingTerminalFocus,
+  type FocusTerminalDetail,
+} from "../lib/terminalFocus";
 import "@wterm/dom/css";
 
 interface Props {
@@ -184,6 +190,34 @@ export function TerminalView({ session }: Props) {
     };
   }, [termRef]);
 
+  // Returns true if focus was applied. Mirrors PairedTerminal so the same
+  // pending-latch fallback covers both terminals when the wterm hasn't
+  // mounted yet (ensureSession round-trip on a fresh session).
+  const focusSelf = useCallback(() => {
+    const ta = termRef.current?.element.querySelector("textarea");
+    if (ta instanceof HTMLElement) {
+      ta.focus();
+      return true;
+    }
+    return false;
+  }, [termRef]);
+
+  // Cmd+` shortcut focuses this terminal when "agent" is the dispatched target.
+  useEffect(() => {
+    const onFocusEvent = (e: Event) => {
+      const detail = (e as CustomEvent<FocusTerminalDetail>).detail;
+      if (detail?.target !== "agent") return;
+      if (!focusSelf()) setPendingTerminalFocus("agent");
+    };
+    window.addEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+    return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+  }, [focusSelf]);
+
+  useEffect(() => {
+    if (ensureState !== "ready") return;
+    if (consumePendingTerminalFocus("agent")) focusSelf();
+  }, [ensureState, focusSelf]);
+
   // On initial connect, auto-open the keyboard.
   useEffect(() => {
     if (!isMobile || !state.connected) return;
@@ -288,6 +322,7 @@ export function TerminalView({ session }: Props) {
       )}
 
       <div
+        data-term="agent"
         className={`flex-1 overflow-hidden bg-surface-950 relative md:rounded-lg term-panel${termFocused ? " term-focused" : ""}`}
         onFocus={() => setTermFocused(true)}
         onBlur={() => setTermFocused(false)}

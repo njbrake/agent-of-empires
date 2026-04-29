@@ -13,6 +13,7 @@ interface ShortcutActions {
   onPalette: () => void;
   onToggleSidebar: () => void;
   onToggleRightPanel: () => void;
+  onToggleTerminalFocus: () => void;
 }
 
 /**
@@ -38,6 +39,17 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
         e.preventDefault();
         e.stopPropagation();
         actions.onPalette();
+        return;
+      }
+
+      // Toggle terminal focus: Cmd+` (Mac) / Ctrl+` (other), works everywhere.
+      // Use e.code so layouts where backtick lives behind a modifier still match.
+      // No stopPropagation: preventDefault is enough to suppress the browser's
+      // own Cmd+` window cycling, and we don't want to silently shadow other
+      // doc-level listeners that might want this combo.
+      if (mod && !e.shiftKey && !e.altKey && e.code === "Backquote") {
+        e.preventDefault();
+        actions.onToggleTerminalFocus();
         return;
       }
 

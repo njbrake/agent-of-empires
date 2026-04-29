@@ -29,6 +29,7 @@ export function HelpOverlay({ onClose }: Props) {
     { key: `${modKey}K`, desc: "Open command palette" },
     { key: `${modKey}B`, desc: "Toggle left sidebar" },
     { key: `${modKey}${optKey}B`, desc: "Toggle right panel" },
+    { key: `${modKey}\``, desc: "Toggle agent / shell terminal focus" },
     { key: "n", desc: "New session" },
     { key: "D", desc: "Toggle diff panel" },
     { key: "s", desc: "Toggle settings" },

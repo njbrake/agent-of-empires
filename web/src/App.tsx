@@ -12,6 +12,10 @@ import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
+import {
+  dispatchFocusTerminal,
+  setPendingTerminalFocus,
+} from "./lib/terminalFocus";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
@@ -313,6 +317,50 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setShowAddProject(true);
   }, []);
 
+  const handleToggleTerminalFocus = useCallback(() => {
+    if (!activeSessionId) return;
+    // ContentSplit renders the right pane twice (desktop inline + mobile
+    // overlay); each instance mounts its own PairedTerminal. Probing by
+    // data-term attribute is robust against that duplication and against
+    // future panel reorderings.
+    //
+    // Semantic: VSCode-like "Cmd+` opens/focuses the terminal." So if the
+    // user is NOT in the paired terminal, send them there; only flip back
+    // to agent when they're already in paired.
+    const active = document.activeElement;
+    const pairedPanels = document.querySelectorAll<HTMLElement>(
+      '[data-term="paired"]',
+    );
+    let inPaired = false;
+    if (active) {
+      for (const p of pairedPanels) {
+        if (p.contains(active)) {
+          inPaired = true;
+          break;
+        }
+      }
+    }
+    const target = inPaired ? "agent" : "paired";
+
+    if (target === "paired" && diffCollapsed) {
+      // Right panel is collapsed; paired terminal is unmounted. Set the
+      // pending intent so PairedTerminal grabs focus once it mounts and
+      // its PTY is ready, then expand the panel.
+      setPendingTerminalFocus("paired");
+      setDiffCollapsed(false);
+      return;
+    }
+    if (target === "agent" && selectedFilePath) {
+      // Agent terminal is hidden under the diff viewer; close the diff first
+      // so the wrapper un-hides, then dispatch on the next frame because
+      // focus() on a display:none element is a no-op.
+      setSelectedFilePath(null);
+      requestAnimationFrame(() => dispatchFocusTerminal("agent"));
+      return;
+    }
+    dispatchFocusTerminal(target);
+  }, [activeSessionId, diffCollapsed, selectedFilePath]);
+
   useKeyboardShortcuts(
     useCallback(
       () => ({
@@ -338,8 +386,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onPalette: () => setShowPalette((p) => !p),
         onToggleSidebar: () => setSidebarOpen((o) => !o),
         onToggleRightPanel: () => setDiffCollapsed((c) => !c),
+        onToggleTerminalFocus: handleToggleTerminalFocus,
       }),
-      [toggleDiff, showPalette, deletingWorkspaceId, showSettings, handleCloseSettings, navigate],
+      [toggleDiff, showPalette, deletingWorkspaceId, showSettings, handleCloseSettings, navigate, handleToggleTerminalFocus],
     ),
   );
 
