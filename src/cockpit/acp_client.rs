@@ -17,10 +17,10 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::{
-    ClientCapabilities, ContentBlock, CreateTerminalRequest, CreateTerminalResponse,
-    FileSystemCapabilities, InitializeRequest, KillTerminalRequest, KillTerminalResponse,
-    NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion, ReadTextFileRequest,
-    ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+    CancelNotification, ClientCapabilities, ContentBlock, CreateTerminalRequest,
+    CreateTerminalResponse, FileSystemCapabilities, InitializeRequest, KillTerminalRequest,
+    KillTerminalResponse, NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
+    ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, SessionUpdate, TerminalId,
     TerminalOutputRequest, TerminalOutputResponse, TextContent, WaitForTerminalExitRequest,
@@ -79,6 +79,7 @@ pub struct SpawnConfig {
 /// Commands sent from `AcpClient` methods to the background connection task.
 enum ClientCmd {
     Prompt(String),
+    Cancel,
     Shutdown,
 }
 
@@ -341,6 +342,17 @@ impl AcpClient {
             .map_err(|_| AcpError::AgentExited)
     }
 
+    /// Cancel the agent's currently-running turn (ACP `session/cancel`
+    /// notification). Best-effort: returns Ok even if no turn is in
+    /// flight, since the UI can race the agent finishing on its own.
+    pub async fn cancel_prompt(&self) -> Result<(), AcpError> {
+        let cmd_tx = self.cmd_tx.as_ref().ok_or(AcpError::NotRunning)?;
+        cmd_tx
+            .send(ClientCmd::Cancel)
+            .await
+            .map_err(|_| AcpError::AgentExited)
+    }
+
     /// Resolve a pending permission request. Looks up the parked
     /// responder by nonce and unblocks the `on_receive_request` callback.
     pub async fn resolve_permission(
@@ -498,6 +510,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             let tool_call = ToolCall {
                 id: tc.tool_call_id.0.to_string(),
                 name: tc.title.clone(),
+                kind: tool_kind_str(&tc.kind),
                 args_preview: args_preview.clone(),
                 started_at: chrono::Utc::now(),
             };
@@ -581,6 +594,25 @@ fn raw_event<T: serde::Serialize>(value: &T) -> Event {
     Event::RawAgentUpdate {
         payload: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
     }
+}
+
+/// Stable lowercased string form of an ACP `ToolKind`. Used to drive the
+/// per-tool renderer dispatch on the web side.
+fn tool_kind_str(kind: &agent_client_protocol::schema::ToolKind) -> String {
+    use agent_client_protocol::schema::ToolKind;
+    match kind {
+        ToolKind::Read => "read",
+        ToolKind::Edit => "edit",
+        ToolKind::Delete => "delete",
+        ToolKind::Move => "move",
+        ToolKind::Search => "search",
+        ToolKind::Execute => "execute",
+        ToolKind::Think => "think",
+        ToolKind::Fetch => "fetch",
+        ToolKind::SwitchMode => "switch_mode",
+        _ => "other",
+    }
+    .into()
 }
 
 /// 16 KB cap on tool-call argument preview, with control chars stripped.
@@ -778,6 +810,11 @@ async fn run_connection_task<W, R>(
                                 reason: "prompt_complete".into(),
                             })
                             .await;
+                    }
+                    Some(ClientCmd::Cancel) => {
+                        info!(target: "cockpit.acp", "sending session/cancel");
+                        connection
+                            .send_notification(CancelNotification::new(acp_session_id.clone()))?;
                     }
                     Some(ClientCmd::Shutdown) | None => {
                         info!(target: "cockpit.acp", "shutdown received, exiting connection loop");
@@ -1018,6 +1055,13 @@ async fn handle_permission_request(
     let tool_call = ToolCall {
         id: request.tool_call.tool_call_id.0.to_string(),
         name: title,
+        kind: request
+            .tool_call
+            .fields
+            .kind
+            .as_ref()
+            .map(tool_kind_str)
+            .unwrap_or_else(|| "other".into()),
         args_preview,
         started_at: chrono::Utc::now(),
     };

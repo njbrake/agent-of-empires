@@ -1,31 +1,42 @@
-// Cockpit view: a single-column chat conversation that fills the
-// middle pane of the app shell.
+// Cockpit conversation surface.
 //
-// The layout is the responsibility of <ContentSplit> in App.tsx (left
-// = workspace sidebar, right = terminal/diff). This component should
-// NOT introduce another layout — it's just the conversation feed,
-// pinned input, and a small sticky plan strip when the agent has one.
+// Layout matches the rest of the app shell: <ContentSplit> handles the
+// outer columns; this component owns the middle pane (chat feed +
+// composer + plan/system strips). It is intentionally chat-shaped, not
+// terminal-shaped, since the cockpit's whole point is to render
+// structured agent state instead of a tmux pane.
+//
+// Design references: Cursor agent chat, VSCode Copilot Chat, Claude Code
+// CLI. User turns are right-aligned chips; agent turns are full-width
+// markdown; tool calls render as per-kind cards inline (see ToolCards.tsx).
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  useCockpit,
-  type ConnectionStatus,
-} from "../../hooks/useCockpit";
+import { useCockpit, type ConnectionStatus } from "../../hooks/useCockpit";
 import { ApprovalCard } from "./ApprovalCard";
+import { Markdown } from "./Markdown";
+import { ToolCard } from "./ToolCards";
 import type {
   ActivityRow,
   Approval,
   ApprovalDecision,
   CockpitState,
   Plan,
+  ToolCall,
 } from "../../lib/cockpitTypes";
 
 interface Props {
   sessionId: string;
 }
 
+const STARTER_PROMPTS = [
+  "Explain this codebase",
+  "Find recent changes worth reviewing",
+  "What does the build pipeline do?",
+];
+
 export function CockpitView({ sessionId }: Props) {
-  const { state, status, resolveApproval, sendPrompt } = useCockpit(sessionId);
+  const { state, status, resolveApproval, sendPrompt, cancelPrompt } =
+    useCockpit(sessionId);
 
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
@@ -44,11 +55,12 @@ export function CockpitView({ sessionId }: Props) {
       <ConversationFeed
         state={state}
         onResolve={resolveApproval}
+        onStarterPrompt={sendPrompt}
       />
 
       <Composer
-        sessionId={sessionId}
         sendPrompt={sendPrompt}
+        cancelPrompt={cancelPrompt}
         thinking={state.thinking}
         inFlight={!!state.inFlightTool}
       />
@@ -56,18 +68,15 @@ export function CockpitView({ sessionId }: Props) {
   );
 }
 
-/* ──────────────────────────────────────────────────────────────────── */
+/* ── Conversation feed ───────────────────────────────────────────── */
 
 interface ConversationFeedProps {
   state: CockpitState;
   onResolve: (nonce: string, decision: ApprovalDecision) => Promise<void>;
+  onStarterPrompt: (text: string) => Promise<void>;
 }
 
-/** Single scrollable column of message-style cells. Groups consecutive
- *  agent text chunks into one bubble so streaming reads as one
- *  paragraph; tool calls appear inline as cards between paragraphs;
- *  approvals are pinned at the bottom of the feed. */
-function ConversationFeed({ state, onResolve }: ConversationFeedProps) {
+function ConversationFeed({ state, onResolve, onStarterPrompt }: ConversationFeedProps) {
   const cells = useMemo(() => groupActivity(state.activity), [state.activity]);
   const scroller = useRef<HTMLDivElement | null>(null);
 
@@ -83,20 +92,22 @@ function ConversationFeed({ state, onResolve }: ConversationFeedProps) {
     }
   }, [cells, state.pendingApprovals.length, state.thinking]);
 
+  const empty = cells.length === 0 && state.pendingApprovals.length === 0;
+
   return (
-    <div
-      ref={scroller}
-      className="flex-1 overflow-y-auto"
-    >
-      <div className="mx-auto max-w-3xl px-4 py-6 space-y-4">
-        {cells.length === 0 && state.pendingApprovals.length === 0 && (
-          <EmptyState />
-        )}
-        {cells.map((cell) => (
-          <Cell key={cell.id} cell={cell} />
+    <div ref={scroller} className="flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-3xl px-4 py-6">
+        {empty && <EmptyState onPick={onStarterPrompt} />}
+
+        {cells.map((cell, i) => (
+          <Turn key={cell.id} cell={cell} prev={cells[i - 1]} />
         ))}
 
-        {state.thinking && <ThinkingBubble />}
+        {state.thinking && (
+          <div className="mt-2 ml-1">
+            <ThinkingBubble />
+          </div>
+        )}
 
         {state.pendingApprovals.map((approval) => (
           <PendingApproval
@@ -115,12 +126,9 @@ function ConversationFeed({ state, onResolve }: ConversationFeedProps) {
 type Cell =
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "agent"; text: string }
-  | { id: string; kind: "tool"; row: ActivityRow; result?: ActivityRow }
+  | { id: string; kind: "tool"; tool: ToolCall; result?: ActivityRow }
   | { id: string; kind: "system"; text: string };
 
-/** Compact the raw activity stream into the message-cells the UI
- *  renders. Consecutive agent_message_chunk rows fuse into one bubble.
- *  tool_start/tool_complete pairs collapse into a single Cell. */
 function groupActivity(rows: ActivityRow[]): Cell[] {
   const out: Cell[] = [];
   for (const row of rows) {
@@ -133,17 +141,16 @@ function groupActivity(rows: ActivityRow[]): Cell[] {
       out.push({ id: row.id, kind: "agent", text: row.text });
     } else if (row.kind === "user_prompt") {
       out.push({ id: row.id, kind: "user", text: row.text });
-    } else if (row.kind === "tool_start") {
-      out.push({ id: row.id, kind: "tool", row });
+    } else if (row.kind === "tool_start" && row.tool) {
+      out.push({ id: row.id, kind: "tool", tool: row.tool });
     } else if (row.kind === "tool_complete" || row.kind === "tool_error") {
-      // Attach to the most recent tool cell with the matching id.
       const target = [...out]
         .reverse()
         .find(
           (c) =>
             c.kind === "tool" &&
-            (c.row.toolCallId === row.toolCallId ||
-              c.row.id === row.id.replace(/^done-/, "start-")),
+            (c.tool.id === row.toolCallId ||
+              `start-${c.tool.id}` === row.id.replace(/^done-/, "start-")),
         );
       if (target && target.kind === "tool") {
         target.result = row;
@@ -151,8 +158,7 @@ function groupActivity(rows: ActivityRow[]): Cell[] {
         out.push({ id: row.id, kind: "system", text: row.text });
       }
     } else if (row.kind === "thinking") {
-      // Suppressed; the bubble at the bottom of the feed handles the
-      // live state.
+      // Suppressed; live state shown by ThinkingBubble below the feed.
     } else {
       out.push({ id: row.id, kind: "system", text: row.text });
     }
@@ -160,73 +166,79 @@ function groupActivity(rows: ActivityRow[]): Cell[] {
   return out;
 }
 
-function Cell({ cell }: { cell: Cell }) {
+/* ── Turn renderer ───────────────────────────────────────────────── */
+
+function Turn({ cell, prev }: { cell: Cell; prev?: Cell }) {
+  // Boundary divider above each user turn (except the first), so user→
+  // agent→user reads as discrete chunks instead of one long stream.
+  const showDivider = cell.kind === "user" && !!prev;
+  return (
+    <>
+      {showDivider && <div className="my-5 border-t border-surface-800/70" />}
+      <div className={cellSpacing(cell, prev)}>
+        <CellContent cell={cell} />
+      </div>
+    </>
+  );
+}
+
+function cellSpacing(cell: Cell, prev?: Cell): string {
+  // Tool cards hug the agent message above; agent text gets its own
+  // breathing room. User chips are right-aligned with a top margin.
+  if (cell.kind === "user") return "flex justify-end mt-2";
+  if (cell.kind === "tool") {
+    return prev?.kind === "tool" || prev?.kind === "agent" ? "mt-1" : "mt-3";
+  }
+  if (cell.kind === "agent") return "mt-3";
+  return "mt-2";
+}
+
+function CellContent({ cell }: { cell: Cell }) {
   if (cell.kind === "user") {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-full rounded-lg bg-surface-700 px-3 py-2 text-sm text-text-primary whitespace-pre-wrap">
-          {cell.text}
-        </div>
+      <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm whitespace-pre-wrap">
+        {cell.text}
       </div>
     );
   }
   if (cell.kind === "agent") {
     return (
-      <div className="text-text-primary leading-relaxed whitespace-pre-wrap">
-        {cell.text}
+      <div className="text-sm text-text-primary leading-relaxed">
+        <Markdown text={cell.text} />
       </div>
     );
   }
   if (cell.kind === "tool") {
-    return <ToolCallCell row={cell.row} result={cell.result} />;
+    return <ToolCard tool={cell.tool} result={cell.result} />;
   }
-  return (
-    <div className="text-xs text-text-dim italic">{cell.text}</div>
-  );
+  return <div className="text-xs italic text-text-dim">{cell.text}</div>;
 }
 
-function ToolCallCell({
-  row,
-  result,
-}: {
-  row: ActivityRow;
-  result?: ActivityRow;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const status: "running" | "ok" | "err" = !result
-    ? "running"
-    : result.kind === "tool_error"
-      ? "err"
-      : "ok";
+/* ── Empty state ─────────────────────────────────────────────────── */
 
-  const dot =
-    status === "running"
-      ? "bg-brand-400 animate-pulse"
-      : status === "ok"
-        ? "bg-emerald-500"
-        : "bg-red-500";
-
+function EmptyState({ onPick }: { onPick: (text: string) => Promise<void> }) {
   return (
-    <div className="rounded-md border border-surface-700 bg-surface-800/60 text-sm">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-800"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <span className={`h-2 w-2 rounded-full ${dot}`} />
-        <span className="font-mono text-xs text-text-secondary">{row.text}</span>
-        <span className="ml-auto text-xs text-text-dim">
-          {status === "running" ? "running" : status === "ok" ? "✓" : "failed"}
-        </span>
-      </button>
-      {expanded && result?.text && (
-        <pre className="border-t border-surface-700 bg-surface-900 px-3 py-2 text-xs text-text-muted whitespace-pre-wrap break-all">
-          {result.text}
-        </pre>
-      )}
+    <div className="mt-12 flex flex-col items-center gap-4 text-center">
+      <div className="text-sm text-text-muted">
+        Ask the agent anything about this workspace.
+      </div>
+      <div className="flex flex-wrap justify-center gap-2">
+        {STARTER_PROMPTS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => void onPick(p)}
+            className="rounded-full border border-surface-700 bg-surface-800/60 px-3 py-1 text-xs text-text-secondary hover:border-brand-600/60 hover:bg-surface-800 hover:text-text-primary"
+          >
+            {p}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
+
+/* ── Thinking bubble ─────────────────────────────────────────────── */
 
 function ThinkingBubble() {
   return (
@@ -237,14 +249,6 @@ function ThinkingBubble() {
         <span className="h-1.5 w-1.5 rounded-full bg-text-dim animate-pulse [animation-delay:240ms]" />
       </span>
       <span>Thinking…</span>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="text-center text-text-dim italic mt-12">
-      Type a prompt below to start the conversation.
     </div>
   );
 }
@@ -327,7 +331,7 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
 function StepGlyph({ status }: { status: Plan["steps"][number]["status"] }) {
   switch (status) {
     case "Done":
-      return <span className="text-emerald-500">✓</span>;
+      return <span className="text-status-running">✓</span>;
     case "InProgress":
       return <span className="text-brand-500">●</span>;
     case "Cancelled":
@@ -338,16 +342,16 @@ function StepGlyph({ status }: { status: Plan["steps"][number]["status"] }) {
   }
 }
 
-/* ── Composer (input area) ───────────────────────────────────────── */
+/* ── Composer ────────────────────────────────────────────────────── */
 
 interface ComposerProps {
-  sessionId: string;
   sendPrompt: (text: string) => Promise<void>;
+  cancelPrompt: () => Promise<void>;
   thinking: boolean;
   inFlight: boolean;
 }
 
-function Composer({ sendPrompt, thinking, inFlight }: ComposerProps) {
+function Composer({ sendPrompt, cancelPrompt, thinking, inFlight }: ComposerProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -359,6 +363,12 @@ function Composer({ sendPrompt, thinking, inFlight }: ComposerProps) {
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
   }, [text]);
+
+  // Focus the composer when the cockpit mounts so the user can type
+  // immediately without an extra click.
+  useEffect(() => {
+    taRef.current?.focus();
+  }, []);
 
   const submit = async () => {
     const trimmed = text.trim();
@@ -379,16 +389,15 @@ function Composer({ sendPrompt, thinking, inFlight }: ComposerProps) {
     }
   };
 
-  const placeholder = thinking
+  const busy = thinking || inFlight;
+  const placeholder = busy
     ? "Steer the agent…  (Enter to send)"
-    : inFlight
-      ? "Tool running. Your message will queue."
-      : "Send a message…  (Enter to send, Shift+Enter for newline)";
+    : "Send a message…";
 
   return (
     <div className="border-t border-surface-800 bg-surface-900">
-      <div className="mx-auto max-w-3xl px-4 py-3">
-        <div className="flex items-end gap-2 rounded-lg border border-surface-700 bg-surface-800 px-3 py-2 focus-within:border-brand-600">
+      <div className="mx-auto max-w-3xl px-4 pt-3 pb-2">
+        <div className="flex items-end gap-2 rounded-xl border border-surface-700 bg-surface-800 px-3 py-2 focus-within:border-brand-600">
           <textarea
             ref={taRef}
             className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-dim focus:outline-none"
@@ -399,18 +408,34 @@ function Composer({ sendPrompt, thinking, inFlight }: ComposerProps) {
             onKeyDown={onKeyDown}
             disabled={sending}
           />
-          <button
-            type="button"
-            className={`shrink-0 rounded px-3 py-1.5 text-sm font-medium ${
-              sending || !text.trim()
-                ? "bg-surface-700 text-text-dim cursor-not-allowed"
-                : "bg-brand-600 text-white hover:bg-brand-500"
-            }`}
-            disabled={sending || !text.trim()}
-            onClick={() => void submit()}
-          >
-            {sending ? "…" : "Send"}
-          </button>
+          {busy ? (
+            <button
+              type="button"
+              aria-label="Stop"
+              title="Stop the agent"
+              className="shrink-0 flex items-center justify-center rounded-md border border-surface-600 bg-surface-700 hover:bg-surface-700/70 px-2.5 py-1.5 text-text-secondary"
+              onClick={() => void cancelPrompt()}
+            >
+              <span className="block h-3 w-3 rounded-sm bg-text-secondary" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium ${
+                sending || !text.trim()
+                  ? "bg-surface-700 text-text-dim cursor-not-allowed"
+                  : "bg-brand-600 text-white hover:bg-brand-500"
+              }`}
+              disabled={sending || !text.trim()}
+              onClick={() => void submit()}
+            >
+              {sending ? "…" : "Send"}
+            </button>
+          )}
+        </div>
+        <div className="mt-1 px-1 text-[11px] text-text-dim">
+          <kbd className="font-mono">Enter</kbd> to send ·{" "}
+          <kbd className="font-mono">Shift+Enter</kbd> for newline
         </div>
       </div>
     </div>
@@ -427,7 +452,7 @@ function PendingApproval({
   onResolve: (nonce: string, decision: ApprovalDecision) => Promise<void>;
 }) {
   return (
-    <div className="rounded-lg border border-surface-700 bg-surface-900/80 p-3 shadow-md">
+    <div className="mt-4 rounded-lg border border-surface-700 bg-surface-900/80 p-3 shadow-md">
       <div className="text-xs font-mono uppercase tracking-wide text-brand-500 mb-2">
         agent is asking permission
       </div>

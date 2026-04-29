@@ -153,6 +153,23 @@ pub async fn cockpit_prompt(
     }
 }
 
+pub async fn cockpit_cancel(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.cockpit_supervisor.cancel_prompt(&id).await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(SupervisorError::UnknownSession(_)) => {
+            (StatusCode::NOT_FOUND, "session has no running cockpit").into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("cancel failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ResolveApprovalRequest {
     pub decision: ApprovalDecisionWire,

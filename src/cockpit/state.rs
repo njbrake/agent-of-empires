@@ -56,6 +56,11 @@ pub struct Todo {
 pub struct ToolCall {
     pub id: String,
     pub name: String,
+    /// ACP `ToolKind` lowercased: `read` / `edit` / `delete` / `move` /
+    /// `search` / `execute` / `think` / `fetch` / `switch_mode` / `other`.
+    /// Lets the UI pick a per-tool renderer.
+    #[serde(default)]
+    pub kind: String,
     /// 16 KB cap applied at ingest, control chars stripped.
     pub args_preview: String,
     pub started_at: DateTime<Utc>,

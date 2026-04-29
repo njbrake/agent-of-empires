@@ -30,6 +30,10 @@ export interface Plan {
 export interface ToolCall {
   id: string;
   name: string;
+  /** ACP ToolKind lowercased: read | edit | delete | move | search |
+   *  execute | think | fetch | switch_mode | other. Drives the per-tool
+   *  renderer in CockpitView. */
+  kind: string;
   args_preview: string;
   started_at: string; // ISO-8601 from chrono
 }
@@ -129,6 +133,10 @@ export interface ActivityRow {
     | "user_prompt";
   text: string;
   toolCallId?: string;
+  /** Full ToolCall payload, present on tool_start rows so the UI can
+   *  pick a per-kind renderer without needing to look the call up by
+   *  toolCallId. */
+  tool?: ToolCall;
   at: string; // ISO-8601
 }
 
@@ -180,6 +188,7 @@ export function applyEvent(
       kind: "tool_start",
       text: tc.name,
       toolCallId: tc.id,
+      tool: tc,
       at: tc.started_at,
     });
     return next;

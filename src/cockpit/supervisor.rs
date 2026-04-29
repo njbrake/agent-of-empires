@@ -216,6 +216,18 @@ impl<S: BroadcastSink> Supervisor<S> {
         Ok(())
     }
 
+    /// Cancel the current turn for a running cockpit worker. Best-effort:
+    /// returns Ok if the worker exists even when no turn is in flight.
+    pub async fn cancel_prompt(&self, session_id: &str) -> Result<(), SupervisorError> {
+        let workers = self.workers.lock().await;
+        let handle = workers
+            .get(session_id)
+            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
+        let client = handle.client.lock().await;
+        client.cancel_prompt().await?;
+        Ok(())
+    }
+
     /// Resolve a pending approval.
     pub async fn resolve_permission(
         &self,

@@ -113,4 +113,30 @@ export function langImportForPath(
   return EXT_TO_LANG[ext] ?? null;
 }
 
+/**
+ * Map a markdown fence language hint (e.g. `bash`, `tsx`, `js`) to a
+ * Shiki language key. Falls back to the hint itself.
+ */
+export function langKeyForExt(ext: string): string | null {
+  const lower = ext.toLowerCase();
+  if (EXT_TO_LANG[lower] || FILENAME_TO_LANG[ext]) return lower;
+  return null;
+}
+
+/**
+ * Lazy-load and register a Shiki language by its key. Idempotent.
+ */
+export async function loadLanguage(langKey: string): Promise<void> {
+  const importer = EXT_TO_LANG[langKey] ?? FILENAME_TO_LANG[langKey];
+  if (!importer) return;
+  const hl = await getHighlighter();
+  if (hl.getLoadedLanguages().includes(langKey)) return;
+  const mod = await importer();
+  // Shiki language modules export the lang object as default.
+  const lang = (mod as { default: unknown }).default;
+  if (lang) {
+    await hl.loadLanguage(lang as Parameters<typeof hl.loadLanguage>[0]);
+  }
+}
+
 export type { ThemedToken };

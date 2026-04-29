@@ -167,5 +167,18 @@ export function useCockpit(sessionId: string | null) {
     [sessionId],
   );
 
-  return { state, status, resolveApproval, sendPrompt };
+  const cancelPrompt = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/cancel`,
+        { method: "POST" },
+      );
+    } catch {
+      // Cancel is best-effort; the agent will eventually emit a
+      // Stopped event whether or not the cancel arrives in time.
+    }
+  }, [sessionId]);
+
+  return { state, status, resolveApproval, sendPrompt, cancelPrompt };
 }
