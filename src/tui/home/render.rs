@@ -1060,10 +1060,10 @@ impl HomeView {
     ) {
         let update_style = Style::default().fg(theme.waiting).bold();
         let text = if let Some(s) = status {
-            format!(" {s}")
+            format!(" {s}  [Ctrl+x] dismiss")
         } else {
             format!(
-                " update available {} → {}  press [u] to update",
+                " update available {} → {}  [u] update  [Ctrl+x] dismiss",
                 info.current_version, info.latest_version
             )
         };

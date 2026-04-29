@@ -53,6 +53,11 @@ pub struct App {
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
     update_status: Option<UpdateStatus>,
     update_status_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<()>>>,
+    /// User dismissed the update bar this session. Resets when the
+    /// process exits; on next launch the startup check runs again and
+    /// the bar reappears if an update is still available. In-memory
+    /// only — no config persistence.
+    update_bar_dismissed: bool,
     /// Held in an Option so `with_raw_mode_disabled` can drop it before
     /// spawning child processes. Crossterm's EventStream runs a background
     /// reader thread on stdin; if it's alive when tmux attach-session starts,
@@ -131,6 +136,7 @@ impl App {
             update_rx: None,
             update_status: None,
             update_status_rx: None,
+            update_bar_dismissed: false,
             event_stream: Some(EventStream::new()),
             mouse_captured: true,
         })
@@ -486,11 +492,15 @@ impl App {
             poll_update_receiver(self.update_rx.take(), self.update_info.take());
         self.update_info = update_info;
         self.update_rx = update_rx;
-        // `autoupdate = Off` means "don't notify, don't auto-apply". Drop the
-        // info now so render() and the `u` hotkey both see None without
-        // per-frame disk I/O. Toggling Off → Notify in settings takes effect
-        // on next startup; the cache TTL keeps it cheap.
-        if received && matches!(get_update_settings().autoupdate, AutoupdatePolicy::Off) {
+        // Drop the info if the user has either:
+        //   - set autoupdate = Off ("don't notify, don't auto-apply"), or
+        //   - dismissed the bar this session ("not now, remind me on restart").
+        // Doing it once at poll time avoids per-frame disk I/O. Toggling
+        // Off → Notify takes effect on next startup; same for dismissal.
+        if received
+            && (matches!(get_update_settings().autoupdate, AutoupdatePolicy::Off)
+                || self.update_bar_dismissed)
+        {
             self.update_info = None;
             return false;
         }
@@ -537,6 +547,9 @@ impl App {
             return;
         };
         if self.update_status_rx.is_some() {
+            return;
+        }
+        if self.update_bar_dismissed {
             return;
         }
         let settings = get_update_settings();
@@ -685,6 +698,21 @@ impl App {
                     return Ok(());
                 }
                 self.should_quit = true;
+                return Ok(());
+            }
+            // Ctrl+x dismisses the update bar / status toast for this
+            // session. Gated on something being visible AND no dialog
+            // open so it doesn't fire during dialog input. On next launch
+            // the startup check runs again and the bar reappears if the
+            // update is still available.
+            (KeyCode::Char('x'), KeyModifiers::CONTROL)
+                if (self.update_info.is_some() || self.update_status.is_some())
+                    && !self.home.has_dialog() =>
+            {
+                self.update_info = None;
+                self.update_status = None;
+                self.update_bar_dismissed = true;
+                self.needs_redraw = true;
                 return Ok(());
             }
             _ => {}
