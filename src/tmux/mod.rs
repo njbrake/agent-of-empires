@@ -12,6 +12,7 @@ pub use status_bar::{get_session_info_for_current, get_status_for_current_sessio
 pub use status_detection::detect_status_from_content;
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
 
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support {
     pub use super::env::{
