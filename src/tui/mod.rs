@@ -7,6 +7,7 @@ mod deletion_poller;
 pub mod dialogs;
 pub mod diff;
 mod home;
+pub(crate) mod responsive;
 pub mod settings;
 mod status_poller;
 pub(crate) mod styles;

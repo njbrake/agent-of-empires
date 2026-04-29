@@ -6,6 +6,7 @@ use ratatui::widgets::*;
 use ratatui_textarea::TextArea;
 
 use super::DialogResult;
+use crate::tui::responsive;
 use crate::tui::styles::Theme;
 
 pub struct SendMessageDialog {
@@ -62,10 +63,12 @@ impl SendMessageDialog {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        // 2 for borders + 1 per content line, min 3 (single line), max 12
+        // 2 for borders + 1 per content line, min 3 (single line), max 12,
+        // capped to viewport so the popover never paints under the iOS soft
+        // keyboard if Event::Resize lands mid-render.
         let content_lines = self.text_area.lines().len() as u16;
-        let height = (content_lines + 2).clamp(3, 12);
-        let dialog_width = (area.width * 80 / 100).max(60).min(area.width);
+        let height = (content_lines + 2).clamp(3, 12).min(area.height.max(3));
+        let dialog_width = responsive::dialog_width(area.width);
         let dialog_area = super::centered_rect(area, dialog_width, height);
 
         frame.render_widget(Clear, dialog_area);
