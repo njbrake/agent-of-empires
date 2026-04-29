@@ -101,7 +101,11 @@ type PendingResponders = Arc<Mutex<HashMap<Nonce, PendingResponder>>>;
 /// from the connection task.
 pub struct AcpClient {
     pub session_id: CockpitSessionId,
-    inbound: mpsc::Receiver<Event>,
+    /// Inbound event receiver. Optional so the supervisor can `take()` it
+    /// for the drain task, decoupling event polling from the client mutex
+    /// (otherwise next_event().await would hold the mutex forever and
+    /// deadlock send_prompt).
+    inbound: Option<mpsc::Receiver<Event>>,
     cmd_tx: Option<mpsc::Sender<ClientCmd>>,
     pending_responders: PendingResponders,
     /// Hold the subprocess so it gets killed when the client is dropped.
@@ -125,7 +129,7 @@ impl AcpClient {
         let (event_tx, event_rx) = mpsc::channel(64);
         let client = Self {
             session_id,
-            inbound: event_rx,
+            inbound: Some(event_rx),
             cmd_tx: None,
             pending_responders: Arc::new(Mutex::new(HashMap::new())),
             _child: None,
@@ -258,7 +262,7 @@ impl AcpClient {
 
         Ok(Self {
             session_id,
-            inbound: event_rx,
+            inbound: Some(event_rx),
             cmd_tx: Some(cmd_tx),
             pending_responders,
             _child: Some(child),
@@ -321,7 +325,7 @@ impl AcpClient {
 
         Ok(Self {
             session_id,
-            inbound: event_rx,
+            inbound: Some(event_rx),
             cmd_tx: Some(cmd_tx),
             pending_responders,
             _child: Some(child),
@@ -370,9 +374,21 @@ impl AcpClient {
         Ok(())
     }
 
-    /// Drain the next event the agent emitted.
+    /// Drain the next event the agent emitted. Returns None once the
+    /// receiver has been moved out via `take_inbound` (the supervisor
+    /// path) or the connection task has dropped its sender.
     pub async fn next_event(&mut self) -> Option<Event> {
-        self.inbound.recv().await
+        match self.inbound.as_mut() {
+            Some(rx) => rx.recv().await,
+            None => None,
+        }
+    }
+
+    /// Take ownership of the inbound event receiver. The supervisor uses
+    /// this so the drain task can poll events without holding the client
+    /// mutex (which would deadlock send_prompt).
+    pub fn take_inbound(&mut self) -> Option<mpsc::Receiver<Event>> {
+        self.inbound.take()
     }
 }
 

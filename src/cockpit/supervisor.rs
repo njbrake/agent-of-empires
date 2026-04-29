@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -153,14 +153,19 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
-        let client = AcpClient::spawn(config, cockpit_session_id.clone()).await?;
+        let mut client = AcpClient::spawn(config, cockpit_session_id.clone()).await?;
 
         info!(target: "cockpit.supervisor", session = %session_id, "cockpit worker spawned");
 
+        // Move the inbound receiver out so the drain task can poll events
+        // without holding the client mutex (which would deadlock
+        // send_prompt: drain holds the lock across recv().await). The
+        // receiver is always Some on a freshly-spawned client.
+        let inbound = client
+            .take_inbound()
+            .expect("freshly spawned AcpClient always has inbound receiver");
         let client = Arc::new(Mutex::new(client));
-        let drain_task = self
-            .start_drain_task(session_id.clone(), Arc::clone(&client))
-            .await;
+        let drain_task = self.start_drain_task(session_id.clone(), inbound).await;
 
         let mut workers = self.workers.lock().await;
         workers.insert(
@@ -177,17 +182,13 @@ impl<S: BroadcastSink> Supervisor<S> {
     async fn start_drain_task(
         &self,
         session_id: String,
-        client: Arc<Mutex<AcpClient>>,
+        mut inbound: mpsc::Receiver<Event>,
     ) -> JoinHandle<()> {
         let sink = Arc::clone(&self.sink);
         tokio::spawn(async move {
             let mut seq: u64 = 0;
             loop {
-                let event = {
-                    let mut c = client.lock().await;
-                    c.next_event().await
-                };
-                let Some(event) = event else {
+                let Some(event) = inbound.recv().await else {
                     debug!(target: "cockpit.supervisor", session = %session_id, "drain channel closed");
                     break;
                 };
