@@ -19,8 +19,8 @@ use crate::session::capture::{
     build_exclusion_set, capture_codex_session_id, capture_gemini_session_id,
     capture_pi_session_id, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
     codex_poll_fn, gemini_poll_fn, generate_claude_session_id, is_valid_session_id,
-    opencode_poll_fn, pi_poll_fn, try_capture_opencode_session_id, validated_session_id,
-    vibe_poll_fn,
+    opencode_poll_fn, opencode_poll_fn_sandboxed, pi_poll_fn, try_capture_opencode_session_id,
+    try_capture_opencode_session_id_in_container, validated_session_id, vibe_poll_fn,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +445,7 @@ impl Instance {
         // via deferred_capture_session_id().
         let session_id = match self.tool.as_str() {
             "claude" => Some(generate_claude_session_id()),
+            "opencode" => None,
             _ => None,
         };
 
@@ -459,7 +460,20 @@ impl Instance {
     pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
         let exclusion = build_exclusion_set(&self.id);
         let result = match self.tool.as_str() {
-            "opencode" => try_capture_opencode_session_id(&self.project_path, &exclusion, 0.0).ok(),
+            "opencode" => {
+                if self.is_sandboxed() {
+                    let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+                    try_capture_opencode_session_id_in_container(
+                        &container_name,
+                        &self.container_workdir(),
+                        &exclusion,
+                        None,
+                    )
+                    .ok()
+                } else {
+                    try_capture_opencode_session_id(&self.project_path, &exclusion, None).ok()
+                }
+            }
             "codex" => capture_codex_session_id(&self.project_path, &exclusion).ok(),
             "gemini" => capture_gemini_session_id(&self.project_path, &exclusion).ok(),
             "vibe" => capture_vibe_session_id(&self.project_path, &exclusion).ok(),
@@ -1011,7 +1025,6 @@ impl Instance {
             .tmux_session()
             .map(|s| s.name().to_string())
             .unwrap_or_default();
-        let cb_tmux_name = tmux_session_name.clone();
         let mut poller = SessionPoller::new(tmux_session_name);
         let instance_id = self.id.clone();
         let initial_known = self.agent_session_id.clone();
@@ -1040,16 +1053,33 @@ impl Instance {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as f64)
                     .unwrap_or(0.0);
-                Box::new(opencode_poll_fn(
-                    self.project_path.clone(),
-                    self.id.clone(),
-                    launch_time_ms,
-                ))
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(opencode_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                        launch_time_ms,
+                    ))
+                } else {
+                    Box::new(opencode_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        launch_time_ms,
+                    ))
+                }
             }
             _ => return,
         };
 
         let cb_instance_id = self.id.clone();
+        let cb_tmux_name = self
+            .tmux_session()
+            .map(|s| s.name().to_string())
+            .unwrap_or_default();
 
         let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id: &str| {
             tracing::info!("Session ID changed for {}: {}", cb_instance_id, new_id);
@@ -2010,6 +2040,33 @@ mod tests {
         let session_id = "session-789";
         let flags = build_resume_flags("opencode", session_id, false);
         assert_eq!(flags, "--session session-789");
+
+        let flags = build_resume_flags("opencode", session_id, true);
+        assert_eq!(flags, "--session session-789");
+    }
+
+    #[test]
+    fn test_opencode_acquire_returns_none_for_deferred_capture() {
+        let mut inst = Instance::new("Test", "/nonexistent/opencode/test");
+        inst.tool = "opencode".to_string();
+
+        let (session_id, is_existing) = inst.acquire_session_id();
+
+        assert!(session_id.is_none());
+        assert!(!is_existing);
+        assert!(inst.agent_session_id.is_none());
+    }
+
+    #[test]
+    fn test_persisted_opencode_session_id_reused() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.tool = "opencode".to_string();
+        inst.agent_session_id = Some("oc-session-42".to_string());
+
+        let (session_id, is_existing) = inst.acquire_session_id();
+
+        assert_eq!(session_id, Some("oc-session-42".to_string()));
+        assert!(is_existing);
     }
 
     #[test]
@@ -2053,25 +2110,6 @@ mod tests {
     }
 
     #[test]
-    fn test_opencode_acquire_returns_none_for_deferred_capture() {
-        let mut inst = Instance::new("Test", "/nonexistent/opencode/test");
-        inst.tool = "opencode".to_string();
-
-        let (session_id, is_existing) = inst.acquire_session_id();
-
-        // OpenCode never generates a pre-launch ID (unlike Claude).
-        // Retroactive capture may still find an existing session via
-        // fallback (opencode returns the most recent session regardless
-        // of project path), so we assert the invariant: any returned
-        // session must be flagged as existing, never generated.
-        assert!(
-            !is_existing || session_id.is_some(),
-            "is_existing=true requires a session ID"
-        );
-        assert_eq!(inst.agent_session_id, session_id);
-    }
-
-    #[test]
     fn test_codex_acquire_returns_none_for_deferred_capture() {
         let mut inst = Instance::new("Test", "/nonexistent/path");
         inst.tool = "codex".to_string();
@@ -2081,18 +2119,6 @@ mod tests {
         assert!(session_id.is_none());
         assert!(!is_existing);
         assert!(inst.agent_session_id.is_none());
-    }
-
-    #[test]
-    fn test_persisted_opencode_session_id_reused() {
-        let mut inst = Instance::new("Test", "/tmp/test");
-        inst.tool = "opencode".to_string();
-        inst.agent_session_id = Some("oc-session-42".to_string());
-
-        let (session_id, is_existing) = inst.acquire_session_id();
-
-        assert_eq!(session_id, Some("oc-session-42".to_string()));
-        assert!(is_existing);
     }
 
     #[test]

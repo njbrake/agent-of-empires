@@ -12,10 +12,12 @@ pub use status_bar::{get_session_info_for_current, get_status_for_current_sessio
 pub use status_detection::detect_status_from_content;
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
 
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support {
     pub use super::env::{
-        get_hidden_env, set_hidden_env, AOE_CAPTURED_SESSION_ID_KEY, AOE_INSTANCE_ID_KEY,
+        get_hidden_env, get_hidden_env_batch, remove_hidden_env, remove_hidden_env_batch,
+        set_hidden_env, set_hidden_env_batch, AOE_CAPTURED_SESSION_ID_KEY, AOE_INSTANCE_ID_KEY,
     };
 }
 

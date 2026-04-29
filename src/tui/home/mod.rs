@@ -403,42 +403,52 @@ impl HomeView {
             let _ = view.save();
         }
 
-        // Synchronize tmux env with sessions.json so build_exclusion_set()
-        // sees current data instead of stale values from previous runs.
-        let mut env_batch: Vec<(String, String, String)> = Vec::new();
-        for inst in &view.instances {
-            let tmux_name = match inst.tmux_session() {
-                Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
-                _ => continue,
-            };
+        // Batch-sync instance IDs and captured session IDs to tmux hidden env
+        // so that build_exclusion_set() on other AoE instances can see them.
+        {
+            let mut set_batch: Vec<(String, String, String)> = Vec::new();
+            let mut unset_batch: Vec<(String, String)> = Vec::new();
+            for inst in &view.instances {
+                let tmux_name = match inst.tmux_session() {
+                    Ok(s) if s.exists() && !s.is_pane_dead() => s.name().to_string(),
+                    _ => continue,
+                };
 
-            env_batch.push((
-                tmux_name.clone(),
-                crate::tmux::env::AOE_INSTANCE_ID_KEY.to_string(),
-                inst.id.clone(),
-            ));
-            // Set if known, clear if not. Pollers re-publish on discovery,
-            // so clearing is safe and prevents stale exclusion-set entries.
-            if let Some(ref sid) = inst.agent_session_id {
-                env_batch.push((
-                    tmux_name,
-                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY.to_string(),
-                    sid.clone(),
+                set_batch.push((
+                    tmux_name.clone(),
+                    crate::tmux::env::AOE_INSTANCE_ID_KEY.to_string(),
+                    inst.id.clone(),
                 ));
-            } else {
-                let _ = crate::tmux::env::remove_hidden_env(
-                    &tmux_name,
-                    crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
-                );
+                if let Some(ref sid) = inst.agent_session_id {
+                    set_batch.push((
+                        tmux_name,
+                        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY.to_string(),
+                        sid.clone(),
+                    ));
+                } else {
+                    unset_batch.push((
+                        tmux_name,
+                        crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY.to_string(),
+                    ));
+                }
             }
-        }
-        if !env_batch.is_empty() {
-            let batch_refs: Vec<(&str, &str, &str)> = env_batch
-                .iter()
-                .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
-                .collect();
-            if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
-                tracing::warn!("Batch env sync failed: {}", e);
+            if !set_batch.is_empty() {
+                let batch_refs: Vec<(&str, &str, &str)> = set_batch
+                    .iter()
+                    .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
+                    .collect();
+                if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
+                    tracing::warn!("Batch env sync failed: {}", e);
+                }
+            }
+            if !unset_batch.is_empty() {
+                let batch_refs: Vec<(&str, &str)> = unset_batch
+                    .iter()
+                    .map(|(s, k)| (s.as_str(), k.as_str()))
+                    .collect();
+                if let Err(e) = crate::tmux::env::remove_hidden_env_batch(&batch_refs) {
+                    tracing::warn!("Batch env unset failed: {}", e);
+                }
             }
         }
 
