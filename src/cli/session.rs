@@ -31,6 +31,9 @@ pub enum SessionCommands {
 
     /// Auto-detect current session
     Current(CurrentArgs),
+
+    /// Set agent session ID for a session
+    SetSessionId(SetSessionIdArgs),
 }
 
 #[derive(Args)]
@@ -102,6 +105,14 @@ struct CaptureOutput {
     lines: usize,
 }
 
+#[derive(Args)]
+pub struct SetSessionIdArgs {
+    /// Session ID or title
+    identifier: String,
+    /// Agent session ID to set (pass empty string to clear)
+    session_id: String,
+}
+
 #[derive(Serialize)]
 struct SessionDetails {
     id: String,
@@ -126,6 +137,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Capture(args) => capture_session(profile, args).await,
         SessionCommands::Rename(args) => rename_session(profile, args).await,
         SessionCommands::Current(args) => current_session(args).await,
+        SessionCommands::SetSessionId(args) => set_session_id(profile, args).await,
     }
 }
 
@@ -477,4 +489,54 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
     }
 
     bail!("Current tmux session is not an Agent of Empires session")
+}
+
+async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    let new_id = if args.session_id.trim().is_empty() {
+        None
+    } else {
+        let trimmed = args.session_id.trim().to_string();
+        if !crate::session::is_valid_session_id(&trimmed) {
+            bail!(
+                "Invalid session ID {:?}: must be 1-256 ASCII alphanumeric, dash, underscore, or dot characters",
+                trimmed
+            );
+        }
+        Some(trimmed)
+    };
+
+    instances[idx].agent_session_id = new_id.clone();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    match new_id {
+        Some(ref id) => {
+            println!("✓ Set session ID for '{}': {}", title, id);
+            let tool = &instances[idx].tool;
+            if let Some(agent) = crate::agents::get_agent(tool) {
+                if matches!(
+                    agent.resume_strategy,
+                    crate::agents::ResumeStrategy::Unsupported
+                ) {
+                    eprintln!("Warning: {} does not support session resume; this ID will be stored but not used.", tool);
+                }
+            }
+        }
+        None => println!("✓ Cleared session ID for '{}'", title),
+    }
+    Ok(())
 }

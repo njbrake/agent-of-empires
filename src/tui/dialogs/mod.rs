@@ -17,6 +17,7 @@ mod rename;
 mod send_message;
 #[cfg(feature = "serve")]
 mod serve;
+mod update_confirm;
 mod welcome;
 
 pub use changelog::ChangelogDialog;
@@ -36,6 +37,7 @@ pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
 #[cfg(feature = "serve")]
 pub use serve::{ServeAction, ServeView};
+pub use update_confirm::UpdateConfirmDialog;
 pub use welcome::WelcomeDialog;
 
 pub enum DialogResult<T> {

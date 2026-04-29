@@ -564,6 +564,14 @@ pub fn detect_droid_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+/// Hermes status is detected via shell-script hooks (YAML-based) registered
+/// in `~/.hermes/config.yaml`, not tmux pane parsing. This stub exists so
+/// the agent registry has a valid function pointer; it only runs as a
+/// fallback when the hook hasn't written a status file yet.
+pub fn detect_hermes_status(_content: &str) -> Status {
+    Status::Idle
+}
+
 /// settl status is detected via hooks (TOML-based), not tmux pane parsing.
 /// This stub exists so the agent registry has a valid function pointer.
 pub fn detect_settl_status(_content: &str) -> Status {
@@ -944,6 +952,12 @@ mod tests {
     fn test_detect_droid_status_idle() {
         assert_eq!(detect_droid_status("file saved"), Status::Idle);
         assert_eq!(detect_droid_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_hermes_status_is_stub() {
+        // Hermes uses hook-based detection; the stub always returns Idle
+        assert_eq!(detect_hermes_status("anything"), Status::Idle);
     }
 
     #[test]

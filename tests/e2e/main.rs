@@ -25,3 +25,4 @@ mod sandbox;
 mod serve;
 mod tui_launch;
 mod unified_view;
+mod update_command;

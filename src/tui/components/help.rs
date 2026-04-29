@@ -7,7 +7,7 @@ use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 40;
+const DIALOG_HEIGHT: u16 = 42;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -63,6 +63,8 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("S", "Settings"),
                     ("P", "Profiles"),
                     ("Ctrl+R", "Serve (LAN / Tunnel)"),
+                    ("u", "Update aoe (when available)"),
+                    ("Ctrl+x", "Dismiss update bar (this session)"),
                     ("Shift+drag", "Select text in preview"),
                     ("?", "Toggle help"),
                     ("Q", "Quit"),
@@ -116,6 +118,8 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("s", "Settings"),
                     ("P", "Profiles"),
                     ("R", "Serve (LAN / Tunnel)"),
+                    ("u", "Update aoe (when available)"),
+                    ("Ctrl+x", "Dismiss update bar (this session)"),
                     ("Shift+drag", "Select text in preview"),
                     ("?", "Toggle help"),
                     ("q", "Quit"),

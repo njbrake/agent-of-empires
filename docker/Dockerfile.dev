@@ -1,6 +1,7 @@
 # aoe-dev-sandbox: Extended sandbox with development tools
 # Includes: Rust, uv (Python), nvm + Node.js, pnpm, bun, gh (GitHub CLI)
-# Note: Claude Code, OpenCode, and Codex CLI are inherited from the base image
+# Note: Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI,
+# Cursor CLI, Copilot CLI, and Pi are inherited from the base image
 
 ARG BASE_IMAGE=ghcr.io/njbrake/aoe-sandbox:latest
 FROM ${BASE_IMAGE}

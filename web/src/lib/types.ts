@@ -26,6 +26,11 @@ export interface SessionResponse {
   /** True when this session uses ACP cockpit rendering instead of a
    *  tmux-backed PTY. Absent on builds without the cockpit feature. */
   cockpit_mode?: boolean;
+  /** True when this is a Claude Code session AND the user has enabled
+   *  Claude's fullscreen renderer (`tui: "fullscreen"` in
+   *  ~/.claude/settings.json). The mobile rendering path uses this to
+   *  skip scrollback-tracking workarounds that target tmux copy-mode. */
+  claude_fullscreen: boolean;
 }
 
 export interface CleanupDefaults {

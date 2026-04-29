@@ -35,7 +35,7 @@ allowfullscreen
 
 ## Supported Agents
 
-Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, and Factory Droid. AoE auto-detects which are installed.
+Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, Factory Droid, and Hermes. AoE auto-detects which are installed.
 
 <div class="cta-box">
 <p><strong>Ready to get started?</strong></p>
