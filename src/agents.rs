@@ -200,7 +200,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
         hook_config: None,
-        resume_strategy: ResumeStrategy::Unsupported,
+        resume_strategy: ResumeStrategy::Subcommand("resume"),
         host_only: false,
         // Codex has paste-burst detection with a 120ms Enter-suppression window;
         // Enter keys arriving within that window after a character stream are
