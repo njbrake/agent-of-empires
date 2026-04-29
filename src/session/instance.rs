@@ -19,8 +19,10 @@ use crate::session::capture::{
     build_exclusion_set, capture_codex_session_id, capture_gemini_session_id,
     capture_pi_session_id, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
     codex_poll_fn, gemini_poll_fn, generate_claude_session_id, is_valid_session_id,
-    opencode_poll_fn, opencode_poll_fn_sandboxed, pi_poll_fn, try_capture_opencode_session_id,
-    try_capture_opencode_session_id_in_container, validated_session_id, vibe_poll_fn,
+    opencode_poll_fn, opencode_poll_fn_sandboxed, pi_poll_fn, pi_poll_fn_sandboxed,
+    try_capture_opencode_session_id, try_capture_opencode_session_id_in_container,
+    try_capture_pi_session_id_in_container, try_capture_vibe_session_id_in_container,
+    validated_session_id, vibe_poll_fn, vibe_poll_fn_sandboxed,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,9 +419,9 @@ impl Instance {
     ///
     /// Returns `(session_id, is_existing)`. If a persisted ID exists, returns it
     /// with `is_existing = true`. Otherwise, only Claude gets a new UUID here
-    /// (it requires `--session-id <uuid>` at launch). Other agents create their
-    /// own sessions on startup; their IDs are captured post-launch by
-    /// `deferred_capture_session_id()`.
+    /// (it requires `--session-id <uuid>` at launch). Other agents discover
+    /// their session ID post-launch via the poller (or retroactively via
+    /// `try_retroactive_capture()` when an existing tmux session is reattached).
     pub fn acquire_session_id(&mut self) -> (Option<String>, bool) {
         if self.agent_session_id.is_some() {
             return (self.agent_session_id.clone(), true);
@@ -476,8 +478,32 @@ impl Instance {
             }
             "codex" => capture_codex_session_id(&self.project_path, &exclusion).ok(),
             "gemini" => capture_gemini_session_id(&self.project_path, &exclusion).ok(),
-            "vibe" => capture_vibe_session_id(&self.project_path, &exclusion).ok(),
-            "pi" => capture_pi_session_id(&self.project_path, &exclusion).ok(),
+            "vibe" => {
+                if self.is_sandboxed() {
+                    let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+                    try_capture_vibe_session_id_in_container(
+                        &container_name,
+                        &self.container_workdir(),
+                        &exclusion,
+                    )
+                    .ok()
+                } else {
+                    capture_vibe_session_id(&self.project_path, &exclusion).ok()
+                }
+            }
+            "pi" => {
+                if self.is_sandboxed() {
+                    let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+                    try_capture_pi_session_id_in_container(
+                        &container_name,
+                        &self.container_workdir(),
+                        &exclusion,
+                    )
+                    .ok()
+                } else {
+                    capture_pi_session_id(&self.project_path, &exclusion).ok()
+                }
+            }
             _ => None,
         };
         result.and_then(validated_session_id)
@@ -1046,8 +1072,36 @@ impl Instance {
             }
             "codex" => Box::new(codex_poll_fn(self.project_path.clone(), self.id.clone())),
             "gemini" => Box::new(gemini_poll_fn(self.project_path.clone(), self.id.clone())),
-            "pi" => Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone())),
-            "vibe" => Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone())),
+            "pi" => {
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(pi_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                    ))
+                } else {
+                    Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone()))
+                }
+            }
+            "vibe" => {
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(vibe_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                    ))
+                } else {
+                    Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone()))
+                }
+            }
             "opencode" => {
                 let launch_time_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

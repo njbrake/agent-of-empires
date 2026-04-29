@@ -294,6 +294,114 @@ pub(crate) fn vibe_poll_fn(
     }
 }
 
+const VIBE_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Vibe `meta.json` files
+/// inside the container. Each file is emitted as a `===VIBE:<unix-mtime>===`
+/// header followed by the JSON body and a `===END===` trailer; the host parses
+/// this stream rather than spawning one `docker exec cat` per file.
+const VIBE_CONTAINER_LIST_SCRIPT: &str = r#"SESS_DIR="${VIBE_HOME:-$HOME/.vibe}/logs/session"
+[ -d "$SESS_DIR" ] || exit 0
+for d in "$SESS_DIR"/*/; do
+  m="$d/meta.json"
+  [ -f "$m" ] || continue
+  ts=$(stat -c %Y "$m" 2>/dev/null || stat -f %m "$m" 2>/dev/null || echo 0)
+  printf '===VIBE:%s===\n' "$ts"
+  cat "$m"
+  printf '\n===END===\n'
+done
+"#;
+
+pub(crate) fn try_capture_vibe_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        VIBE_CONTAINER_LIST_SCRIPT,
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(VIBE_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (vibe meta scan)",
+    )?;
+    select_vibe_session_in_container(&stdout_bytes, container_cwd, exclusion)
+}
+
+fn select_vibe_session_in_container(
+    stdout_bytes: &[u8],
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, Option<String>, u64)> = Vec::new();
+
+    for chunk in text.split("===VIBE:").skip(1) {
+        let (ts_str, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let (session_id, cwd) = match parse_vibe_meta_json(json_part.trim()) {
+            Some(pair) if !pair.0.is_empty() && !exclusion.contains(&pair.0) => pair,
+            _ => continue,
+        };
+        candidates.push((session_id, cwd, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Vibe sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.2));
+
+    let project_match = candidates
+        .iter()
+        .find(|(_, cwd, _)| cwd.as_deref() == Some(container_cwd));
+
+    project_match
+        .map(|(id, _, _)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Vibe session matching container CWD"))
+}
+
+fn parse_vibe_meta_json(content: &str) -> Option<(String, Option<String>)> {
+    let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
+    let session_id = parsed
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)?;
+    let cwd = parsed
+        .get("environment")
+        .and_then(|env| env.get("working_directory"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Some((session_id, cwd))
+}
+
+pub(crate) fn vibe_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_vibe_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Vibe container poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
 /// Capture session ID from Codex filesystem.
 ///
 /// Walks the Codex sessions directory (including date-partitioned `YYYY/MM/DD/` subdirectories)
@@ -873,6 +981,114 @@ pub(crate) fn pi_poll_fn(
         let exclusion = build_exclusion_set(&instance_id);
         capture_pi_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Pi poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+const PI_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Pi `.jsonl` session
+/// files inside the container. Each file is emitted as a `===PI:<unix-mtime>===`
+/// header followed by the first line of the file (the session header) and a
+/// `===END===` trailer; the host parses this stream rather than spawning one
+/// `docker exec head` per file.
+const PI_CONTAINER_LIST_SCRIPT: &str = r#"SESS_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/sessions"
+[ -d "$SESS_DIR" ] || exit 0
+for d in "$SESS_DIR"/*/; do
+  for f in "$d"*.jsonl; do
+    [ -f "$f" ] || continue
+    ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+    printf '===PI:%s===\n' "$ts"
+    head -n 1 "$f"
+    printf '\n===END===\n'
+  done
+done
+"#;
+
+pub(crate) fn try_capture_pi_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args(["exec", container_name, "sh", "-c", PI_CONTAINER_LIST_SCRIPT]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(PI_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (pi session scan)",
+    )?;
+    select_pi_session_in_container(&stdout_bytes, container_cwd, exclusion)
+}
+
+fn select_pi_session_in_container(
+    stdout_bytes: &[u8],
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, Option<String>, u64)> = Vec::new();
+
+    for chunk in text.split("===PI:").skip(1) {
+        let (ts_str, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let (id_opt, cwd) = match parse_pi_header_json(json_part.trim()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let session_id = match id_opt {
+            Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
+            _ => continue,
+        };
+        candidates.push((session_id, cwd, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Pi sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.2));
+
+    let project_match = candidates
+        .iter()
+        .find(|(_, cwd, _)| cwd.as_deref() == Some(container_cwd));
+
+    project_match
+        .map(|(id, _, _)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Pi session matching container CWD"))
+}
+
+fn parse_pi_header_json(line: &str) -> Option<(Option<String>, Option<String>)> {
+    let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+    if parsed.get("type")?.as_str()? != "session" {
+        return None;
+    }
+    let session_id = parsed.get("id").and_then(|v| v.as_str()).map(String::from);
+    let cwd = parsed
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    Some((session_id, cwd))
+}
+
+pub(crate) fn pi_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_pi_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Pi container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }

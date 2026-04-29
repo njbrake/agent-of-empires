@@ -89,6 +89,7 @@ async fn main() -> Result<()> {
             };
         }
         Some(Commands::Uninstall(args)) => return cli::uninstall::run(args).await,
+        Some(Commands::Update(args)) => return cli::update::run(args).await,
         _ => {}
     }
 

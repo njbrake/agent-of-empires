@@ -36,7 +36,11 @@ impl HomeView {
         self.diff_area.contains(Position::from((col, row)))
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+    pub fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        update_info: Option<&crate::update::UpdateInfo>,
+    ) -> Option<Action> {
         // Handle unsaved changes confirmation for settings (shown over settings view)
         if self.settings_close_confirm {
             if let Some(dialog) = &mut self.confirm_dialog {
@@ -515,6 +519,23 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.update_confirm_dialog {
+            use crate::tui::dialogs::DialogResult;
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.update_confirm_dialog = None;
+                }
+                DialogResult::Submit(()) => {
+                    let method = dialog.method.clone();
+                    let version = dialog.latest_version.clone();
+                    self.update_confirm_dialog = None;
+                    return Some(Action::SpawnUpdate(method, version));
+                }
+            }
+            return None;
+        }
+
         // Search mode
         if self.search_active {
             match key.code {
@@ -744,6 +765,50 @@ impl HomeView {
                             "Error",
                             &format!("Failed to open settings: {}", e),
                         ));
+                    }
+                }
+            }
+            KeyCode::Char('u') => {
+                if let Some(info) = update_info {
+                    if info.available && self.update_confirm_dialog.is_none() {
+                        let method = match crate::update::install::detect_install_method() {
+                            Ok(m) => m,
+                            Err(e) => {
+                                tracing::warn!("update detection failed: {e}");
+                                return None;
+                            }
+                        };
+                        use crate::update::install::InstallMethod;
+                        if !matches!(
+                            &method,
+                            InstallMethod::Homebrew | InstallMethod::Tarball { .. }
+                        ) {
+                            let msg = match &method {
+                                InstallMethod::Nix => {
+                                    "Nix install: run `nix run github:njbrake/agent-of-empires` to update".to_string()
+                                }
+                                InstallMethod::Cargo => {
+                                    "Cargo install: run `cargo install --git https://github.com/njbrake/agent-of-empires aoe`".to_string()
+                                }
+                                InstallMethod::Unknown { .. } => {
+                                    "Unknown install method: run `aoe update` in a terminal for instructions".to_string()
+                                }
+                                _ => unreachable!(),
+                            };
+                            return Some(Action::SetTransientStatus(msg));
+                        }
+                        let needs_sudo = matches!(
+                            &method,
+                            InstallMethod::Tarball { binary_path }
+                                if !crate::update::install::parent_is_writable(binary_path)
+                        );
+                        self.update_confirm_dialog =
+                            Some(crate::tui::dialogs::UpdateConfirmDialog::new(
+                                info.current_version.clone(),
+                                info.latest_version.clone(),
+                                method,
+                                needs_sudo,
+                            ));
                     }
                 }
             }

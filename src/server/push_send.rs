@@ -168,7 +168,7 @@ pub fn encrypt_aes128gcm(subscription: &Subscription, plaintext: &[u8]) -> Resul
     info1.extend_from_slice(&p_ua_bytes);
     info1.extend_from_slice(p_as_bytes);
 
-    let hk1 = Hkdf::<Sha256>::new(Some(&auth_secret), shared_bytes.as_slice());
+    let hk1 = Hkdf::<Sha256>::new(Some(&auth_secret), shared_bytes.as_ref());
     let mut ikm = [0u8; 32];
     hk1.expand(&info1, &mut ikm)
         .map_err(|e| anyhow!("HKDF expand for IKM: {}", e))?;

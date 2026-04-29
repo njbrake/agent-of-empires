@@ -21,6 +21,7 @@ use super::status::StatusArgs;
 use super::theme::ThemeCommands;
 use super::tmux::TmuxCommands;
 use super::uninstall::UninstallArgs;
+use super::update::UpdateArgs;
 use super::worktree::WorktreeCommands;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -116,6 +117,9 @@ pub enum Commands {
 
     /// Uninstall Agent of Empires
     Uninstall(UninstallArgs),
+
+    /// Update aoe to the latest release
+    Update(UpdateArgs),
 
     /// Generate shell completions
     Completion {

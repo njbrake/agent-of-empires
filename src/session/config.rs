@@ -353,9 +353,6 @@ pub struct UpdatesConfig {
     #[serde(default = "default_true")]
     pub check_enabled: bool,
 
-    #[serde(default)]
-    pub auto_update: bool,
-
     #[serde(default = "default_check_interval")]
     pub check_interval_hours: u64,
 
@@ -367,7 +364,6 @@ impl Default for UpdatesConfig {
     fn default() -> Self {
         Self {
             check_enabled: true,
-            auto_update: false,
             check_interval_hours: 24,
             notify_in_cli: true,
         }
@@ -778,7 +774,6 @@ mod tests {
     fn test_updates_config_default() {
         let updates = UpdatesConfig::default();
         assert!(updates.check_enabled);
-        assert!(!updates.auto_update);
         assert_eq!(updates.check_interval_hours, 24);
         assert!(updates.notify_in_cli);
     }
@@ -787,13 +782,11 @@ mod tests {
     fn test_updates_config_deserialize() {
         let toml = r#"
             check_enabled = false
-            auto_update = true
             check_interval_hours = 12
             notify_in_cli = false
         "#;
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
         assert!(!updates.check_enabled);
-        assert!(updates.auto_update);
         assert_eq!(updates.check_interval_hours, 12);
         assert!(!updates.notify_in_cli);
     }
@@ -804,8 +797,26 @@ mod tests {
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
         assert!(!updates.check_enabled);
         // Defaults for other fields
-        assert!(!updates.auto_update);
         assert_eq!(updates.check_interval_hours, 24);
+    }
+
+    /// Regression: a previous schema had `auto_update = bool` on
+    /// UpdatesConfig (it was wired through profiles but never read).
+    /// The field is gone now, so old configs that still set it must
+    /// deserialize cleanly with the field silently dropped by serde.
+    #[test]
+    fn test_legacy_auto_update_field_is_silently_ignored() {
+        let old_toml = r#"
+            check_enabled = true
+            auto_update = true
+            check_interval_hours = 12
+            notify_in_cli = true
+        "#;
+        let updates: UpdatesConfig =
+            toml::from_str(old_toml).expect("old auto_update field should not error");
+        assert_eq!(updates.check_interval_hours, 12);
+        assert!(updates.check_enabled);
+        assert!(updates.notify_in_cli);
     }
 
     // Tests for WorktreeConfig
