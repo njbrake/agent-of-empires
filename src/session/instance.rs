@@ -1051,6 +1051,7 @@ impl Instance {
             .tmux_session()
             .map(|s| s.name().to_string())
             .unwrap_or_default();
+        let cb_tmux_name = tmux_session_name.clone();
         let mut poller = SessionPoller::new(tmux_session_name);
         let instance_id = self.id.clone();
         let initial_known = self.agent_session_id.clone();
@@ -1130,10 +1131,6 @@ impl Instance {
         };
 
         let cb_instance_id = self.id.clone();
-        let cb_tmux_name = self
-            .tmux_session()
-            .map(|s| s.name().to_string())
-            .unwrap_or_default();
 
         let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id: &str| {
             tracing::info!("Session ID changed for {}: {}", cb_instance_id, new_id);
