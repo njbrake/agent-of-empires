@@ -16,12 +16,13 @@ use super::environment::{build_docker_env_args, shell_escape};
 use super::poller::SessionPoller;
 
 use crate::session::capture::{
-    build_exclusion_set, capture_pi_session_id, capture_vibe_session_id, claude_poll_fn,
-    claude_poll_fn_sandboxed, generate_claude_session_id, is_valid_session_id, opencode_poll_fn,
-    opencode_poll_fn_sandboxed, pi_poll_fn, pi_poll_fn_sandboxed, try_capture_opencode_session_id,
-    try_capture_opencode_session_id_in_container, try_capture_pi_session_id_in_container,
-    try_capture_vibe_session_id_in_container, validated_session_id, vibe_poll_fn,
-    vibe_poll_fn_sandboxed,
+    build_exclusion_set, capture_codex_session_id, capture_pi_session_id, capture_vibe_session_id,
+    claude_poll_fn, claude_poll_fn_sandboxed, codex_poll_fn, codex_poll_fn_sandboxed,
+    generate_claude_session_id, is_valid_session_id, opencode_poll_fn, opencode_poll_fn_sandboxed,
+    pi_poll_fn, pi_poll_fn_sandboxed, try_capture_codex_session_id_in_container,
+    try_capture_opencode_session_id, try_capture_opencode_session_id_in_container,
+    try_capture_pi_session_id_in_container, try_capture_vibe_session_id_in_container,
+    validated_session_id, vibe_poll_fn, vibe_poll_fn_sandboxed,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -492,6 +493,19 @@ impl Instance {
                     .ok()
                 } else {
                     capture_pi_session_id(&self.project_path, &exclusion).ok()
+                }
+            }
+            "codex" => {
+                if self.is_sandboxed() {
+                    let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+                    try_capture_codex_session_id_in_container(
+                        &container_name,
+                        &self.container_workdir(),
+                        &exclusion,
+                    )
+                    .ok()
+                } else {
+                    capture_codex_session_id(&self.project_path, &exclusion).ok()
                 }
             }
             _ => None,
@@ -1121,6 +1135,21 @@ impl Instance {
                     ))
                 } else {
                     Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone()))
+                }
+            }
+            "codex" => {
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(codex_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                    ))
+                } else {
+                    Box::new(codex_poll_fn(self.project_path.clone(), self.id.clone()))
                 }
             }
             _ => return,
