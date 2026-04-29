@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "agent-of-empires"
-version = "1.4.6"
+version = "1.5.0"
 dependencies = [
  "aes-gcm",
  "agent-of-empires",
