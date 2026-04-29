@@ -252,34 +252,6 @@ pub(crate) fn claude_poll_fn_sandboxed(
     }
 }
 
-/// Polling closure for Codex CLI session tracking.
-pub(crate) fn codex_poll_fn(
-    project_path: String,
-    instance_id: String,
-) -> impl Fn() -> Option<String> + Send + 'static {
-    move || {
-        let exclusion = build_exclusion_set(&instance_id);
-        capture_codex_session_id(&project_path, &exclusion)
-            .map_err(|e| tracing::debug!("Codex poll capture failed: {}", e))
-            .ok()
-            .and_then(validated_session_id)
-    }
-}
-
-/// Polling closure for Gemini CLI session tracking.
-pub(crate) fn gemini_poll_fn(
-    project_path: String,
-    instance_id: String,
-) -> impl Fn() -> Option<String> + Send + 'static {
-    move || {
-        let exclusion = build_exclusion_set(&instance_id);
-        capture_gemini_session_id(&project_path, &exclusion)
-            .map_err(|e| tracing::debug!("Gemini poll capture failed: {}", e))
-            .ok()
-            .and_then(validated_session_id)
-    }
-}
-
 /// Polling closure for Vibe (Mistral) session tracking.
 pub(crate) fn vibe_poll_fn(
     project_path: String,
@@ -402,258 +374,10 @@ pub(crate) fn vibe_poll_fn_sandboxed(
     }
 }
 
-/// Capture session ID from Codex filesystem.
-///
-/// Walks the Codex sessions directory (including date-partitioned `YYYY/MM/DD/` subdirectories)
-/// for `.jsonl` rollout files and extracts the UUID from the most recent one.
-/// Codex filenames follow the pattern `rollout-<timestamp>-<uuid>.jsonl`.
-/// Respects `CODEX_HOME` env var, falling back to `~/.codex`.
-pub(crate) fn capture_codex_session_id(
-    project_path: &str,
-    exclusion: &HashSet<String>,
-) -> Result<String> {
-    let codex_home = resolve_agent_home(Some("CODEX_HOME"), ".codex")?;
-    let sessions_dir = codex_home.join("sessions");
-
-    if !sessions_dir.exists() {
-        anyhow::bail!(
-            "Codex sessions directory not found: {}",
-            sessions_dir.display()
-        );
-    }
-
-    let mut session_entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
-    collect_codex_sessions(&sessions_dir, &mut session_entries)?;
-
-    if session_entries.is_empty() {
-        anyhow::bail!("No Codex sessions found in {}", sessions_dir.display());
-    }
-
-    session_entries.sort_by(|a, b| b.1.cmp(&a.1));
-
-    session_entries.retain(|(path, _)| {
-        !exclusion.contains(
-            extract_codex_uuid_from_filename(path)
-                .as_deref()
-                .unwrap_or(""),
-        )
-    });
-
-    let canonical_project = canonicalize_or_raw(project_path);
-
-    let chosen = session_entries.iter().find_map(|(path, _)| {
-        let cwd_matches = extract_codex_cwd_from_file(path)
-            .and_then(|cwd| std::fs::canonicalize(&cwd).ok())
-            .map(|cwd| cwd == canonical_project)
-            .unwrap_or(false);
-        if cwd_matches {
-            extract_codex_uuid_from_filename(path)
-        } else {
-            None
-        }
-    });
-
-    chosen.ok_or_else(|| anyhow::anyhow!("No Codex session found matching project path"))
-}
-
-/// Extract UUID from a Codex rollout filename.
-///
-/// Codex filenames follow the pattern `rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`.
-/// The UUID is the last hyphen-delimited segment before `.jsonl`, comprising 5 groups
-/// (e.g. `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
-pub(crate) fn extract_codex_uuid_from_filename(path: &std::path::Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?;
-    if stem.len() >= 36 {
-        let candidate = &stem[stem.len() - 36..];
-        if Uuid::parse_str(candidate).is_ok() {
-            return Some(candidate.to_string());
-        }
-    }
-    None
-}
-
-/// Extract the working directory from a Codex rollout `.jsonl` file.
-///
-/// The first line is always a `session_meta` event containing `payload.cwd`.
-/// Returns `None` if the file cannot be read or the field is missing.
-fn extract_codex_cwd_from_file(path: &std::path::Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let reader = std::io::BufReader::new(file);
-    let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&first_line).ok()?;
-    parsed
-        .get("payload")
-        .and_then(|p| p.get("cwd"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-/// Recursively collect Codex session `.jsonl` files, descending into date-partitioned dirs.
-///
-/// Directories whose names are all ASCII digits (e.g. `2025`, `03`, `06`) are treated as
-/// date components and recursed into. Files ending in `.jsonl` are collected as session entries.
-pub(crate) fn collect_codex_sessions(
-    dir: &std::path::Path,
-    entries: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>,
-) -> Result<()> {
-    for entry in resilient_read_dir(dir)? {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.chars().all(|c| c.is_ascii_digit()) {
-                collect_codex_sessions(&path, entries)?;
-            }
-        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            let modified = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            entries.push((path, modified));
-        }
-    }
-    Ok(())
-}
-
-/// Capture Gemini session ID from `~/.gemini/tmp/<dir>/chats/session-*.json`.
-///
-/// `<dir>` is a SHA-256 hash (legacy) or slug (current). We try the hash as a
-/// fast path, then scan all subdirs and verify via the `projectHash` JSON field.
-pub(crate) fn capture_gemini_session_id(
-    project_path: &str,
-    exclusion: &HashSet<String>,
-) -> Result<String> {
-    use sha2::{Digest, Sha256};
-
-    let gemini_home = resolve_agent_home(Some("GEMINI_CLI_HOME"), ".gemini")?;
-    let tmp_dir = gemini_home.join("tmp");
-
-    if !tmp_dir.exists() {
-        anyhow::bail!("Gemini tmp directory not found: {}", tmp_dir.display());
-    }
-
-    let canonical_project = canonicalize_or_raw(project_path);
-    let digest = Sha256::digest(canonical_project.to_string_lossy().as_bytes());
-    let expected_hash = digest
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>();
-
-    // Hash-named dir (legacy) as fast path; fall back to scanning all subdirs.
-    let project_dirs: Vec<std::path::PathBuf> = {
-        let exact = tmp_dir.join(&expected_hash);
-        if exact.is_dir() {
-            vec![exact]
-        } else {
-            resilient_read_dir(&tmp_dir)?
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .collect()
-        }
-    };
-
-    let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime, Option<String>)> =
-        Vec::new();
-
-    for project_dir in &project_dirs {
-        let chats_dir = project_dir.join("chats");
-        if !chats_dir.is_dir() {
-            continue;
-        }
-
-        let is_exact_match = project_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n == expected_hash);
-
-        for chat_entry in resilient_read_dir(&chats_dir)? {
-            let path = chat_entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json")
-                || !path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("session-"))
-            {
-                continue;
-            }
-
-            let fields = extract_gemini_fields(&path);
-
-            // For slug-named dirs, verify projectHash inside the file.
-            if !is_exact_match {
-                let file_hash = fields
-                    .as_ref()
-                    .and_then(|(_, h)| h.as_deref())
-                    .unwrap_or_default();
-                if file_hash != expected_hash {
-                    continue;
-                }
-            }
-
-            let session_id = fields.and_then(|(sid, _)| sid);
-
-            let modified = chat_entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            candidates.push((path, modified, session_id));
-        }
-    }
-
-    if candidates.is_empty() {
-        anyhow::bail!("No Gemini session files found in {}", tmp_dir.display());
-    }
-
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-    candidates.retain(|(_, _, sid)| {
-        sid.as_deref()
-            .map(|id| !id.is_empty() && !exclusion.contains(id))
-            .unwrap_or(false)
-    });
-
-    candidates
-        .first()
-        .and_then(|(_, _, sid)| sid.clone())
-        .ok_or_else(|| anyhow::anyhow!("No Gemini session found matching project path"))
-}
-
-/// Extract session ID from a Gemini session JSON file, falling back to filename stem.
-#[cfg(test)]
-pub(crate) fn extract_gemini_session_id_from_file(path: &std::path::Path) -> Option<String> {
-    extract_gemini_fields(path).and_then(|(sid, _)| sid)
-}
-
 fn extract_cwd_from_json(parsed: &serde_json::Value, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| parsed.get(*key).and_then(|v| v.as_str()))
         .map(String::from)
-}
-
-/// Extract the project hash from a Gemini session file for CWD matching.
-///
-/// Gemini stores a SHA-256 hash of the project root in `projectHash` rather than
-/// a literal path. Returns the hash string so callers can compare against a
-/// locally computed hash.
-#[cfg(test)]
-pub(crate) fn extract_gemini_project_hash_from_file(path: &std::path::Path) -> Option<String> {
-    extract_gemini_fields(path).and_then(|(_, hash)| hash)
-}
-
-/// Read a Gemini session JSON file once and return both sessionId and projectHash.
-fn extract_gemini_fields(path: &std::path::Path) -> Option<(Option<String>, Option<String>)> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let session_id = parsed
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from));
-    let project_hash = parsed
-        .get("projectHash")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    Some((session_id, project_hash))
 }
 
 /// Capture Vibe session ID from `meta.json` files in the session log directory.
@@ -1382,6 +1106,517 @@ pub(crate) fn opencode_poll_fn_sandboxed(
     }
 }
 
+// ─── Codex CLI session capture ────────────────────────────────────────────────
+
+const CODEX_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Codex `.jsonl` session
+/// files inside the container. Each file is emitted as a
+/// `===CODEX:<unix-mtime>:<basename>===` header followed by the first line of the
+/// file and a `===END===` trailer.
+const CODEX_CONTAINER_LIST_SCRIPT: &str = r#"SESS_DIR="${CODEX_HOME:-$HOME/.codex}/sessions"
+[ -d "$SESS_DIR" ] || exit 0
+find "$SESS_DIR" -name '*.jsonl' -type f | while read -r f; do
+  ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+  bn=$(basename "$f")
+  printf '===CODEX:%s:%s===\n' "$ts" "$bn"
+  head -n 1 "$f"
+  printf '\n===END===\n'
+done
+"#;
+
+/// Capture session ID from Codex filesystem.
+///
+/// Walks the Codex sessions directory (including date-partitioned `YYYY/MM/DD/` subdirectories)
+/// for `.jsonl` rollout files and extracts the UUID from the most recent one.
+/// Codex filenames follow the pattern `rollout-<timestamp>-<uuid>.jsonl`.
+/// Respects `CODEX_HOME` env var, falling back to `~/.codex`.
+pub(crate) fn capture_codex_session_id(
+    project_path: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let codex_home = resolve_agent_home(Some("CODEX_HOME"), ".codex")?;
+    let sessions_dir = codex_home.join("sessions");
+
+    if !sessions_dir.exists() {
+        anyhow::bail!(
+            "Codex sessions directory not found: {}",
+            sessions_dir.display()
+        );
+    }
+
+    let mut session_entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+    collect_codex_sessions(&sessions_dir, &mut session_entries)?;
+
+    if session_entries.is_empty() {
+        anyhow::bail!("No Codex sessions found in {}", sessions_dir.display());
+    }
+
+    session_entries.sort_by_key(|c| std::cmp::Reverse(c.1));
+
+    let canonical_project = canonicalize_or_raw(project_path);
+
+    let chosen = session_entries.iter().find_map(|(path, _)| {
+        let uuid = extract_codex_uuid_from_filename(path)?;
+        if exclusion.contains(&uuid) {
+            return None;
+        }
+        let file = std::fs::File::open(path).ok()?;
+        let reader = std::io::BufReader::new(file);
+        let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
+        let cwd = parse_codex_cwd_from_json(&first_line)?;
+        let cwd_matches = std::fs::canonicalize(&cwd)
+            .map(|c| c == canonical_project)
+            .unwrap_or(false);
+        if cwd_matches {
+            Some(uuid)
+        } else {
+            None
+        }
+    });
+
+    chosen.ok_or_else(|| anyhow::anyhow!("No Codex session found matching project path"))
+}
+
+/// Parse the CWD from a Codex `.jsonl` first line (already in memory).
+///
+/// Shared by the host scanner and the container scanner. Extracts `payload.cwd`
+/// from the JSON object on the first line of a session file.
+fn parse_codex_cwd_from_json(line: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+    parsed
+        .get("payload")
+        .and_then(|p| p.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Extract UUID from a Codex rollout filename.
+///
+/// Codex filenames follow the pattern `rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`.
+/// The UUID is the last 36 characters of the stem (before `.jsonl`).
+fn extract_codex_uuid_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    if stem.len() >= 36 {
+        let candidate = &stem[stem.len() - 36..];
+        if Uuid::parse_str(candidate).is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Recursively collect Codex session `.jsonl` files, descending into date-partitioned dirs.
+///
+/// Directories whose names are all ASCII digits (e.g. `2025`, `03`, `06`) are treated as
+/// date components and recursed into. Files ending in `.jsonl` are collected as session entries.
+pub(crate) fn collect_codex_sessions(
+    dir: &Path,
+    entries: &mut Vec<(PathBuf, std::time::SystemTime)>,
+) -> Result<()> {
+    for entry in resilient_read_dir(dir)? {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.chars().all(|c| c.is_ascii_digit()) {
+                collect_codex_sessions(&path, entries)?;
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            entries.push((path, modified));
+        }
+    }
+    Ok(())
+}
+
+/// Capture a Codex session ID from inside a Docker container.
+///
+/// Mirrors `capture_codex_session_id` but reads `.jsonl` headers via
+/// `docker exec sh` since codex-in-container writes to the container's
+/// `~/.codex/sessions/`. Matches against `container_cwd` (the path
+/// codex-in-container records), not the host project path.
+pub(crate) fn try_capture_codex_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        CODEX_CONTAINER_LIST_SCRIPT,
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(CODEX_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (codex session scan)",
+    )?;
+    select_codex_session_in_container(&stdout_bytes, container_cwd, exclusion)
+}
+
+/// Parse the delimited stream emitted by `CODEX_CONTAINER_LIST_SCRIPT` and pick
+/// the most recent session whose recorded CWD matches `container_cwd`.
+fn select_codex_session_in_container(
+    stdout_bytes: &[u8],
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, String, u64)> = Vec::new();
+
+    for chunk in text.split("===CODEX:").skip(1) {
+        let (header, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let (ts_str, basename) = match header.split_once(':') {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let uuid = match extract_codex_uuid_from_filename(Path::new(basename.trim())) {
+            Some(u) if !exclusion.contains(&u) => u,
+            _ => continue,
+        };
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let cwd = match parse_codex_cwd_from_json(json_part.trim()) {
+            Some(c) => c,
+            None => continue,
+        };
+        candidates.push((uuid, cwd, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Codex sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.2));
+
+    let project_match = candidates.iter().find(|(_, cwd, _)| cwd == container_cwd);
+
+    project_match
+        .map(|(id, _, _)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Codex session matching container CWD"))
+}
+
+/// Polling closure for Codex CLI session tracking.
+pub(crate) fn codex_poll_fn(
+    project_path: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        capture_codex_session_id(&project_path, &exclusion)
+            .map_err(|e| tracing::debug!("Codex poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+/// Polling closure for sandboxed (Docker) Codex session tracking.
+pub(crate) fn codex_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_codex_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Codex container poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+// ─── Gemini CLI session capture ───────────────────────────────────────────────
+
+/// Polling closure for Gemini CLI session tracking.
+pub(crate) fn gemini_poll_fn(
+    project_path: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        capture_gemini_session_id(&project_path, &exclusion)
+            .map_err(|e| tracing::debug!("Gemini poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+const GEMINI_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Gemini session files
+/// inside the container. Each file is emitted as a `===GEMINI:<unix-mtime>===`
+/// header followed by the metadata-bearing first line and a `===END===` trailer.
+///
+/// Accepts both legacy `.json` (single-object) and current `.jsonl` (line-delimited)
+/// formats. For both, the `sessionId` and `projectHash` we need live in the first
+/// line, so `head -n 1` keeps the response small even for long conversations.
+const GEMINI_CONTAINER_LIST_SCRIPT: &str = r#"GEMINI_HOME="${GEMINI_CLI_HOME:-$HOME/.gemini}"
+TMP_DIR="$GEMINI_HOME/tmp"
+[ -d "$TMP_DIR" ] || exit 0
+find "$TMP_DIR" -type f \( -name 'session-*.json' -o -name 'session-*.jsonl' \) -path '*/chats/*' | while read -r f; do
+  ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+  printf '===GEMINI:%s===\n' "$ts"
+  head -n 1 "$f"
+  printf '\n===END===\n'
+done
+"#;
+
+/// Capture a Gemini session ID from inside a Docker container.
+///
+/// Mirrors `capture_gemini_session_id` but reads session files via
+/// `docker exec sh`. Matches against `expected_hash` (SHA-256 of the
+/// container-side project path) rather than the host path.
+pub(crate) fn try_capture_gemini_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(container_cwd.as_bytes());
+    let expected_hash = digest
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        GEMINI_CONTAINER_LIST_SCRIPT,
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(GEMINI_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (gemini session scan)",
+    )?;
+    select_gemini_session_in_container(&stdout_bytes, &expected_hash, exclusion)
+}
+
+/// Parse the delimited stream emitted by `GEMINI_CONTAINER_LIST_SCRIPT` and pick
+/// the most recent session whose `projectHash` matches `expected_hash`.
+fn select_gemini_session_in_container(
+    stdout_bytes: &[u8],
+    expected_hash: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, u64)> = Vec::new();
+
+    for chunk in text.split("===GEMINI:").skip(1) {
+        let (ts_str, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let (session_id, project_hash) = match parse_gemini_session_json(json_part.trim()) {
+            Some((Some(sid), hash)) if !sid.is_empty() && !exclusion.contains(&sid) => (sid, hash),
+            _ => continue,
+        };
+        if project_hash.as_deref() != Some(expected_hash) {
+            continue;
+        }
+        candidates.push((session_id, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Gemini sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
+    Ok(candidates[0].0.clone())
+}
+
+/// Polling closure for sandboxed (Docker) Gemini session tracking.
+pub(crate) fn gemini_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_gemini_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Gemini container poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+/// Capture Gemini session ID from `~/.gemini/tmp/<dir>/chats/session-*.json`.
+///
+/// `<dir>` is a SHA-256 hash of the project path. We compute it locally and look
+/// for a matching directory, then scan all subdirs as a fallback verifying via the
+/// `projectHash` JSON field.
+pub(crate) fn capture_gemini_session_id(
+    project_path: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let gemini_home = resolve_agent_home(Some("GEMINI_CLI_HOME"), ".gemini")?;
+    let tmp_dir = gemini_home.join("tmp");
+
+    if !tmp_dir.exists() {
+        anyhow::bail!("Gemini tmp directory not found: {}", tmp_dir.display());
+    }
+
+    let canonical_project = canonicalize_or_raw(project_path);
+    let digest = Sha256::digest(canonical_project.to_string_lossy().as_bytes());
+    let expected_hash = digest
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    let project_dirs: Vec<std::path::PathBuf> = {
+        let exact = tmp_dir.join(&expected_hash);
+        if exact.is_dir() {
+            vec![exact]
+        } else {
+            resilient_read_dir(&tmp_dir)?
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        }
+    };
+
+    let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime, Option<String>)> =
+        Vec::new();
+
+    for project_dir in &project_dirs {
+        let chats_dir = project_dir.join("chats");
+        if !chats_dir.is_dir() {
+            continue;
+        }
+
+        let is_exact_match = project_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == expected_hash);
+
+        for chat_entry in resilient_read_dir(&chats_dir)? {
+            let path = chat_entry.path();
+            let ext = path.extension().and_then(|e| e.to_str());
+            if !matches!(ext, Some("json") | Some("jsonl"))
+                || !path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("session-"))
+            {
+                continue;
+            }
+
+            let fields = extract_gemini_fields(&path);
+
+            if !is_exact_match {
+                let file_hash = fields
+                    .as_ref()
+                    .and_then(|(_, h)| h.as_deref())
+                    .unwrap_or_default();
+                if file_hash != expected_hash {
+                    continue;
+                }
+            }
+
+            let session_id = fields.and_then(|(sid, _)| sid);
+
+            let modified = chat_entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            candidates.push((path, modified, session_id));
+        }
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Gemini session files found in {}", tmp_dir.display());
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
+
+    candidates.retain(|(_, _, sid)| {
+        sid.as_deref()
+            .map(|id| !id.is_empty() && !exclusion.contains(id))
+            .unwrap_or(false)
+    });
+
+    candidates
+        .first()
+        .and_then(|(_, _, sid)| sid.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Gemini session found matching project path"))
+}
+
+/// Extract session ID from a Gemini session JSON file, falling back to filename stem.
+#[cfg(test)]
+pub(crate) fn extract_gemini_session_id_from_file(path: &std::path::Path) -> Option<String> {
+    extract_gemini_fields(path).and_then(|(sid, _)| sid)
+}
+
+/// Extract the project hash from a Gemini session file for CWD matching.
+#[cfg(test)]
+pub(crate) fn extract_gemini_project_hash_from_file(path: &std::path::Path) -> Option<String> {
+    extract_gemini_fields(path).and_then(|(_, hash)| hash)
+}
+
+/// Parse the metadata of a Gemini session file (already in memory).
+///
+/// Handles both legacy single-object `.json` files (whole content is one object)
+/// and current line-delimited `.jsonl` files (the metadata header is the first
+/// line, with subsequent lines holding individual conversation records). Tries
+/// to parse the whole content first, falling back to just the first line.
+///
+/// Shared by the host scanner and the container scanner, which receives the
+/// metadata line via `docker exec` rather than a direct filesystem read.
+/// Returns `(sessionId, projectHash)`.
+fn parse_gemini_session_json(content: &str) -> Option<(Option<String>, Option<String>)> {
+    let extract = |v: &serde_json::Value| {
+        let session_id = v
+            .get("sessionId")
+            .and_then(|x| x.as_str())
+            .map(String::from);
+        let project_hash = v
+            .get("projectHash")
+            .and_then(|x| x.as_str())
+            .map(String::from);
+        (session_id, project_hash)
+    };
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
+        return Some(extract(&parsed));
+    }
+    let first_line = content.lines().next()?;
+    let parsed: serde_json::Value = serde_json::from_str(first_line).ok()?;
+    Some(extract(&parsed))
+}
+
+/// Read a Gemini session file once and return both sessionId and projectHash.
+/// Falls back to filename stem for sessionId if the JSON field is absent.
+fn extract_gemini_fields(path: &std::path::Path) -> Option<(Option<String>, Option<String>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let (session_id, project_hash) = parse_gemini_session_json(&content)?;
+    let session_id =
+        session_id.or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from));
+    Some((session_id, project_hash))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,39 +1713,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn test_codex_respects_codex_home_env() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions_dir = tmp.path().join("sessions");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-
-        let uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-        let project_dir = tmp.path().join("test-project");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let jsonl_content = format!(
-            r#"{{"type":"session_meta","payload":{{"cwd":"{}"}}}}"#,
-            project_dir.display()
-        );
-        std::fs::write(
-            sessions_dir.join(format!("rollout-2025-03-06T10-30-00-{}.jsonl", uuid)),
-            jsonl_content,
-        )
-        .unwrap();
-
-        let old_val = std::env::var("CODEX_HOME").ok();
-        std::env::set_var("CODEX_HOME", tmp.path());
-
-        let result = capture_codex_session_id(project_dir.to_str().unwrap(), &HashSet::new());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), uuid);
-
-        match old_val {
-            Some(v) => std::env::set_var("CODEX_HOME", v),
-            None => std::env::remove_var("CODEX_HOME"),
-        }
-    }
-
-    #[test]
     fn test_codex_walks_date_partitioned_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions_dir = tmp.path().join("sessions");
@@ -1545,16 +1747,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_codex_uuid_from_filename() {
-        let uuid = "abcdef01-2345-6789-abcd-ef0123456789";
-        let path = std::path::PathBuf::from(format!("rollout-2025-03-06T12-00-00-{}.jsonl", uuid));
-        assert_eq!(
-            extract_codex_uuid_from_filename(&path),
-            Some(uuid.to_string())
-        );
-    }
-
-    #[test]
     fn test_extract_codex_uuid_fallback_for_non_standard_filename() {
         // Non-UUID filenames should return None to prevent garbage session IDs
         let path = std::path::PathBuf::from("my-thread-name.jsonl");
@@ -1580,29 +1772,6 @@ mod tests {
         assert_eq!(
             extract_gemini_session_id_from_file(&path),
             Some("session-42".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_gemini_session_id_from_file_invalid_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("session-42.json");
-        std::fs::write(&path, "not json").unwrap();
-        assert_eq!(extract_gemini_session_id_from_file(&path), None);
-    }
-
-    #[test]
-    fn test_extract_gemini_project_hash_from_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("session.json");
-        std::fs::write(
-            &path,
-            r#"{"sessionId": "s1", "projectHash": "abc123def456"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            extract_gemini_project_hash_from_file(&path),
-            Some("abc123def456".to_string())
         );
     }
 
@@ -1943,32 +2112,6 @@ mod tests {
         let path = tmp.path().join("session-bad.json");
         std::fs::write(&path, "this is not json at all {{{{").unwrap();
         assert_eq!(extract_gemini_session_id_from_file(&path), None);
-    }
-
-    #[test]
-    #[serial]
-    fn test_codex_capture_empty_sessions_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions_dir = tmp.path().join("sessions");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-
-        let old_val = std::env::var("CODEX_HOME").ok();
-        std::env::set_var("CODEX_HOME", tmp.path());
-
-        let result = capture_codex_session_id("/tmp/some-project", &HashSet::new());
-        assert!(result.is_err(), "Empty sessions dir should return error");
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("No Codex")
-                || err_msg.contains("session")
-                || err_msg.contains("found"),
-            "Error message should mention sessions: {err_msg}"
-        );
-
-        match old_val {
-            Some(v) => std::env::set_var("CODEX_HOME", v),
-            None => std::env::remove_var("CODEX_HOME"),
-        }
     }
 
     #[test]
@@ -2647,121 +2790,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_gemini_exclusion_uses_json_id_not_stem() {
-        use sha2::{Digest, Sha256};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let project_path = "/tmp/gemini-exclusion-test";
-        let digest = Sha256::digest(project_path.as_bytes());
-        let hash = digest
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
-
-        let chats_dir = tmp.path().join("tmp").join(&hash).join("chats");
-        std::fs::create_dir_all(&chats_dir).unwrap();
-
-        let file1 = chats_dir.join("session-1.json");
-        std::fs::write(
-            &file1,
-            format!(r#"{{"sessionId": "json-id-AAA", "projectHash": "{hash}"}}"#),
-        )
-        .unwrap();
-
-        let file2 = chats_dir.join("session-2.json");
-        std::fs::write(
-            &file2,
-            format!(r#"{{"sessionId": "json-id-BBB", "projectHash": "{hash}"}}"#),
-        )
-        .unwrap();
-        let older = std::time::SystemTime::now() - Duration::from_secs(10);
-        std::fs::File::options()
-            .write(true)
-            .open(&file2)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(older))
-            .unwrap();
-
-        let old_val = std::env::var("GEMINI_CLI_HOME").ok();
-        std::env::set_var("GEMINI_CLI_HOME", tmp.path());
-
-        let mut exclusion = HashSet::new();
-        exclusion.insert("json-id-AAA".to_string());
-
-        let result = capture_gemini_session_id(project_path, &exclusion);
-        assert_eq!(
-            result.unwrap(),
-            "json-id-BBB",
-            "Exclusion must use JSON sessionId, not filename stem"
-        );
-
-        let mut wrong_exclusion = HashSet::new();
-        wrong_exclusion.insert("session-1".to_string());
-
-        let result2 = capture_gemini_session_id(project_path, &wrong_exclusion);
-        assert_eq!(
-            result2.unwrap(),
-            "json-id-AAA",
-            "Filename stem in exclusion should have no effect"
-        );
-
-        match old_val {
-            Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
-            None => std::env::remove_var("GEMINI_CLI_HOME"),
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_gemini_capture_returns_most_recent_by_cwd() {
-        use sha2::{Digest, Sha256};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let project_path = "/tmp/gemini-test-project";
-        let digest = Sha256::digest(project_path.as_bytes());
-        let hash = digest
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
-
-        let chats_dir = tmp.path().join("tmp").join(&hash).join("chats");
-        std::fs::create_dir_all(&chats_dir).unwrap();
-
-        let old_file = chats_dir.join("session-1.json");
-        std::fs::write(
-            &old_file,
-            format!(r#"{{"sessionId": "old-id-111", "projectHash": "{hash}"}}"#),
-        )
-        .unwrap();
-        let ten_min_ago = std::time::SystemTime::now() - Duration::from_secs(600);
-        std::fs::File::options()
-            .write(true)
-            .open(&old_file)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(ten_min_ago))
-            .unwrap();
-
-        let new_file = chats_dir.join("session-2.json");
-        std::fs::write(
-            &new_file,
-            format!(r#"{{"sessionId": "new-id-222", "projectHash": "{hash}"}}"#),
-        )
-        .unwrap();
-
-        let old_val = std::env::var("GEMINI_CLI_HOME").ok();
-        std::env::set_var("GEMINI_CLI_HOME", tmp.path());
-
-        let result = capture_gemini_session_id(project_path, &HashSet::new());
-        assert_eq!(result.unwrap(), "new-id-222");
-
-        match old_val {
-            Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
-            None => std::env::remove_var("GEMINI_CLI_HOME"),
-        }
-    }
-
-    #[test]
-    #[serial]
     fn test_vibe_capture_matches_by_cwd() {
         let tmp = tempfile::tempdir().unwrap();
         let project_dir = tmp.path().join("myproject");
@@ -2829,34 +2857,516 @@ mod tests {
         }
     }
 
+    // ─── Codex tests ──────────────────────────────────────────────────────────
+
     #[test]
-    fn test_extract_codex_cwd_from_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("rollout.jsonl");
-        std::fs::write(
-            &path,
-            r#"{"type":"session_meta","payload":{"cwd":"/home/user/myproject"}}"#,
-        )
-        .unwrap();
+    fn test_extract_codex_uuid_from_filename() {
+        let uuid = "abcdef01-2345-6789-abcd-ef0123456789";
+        let path = PathBuf::from(format!("rollout-2025-03-06T12-00-00-{}.jsonl", uuid));
         assert_eq!(
-            extract_codex_cwd_from_file(&path),
+            extract_codex_uuid_from_filename(&path),
+            Some(uuid.to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_codex_uuid_non_standard_filename_returns_none() {
+        let path = PathBuf::from("my-thread-name.jsonl");
+        assert_eq!(extract_codex_uuid_from_filename(&path), None);
+    }
+
+    #[test]
+    fn test_parse_codex_cwd_from_json() {
+        let line = r#"{"type":"session_meta","payload":{"cwd":"/home/user/myproject"}}"#;
+        assert_eq!(
+            parse_codex_cwd_from_json(line),
             Some("/home/user/myproject".to_string())
         );
     }
 
     #[test]
-    fn test_extract_codex_cwd_from_file_missing_field() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("rollout.jsonl");
-        std::fs::write(&path, r#"{"type":"session_meta","payload":{}}"#).unwrap();
-        assert_eq!(extract_codex_cwd_from_file(&path), None);
+    fn test_parse_codex_cwd_from_json_missing_field() {
+        let line = r#"{"type":"session_meta","payload":{}}"#;
+        assert_eq!(parse_codex_cwd_from_json(line), None);
     }
 
     #[test]
-    fn test_extract_codex_cwd_from_file_invalid_json() {
+    fn test_parse_codex_cwd_from_json_invalid_json() {
+        assert_eq!(parse_codex_cwd_from_json("not json at all"), None);
+    }
+
+    #[test]
+    fn test_collect_codex_sessions_walks_date_dirs() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("rollout.jsonl");
-        std::fs::write(&path, "not json at all").unwrap();
-        assert_eq!(extract_codex_cwd_from_file(&path), None);
+        let sessions_dir = tmp.path().join("sessions");
+
+        let date_path = sessions_dir.join("2025").join("03").join("06");
+        std::fs::create_dir_all(&date_path).unwrap();
+
+        let uuid_deep = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        let uuid_flat = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        std::fs::write(
+            date_path.join(format!("rollout-2025-03-06T12-00-00-{}.jsonl", uuid_deep)),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(
+            sessions_dir.join(format!("rollout-2025-01-01T00-00-00-{}.jsonl", uuid_flat)),
+            "{}",
+        )
+        .unwrap();
+
+        let mut entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        collect_codex_sessions(&sessions_dir, &mut entries).unwrap();
+
+        let uuids: Vec<String> = entries
+            .iter()
+            .filter_map(|(p, _)| extract_codex_uuid_from_filename(p))
+            .collect();
+
+        assert!(uuids.contains(&uuid_deep.to_string()));
+        assert!(uuids.contains(&uuid_flat.to_string()));
+        assert_eq!(uuids.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_codex_sessions_most_recent_selected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let old_file = sessions_dir.join(format!("rollout-2025-01-01T00-00-00-{}.jsonl", uuid_old));
+        let new_file = sessions_dir.join(format!("rollout-2025-01-02T00-00-00-{}.jsonl", uuid_new));
+        std::fs::write(&old_file, "{}").unwrap();
+        std::fs::write(&new_file, "{}").unwrap();
+
+        let old_time = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old_file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
+
+        let mut entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        collect_codex_sessions(&sessions_dir, &mut entries).unwrap();
+        entries.sort_by_key(|c| std::cmp::Reverse(c.1));
+
+        let selected = entries
+            .first()
+            .and_then(|(p, _)| extract_codex_uuid_from_filename(p))
+            .unwrap();
+        assert_eq!(selected, uuid_new);
+    }
+
+    struct CodexHomeGuard(Option<String>);
+    impl CodexHomeGuard {
+        fn set(path: &str) -> Self {
+            let prev = std::env::var("CODEX_HOME").ok();
+            std::env::set_var("CODEX_HOME", path);
+            Self(prev)
+        }
+    }
+    impl Drop for CodexHomeGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_codex_respects_codex_home_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let project_dir = tmp.path().join("test-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let jsonl_content = format!(
+            r#"{{"type":"session_meta","payload":{{"cwd":"{}"}}}}"#,
+            project_dir.display()
+        );
+        std::fs::write(
+            sessions_dir.join(format!("rollout-2025-03-06T10-30-00-{}.jsonl", uuid)),
+            jsonl_content,
+        )
+        .unwrap();
+
+        let _guard = CodexHomeGuard::set(tmp.path().to_str().unwrap());
+
+        let result = capture_codex_session_id(project_dir.to_str().unwrap(), &HashSet::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid);
+    }
+
+    #[test]
+    #[serial]
+    fn test_codex_capture_empty_sessions_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let _guard = CodexHomeGuard::set(tmp.path().to_str().unwrap());
+
+        let result = capture_codex_session_id("/tmp/some-project", &HashSet::new());
+        assert!(result.is_err(), "Empty sessions dir should return error");
+    }
+
+    #[test]
+    fn test_select_codex_session_in_container_most_recent() {
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let uuid_other = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let stdout = format!(
+            "\
+===CODEX:1700000000:rollout-2025-01-01T00-00-00-{uuid_old}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+===CODEX:1700001000:rollout-2025-01-02T00-00-00-{uuid_new}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+===CODEX:1700002000:rollout-2025-01-03T00-00-00-{uuid_other}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/elsewhere\"}}}}
+===END===
+"
+        );
+        let result =
+            select_codex_session_in_container(stdout.as_bytes(), "/workspace", &HashSet::new())
+                .unwrap();
+        assert_eq!(result, uuid_new);
+    }
+
+    #[test]
+    fn test_select_codex_session_in_container_exclusion() {
+        let uuid_claimed = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_available = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let stdout = format!(
+            "\
+===CODEX:1700001000:rollout-2025-01-02T00-00-00-{uuid_claimed}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+===CODEX:1700000500:rollout-2025-01-01T00-00-00-{uuid_available}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+"
+        );
+        let mut exclusion = HashSet::new();
+        exclusion.insert(uuid_claimed.to_string());
+        let result =
+            select_codex_session_in_container(stdout.as_bytes(), "/workspace", &exclusion).unwrap();
+        assert_eq!(result, uuid_available);
+    }
+
+    #[test]
+    fn test_select_codex_session_in_container_no_match() {
+        let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let stdout = format!(
+            "\
+===CODEX:1700000000:rollout-2025-01-01T00-00-00-{uuid}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/somewhere/else\"}}}}
+===END===
+"
+        );
+        let result =
+            select_codex_session_in_container(stdout.as_bytes(), "/workspace", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_codex_session_in_container_empty_input() {
+        let result = select_codex_session_in_container(b"", "/workspace", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    // ─── Gemini tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_gemini_session_id_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session-42.json");
+        std::fs::write(
+            &path,
+            r#"{"sessionId": "abc-123", "projectHash": "deadbeef"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_gemini_session_id_from_file(&path),
+            Some("abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_gemini_session_id_from_file_falls_back_to_stem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session-42.json");
+        std::fs::write(&path, r#"{"projectHash": "deadbeef"}"#).unwrap();
+        assert_eq!(
+            extract_gemini_session_id_from_file(&path),
+            Some("session-42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_gemini_session_id_from_file_invalid_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session-42.json");
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(extract_gemini_session_id_from_file(&path), None);
+    }
+
+    #[test]
+    fn test_extract_gemini_project_hash_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.json");
+        std::fs::write(
+            &path,
+            r#"{"sessionId": "s1", "projectHash": "abc123def456"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_gemini_project_hash_from_file(&path),
+            Some("abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_gemini_capture_returns_most_recent_by_cwd() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project_path = "/tmp/gemini-test-project";
+        let digest = Sha256::digest(project_path.as_bytes());
+        let hash = digest
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+
+        let chats_dir = tmp.path().join("tmp").join(&hash).join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+
+        let old_file = chats_dir.join("session-1.json");
+        std::fs::write(
+            &old_file,
+            format!(r#"{{"sessionId": "old-id-111", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+        let ten_min_ago = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old_file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(ten_min_ago))
+            .unwrap();
+
+        let new_file = chats_dir.join("session-2.json");
+        std::fs::write(
+            &new_file,
+            format!(r#"{{"sessionId": "new-id-222", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+
+        let _guard = GeminiHomeGuard::set(tmp.path());
+
+        let result = capture_gemini_session_id(project_path, &HashSet::new());
+        assert_eq!(result.unwrap(), "new-id-222");
+    }
+
+    #[test]
+    #[serial]
+    fn test_gemini_exclusion_uses_json_id_not_stem() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project_path = "/tmp/gemini-exclusion-test";
+        let digest = Sha256::digest(project_path.as_bytes());
+        let hash = digest
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+
+        let chats_dir = tmp.path().join("tmp").join(&hash).join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+
+        let file1 = chats_dir.join("session-1.json");
+        std::fs::write(
+            &file1,
+            format!(r#"{{"sessionId": "json-id-AAA", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+
+        let file2 = chats_dir.join("session-2.json");
+        std::fs::write(
+            &file2,
+            format!(r#"{{"sessionId": "json-id-BBB", "projectHash": "{hash}"}}"#),
+        )
+        .unwrap();
+        let older = std::time::SystemTime::now() - Duration::from_secs(10);
+        std::fs::File::options()
+            .write(true)
+            .open(&file2)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(older))
+            .unwrap();
+
+        let _guard = GeminiHomeGuard::set(tmp.path());
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("json-id-AAA".to_string());
+
+        let result = capture_gemini_session_id(project_path, &exclusion);
+        assert_eq!(
+            result.unwrap(),
+            "json-id-BBB",
+            "Exclusion must use JSON sessionId, not filename stem"
+        );
+
+        let mut wrong_exclusion = HashSet::new();
+        wrong_exclusion.insert("session-1".to_string());
+
+        let result2 = capture_gemini_session_id(project_path, &wrong_exclusion);
+        assert_eq!(
+            result2.unwrap(),
+            "json-id-AAA",
+            "Filename stem in exclusion should have no effect"
+        );
+    }
+
+    struct GeminiHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl GeminiHomeGuard {
+        fn set(value: &Path) -> Self {
+            let previous = std::env::var("GEMINI_CLI_HOME").ok();
+            std::env::set_var("GEMINI_CLI_HOME", value);
+            Self { previous }
+        }
+    }
+
+    impl Drop for GeminiHomeGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
+                None => std::env::remove_var("GEMINI_CLI_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_most_recent() {
+        let stdout = b"\
+===GEMINI:1700000000===
+{\"sessionId\": \"older-match\", \"projectHash\": \"abc123\"}
+===END===
+===GEMINI:1700001000===
+{\"sessionId\": \"newer-match\", \"projectHash\": \"abc123\"}
+===END===
+===GEMINI:1700002000===
+{\"sessionId\": \"other-project\", \"projectHash\": \"def456\"}
+===END===
+";
+        let result = select_gemini_session_in_container(stdout, "abc123", &HashSet::new()).unwrap();
+        assert_eq!(result, "newer-match");
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_exclusion() {
+        let stdout = b"\
+===GEMINI:1700001000===
+{\"sessionId\": \"already-claimed\", \"projectHash\": \"abc123\"}
+===END===
+===GEMINI:1700000500===
+{\"sessionId\": \"available\", \"projectHash\": \"abc123\"}
+===END===
+";
+        let mut exclusion = HashSet::new();
+        exclusion.insert("already-claimed".to_string());
+        let result = select_gemini_session_in_container(stdout, "abc123", &exclusion).unwrap();
+        assert_eq!(result, "available");
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_no_match() {
+        let stdout = b"\
+===GEMINI:1700000000===
+{\"sessionId\": \"foo\", \"projectHash\": \"wrong-hash\"}
+===END===
+";
+        let result = select_gemini_session_in_container(stdout, "abc123", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_empty_input() {
+        let result = select_gemini_session_in_container(b"", "abc123", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gemini_session_json_handles_jsonl_first_line() {
+        // current gemini-cli (>= 0.40) writes line-delimited files where the
+        // first line is the metadata header and subsequent lines are records
+        let content = "\
+{\"sessionId\":\"abc-123\",\"projectHash\":\"deadbeef\",\"startTime\":\"2026-04-29T19:06:25.028Z\",\"kind\":\"main\"}
+{\"role\":\"user\",\"content\":\"hello\"}
+{\"role\":\"assistant\",\"content\":\"hi\"}
+";
+        let (sid, hash) = parse_gemini_session_json(content).unwrap();
+        assert_eq!(sid.as_deref(), Some("abc-123"));
+        assert_eq!(hash.as_deref(), Some("deadbeef"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_gemini_capture_handles_jsonl_in_short_id_dir() {
+        // simulates current gemini-cli layout: $HOME/.gemini/tmp/<short-id>/chats/
+        // containing .jsonl files, where the project subdir name is *not* the
+        // sha256 of the cwd but a registry short-id. The fallback that scans all
+        // subdirs and matches by the file's `projectHash` field must still work.
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project_path = "/tmp/gemini-jsonl-test";
+        let digest = Sha256::digest(project_path.as_bytes());
+        let project_hash = digest
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+
+        let chats_dir = tmp.path().join("tmp").join("short-id-abc").join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+
+        let session_file = chats_dir.join("session-2026-04-29T19-06-deadbeef.jsonl");
+        let body = format!(
+            "{{\"sessionId\":\"jsonl-session-id\",\"projectHash\":\"{project_hash}\",\"startTime\":\"2026-04-29T19:06:25.028Z\",\"kind\":\"main\"}}\n\
+{{\"role\":\"user\",\"content\":\"hello\"}}\n"
+        );
+        std::fs::write(&session_file, body).unwrap();
+
+        let _guard = GeminiHomeGuard::set(tmp.path());
+
+        let result = capture_gemini_session_id(project_path, &HashSet::new());
+        assert_eq!(result.unwrap(), "jsonl-session-id");
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_jsonl_first_line() {
+        // container script now emits only the first line of each session file via
+        // `head -n 1`, so it works for both .json and .jsonl. Verify the parser
+        // handles a single metadata-line response.
+        let stdout = b"\
+===GEMINI:1700001000===
+{\"sessionId\":\"jsonl-id\",\"projectHash\":\"abc123\",\"kind\":\"main\"}
+===END===
+";
+        let result = select_gemini_session_in_container(stdout, "abc123", &HashSet::new()).unwrap();
+        assert_eq!(result, "jsonl-id");
     }
 }
