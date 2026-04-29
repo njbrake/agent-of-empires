@@ -139,7 +139,7 @@ test.describe("Mobile scrollback exit", () => {
     // and the requestAnimationFrame decay keeps emitting wheel-ups for
     // hundreds of ms after touchend. If exitScrollback doesn't cancel
     // that momentum, the next decay frame calls sendWheel("up") and
-    // re-flips isInScrollback: true — the button reappears mid-poll.
+    // re-flips isInScrollback: true, so the button reappears mid-poll.
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
     await page.goto("/");
