@@ -82,6 +82,10 @@ export function useTerminal(
   // Populated inside the effect; `exitScrollback()` uses it to reset the
   // mobile scroll-depth counter when the user escapes copy-mode.
   const resetScrollbackDepthRef = useRef<(() => void) | null>(null);
+  // Populated inside the effect; `exitScrollback()` uses it to cancel any
+  // in-flight momentum decay so post-flick wheel-ups don't immediately
+  // re-enter scrollback after the user taps "Back to live".
+  const cancelMomentumRef = useRef<(() => void) | null>(null);
   // Mirror of state.isInScrollback so the resize callback (which lives
   // inside the WTerm options closure) can read the latest value without
   // re-creating the terminal. Updated by an effect below.
@@ -739,6 +743,7 @@ export function useTerminal(
         momentumRaf = null;
       }
     };
+    cancelMomentumRef.current = cancelMomentum;
 
     const onTouchStart = (e: TouchEvent) => {
       cancelMomentum();
@@ -1065,6 +1070,11 @@ export function useTerminal(
   // auto-resumes on disconnect as a safety net, so forgetting this is
   // annoying but not permanent.
   const exitScrollback = useCallback(() => {
+    // Cancel any in-flight momentum decay first. Otherwise a tap that
+    // lands while a fast flick is still emitting wheel-ups would let the
+    // next decay frame call sendWheel("up", ...), which re-sets
+    // isInScrollback: true and the button reappears.
+    cancelMomentumRef.current?.();
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(
