@@ -77,8 +77,6 @@ git clone https://github.com/njbrake/agent-of-empires
 cd agent-of-empires && cargo build --release
 ```
 
-To update an existing install, run `aoe update` (or press `u` in the TUI when the update bar appears). See [Updating](https://www.agent-of-empires.com/docs/installation/#updating) for details.
-
 ## Quick Start
 
 ```bash
