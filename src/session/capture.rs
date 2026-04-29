@@ -1076,6 +1076,110 @@ pub(crate) fn gemini_poll_fn(
     }
 }
 
+const GEMINI_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Gemini session files
+/// inside the container. Each file is emitted as a `===GEMINI:<unix-mtime>===`
+/// header followed by the JSON body and a `===END===` trailer.
+const GEMINI_CONTAINER_LIST_SCRIPT: &str = r#"GEMINI_HOME="${GEMINI_CLI_HOME:-$HOME/.gemini}"
+TMP_DIR="$GEMINI_HOME/tmp"
+[ -d "$TMP_DIR" ] || exit 0
+find "$TMP_DIR" -path '*/chats/session-*.json' -type f | while read -r f; do
+  ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+  printf '===GEMINI:%s===\n' "$ts"
+  cat "$f"
+  printf '\n===END===\n'
+done
+"#;
+
+/// Capture a Gemini session ID from inside a Docker container.
+///
+/// Mirrors `capture_gemini_session_id` but reads session files via
+/// `docker exec sh`. Matches against `expected_hash` (SHA-256 of the
+/// container-side project path) rather than the host path.
+pub(crate) fn try_capture_gemini_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(container_cwd.as_bytes());
+    let expected_hash = digest
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        GEMINI_CONTAINER_LIST_SCRIPT,
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(GEMINI_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (gemini session scan)",
+    )?;
+    select_gemini_session_in_container(&stdout_bytes, &expected_hash, exclusion)
+}
+
+/// Parse the delimited stream emitted by `GEMINI_CONTAINER_LIST_SCRIPT` and pick
+/// the most recent session whose `projectHash` matches `expected_hash`.
+fn select_gemini_session_in_container(
+    stdout_bytes: &[u8],
+    expected_hash: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, u64)> = Vec::new();
+
+    for chunk in text.split("===GEMINI:").skip(1) {
+        let (ts_str, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let (session_id, project_hash) = match parse_gemini_session_json(json_part.trim()) {
+            Some((Some(sid), hash)) if !sid.is_empty() && !exclusion.contains(&sid) => (sid, hash),
+            _ => continue,
+        };
+        if project_hash.as_deref() != Some(expected_hash) {
+            continue;
+        }
+        candidates.push((session_id, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Gemini sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
+    Ok(candidates[0].0.clone())
+}
+
+/// Polling closure for sandboxed (Docker) Gemini session tracking.
+pub(crate) fn gemini_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_gemini_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Gemini container poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
 /// Capture Gemini session ID from `~/.gemini/tmp/<dir>/chats/session-*.json`.
 ///
 /// `<dir>` is a SHA-256 hash of the project path. We compute it locally and look
@@ -1190,19 +1294,31 @@ pub(crate) fn extract_gemini_project_hash_from_file(path: &std::path::Path) -> O
     extract_gemini_fields(path).and_then(|(_, hash)| hash)
 }
 
-/// Read a Gemini session JSON file once and return both sessionId and projectHash.
-fn extract_gemini_fields(path: &std::path::Path) -> Option<(Option<String>, Option<String>)> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+/// Parse the body of a Gemini session JSON (already in memory).
+///
+/// Shared by the host scanner and the container scanner, which receives
+/// session JSON contents via `docker exec` rather than direct filesystem reads.
+/// Returns `(sessionId, projectHash)`.
+fn parse_gemini_session_json(content: &str) -> Option<(Option<String>, Option<String>)> {
+    let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
     let session_id = parsed
         .get("sessionId")
         .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from));
+        .map(String::from);
     let project_hash = parsed
         .get("projectHash")
         .and_then(|v| v.as_str())
         .map(String::from);
+    Some((session_id, project_hash))
+}
+
+/// Read a Gemini session JSON file once and return both sessionId and projectHash.
+/// Falls back to filename stem for sessionId if the JSON field is absent.
+fn extract_gemini_fields(path: &std::path::Path) -> Option<(Option<String>, Option<String>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let (session_id, project_hash) = parse_gemini_session_json(&content)?;
+    let session_id =
+        session_id.or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from));
     Some((session_id, project_hash))
 }
 
@@ -2261,16 +2377,10 @@ mod tests {
         )
         .unwrap();
 
-        let old_val = std::env::var("GEMINI_CLI_HOME").ok();
-        std::env::set_var("GEMINI_CLI_HOME", tmp.path());
+        let _guard = GeminiHomeGuard::set(tmp.path());
 
         let result = capture_gemini_session_id(project_path, &HashSet::new());
         assert_eq!(result.unwrap(), "new-id-222");
-
-        match old_val {
-            Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
-            None => std::env::remove_var("GEMINI_CLI_HOME"),
-        }
     }
 
     #[test]
@@ -2310,8 +2420,7 @@ mod tests {
             .set_times(std::fs::FileTimes::new().set_modified(older))
             .unwrap();
 
-        let old_val = std::env::var("GEMINI_CLI_HOME").ok();
-        std::env::set_var("GEMINI_CLI_HOME", tmp.path());
+        let _guard = GeminiHomeGuard::set(tmp.path());
 
         let mut exclusion = HashSet::new();
         exclusion.insert("json-id-AAA".to_string());
@@ -2332,10 +2441,76 @@ mod tests {
             "json-id-AAA",
             "Filename stem in exclusion should have no effect"
         );
+    }
 
-        match old_val {
-            Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
-            None => std::env::remove_var("GEMINI_CLI_HOME"),
+    struct GeminiHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl GeminiHomeGuard {
+        fn set(value: &Path) -> Self {
+            let previous = std::env::var("GEMINI_CLI_HOME").ok();
+            std::env::set_var("GEMINI_CLI_HOME", value);
+            Self { previous }
         }
+    }
+
+    impl Drop for GeminiHomeGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var("GEMINI_CLI_HOME", v),
+                None => std::env::remove_var("GEMINI_CLI_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_most_recent() {
+        let stdout = b"\
+===GEMINI:1700000000===
+{\"sessionId\": \"older-match\", \"projectHash\": \"abc123\"}
+===END===
+===GEMINI:1700001000===
+{\"sessionId\": \"newer-match\", \"projectHash\": \"abc123\"}
+===END===
+===GEMINI:1700002000===
+{\"sessionId\": \"other-project\", \"projectHash\": \"def456\"}
+===END===
+";
+        let result = select_gemini_session_in_container(stdout, "abc123", &HashSet::new()).unwrap();
+        assert_eq!(result, "newer-match");
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_exclusion() {
+        let stdout = b"\
+===GEMINI:1700001000===
+{\"sessionId\": \"already-claimed\", \"projectHash\": \"abc123\"}
+===END===
+===GEMINI:1700000500===
+{\"sessionId\": \"available\", \"projectHash\": \"abc123\"}
+===END===
+";
+        let mut exclusion = HashSet::new();
+        exclusion.insert("already-claimed".to_string());
+        let result = select_gemini_session_in_container(stdout, "abc123", &exclusion).unwrap();
+        assert_eq!(result, "available");
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_no_match() {
+        let stdout = b"\
+===GEMINI:1700000000===
+{\"sessionId\": \"foo\", \"projectHash\": \"wrong-hash\"}
+===END===
+";
+        let result = select_gemini_session_in_container(stdout, "abc123", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_gemini_session_in_container_empty_input() {
+        let result = select_gemini_session_in_container(b"", "abc123", &HashSet::new());
+        assert!(result.is_err());
     }
 }
