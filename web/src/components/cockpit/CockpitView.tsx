@@ -28,7 +28,7 @@ export function CockpitView({ sessionId }: Props) {
   const { state, status, resolveApproval, sendPrompt } = useCockpit(sessionId);
 
   return (
-    <div className="flex h-full flex-col bg-slate-900 text-slate-100">
+    <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} mode={state.mode} />
 
       {(status !== "open" || state.lagged || state.rateLimit) && (
@@ -164,7 +164,7 @@ function Cell({ cell }: { cell: Cell }) {
   if (cell.kind === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-full rounded-lg bg-slate-700 px-3 py-2 text-sm text-slate-100 whitespace-pre-wrap">
+        <div className="max-w-full rounded-lg bg-surface-700 px-3 py-2 text-sm text-text-primary whitespace-pre-wrap">
           {cell.text}
         </div>
       </div>
@@ -172,7 +172,7 @@ function Cell({ cell }: { cell: Cell }) {
   }
   if (cell.kind === "agent") {
     return (
-      <div className="text-slate-100 leading-relaxed whitespace-pre-wrap">
+      <div className="text-text-primary leading-relaxed whitespace-pre-wrap">
         {cell.text}
       </div>
     );
@@ -181,7 +181,7 @@ function Cell({ cell }: { cell: Cell }) {
     return <ToolCallCell row={cell.row} result={cell.result} />;
   }
   return (
-    <div className="text-xs text-slate-500 italic">{cell.text}</div>
+    <div className="text-xs text-text-dim italic">{cell.text}</div>
   );
 }
 
@@ -201,26 +201,26 @@ function ToolCallCell({
 
   const dot =
     status === "running"
-      ? "bg-amber-400 animate-pulse"
+      ? "bg-brand-400 animate-pulse"
       : status === "ok"
         ? "bg-emerald-500"
         : "bg-red-500";
 
   return (
-    <div className="rounded-md border border-slate-700 bg-slate-800/60 text-sm">
+    <div className="rounded-md border border-surface-700 bg-surface-800/60 text-sm">
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-800"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-800"
         onClick={() => setExpanded((v) => !v)}
       >
         <span className={`h-2 w-2 rounded-full ${dot}`} />
-        <span className="font-mono text-xs text-slate-300">{row.text}</span>
-        <span className="ml-auto text-xs text-slate-500">
+        <span className="font-mono text-xs text-text-secondary">{row.text}</span>
+        <span className="ml-auto text-xs text-text-dim">
           {status === "running" ? "running" : status === "ok" ? "✓" : "failed"}
         </span>
       </button>
       {expanded && result?.text && (
-        <pre className="border-t border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-400 whitespace-pre-wrap break-all">
+        <pre className="border-t border-surface-700 bg-surface-900 px-3 py-2 text-xs text-text-muted whitespace-pre-wrap break-all">
           {result.text}
         </pre>
       )}
@@ -230,11 +230,11 @@ function ToolCallCell({
 
 function ThinkingBubble() {
   return (
-    <div className="flex items-center gap-2 text-sm italic text-slate-400">
+    <div className="flex items-center gap-2 text-sm italic text-text-muted">
       <span className="flex gap-1" aria-hidden="true">
-        <span className="h-1.5 w-1.5 rounded-full bg-slate-500 animate-pulse" />
-        <span className="h-1.5 w-1.5 rounded-full bg-slate-500 animate-pulse [animation-delay:120ms]" />
-        <span className="h-1.5 w-1.5 rounded-full bg-slate-500 animate-pulse [animation-delay:240ms]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-text-dim animate-pulse" />
+        <span className="h-1.5 w-1.5 rounded-full bg-text-dim animate-pulse [animation-delay:120ms]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-text-dim animate-pulse [animation-delay:240ms]" />
       </span>
       <span>Thinking…</span>
     </div>
@@ -243,7 +243,7 @@ function ThinkingBubble() {
 
 function EmptyState() {
   return (
-    <div className="text-center text-slate-500 italic mt-12">
+    <div className="text-center text-text-dim italic mt-12">
       Type a prompt below to start the conversation.
     </div>
   );
@@ -266,46 +266,46 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
   const totalSteps = plan?.steps.length ?? 0;
 
   return (
-    <div className="border-b border-slate-800 bg-slate-900/95 backdrop-blur">
+    <div className="border-b border-surface-800 bg-surface-900/95 backdrop-blur">
       <button
         type="button"
-        className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-slate-800/40"
+        className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-surface-800/40"
         onClick={() => setExpanded((v) => !v)}
       >
-        <span className="font-mono text-[11px] uppercase tracking-wide text-slate-500">
+        <span className="font-mono text-[11px] uppercase tracking-wide text-text-dim">
           plan
         </span>
-        <span className="truncate text-slate-200">
+        <span className="truncate text-text-primary">
           {current?.title ?? (plan ? "all steps complete" : "—")}
         </span>
         {plan && (
-          <span className="ml-auto text-xs text-slate-500">
+          <span className="ml-auto text-xs text-text-dim">
             {completed.length}/{totalSteps}
           </span>
         )}
         {mode !== "Default" && (
-          <span className="rounded bg-amber-900/40 px-2 py-0.5 text-[11px] uppercase tracking-wide text-amber-300">
+          <span className="rounded bg-brand-700/40 px-2 py-0.5 text-[11px] uppercase tracking-wide text-brand-400">
             {mode}
           </span>
         )}
       </button>
 
       {expanded && plan && (
-        <div className="max-h-64 overflow-y-auto border-t border-slate-800 px-4 py-2 text-sm">
+        <div className="max-h-64 overflow-y-auto border-t border-surface-800 px-4 py-2 text-sm">
           <ul className="space-y-1">
             {plan.steps.map((step) => (
               <li
                 key={step.id}
-                className="flex items-start gap-2 text-slate-300"
+                className="flex items-start gap-2 text-text-secondary"
               >
                 <StepGlyph status={step.status} />
                 <span
                   className={
                     step.status === "Done"
-                      ? "text-slate-500 line-through"
+                      ? "text-text-dim line-through"
                       : step.status === "InProgress"
-                        ? "text-slate-100 font-medium"
-                        : "text-slate-300"
+                        ? "text-text-primary font-medium"
+                        : "text-text-secondary"
                   }
                 >
                   {step.title}
@@ -314,7 +314,7 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
             ))}
           </ul>
           {upcoming.length === 0 && current && (
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-text-dim">
               No upcoming steps after the current one.
             </p>
           )}
@@ -329,12 +329,12 @@ function StepGlyph({ status }: { status: Plan["steps"][number]["status"] }) {
     case "Done":
       return <span className="text-emerald-500">✓</span>;
     case "InProgress":
-      return <span className="text-amber-400">●</span>;
+      return <span className="text-brand-500">●</span>;
     case "Cancelled":
-      return <span className="text-slate-600">⊘</span>;
+      return <span className="text-text-dim">⊘</span>;
     case "Pending":
     default:
-      return <span className="text-slate-600">○</span>;
+      return <span className="text-text-dim">○</span>;
   }
 }
 
@@ -386,12 +386,12 @@ function Composer({ sendPrompt, thinking, inFlight }: ComposerProps) {
       : "Send a message…  (Enter to send, Shift+Enter for newline)";
 
   return (
-    <div className="border-t border-slate-800 bg-slate-900">
+    <div className="border-t border-surface-800 bg-surface-900">
       <div className="mx-auto max-w-3xl px-4 py-3">
-        <div className="flex items-end gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 focus-within:border-amber-600">
+        <div className="flex items-end gap-2 rounded-lg border border-surface-700 bg-surface-800 px-3 py-2 focus-within:border-brand-600">
           <textarea
             ref={taRef}
-            className="flex-1 resize-none bg-transparent text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none"
+            className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-dim focus:outline-none"
             rows={1}
             placeholder={placeholder}
             value={text}
@@ -403,8 +403,8 @@ function Composer({ sendPrompt, thinking, inFlight }: ComposerProps) {
             type="button"
             className={`shrink-0 rounded px-3 py-1.5 text-sm font-medium ${
               sending || !text.trim()
-                ? "bg-slate-700 text-slate-500 cursor-not-allowed"
-                : "bg-amber-600 text-white hover:bg-amber-500"
+                ? "bg-surface-700 text-text-dim cursor-not-allowed"
+                : "bg-brand-600 text-white hover:bg-brand-500"
             }`}
             disabled={sending || !text.trim()}
             onClick={() => void submit()}
@@ -427,8 +427,8 @@ function PendingApproval({
   onResolve: (nonce: string, decision: ApprovalDecision) => Promise<void>;
 }) {
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-3 shadow-md">
-      <div className="text-xs font-mono uppercase tracking-wide text-amber-400 mb-2">
+    <div className="rounded-lg border border-surface-700 bg-surface-900/80 p-3 shadow-md">
+      <div className="text-xs font-mono uppercase tracking-wide text-brand-500 mb-2">
         agent is asking permission
       </div>
       <ApprovalCard
@@ -475,12 +475,12 @@ function SystemNotices({
   }
   if (messages.length === 0) return null;
   return (
-    <div className="border-b border-slate-800 px-4 py-2 space-y-1">
+    <div className="border-b border-surface-800 px-4 py-2 space-y-1">
       {messages.map((m, i) => (
         <div
           key={i}
           className={`text-xs ${
-            m.kind === "warn" ? "text-amber-300" : "text-slate-400"
+            m.kind === "warn" ? "text-brand-400" : "text-text-muted"
           }`}
         >
           {m.text}
@@ -491,16 +491,34 @@ function SystemNotices({
 }
 
 function StartupErrorBanner({ message }: { message: string }) {
+  // Auth-required is a different remediation than missing-binary. The
+  // adapter throws "Authentication required" when the binary IS installed
+  // but no creds are reachable.
+  const isAuth = /authentic|login|api[_ -]?key/i.test(message);
   return (
     <div className="border-b border-rose-900/60 bg-rose-950/40 px-4 py-3 text-rose-200">
       <div className="text-sm font-medium">Cockpit agent failed to start</div>
       <pre className="mt-1 whitespace-pre-wrap text-xs text-rose-100/90">{message}</pre>
       <div className="mt-2 text-xs text-rose-200/80">
-        Run <code className="rounded bg-rose-900/60 px-1">aoe cockpit doctor --fix</code> from a terminal,
-        or install the adapter manually:
-        <pre className="mt-1 whitespace-pre-wrap rounded bg-rose-900/40 p-2 text-xs">
-          npm install -g @agentclientprotocol/claude-agent-acp
-        </pre>
+        {isAuth ? (
+          <>
+            The adapter is installed but has no Claude credentials. Either set{" "}
+            <code className="rounded bg-rose-900/60 px-1">ANTHROPIC_API_KEY</code>{" "}
+            in the env that runs <code className="rounded bg-rose-900/60 px-1">aoe serve</code>,
+            or run <code className="rounded bg-rose-900/60 px-1">claude /login</code>{" "}
+            in a terminal to write credentials to{" "}
+            <code className="rounded bg-rose-900/60 px-1">~/.claude</code>,
+            then restart aoe.
+          </>
+        ) : (
+          <>
+            Run <code className="rounded bg-rose-900/60 px-1">aoe cockpit doctor --fix</code>{" "}
+            from a terminal, or install the adapter manually:
+            <pre className="mt-1 whitespace-pre-wrap rounded bg-rose-900/40 p-2 text-xs">
+              npm install -g @agentclientprotocol/claude-agent-acp
+            </pre>
+          </>
+        )}
       </div>
     </div>
   );

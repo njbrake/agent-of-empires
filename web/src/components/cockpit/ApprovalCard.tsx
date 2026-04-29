@@ -87,7 +87,7 @@ export function ApprovalCard({ approval, onResolve }: Props) {
 
   return (
     <div
-      className={`rounded-md bg-slate-800 p-4 mb-3 shadow-md ${borderClass}`}
+      className={`rounded-md bg-surface-800 p-4 mb-3 shadow-md ${borderClass}`}
       role="alertdialog"
       aria-label={`Approval needed: ${approval.tool_call.name}`}
     >
@@ -97,12 +97,12 @@ export function ApprovalCard({ approval, onResolve }: Props) {
             destructive
           </span>
         )}
-        <span className="text-slate-100 font-medium">
+        <span className="text-text-primary font-medium">
           {approval.tool_call.name}
         </span>
       </div>
 
-      <pre className="font-mono text-xs text-slate-300 bg-slate-900 rounded p-2 mb-3 overflow-x-auto">
+      <pre className="font-mono text-xs text-text-secondary bg-surface-900 rounded p-2 mb-3 overflow-x-auto">
         {approval.tool_call.args_preview}
       </pre>
 
@@ -145,8 +145,8 @@ export function ApprovalCard({ approval, onResolve }: Props) {
             type="button"
             className={`flex-1 rounded text-white font-medium py-3 px-4 text-sm ${
               phase === "pending"
-                ? "bg-amber-600 hover:bg-amber-500"
-                : "bg-amber-700 opacity-70 cursor-wait"
+                ? "bg-brand-600 hover:bg-brand-500"
+                : "bg-brand-700 opacity-70 cursor-wait"
             }`}
             disabled={phase !== "pending"}
             onClick={() => void submit("Allow")}
@@ -157,7 +157,7 @@ export function ApprovalCard({ approval, onResolve }: Props) {
 
         <button
           type="button"
-          className="rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-medium py-3 px-4 text-sm"
+          className="rounded bg-surface-700 hover:bg-surface-700 text-text-primary font-medium py-3 px-4 text-sm"
           disabled={phase === "submitting"}
           onClick={() => void submit("Deny")}
         >

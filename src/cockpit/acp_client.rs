@@ -403,7 +403,22 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
     // Env: clear, then forward an explicit allowlist + provider-specific
     // creds. AOE_TOKEN must NEVER reach the agent.
     cmd.env_clear();
-    let always_forward = ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER"];
+    let always_forward = [
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "USER",
+        // Provider auth: forwarded by default so users who already have
+        // `ANTHROPIC_API_KEY` (or have run `claude /login` so their
+        // ~/.claude credentials sit under HOME) get a working agent
+        // without manual env_allowlist plumbing.
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+    ];
     for name in always_forward {
         if let Ok(value) = std::env::var(name) {
             cmd.env(name, value);

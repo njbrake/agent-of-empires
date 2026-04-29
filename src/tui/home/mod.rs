@@ -170,8 +170,6 @@ pub struct HomeView {
     pub(super) welcome_dialog: Option<WelcomeDialog>,
     pub(super) no_agents_dialog: Option<NoAgentsDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
-    #[cfg(feature = "cockpit")]
-    pub(super) cockpit_intro_dialog: Option<crate::tui::dialogs::CockpitIntroDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     #[cfg(feature = "serve")]
@@ -351,8 +349,6 @@ impl HomeView {
             welcome_dialog: None,
             no_agents_dialog: None,
             changelog_dialog: None,
-            #[cfg(feature = "cockpit")]
-            cockpit_intro_dialog: None,
             info_dialog: None,
             profile_picker_dialog: None,
             #[cfg(feature = "serve")]
@@ -1137,11 +1133,6 @@ impl HomeView {
 
     pub fn show_changelog(&mut self, from_version: Option<String>) {
         self.changelog_dialog = Some(ChangelogDialog::new(from_version));
-    }
-
-    #[cfg(feature = "cockpit")]
-    pub fn show_cockpit_intro(&mut self) {
-        self.cockpit_intro_dialog = Some(crate::tui::dialogs::CockpitIntroDialog::new());
     }
 
     pub fn instances(&self) -> &[Instance] {

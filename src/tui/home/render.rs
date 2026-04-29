@@ -238,11 +238,6 @@ impl HomeView {
             send_message_dialog,
             update_confirm_dialog,
         );
-
-        #[cfg(feature = "cockpit")]
-        if let Some(dialog) = &self.cockpit_intro_dialog {
-            dialog.render(frame, area, theme);
-        }
     }
 
     fn active_diff_area(&self, area: Rect) -> Rect {
