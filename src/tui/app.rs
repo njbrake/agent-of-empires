@@ -349,6 +349,18 @@ impl App {
 
                             continue;
                         }
+                        Some(Ok(Event::Resize(_, _))) => {
+                            // Soft keyboard slides up/down on iPad/iPhone Mosh
+                            // (and ordinary terminal resizes) emit Resize. The
+                            // catch-all below would silently drop them, leaving
+                            // the screen mid-stale until the next refresh tick.
+                            // Sync the backend's internal size + redraw now so
+                            // viewport-driven layout (responsive::dialog_width,
+                            // STACKED_BREAKPOINT, etc.) re-evaluates.
+                            terminal.autoresize()?;
+                            terminal.draw(|f| self.render(f))?;
+                            continue;
+                        }
                         Some(Ok(_)) => {}
                         Some(Err(e)) => {
                             // IO error reading from the terminal (broken pipe,
