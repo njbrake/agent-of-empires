@@ -320,15 +320,27 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleToggleTerminalFocus = useCallback(() => {
     if (!activeSessionId) return;
     // ContentSplit renders the right pane twice (desktop inline + mobile
-    // overlay); each instance mounts its own PairedTerminal. Detecting the
-    // current focus target by data-term attribute is robust against that
-    // duplication and against future panel reorderings.
-    const agentPanel = document.querySelector<HTMLElement>(
-      '[data-term="agent"]',
-    );
+    // overlay); each instance mounts its own PairedTerminal. Probing by
+    // data-term attribute is robust against that duplication and against
+    // future panel reorderings.
+    //
+    // Semantic: VSCode-like "Cmd+` opens/focuses the terminal." So if the
+    // user is NOT in the paired terminal, send them there; only flip back
+    // to agent when they're already in paired.
     const active = document.activeElement;
-    const inAgent = !!agentPanel && !!active && agentPanel.contains(active);
-    const target = inAgent ? "paired" : "agent";
+    const pairedPanels = document.querySelectorAll<HTMLElement>(
+      '[data-term="paired"]',
+    );
+    let inPaired = false;
+    if (active) {
+      for (const p of pairedPanels) {
+        if (p.contains(active)) {
+          inPaired = true;
+          break;
+        }
+      }
+    }
+    const target = inPaired ? "agent" : "paired";
 
     if (target === "paired" && diffCollapsed) {
       // Right panel is collapsed; paired terminal is unmounted. Set the
