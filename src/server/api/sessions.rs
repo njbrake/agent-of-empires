@@ -717,11 +717,13 @@ pub async fn create_session(
                         .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
                         .await
                     {
+                        let message = format!("Failed to start cockpit agent {agent:?}: {e}");
                         tracing::warn!(
                             target: "cockpit.supervisor",
                             session = %id,
-                            "auto-spawn after create failed: {e}"
+                            "auto-spawn after create failed: {message}"
                         );
+                        supervisor.publish_startup_error(&id, message);
                     }
                 });
             }

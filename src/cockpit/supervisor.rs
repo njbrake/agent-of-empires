@@ -95,6 +95,16 @@ impl<S: BroadcastSink> Supervisor<S> {
         self.registry.lock().await.clone()
     }
 
+    /// Publish a synthetic AgentStartupError event for a session whose
+    /// worker never came online. Used by the auto-spawn-after-create
+    /// path so the UI shows a remediation hint instead of an empty,
+    /// silent conversation when `claude-agent-acp` isn't installed (or
+    /// `npx -y` is still downloading on first run).
+    pub fn publish_startup_error(&self, session_id: &str, message: String) {
+        self.sink
+            .publish(session_id, 1, &Event::AgentStartupError { message });
+    }
+
     pub async fn upsert_agent(&self, name: String, spec: AgentSpec) {
         self.registry.lock().await.upsert(name, spec);
     }

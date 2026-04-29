@@ -756,6 +756,26 @@ impl Instance {
             return;
         }
 
+        // Cockpit-mode sessions are not backed by a tmux pane; the cockpit
+        // worker supervisor owns their lifecycle and emits typed health
+        // events over the broadcast. Probing tmux here only ever produces
+        // a spurious "tmux session is gone" Error transition.
+        #[cfg(feature = "cockpit")]
+        if self.cockpit_mode {
+            // Clear any stale tmux-derived error so the UI doesn't show
+            // a misleading message after a session is converted or
+            // restarted with cockpit_mode on.
+            if self.last_error.as_deref()
+                == Some("tmux session is gone. The agent process may have exited or been killed.")
+            {
+                self.last_error = None;
+            }
+            if self.status == Status::Error {
+                self.status = Status::Idle;
+            }
+            return;
+        }
+
         if self.status == Status::Error {
             if let Some(last_check) = self.last_error_check {
                 if last_check.elapsed().as_secs() < 30 {

@@ -501,12 +501,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                     .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
                     .await
                 {
+                    let message = format!("Failed to start cockpit agent {agent:?}: {e}");
                     tracing::warn!(
                         target: "cockpit.supervisor",
                         session = %id,
                         agent = %agent,
-                        "auto-spawn at serve startup failed: {e}"
+                        "auto-spawn at serve startup failed: {message}"
                     );
+                    supervisor.publish_startup_error(&id, message);
                 }
             });
         }

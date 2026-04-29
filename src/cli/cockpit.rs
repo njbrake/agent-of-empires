@@ -102,6 +102,23 @@ async fn doctor(json: bool, fix: bool) -> Result<()> {
                 Err(e) => println!("Cannot probe Node: {e}"),
             }
         }
+        // Auto-install the claude-code ACP adapter globally if
+        // `claude-agent-acp` isn't on PATH. We surface output so a
+        // failure (no npm, no internet, etc.) is obvious rather than
+        // silently leaving the user with a wedged cockpit.
+        if find_in_path("claude-agent-acp").is_none() {
+            println!("Installing @agentclientprotocol/claude-agent-acp globally via npm...");
+            let status = std::process::Command::new("npm")
+                .args(["install", "-g", "@agentclientprotocol/claude-agent-acp"])
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    println!("Installed @agentclientprotocol/claude-agent-acp.");
+                }
+                Ok(s) => println!("npm install exited with status {s}"),
+                Err(e) => println!("Could not run npm: {e}. Install Node.js + npm first."),
+            }
+        }
     }
     let registry = AgentRegistry::with_defaults();
 

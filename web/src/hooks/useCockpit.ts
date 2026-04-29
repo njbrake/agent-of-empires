@@ -48,6 +48,8 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       // A new user turn implicitly starts a fresh assistant buffer for
       // the next agent_message_chunk burst.
       assistantMessage: "",
+      // Clear any previous startup-error banner: the user is retrying.
+      startupError: null,
     };
   }
   return emptyCockpitState();

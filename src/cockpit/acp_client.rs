@@ -239,17 +239,22 @@ impl AcpClient {
             label: session_label.clone(),
         };
 
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<(), AcpError>>();
+
         tokio::spawn(run_connection_task(
             transport,
             event_tx,
             cmd_rx,
             cwd,
-            session_label,
+            session_label.clone(),
             child_for_task,
             pending_for_task,
             resources,
             None,
+            Some(ready_tx),
         ));
+
+        wait_for_handshake(&session_label, ready_rx, &child).await?;
 
         Ok(Self {
             session_id,
@@ -297,17 +302,22 @@ impl AcpClient {
         let child_for_task = child.clone();
         let pending_for_task = pending_responders.clone();
 
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<(), AcpError>>();
+
         tokio::spawn(run_connection_task(
             transport,
             event_tx,
             cmd_rx,
             cwd,
-            session_label,
+            session_label.clone(),
             child_for_task,
             pending_for_task,
             resources,
             socket_path,
+            Some(ready_tx),
         ));
+
+        wait_for_handshake(&session_label, ready_rx, &child).await?;
 
         Ok(Self {
             session_id,
@@ -579,12 +589,16 @@ async fn run_connection_task<W, R>(
     pending_responders: PendingResponders,
     resources: SessionResources,
     socket_path: Option<PathBuf>,
+    ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
     R: futures_util::AsyncRead + Send + 'static,
 {
+    let ready_tx = Arc::new(Mutex::new(ready_tx));
+    let ready_for_block = ready_tx.clone();
     let event_tx_for_notif = event_tx.clone();
     let event_tx_for_perm = event_tx.clone();
+    let event_tx_for_block = event_tx.clone();
     let pending_for_perm = pending_responders.clone();
     let cmd_rx = Arc::new(Mutex::new(cmd_rx));
     let res_read = resources.clone();
@@ -709,6 +723,10 @@ async fn run_connection_task<W, R>(
                 .await?;
             let acp_session_id = new_session.session_id;
 
+            if let Some(tx) = ready_for_block.lock().await.take() {
+                let _ = tx.send(Ok(()));
+            }
+
             loop {
                 let cmd = {
                     let mut rx = cmd_rx.lock().await;
@@ -724,7 +742,7 @@ async fn run_connection_task<W, R>(
                             ))
                             .block_task()
                             .await?;
-                        let _ = event_tx
+                        let _ = event_tx_for_block
                             .send(Event::Stopped {
                                 reason: "prompt_complete".into(),
                             })
@@ -740,14 +758,75 @@ async fn run_connection_task<W, R>(
         })
         .await;
 
-    if let Err(e) = result {
+    if let Err(e) = &result {
         error!(target: "cockpit.acp", "ACP connection task ended with error: {:?}", e);
+        let message = format!("ACP connection failed: {e}");
+        // If the handshake never completed, hand the failure back so
+        // `spawn()` can surface a typed error to the caller; otherwise
+        // publish a synthetic event so the UI can show a remediation
+        // hint instead of a silent dead session.
+        if let Some(tx) = ready_tx.lock().await.take() {
+            let _ = tx.send(Err(AcpError::Spawn(message.clone())));
+        } else {
+            let _ = event_tx.send(Event::AgentStartupError { message }).await;
+        }
     }
     let mut guard = child.lock().await;
     let _ = guard.kill().await;
     // Clean up socket file on exit when this transport was socket-based.
     if let Some(path) = socket_path {
         let _ = tokio::fs::remove_file(path).await;
+    }
+}
+
+/// Wait for the connection task to finish the ACP handshake (or fail).
+/// Bounds the wait so a wedged agent (the classic `npx -y` first-run
+/// download stall) returns a clear typed error instead of leaving the
+/// supervisor parked indefinitely. Also watches for early child exit
+/// and surfaces stderr in the message so callers see why it died.
+async fn wait_for_handshake(
+    session_label: &str,
+    ready_rx: oneshot::Receiver<Result<(), AcpError>>,
+    child: &Arc<Mutex<tokio::process::Child>>,
+) -> Result<(), AcpError> {
+    let timeout = std::time::Duration::from_secs(30);
+    match tokio::time::timeout(timeout, ready_rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(e))) => {
+            warn!(target: "cockpit.acp", session = %session_label, "ACP handshake failed: {e}");
+            collect_child_failure(child).await;
+            Err(e)
+        }
+        Ok(Err(_canceled)) => Err(AcpError::Spawn(
+            "ACP connection task ended before completing the initialize handshake".into(),
+        )),
+        Err(_elapsed) => {
+            warn!(
+                target: "cockpit.acp",
+                session = %session_label,
+                "ACP handshake timed out after {}s",
+                timeout.as_secs()
+            );
+            // Kill the wedged child so we don't leak a zombie npx
+            // download. The connection task will then unwind and the
+            // ready_tx is already gone, so no event_tx duplicate.
+            let mut guard = child.lock().await;
+            let _ = guard.kill().await;
+            Err(AcpError::Spawn(format!(
+                "agent did not complete the ACP initialize handshake within {}s. \
+                 Common causes: `npx -y` is still downloading the adapter on first run, \
+                 or the configured agent command isn't a real ACP server. \
+                 Try `npm install -g @agentclientprotocol/claude-agent-acp` and re-run.",
+                timeout.as_secs()
+            )))
+        }
+    }
+}
+
+async fn collect_child_failure(child: &Arc<Mutex<tokio::process::Child>>) {
+    let mut guard = child.lock().await;
+    if let Ok(Some(status)) = guard.try_wait() {
+        warn!(target: "cockpit.acp", "agent process exited early: status={status}");
     }
 }
 

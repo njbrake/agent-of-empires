@@ -124,7 +124,7 @@ mod tests {
         let resolved = policy
             .resolve_inside(&root.join("file.txt"))
             .expect("should resolve inside root");
-        assert!(resolved.starts_with(&root.canonicalize().unwrap()));
+        assert!(resolved.starts_with(root.canonicalize().unwrap()));
     }
 
     #[test]

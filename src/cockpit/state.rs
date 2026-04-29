@@ -195,6 +195,13 @@ pub enum Event {
     Stopped {
         reason: String,
     },
+    /// The agent process failed to spawn or never completed its
+    /// `initialize` handshake. Surfaced through the broadcast so the
+    /// React cockpit can show a remediation hint instead of staring at
+    /// an empty conversation.
+    AgentStartupError {
+        message: String,
+    },
 }
 
 impl CockpitState {
@@ -247,6 +254,7 @@ impl CockpitState {
             Event::RawAgentUpdate { .. } => {}
             Event::AgentMessageChunk { .. } => {}
             Event::Stopped { .. } => {}
+            Event::AgentStartupError { .. } => {}
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();

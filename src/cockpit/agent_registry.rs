@@ -34,12 +34,21 @@ impl AgentRegistry {
     /// and `aoe-agent` (our Node binary).
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
+        // Default to a global install (`npm install -g
+        // @agentclientprotocol/claude-agent-acp`). The doctor surfaces a
+        // clear remediation hint when the binary isn't on PATH. We
+        // deliberately don't use `npx -y @agentclientprotocol/claude-agent-acp`
+        // here because the first-run download can hang for tens of
+        // seconds with no output, which used to leave the cockpit
+        // worker silently wedged before the handshake.
         reg.agents.insert(
             "claude-code".into(),
             AgentSpec {
-                command: "npx".into(),
-                args: vec!["-y".into(), "@agentclientprotocol/claude-agent-acp".into()],
-                description: "Anthropic Claude via the official ACP adapter".into(),
+                command: "claude-agent-acp".into(),
+                args: vec![],
+                description:
+                    "Anthropic Claude via the official ACP adapter (npm i -g @agentclientprotocol/claude-agent-acp)"
+                        .into(),
                 env_allowlist: None,
             },
         );

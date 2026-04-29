@@ -77,7 +77,8 @@ export type CockpitEvent =
   | { ModeChanged: { mode: SessionMode } }
   | { RawAgentUpdate: { payload: unknown } }
   | { AgentMessageChunk: { text: string } }
-  | { Stopped: { reason: string } };
+  | { Stopped: { reason: string } }
+  | { AgentStartupError: { message: string } };
 
 export interface CockpitFrame {
   session_id: string;
@@ -112,6 +113,9 @@ export interface CockpitState {
   lastSeq: number;
   /** True if the most recent broadcast told us we lagged. */
   lagged: boolean;
+  /** Latest agent startup failure message, if any. Cleared when a new
+   *  prompt is sent or the worker successfully connects. */
+  startupError: string | null;
 }
 
 export interface ActivityRow {
@@ -145,6 +149,7 @@ export function emptyCockpitState(): CockpitState {
     activity: [],
     lastSeq: 0,
     lagged: false,
+    startupError: null,
   };
 }
 
@@ -230,6 +235,11 @@ export function applyEvent(
   if ("Stopped" in event) {
     // Final marker; nothing to mutate, but reset the inflight tool just
     // in case the agent forgot to emit a completion.
+    next.inFlightTool = null;
+    return next;
+  }
+  if ("AgentStartupError" in event) {
+    next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
     return next;
   }

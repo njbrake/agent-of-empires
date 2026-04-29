@@ -39,6 +39,8 @@ export function CockpitView({ sessionId }: Props) {
         />
       )}
 
+      {state.startupError && <StartupErrorBanner message={state.startupError} />}
+
       <ConversationFeed
         state={state}
         onResolve={resolveApproval}
@@ -484,6 +486,22 @@ function SystemNotices({
           {m.text}
         </div>
       ))}
+    </div>
+  );
+}
+
+function StartupErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="border-b border-rose-900/60 bg-rose-950/40 px-4 py-3 text-rose-200">
+      <div className="text-sm font-medium">Cockpit agent failed to start</div>
+      <pre className="mt-1 whitespace-pre-wrap text-xs text-rose-100/90">{message}</pre>
+      <div className="mt-2 text-xs text-rose-200/80">
+        Run <code className="rounded bg-rose-900/60 px-1">aoe cockpit doctor --fix</code> from a terminal,
+        or install the adapter manually:
+        <pre className="mt-1 whitespace-pre-wrap rounded bg-rose-900/40 p-2 text-xs">
+          npm install -g @agentclientprotocol/claude-agent-acp
+        </pre>
+      </div>
     </div>
   );
 }
