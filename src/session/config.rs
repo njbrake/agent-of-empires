@@ -348,54 +348,10 @@ pub struct ClaudeConfig {
     pub config_dir: Option<String>,
 }
 
-/// What to do when a new release is detected.
-///
-/// Composes with `check_enabled`: if checks are off, this setting has no effect.
-/// `Notify` matches pre-0.5 behavior (show the update bar / print the CLI notice
-/// and let the user run `aoe update` themselves). `Patch` and `All` only kick in
-/// for the safe in-place tarball path; brew/sudo updates still go through the
-/// confirm dialog because they need the terminal for a password prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AutoupdatePolicy {
-    /// Don't show update notifications and don't auto-apply.
-    Off,
-    /// Show notifications, never auto-apply (default).
-    #[default]
-    Notify,
-    /// Auto-apply patch releases (x.y.Z bumps); notify on minor/major.
-    Patch,
-    /// Auto-apply every release.
-    All,
-}
-
-impl AutoupdatePolicy {
-    pub fn cycle(self) -> Self {
-        match self {
-            AutoupdatePolicy::Off => AutoupdatePolicy::Notify,
-            AutoupdatePolicy::Notify => AutoupdatePolicy::Patch,
-            AutoupdatePolicy::Patch => AutoupdatePolicy::All,
-            AutoupdatePolicy::All => AutoupdatePolicy::Off,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            AutoupdatePolicy::Off => "Off",
-            AutoupdatePolicy::Notify => "Notify",
-            AutoupdatePolicy::Patch => "Patch only",
-            AutoupdatePolicy::All => "All",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatesConfig {
     #[serde(default = "default_true")]
     pub check_enabled: bool,
-
-    #[serde(default)]
-    pub autoupdate: AutoupdatePolicy,
 
     #[serde(default = "default_check_interval")]
     pub check_interval_hours: u64,
@@ -408,7 +364,6 @@ impl Default for UpdatesConfig {
     fn default() -> Self {
         Self {
             check_enabled: true,
-            autoupdate: AutoupdatePolicy::default(),
             check_interval_hours: 24,
             notify_in_cli: true,
         }
@@ -819,7 +774,6 @@ mod tests {
     fn test_updates_config_default() {
         let updates = UpdatesConfig::default();
         assert!(updates.check_enabled);
-        assert_eq!(updates.autoupdate, AutoupdatePolicy::Notify);
         assert_eq!(updates.check_interval_hours, 24);
         assert!(updates.notify_in_cli);
     }
@@ -828,13 +782,11 @@ mod tests {
     fn test_updates_config_deserialize() {
         let toml = r#"
             check_enabled = false
-            autoupdate = "patch"
             check_interval_hours = 12
             notify_in_cli = false
         "#;
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
         assert!(!updates.check_enabled);
-        assert_eq!(updates.autoupdate, AutoupdatePolicy::Patch);
         assert_eq!(updates.check_interval_hours, 12);
         assert!(!updates.notify_in_cli);
     }
@@ -845,17 +797,15 @@ mod tests {
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
         assert!(!updates.check_enabled);
         // Defaults for other fields
-        assert_eq!(updates.autoupdate, AutoupdatePolicy::Notify);
         assert_eq!(updates.check_interval_hours, 24);
     }
 
-    /// Regression: pre-0.5 configs had `auto_update = bool`. The field was
-    /// removed when we introduced the autoupdate enum. Old configs must
-    /// still deserialize cleanly (serde silently drops unknown fields), and
-    /// the new `autoupdate` defaults to `Notify`, which matches the behavior
-    /// the dead bool produced (i.e., no auto-apply).
+    /// Regression: a previous schema had `auto_update = bool` on
+    /// UpdatesConfig (it was wired through profiles but never read).
+    /// The field is gone now, so old configs that still set it must
+    /// deserialize cleanly with the field silently dropped by serde.
     #[test]
-    fn test_old_auto_update_field_is_silently_ignored() {
+    fn test_legacy_auto_update_field_is_silently_ignored() {
         let old_toml = r#"
             check_enabled = true
             auto_update = true
@@ -864,41 +814,9 @@ mod tests {
         "#;
         let updates: UpdatesConfig =
             toml::from_str(old_toml).expect("old auto_update field should not error");
-        assert_eq!(updates.autoupdate, AutoupdatePolicy::Notify);
         assert_eq!(updates.check_interval_hours, 12);
         assert!(updates.check_enabled);
         assert!(updates.notify_in_cli);
-    }
-
-    #[test]
-    fn test_autoupdate_policy_cycle() {
-        let p = AutoupdatePolicy::Off;
-        assert_eq!(p.cycle(), AutoupdatePolicy::Notify);
-        assert_eq!(p.cycle().cycle(), AutoupdatePolicy::Patch);
-        assert_eq!(p.cycle().cycle().cycle(), AutoupdatePolicy::All);
-        assert_eq!(p.cycle().cycle().cycle().cycle(), AutoupdatePolicy::Off);
-    }
-
-    #[test]
-    fn test_autoupdate_policy_serde_round_trip() {
-        for p in [
-            AutoupdatePolicy::Off,
-            AutoupdatePolicy::Notify,
-            AutoupdatePolicy::Patch,
-            AutoupdatePolicy::All,
-        ] {
-            let toml = format!(
-                "check_enabled = true\nautoupdate = \"{}\"\ncheck_interval_hours = 24\nnotify_in_cli = true\n",
-                match p {
-                    AutoupdatePolicy::Off => "off",
-                    AutoupdatePolicy::Notify => "notify",
-                    AutoupdatePolicy::Patch => "patch",
-                    AutoupdatePolicy::All => "all",
-                }
-            );
-            let parsed: UpdatesConfig = toml::from_str(&toml).unwrap();
-            assert_eq!(parsed.autoupdate, p);
-        }
     }
 
     // Tests for WorktreeConfig

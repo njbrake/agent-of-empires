@@ -49,7 +49,6 @@ pub enum FieldKey {
     ThemeColorMode,
     // Updates
     CheckEnabled,
-    Autoupdate,
     CheckIntervalHours,
     NotifyInCli,
     // Worktree
@@ -396,19 +395,12 @@ fn build_updates_fields(
     global: &Config,
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
-    use crate::session::config::AutoupdatePolicy;
-
     let updates = profile.updates.as_ref();
 
     let (check_enabled, o1) = resolve_value(
         scope,
         global.updates.check_enabled,
         updates.and_then(|u| u.check_enabled),
-    );
-    let (autoupdate, o_au) = resolve_value(
-        scope,
-        global.updates.autoupdate,
-        updates.and_then(|u| u.autoupdate),
     );
     let (check_interval, o2) = resolve_value(
         scope,
@@ -421,19 +413,6 @@ fn build_updates_fields(
         updates.and_then(|u| u.notify_in_cli),
     );
 
-    let policy_to_index = |p: AutoupdatePolicy| match p {
-        AutoupdatePolicy::Off => 0,
-        AutoupdatePolicy::Notify => 1,
-        AutoupdatePolicy::Patch => 2,
-        AutoupdatePolicy::All => 3,
-    };
-    let autoupdate_options = vec![
-        "Off".into(),
-        "Notify".into(),
-        "Patch only".into(),
-        "All".into(),
-    ];
-
     vec![
         SettingField {
             key: FieldKey::CheckEnabled,
@@ -443,24 +422,6 @@ fn build_updates_fields(
             category: SettingsCategory::Updates,
             has_override: o1,
             inherited_display: inherited_if(o1, FieldValue::Bool(global.updates.check_enabled)),
-        },
-        SettingField {
-            key: FieldKey::Autoupdate,
-            label: "Auto-update",
-            description: "Off: silent. Notify: show update bar. Patch only: auto-apply x.y.Z bumps. All: auto-apply every release. Auto-apply only runs for the safe in-place tarball path; sudo/brew updates still prompt.",
-            value: FieldValue::Select {
-                selected: policy_to_index(autoupdate),
-                options: autoupdate_options.clone(),
-            },
-            category: SettingsCategory::Updates,
-            has_override: o_au,
-            inherited_display: inherited_if(
-                o_au,
-                FieldValue::Select {
-                    selected: policy_to_index(global.updates.autoupdate),
-                    options: autoupdate_options,
-                },
-            ),
         },
         SettingField {
             key: FieldKey::CheckIntervalHours,
@@ -1437,15 +1398,6 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
-        (FieldKey::Autoupdate, FieldValue::Select { selected, .. }) => {
-            use crate::session::config::AutoupdatePolicy;
-            config.updates.autoupdate = match selected {
-                0 => AutoupdatePolicy::Off,
-                1 => AutoupdatePolicy::Notify,
-                2 => AutoupdatePolicy::Patch,
-                _ => AutoupdatePolicy::All,
-            };
-        }
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
             config.updates.check_interval_hours = *v
         }
@@ -1606,16 +1558,6 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.updates, |s, val| s.check_enabled = val);
-        }
-        (FieldKey::Autoupdate, FieldValue::Select { selected, .. }) => {
-            use crate::session::config::AutoupdatePolicy;
-            let policy = match selected {
-                0 => AutoupdatePolicy::Off,
-                1 => AutoupdatePolicy::Notify,
-                2 => AutoupdatePolicy::Patch,
-                _ => AutoupdatePolicy::All,
-            };
-            set_profile_override(policy, &mut config.updates, |s, val| s.autoupdate = val);
         }
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
             set_profile_override(*v, &mut config.updates, |s, val| {

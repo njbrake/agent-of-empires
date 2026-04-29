@@ -547,11 +547,6 @@ impl SettingsView {
                     u.check_enabled = None;
                 }
             }
-            FieldKey::Autoupdate => {
-                if let Some(ref mut u) = config.updates {
-                    u.autoupdate = None;
-                }
-            }
             FieldKey::CheckIntervalHours => {
                 if let Some(ref mut u) = config.updates {
                     u.check_interval_hours = None;

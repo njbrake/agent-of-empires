@@ -209,46 +209,6 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     false
 }
 
-/// Semver bump category between two versions, used to decide whether
-/// `autoupdate = patch` should auto-apply this release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleaseKind {
-    /// `1.2.3` → `1.2.4`
-    Patch,
-    /// `1.2.3` → `1.3.0`
-    Minor,
-    /// `1.2.3` → `2.0.0`
-    Major,
-    /// Couldn't parse one or both versions, or `latest <= current`.
-    /// Treated as "don't auto-apply" by every policy.
-    Unknown,
-}
-
-pub fn release_kind(current: &str, latest: &str) -> ReleaseKind {
-    let parse = |v: &str| -> Option<(u32, u32, u32)> {
-        let parts: Vec<u32> = v.split('.').filter_map(|s| s.parse().ok()).collect();
-        match parts.as_slice() {
-            [a, b, c] => Some((*a, *b, *c)),
-            _ => None,
-        }
-    };
-    let Some((cmaj, cmin, cpat)) = parse(current) else {
-        return ReleaseKind::Unknown;
-    };
-    let Some((lmaj, lmin, lpat)) = parse(latest) else {
-        return ReleaseKind::Unknown;
-    };
-    if lmaj > cmaj {
-        ReleaseKind::Major
-    } else if lmaj == cmaj && lmin > cmin {
-        ReleaseKind::Minor
-    } else if lmaj == cmaj && lmin == cmin && lpat > cpat {
-        ReleaseKind::Patch
-    } else {
-        ReleaseKind::Unknown
-    }
-}
-
 pub async fn print_update_notice() {
     let settings = get_update_settings();
     if !settings.check_enabled || !settings.notify_in_cli {
