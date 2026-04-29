@@ -132,6 +132,56 @@ test.describe("Mobile scrollback exit", () => {
       .toBe(true);
   });
 
+  test("button stays hidden after tap even with in-flight momentum", async ({
+    page,
+  }) => {
+    // Regression: a fast swipe pegs momentum velocity at MAX_VELOCITY,
+    // and the requestAnimationFrame decay keeps emitting wheel-ups for
+    // hundreds of ms after touchend. If exitScrollback doesn't cancel
+    // that momentum, the next decay frame calls sendWheel("up") and
+    // re-flips isInScrollback: true — the button reappears mid-poll.
+    await installTerminalSpies(page);
+    const handle = await mockTerminalApis(page);
+    await page.goto("/");
+    await seedSettings(page, { mobileFontSize: 14 });
+    await page.reload();
+    await openSession(page);
+
+    // Aggressive swipe: large per-step dy (75px) saturates velocity at
+    // MAX_VELOCITY=2.0 px/ms even when synthetic touchmoves arrive tens
+    // of ms apart (Playwright IPC roundtrip). Without saturation, slow
+    // local environments wouldn't generate enough momentum to repro.
+    const cx = 160;
+    let cy = 600;
+    await fireTouches(page, "touchstart", [{ x: cx, y: cy }]);
+    const steps = 8;
+    const travel = 600;
+    for (let i = 1; i <= steps; i++) {
+      cy = 600 - (i * travel) / steps;
+      await fireTouches(page, "touchmove", [{ x: cx, y: cy }]);
+    }
+    await fireTouches(page, "touchend", []);
+
+    const btn = page.getByRole("button", { name: "Back to live" });
+    await expect(btn).toBeVisible();
+
+    // Click immediately, while momentum is still decaying.
+    await btn.click();
+    const upsAtClick = countSeq(handle, WHEEL_UP_SEQ);
+
+    // Button must stay gone across the full momentum window (~700ms +
+    // slack). toHaveCount with timeout would pass on the first frame; we
+    // need to verify it stays at 0 across multiple animation frames.
+    for (let i = 0; i < 10; i++) {
+      await page.waitForTimeout(100);
+      await expect(btn).toHaveCount(0);
+    }
+
+    // And no additional wheel-ups should have been emitted after exit
+    // (would prove momentum kept running and would re-enter scrollback).
+    expect(countSeq(handle, WHEEL_UP_SEQ)).toBe(upsAtClick);
+  });
+
   test("scroll-down clamp: fewer wheel-downs sent than wheel-ups", async ({
     page,
   }) => {
