@@ -1062,6 +1062,23 @@ pub(crate) fn opencode_poll_fn_sandboxed(
 
 // ─── Codex CLI session capture ────────────────────────────────────────────────
 
+const CODEX_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Codex `.jsonl` session
+/// files inside the container. Each file is emitted as a
+/// `===CODEX:<unix-mtime>:<basename>===` header followed by the first line of the
+/// file and a `===END===` trailer.
+const CODEX_CONTAINER_LIST_SCRIPT: &str = r#"SESS_DIR="${CODEX_HOME:-$HOME/.codex}/sessions"
+[ -d "$SESS_DIR" ] || exit 0
+find "$SESS_DIR" -name '*.jsonl' -type f | while read -r f; do
+  ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+  bn=$(basename "$f")
+  printf '===CODEX:%s:%s===\n' "$ts" "$bn"
+  head -n 1 "$f"
+  printf '\n===END===\n'
+done
+"#;
+
 /// Capture session ID from Codex filesystem.
 ///
 /// Walks the Codex sessions directory (including date-partitioned `YYYY/MM/DD/` subdirectories)
@@ -1091,23 +1108,22 @@ pub(crate) fn capture_codex_session_id(
 
     session_entries.sort_by(|a, b| b.1.cmp(&a.1));
 
-    session_entries.retain(|(path, _)| {
-        !exclusion.contains(
-            extract_codex_uuid_from_filename(path)
-                .as_deref()
-                .unwrap_or(""),
-        )
-    });
-
     let canonical_project = canonicalize_or_raw(project_path);
 
     let chosen = session_entries.iter().find_map(|(path, _)| {
-        let cwd_matches = extract_codex_cwd_from_file(path)
-            .and_then(|cwd| std::fs::canonicalize(&cwd).ok())
-            .map(|cwd| cwd == canonical_project)
+        let uuid = extract_codex_uuid_from_filename(path)?;
+        if exclusion.contains(&uuid) {
+            return None;
+        }
+        let file = std::fs::File::open(path).ok()?;
+        let reader = std::io::BufReader::new(file);
+        let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
+        let cwd = parse_codex_cwd_from_json(&first_line)?;
+        let cwd_matches = std::fs::canonicalize(&cwd)
+            .map(|c| c == canonical_project)
             .unwrap_or(false);
         if cwd_matches {
-            extract_codex_uuid_from_filename(path)
+            Some(uuid)
         } else {
             None
         }
@@ -1116,11 +1132,24 @@ pub(crate) fn capture_codex_session_id(
     chosen.ok_or_else(|| anyhow::anyhow!("No Codex session found matching project path"))
 }
 
+/// Parse the CWD from a Codex `.jsonl` first line (already in memory).
+///
+/// Shared by the host scanner and the container scanner. Extracts `payload.cwd`
+/// from the JSON object on the first line of a session file.
+fn parse_codex_cwd_from_json(line: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+    parsed
+        .get("payload")
+        .and_then(|p| p.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Extract UUID from a Codex rollout filename.
 ///
 /// Codex filenames follow the pattern `rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`.
 /// The UUID is the last 36 characters of the stem (before `.jsonl`).
-pub(crate) fn extract_codex_uuid_from_filename(path: &Path) -> Option<String> {
+fn extract_codex_uuid_from_filename(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     if stem.len() >= 36 {
         let candidate = &stem[stem.len() - 36..];
@@ -1129,22 +1158,6 @@ pub(crate) fn extract_codex_uuid_from_filename(path: &Path) -> Option<String> {
         }
     }
     None
-}
-
-/// Extract the working directory from a Codex rollout `.jsonl` file.
-///
-/// The first line is always a `session_meta` event containing `payload.cwd`.
-/// Returns `None` if the file cannot be read or the field is missing.
-fn extract_codex_cwd_from_file(path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let reader = std::io::BufReader::new(file);
-    let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&first_line).ok()?;
-    parsed
-        .get("payload")
-        .and_then(|p| p.get("cwd"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
 }
 
 /// Recursively collect Codex session `.jsonl` files, descending into date-partitioned dirs.
@@ -1174,6 +1187,82 @@ pub(crate) fn collect_codex_sessions(
     Ok(())
 }
 
+/// Capture a Codex session ID from inside a Docker container.
+///
+/// Mirrors `capture_codex_session_id` but reads `.jsonl` headers via
+/// `docker exec sh` since codex-in-container writes to the container's
+/// `~/.codex/sessions/`. Matches against `container_cwd` (the path
+/// codex-in-container records), not the host project path.
+pub(crate) fn try_capture_codex_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        CODEX_CONTAINER_LIST_SCRIPT,
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(CODEX_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (codex session scan)",
+    )?;
+    select_codex_session_in_container(&stdout_bytes, container_cwd, exclusion)
+}
+
+/// Parse the delimited stream emitted by `CODEX_CONTAINER_LIST_SCRIPT` and pick
+/// the most recent session whose recorded CWD matches `container_cwd`.
+fn select_codex_session_in_container(
+    stdout_bytes: &[u8],
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, String, u64)> = Vec::new();
+
+    for chunk in text.split("===CODEX:").skip(1) {
+        let (header, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let (ts_str, basename) = match header.split_once(':') {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let uuid = match extract_codex_uuid_from_filename(Path::new(basename.trim())) {
+            Some(u) if !exclusion.contains(&u) => u,
+            _ => continue,
+        };
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let cwd = match parse_codex_cwd_from_json(json_part.trim()) {
+            Some(c) => c,
+            None => continue,
+        };
+        candidates.push((uuid, cwd, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Codex sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.2));
+
+    let project_match = candidates.iter().find(|(_, cwd, _)| cwd == container_cwd);
+
+    project_match
+        .map(|(id, _, _)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Codex session matching container CWD"))
+}
+
 /// Polling closure for Codex CLI session tracking.
 pub(crate) fn codex_poll_fn(
     project_path: String,
@@ -1183,6 +1272,21 @@ pub(crate) fn codex_poll_fn(
         let exclusion = build_exclusion_set(&instance_id);
         capture_codex_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Codex poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+/// Polling closure for sandboxed (Docker) Codex session tracking.
+pub(crate) fn codex_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_codex_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Codex container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -2174,34 +2278,23 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_codex_cwd_from_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("rollout.jsonl");
-        std::fs::write(
-            &path,
-            r#"{"type":"session_meta","payload":{"cwd":"/home/user/myproject"}}"#,
-        )
-        .unwrap();
+    fn test_parse_codex_cwd_from_json() {
+        let line = r#"{"type":"session_meta","payload":{"cwd":"/home/user/myproject"}}"#;
         assert_eq!(
-            extract_codex_cwd_from_file(&path),
+            parse_codex_cwd_from_json(line),
             Some("/home/user/myproject".to_string())
         );
     }
 
     #[test]
-    fn test_extract_codex_cwd_from_file_missing_field() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("rollout.jsonl");
-        std::fs::write(&path, r#"{"type":"session_meta","payload":{}}"#).unwrap();
-        assert_eq!(extract_codex_cwd_from_file(&path), None);
+    fn test_parse_codex_cwd_from_json_missing_field() {
+        let line = r#"{"type":"session_meta","payload":{}}"#;
+        assert_eq!(parse_codex_cwd_from_json(line), None);
     }
 
     #[test]
-    fn test_extract_codex_cwd_from_file_invalid_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("rollout.jsonl");
-        std::fs::write(&path, "not json at all").unwrap();
-        assert_eq!(extract_codex_cwd_from_file(&path), None);
+    fn test_parse_codex_cwd_from_json_invalid_json() {
+        assert_eq!(parse_codex_cwd_from_json("not json at all"), None);
     }
 
     #[test]
@@ -2270,6 +2363,23 @@ mod tests {
         assert_eq!(selected, uuid_new);
     }
 
+    struct CodexHomeGuard(Option<String>);
+    impl CodexHomeGuard {
+        fn set(path: &str) -> Self {
+            let prev = std::env::var("CODEX_HOME").ok();
+            std::env::set_var("CODEX_HOME", path);
+            Self(prev)
+        }
+    }
+    impl Drop for CodexHomeGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+
     #[test]
     #[serial]
     fn test_codex_respects_codex_home_env() {
@@ -2290,17 +2400,11 @@ mod tests {
         )
         .unwrap();
 
-        let old_val = std::env::var("CODEX_HOME").ok();
-        std::env::set_var("CODEX_HOME", tmp.path());
+        let _guard = CodexHomeGuard::set(tmp.path().to_str().unwrap());
 
         let result = capture_codex_session_id(project_dir.to_str().unwrap(), &HashSet::new());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), uuid);
-
-        match old_val {
-            Some(v) => std::env::set_var("CODEX_HOME", v),
-            None => std::env::remove_var("CODEX_HOME"),
-        }
     }
 
     #[test]
@@ -2310,15 +2414,75 @@ mod tests {
         let sessions_dir = tmp.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
 
-        let old_val = std::env::var("CODEX_HOME").ok();
-        std::env::set_var("CODEX_HOME", tmp.path());
+        let _guard = CodexHomeGuard::set(tmp.path().to_str().unwrap());
 
         let result = capture_codex_session_id("/tmp/some-project", &HashSet::new());
         assert!(result.is_err(), "Empty sessions dir should return error");
+    }
 
-        match old_val {
-            Some(v) => std::env::set_var("CODEX_HOME", v),
-            None => std::env::remove_var("CODEX_HOME"),
-        }
+    #[test]
+    fn test_select_codex_session_in_container_most_recent() {
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let uuid_other = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let stdout = format!(
+            "\
+===CODEX:1700000000:rollout-2025-01-01T00-00-00-{uuid_old}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+===CODEX:1700001000:rollout-2025-01-02T00-00-00-{uuid_new}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+===CODEX:1700002000:rollout-2025-01-03T00-00-00-{uuid_other}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/elsewhere\"}}}}
+===END===
+"
+        );
+        let result =
+            select_codex_session_in_container(stdout.as_bytes(), "/workspace", &HashSet::new())
+                .unwrap();
+        assert_eq!(result, uuid_new);
+    }
+
+    #[test]
+    fn test_select_codex_session_in_container_exclusion() {
+        let uuid_claimed = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_available = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let stdout = format!(
+            "\
+===CODEX:1700001000:rollout-2025-01-02T00-00-00-{uuid_claimed}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+===CODEX:1700000500:rollout-2025-01-01T00-00-00-{uuid_available}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/workspace\"}}}}
+===END===
+"
+        );
+        let mut exclusion = HashSet::new();
+        exclusion.insert(uuid_claimed.to_string());
+        let result =
+            select_codex_session_in_container(stdout.as_bytes(), "/workspace", &exclusion).unwrap();
+        assert_eq!(result, uuid_available);
+    }
+
+    #[test]
+    fn test_select_codex_session_in_container_no_match() {
+        let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let stdout = format!(
+            "\
+===CODEX:1700000000:rollout-2025-01-01T00-00-00-{uuid}.jsonl===
+{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"/somewhere/else\"}}}}
+===END===
+"
+        );
+        let result =
+            select_codex_session_in_container(stdout.as_bytes(), "/workspace", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_codex_session_in_container_empty_input() {
+        let result = select_codex_session_in_container(b"", "/workspace", &HashSet::new());
+        assert!(result.is_err());
     }
 }
