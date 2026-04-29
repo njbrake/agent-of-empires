@@ -1,4 +1,18 @@
-//! Integration tests for `aoe update --check` and `--dry-run`.
+//! Smoke tests for `aoe update --check` and `--dry-run`.
+//!
+//! These hit the real GitHub releases API because both flags pass
+//! `force=true` to `check_for_update`, which bypasses the on-disk cache.
+//! That makes them flaky on CI runners that share IPs with many other
+//! jobs (the unauthenticated GitHub API limit is 60 req/hr/IP and
+//! macos-latest runners regularly hit it). They're marked `#[ignore]`
+//! so CI doesn't gate on them; run locally with:
+//!
+//!     cargo test --test update_command -- --ignored
+//!
+//! The actual update flow is covered hermetically by
+//! `tests/e2e/update_command.rs::update_via_tarball_replaces_binary_at_target_path`,
+//! which spins up a local axum fixture server and exercises the full
+//! download → verify → atomic-replace path without touching GitHub.
 
 use std::process::Command;
 
@@ -7,6 +21,7 @@ fn aoe_binary() -> &'static str {
 }
 
 #[test]
+#[ignore = "hits real GitHub API; rate-limited on shared CI runners"]
 fn update_check_prints_three_lines_and_exits_zero() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = Command::new(aoe_binary())
@@ -27,6 +42,7 @@ fn update_check_prints_three_lines_and_exits_zero() {
 }
 
 #[test]
+#[ignore = "hits real GitHub API; rate-limited on shared CI runners"]
 fn update_dry_run_prints_prompt_block_and_exits_zero() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = Command::new(aoe_binary())
