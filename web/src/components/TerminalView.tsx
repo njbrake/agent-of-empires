@@ -322,6 +322,7 @@ export function TerminalView({ session }: Props) {
       )}
 
       <div
+        data-term="agent"
         className={`flex-1 overflow-hidden bg-surface-950 relative md:rounded-lg term-panel${termFocused ? " term-focused" : ""}`}
         onFocus={() => setTermFocused(true)}
         onBlur={() => setTermFocused(false)}

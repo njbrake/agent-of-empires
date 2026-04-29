@@ -319,13 +319,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   const handleToggleTerminalFocus = useCallback(() => {
     if (!activeSessionId) return;
-    const panels = document.querySelectorAll<HTMLElement>(".term-panel");
+    // ContentSplit renders the right pane twice (desktop inline + mobile
+    // overlay); each instance mounts its own PairedTerminal. Detecting the
+    // current focus target by data-term attribute is robust against that
+    // duplication and against future panel reorderings.
+    const agentPanel = document.querySelector<HTMLElement>(
+      '[data-term="agent"]',
+    );
     const active = document.activeElement;
-    // Panel order in the DOM matches mount order: agent first, paired second.
-    // The paired panel only exists while the right panel is mounted.
-    const inPaired =
-      panels.length >= 2 && !!active && panels[1]!.contains(active);
-    const target = inPaired ? "agent" : "paired";
+    const inAgent = !!agentPanel && !!active && agentPanel.contains(active);
+    const target = inAgent ? "paired" : "agent";
 
     if (target === "paired" && diffCollapsed) {
       // Right panel is collapsed; paired terminal is unmounted. Set the
