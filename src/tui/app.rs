@@ -16,6 +16,34 @@ use crate::session::{get_update_settings, load_config, save_config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
+struct UpdateStatus {
+    text: String,
+    expires_at: Option<std::time::Instant>,
+}
+
+impl UpdateStatus {
+    fn persistent(text: String) -> Self {
+        Self {
+            text,
+            expires_at: None,
+        }
+    }
+
+    fn transient(text: String) -> Self {
+        Self {
+            text,
+            expires_at: Some(std::time::Instant::now() + std::time::Duration::from_secs(10)),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        match self.expires_at {
+            Some(deadline) => std::time::Instant::now() >= deadline,
+            None => false,
+        }
+    }
+}
+
 pub struct App {
     home: HomeView,
     should_quit: bool,
@@ -23,6 +51,13 @@ pub struct App {
     needs_redraw: bool,
     update_info: Option<UpdateInfo>,
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    update_status: Option<UpdateStatus>,
+    update_status_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<()>>>,
+    /// User dismissed the update bar this session. Resets when the
+    /// process exits; on next launch the startup check runs again and
+    /// the bar reappears if an update is still available. In-memory
+    /// only — no config persistence.
+    update_bar_dismissed: bool,
     /// Held in an Option so `with_raw_mode_disabled` can drop it before
     /// spawning child processes. Crossterm's EventStream runs a background
     /// reader thread on stdin; if it's alive when tmux attach-session starts,
@@ -99,6 +134,9 @@ impl App {
             needs_redraw: true,
             update_info: None,
             update_rx: None,
+            update_status: None,
+            update_status_rx: None,
+            update_bar_dismissed: false,
             event_stream: Some(EventStream::new()),
             mouse_captured: true,
         })
@@ -363,6 +401,11 @@ impl App {
                 self.needs_redraw = true;
             }
 
+            // Check for in-progress update completion
+            if self.poll_update_status() {
+                self.needs_redraw = true;
+            }
+
             // Periodic refreshes (only when no input pending)
             let mut refresh_needed = false;
 
@@ -432,8 +475,17 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.home
-            .render(frame, frame.area(), &self.theme, self.update_info.as_ref());
+        if self.update_status.as_ref().is_some_and(|s| s.is_expired()) {
+            self.update_status = None;
+        }
+        let status_text = self.update_status.as_ref().map(|s| s.text.as_str());
+        self.home.render(
+            frame,
+            frame.area(),
+            &self.theme,
+            self.update_info.as_ref(),
+            status_text,
+        );
     }
 
     /// Poll for update check result (non-blocking).
@@ -443,7 +495,104 @@ impl App {
             poll_update_receiver(self.update_rx.take(), self.update_info.take());
         self.update_info = update_info;
         self.update_rx = update_rx;
+        // If the user dismissed the bar this session, drop the info so
+        // render() and the `u` hotkey both see None. Reset on next launch.
+        if received && self.update_bar_dismissed {
+            self.update_info = None;
+            return false;
+        }
         received
+    }
+
+    /// Poll the in-progress update task for completion.
+    /// Returns true when the status line changed and a redraw is needed.
+    fn poll_update_status(&mut self) -> bool {
+        let Some(mut rx) = self.update_status_rx.take() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                self.update_status = Some(UpdateStatus::persistent(
+                    "update complete. Restart aoe to use the new version.".into(),
+                ));
+                true
+            }
+            Ok(Err(e)) => {
+                self.update_status = Some(UpdateStatus::transient(format!("update failed: {e}")));
+                true
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                self.update_status_rx = Some(rx);
+                false
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.update_status = Some(UpdateStatus::transient(
+                    "update task ended unexpectedly".into(),
+                ));
+                true
+            }
+        }
+    }
+
+    /// Dispatch the confirmed update, choosing between a blocking suspend and a
+    /// background tokio task based on whether the method requires sudo.
+    fn spawn_update(
+        &mut self,
+        method: crate::update::install::InstallMethod,
+        version: String,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        use crate::update::install::InstallMethod;
+
+        let needs_sudo = matches!(
+            &method,
+            InstallMethod::Tarball { binary_path }
+                if !crate::update::install::parent_is_writable(binary_path)
+        );
+
+        if matches!(method, InstallMethod::Homebrew) || needs_sudo {
+            // Suspend the TUI so sudo's password prompt can use the terminal.
+            self.update_status = Some(UpdateStatus::transient(format!("updating to v{version}…")));
+            let method_clone = method.clone();
+            let version_clone = version.clone();
+            let result = self.with_raw_mode_disabled(terminal, move || {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        crate::update::install::perform_update(&method_clone, &version_clone, None)
+                            .await
+                    })
+                })
+            })?;
+            match result {
+                Ok(()) => {
+                    self.update_status = Some(UpdateStatus::persistent(
+                        "update complete. Restart aoe to use the new version.".into(),
+                    ));
+                }
+                Err(e) => {
+                    self.update_status =
+                        Some(UpdateStatus::transient(format!("update failed: {e}")));
+                }
+            }
+        } else {
+            // Background task for writable tarball installs.
+            // `perform_update`'s future is !Send because its `on_progress` parameter is
+            // `Option<&mut dyn FnMut(...)>` (no Send bound on the trait object), so
+            // `tokio::spawn` won't accept it. A std::thread + Handle::block_on lets the
+            // async I/O still use the existing tokio runtime while sidestepping the
+            // Send constraint.
+            self.update_status = Some(UpdateStatus::transient(format!("updating to v{version}…")));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.update_status_rx = Some(rx);
+            let handle = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                let result = handle.block_on(crate::update::install::perform_update(
+                    &method, &version, None,
+                ));
+                let _ = tx.send(result);
+            });
+        }
+        Ok(())
     }
 }
 
@@ -505,10 +654,25 @@ impl App {
                 self.should_quit = true;
                 return Ok(());
             }
+            // Ctrl+x dismisses the update bar / status toast for this
+            // session. Gated on something being visible AND no dialog
+            // open so it doesn't fire during dialog input. On next launch
+            // the startup check runs again and the bar reappears if the
+            // update is still available.
+            (KeyCode::Char('x'), KeyModifiers::CONTROL)
+                if (self.update_info.is_some() || self.update_status.is_some())
+                    && !self.home.has_dialog() =>
+            {
+                self.update_info = None;
+                self.update_status = None;
+                self.update_bar_dismissed = true;
+                self.needs_redraw = true;
+                return Ok(());
+            }
             _ => {}
         }
 
-        if let Some(action) = self.home.handle_key(key) {
+        if let Some(action) = self.home.handle_key(key, self.update_info.as_ref()) {
             self.execute_action(action, terminal)?;
         }
 
@@ -559,6 +723,17 @@ impl App {
             }
             Action::SetTheme(name) => {
                 self.set_theme(&name);
+            }
+            Action::SpawnUpdate(method, version) => {
+                if self.update_status_rx.is_some() {
+                    self.update_status =
+                        Some(UpdateStatus::transient("update already in progress".into()));
+                    return Ok(());
+                }
+                self.spawn_update(method, version, terminal)?;
+            }
+            Action::SetTransientStatus(text) => {
+                self.update_status = Some(UpdateStatus::transient(text));
             }
         }
         Ok(())
@@ -816,6 +991,8 @@ pub enum Action {
     EditFile(PathBuf),
     StopSession(String),
     SetTheme(String),
+    SpawnUpdate(crate::update::install::InstallMethod, String),
+    SetTransientStatus(String),
 }
 
 #[cfg(test)]

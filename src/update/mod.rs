@@ -1,5 +1,7 @@
 //! Update check functionality
 
+pub mod install;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -8,10 +10,29 @@ use tracing::warn;
 
 use crate::session::{get_app_dir, get_update_settings};
 
-const GITHUB_API_LATEST: &str =
-    "https://api.github.com/repos/njbrake/agent-of-empires/releases/latest";
-const GITHUB_API_RELEASES: &str =
-    "https://api.github.com/repos/njbrake/agent-of-empires/releases?per_page=20";
+const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
+
+/// Resolve the GitHub API base URL, honoring `AOE_UPDATE_API_BASE` for
+/// hermetic tests. The override mirrors `AOE_UPDATE_BASE_URL` (which
+/// covers tarball downloads); tests that need to exercise the CLI
+/// without rate-limiting GitHub set both.
+fn github_api_base() -> String {
+    std::env::var("AOE_UPDATE_API_BASE").unwrap_or_else(|_| DEFAULT_GITHUB_API_BASE.to_string())
+}
+
+fn github_api_latest_url() -> String {
+    format!(
+        "{}/repos/njbrake/agent-of-empires/releases/latest",
+        github_api_base()
+    )
+}
+
+fn github_api_releases_url() -> String {
+    format!(
+        "{}/repos/njbrake/agent-of-empires/releases?per_page=20",
+        github_api_base()
+    )
+}
 
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
@@ -98,7 +119,7 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
 
     if latest_version.is_empty() {
         // Fall back to latest endpoint if releases fetch failed
-        let response = client.get(GITHUB_API_LATEST).send().await?;
+        let response = client.get(github_api_latest_url()).send().await?;
         if !response.status().is_success() {
             anyhow::bail!("Failed to check for updates: HTTP {}", response.status());
         }
@@ -146,7 +167,7 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
 }
 
 async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<ReleaseInfo>> {
-    let response = client.get(GITHUB_API_RELEASES).send().await?;
+    let response = client.get(github_api_releases_url()).send().await?;
 
     if !response.status().is_success() {
         anyhow::bail!("Failed to fetch releases: HTTP {}", response.status());
@@ -218,7 +239,7 @@ pub async fn print_update_notice() {
     if let Ok(info) = check_for_update(version, false).await {
         if info.available {
             eprintln!(
-                "\n💡 Update available: v{} → v{} (run: brew update && brew upgrade aoe)",
+                "\n💡 Update available: v{} → v{} (run: aoe update)",
                 info.current_version, info.latest_version
             );
         }
