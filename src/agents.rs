@@ -166,7 +166,7 @@ pub const AGENTS: &[AgentDef] = &[
         detect_status: status_detection::detect_opencode_status,
         container_env: &[],
         hook_config: None,
-        resume_strategy: ResumeStrategy::Unsupported,
+        resume_strategy: ResumeStrategy::Flag("--session"),
         host_only: false,
         send_keys_enter_delay_ms: 0,
         install_hint: "curl -fsSL https://opencode.ai/install | bash",
