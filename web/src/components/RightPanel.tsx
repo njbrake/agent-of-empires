@@ -10,6 +10,7 @@ import type { RichDiffFile, SessionResponse } from "../lib/types";
 import {
   FOCUS_TERMINAL_EVENT,
   consumePendingTerminalFocus,
+  setPendingTerminalFocus,
   type FocusTerminalDetail,
 } from "../lib/terminalFocus";
 import "@wterm/dom/css";
@@ -158,20 +159,28 @@ function PairedTerminal({
     activate();
   }, [termRef, keyboardOpen, activate]);
 
+  // Returns true if focus was applied. Callers can fall back to the pending
+  // latch when the textarea isn't in the DOM yet (PTY still booting).
   const focusSelf = useCallback(() => {
     const ta = termRef.current?.element.querySelector("textarea");
-    if (ta instanceof HTMLElement) ta.focus();
+    if (ta instanceof HTMLElement) {
+      ta.focus();
+      return true;
+    }
+    return false;
   }, [termRef]);
 
   // Cmd+` shortcut focuses this terminal when "paired" is the dispatched
-  // target. While the right panel is collapsed this component is unmounted,
-  // so the shortcut handler stashes the intent and we consume it on first
-  // ready render after expanding.
+  // target. The component might be mounted but its PTY not yet ready (the
+  // initial ensureTerminal round-trip), in which case focusSelf() can't
+  // find a textarea, so we latch the intent for the ready-effect below.
+  // While the right panel is collapsed this component is unmounted entirely;
+  // App.tsx sets the latch directly in that case.
   useEffect(() => {
     const onFocusEvent = (e: Event) => {
       const detail = (e as CustomEvent<FocusTerminalDetail>).detail;
       if (detail?.target !== "paired") return;
-      focusSelf();
+      if (!focusSelf()) setPendingTerminalFocus("paired");
     };
     window.addEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
     return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
