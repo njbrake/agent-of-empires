@@ -12,6 +12,10 @@ import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
 import { ensureSession } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
+import {
+  FOCUS_TERMINAL_EVENT,
+  type FocusTerminalDetail,
+} from "../lib/terminalFocus";
 import "@wterm/dom/css";
 
 interface Props {
@@ -182,6 +186,18 @@ export function TerminalView({ session }: Props) {
       document.removeEventListener("scroll", onScroll, true);
       cancelAnimationFrame(raf);
     };
+  }, [termRef]);
+
+  // Cmd+` shortcut focuses this terminal when "agent" is the dispatched target.
+  useEffect(() => {
+    const onFocusEvent = (e: Event) => {
+      const detail = (e as CustomEvent<FocusTerminalDetail>).detail;
+      if (detail?.target !== "agent") return;
+      const ta = termRef.current?.element.querySelector("textarea");
+      if (ta instanceof HTMLElement) ta.focus();
+    };
+    window.addEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+    return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
   }, [termRef]);
 
   // On initial connect, auto-open the keyboard.

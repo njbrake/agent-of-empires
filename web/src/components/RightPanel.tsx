@@ -7,6 +7,11 @@ import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
 import { ensureTerminal } from "../lib/api";
 import type { RichDiffFile, SessionResponse } from "../lib/types";
+import {
+  FOCUS_TERMINAL_EVENT,
+  consumePendingTerminalFocus,
+  type FocusTerminalDetail,
+} from "../lib/terminalFocus";
 import "@wterm/dom/css";
 
 const VSPLIT_STORAGE_KEY = "aoe-right-vsplit";
@@ -152,6 +157,30 @@ function PairedTerminal({
     }
     activate();
   }, [termRef, keyboardOpen, activate]);
+
+  const focusSelf = useCallback(() => {
+    const ta = termRef.current?.element.querySelector("textarea");
+    if (ta instanceof HTMLElement) ta.focus();
+  }, [termRef]);
+
+  // Cmd+` shortcut focuses this terminal when "paired" is the dispatched
+  // target. While the right panel is collapsed this component is unmounted,
+  // so the shortcut handler stashes the intent and we consume it on first
+  // ready render after expanding.
+  useEffect(() => {
+    const onFocusEvent = (e: Event) => {
+      const detail = (e as CustomEvent<FocusTerminalDetail>).detail;
+      if (detail?.target !== "paired") return;
+      focusSelf();
+    };
+    window.addEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+    return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+  }, [focusSelf]);
+
+  useEffect(() => {
+    if (!ready) return;
+    if (consumePendingTerminalFocus("paired")) focusSelf();
+  }, [ready, focusSelf]);
 
   if (!ready) {
     return (

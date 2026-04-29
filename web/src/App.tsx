@@ -12,6 +12,10 @@ import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
+import {
+  dispatchFocusTerminal,
+  setPendingTerminalFocus,
+} from "./lib/terminalFocus";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
@@ -313,6 +317,27 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setShowAddProject(true);
   }, []);
 
+  const handleToggleTerminalFocus = useCallback(() => {
+    if (!activeSessionId) return;
+    const panels = document.querySelectorAll<HTMLElement>(".term-panel");
+    const active = document.activeElement;
+    // Panel order in the DOM matches mount order: agent first, paired second.
+    // The paired panel only exists while the right panel is mounted.
+    const inPaired =
+      panels.length >= 2 && !!active && panels[1]!.contains(active);
+    const target = inPaired ? "agent" : "paired";
+
+    if (target === "paired" && diffCollapsed) {
+      // Right panel is collapsed; paired terminal is unmounted. Set the
+      // pending intent so PairedTerminal grabs focus once it mounts and
+      // its PTY is ready, then expand the panel.
+      setPendingTerminalFocus("paired");
+      setDiffCollapsed(false);
+      return;
+    }
+    dispatchFocusTerminal(target);
+  }, [activeSessionId, diffCollapsed]);
+
   useKeyboardShortcuts(
     useCallback(
       () => ({
@@ -338,8 +363,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onPalette: () => setShowPalette((p) => !p),
         onToggleSidebar: () => setSidebarOpen((o) => !o),
         onToggleRightPanel: () => setDiffCollapsed((c) => !c),
+        onToggleTerminalFocus: handleToggleTerminalFocus,
       }),
-      [toggleDiff, showPalette, deletingWorkspaceId, showSettings, handleCloseSettings, navigate],
+      [toggleDiff, showPalette, deletingWorkspaceId, showSettings, handleCloseSettings, navigate, handleToggleTerminalFocus],
     ),
   );
 
