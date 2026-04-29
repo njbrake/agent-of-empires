@@ -17,7 +17,9 @@ use super::poller::SessionPoller;
 
 use crate::session::capture::{
     build_exclusion_set, claude_poll_fn, claude_poll_fn_sandboxed, generate_claude_session_id,
-    is_valid_session_id, opencode_poll_fn, try_capture_opencode_session_id, validated_session_id,
+    is_valid_session_id, opencode_poll_fn, opencode_poll_fn_sandboxed,
+    try_capture_opencode_session_id, try_capture_opencode_session_id_in_container,
+    validated_session_id,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,13 +449,22 @@ impl Instance {
     }
 
     pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
-        if self.tool != "opencode" || self.is_sandboxed() {
+        if self.tool != "opencode" {
             return None;
         }
         let exclusion = build_exclusion_set(&self.id);
-        try_capture_opencode_session_id(&self.project_path, &exclusion, 0.0)
-            .ok()
-            .and_then(validated_session_id)
+        let result = if self.is_sandboxed() {
+            let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+            try_capture_opencode_session_id_in_container(
+                &container_name,
+                &self.container_workdir(),
+                &exclusion,
+                None,
+            )
+        } else {
+            try_capture_opencode_session_id(&self.project_path, &exclusion, None)
+        };
+        result.ok().and_then(validated_session_id)
     }
 
     fn apply_session_flags(&mut self, cmd: &mut String, context: &str) {
@@ -1027,23 +1038,28 @@ impl Instance {
                 }
             }
             "opencode" => {
-                if self.is_sandboxed() {
-                    tracing::debug!(
-                        "Skipping opencode session poller for sandboxed instance {}: \
-                         host-side `opencode session list` cannot see container sessions",
-                        self.id
-                    );
-                    return;
-                }
                 let launch_time_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as f64)
                     .unwrap_or(0.0);
-                Box::new(opencode_poll_fn(
-                    self.project_path.clone(),
-                    self.id.clone(),
-                    launch_time_ms,
-                ))
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(opencode_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                        launch_time_ms,
+                    ))
+                } else {
+                    Box::new(opencode_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        launch_time_ms,
+                    ))
+                }
             }
             _ => return,
         };
