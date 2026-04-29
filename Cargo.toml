@@ -31,6 +31,7 @@ tokio = { version = "1.50", features = ["full"] }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 toml = "1.1"
 
 # File watching
@@ -119,6 +120,10 @@ getrandom = { version = "0.3", optional = true }
 
 [features]
 default = []
+# Re-exports private tmux env helpers via `crate::tmux::test_support` so that
+# integration tests in `tests/` can poke them. Not enabled by default — only
+# used by `cargo test`.
+test-support = []
 serve = [
     "axum",
     "tower-http",
@@ -137,7 +142,14 @@ serve = [
 [dev-dependencies]
 serial_test = "3.4"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
+# Test-only axum dep, used by the update e2e fixture server that serves
+# a fake release tarball. The runtime code uses reqwest, not axum.
 axum = { version = "0.8", features = ["ws"] }
+# Self-dev-dependency: enables the `test-support` feature when building
+# integration tests so they can reach `crate::tmux::test_support`. This is
+# the standard Cargo pattern for opt-in test-only re-exports; the lib build
+# (and release binaries) never see the feature.
+agent-of-empires = { path = ".", features = ["test-support"] }
 
 [profile.release]
 lto = true
