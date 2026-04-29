@@ -79,7 +79,14 @@ fn paths_canonicalize_equal(a: &Path, b: &Path) -> bool {
 pub fn detect_install_method() -> Result<InstallMethod> {
     let exe = std::env::current_exe().context("locating current executable")?;
     let exe = exe.canonicalize().unwrap_or(exe);
+    // Canonicalize home too, otherwise on macOS a binary at /tmp/.../.local/bin/aoe
+    // gets a canonicalized exe path of /private/tmp/.../.local/bin/aoe but home is
+    // still /tmp/..., the parent-prefix comparison fails, and the binary
+    // misclassifies as Unknown. Same failure mode for any user whose HOME
+    // resolves through a symlink. canonicalize() can fail (home doesn't exist
+    // on disk, permission errors, etc.) so we fall back to the raw path.
     let home = dirs::home_dir().context("locating home directory")?;
+    let home = home.canonicalize().unwrap_or(home);
     let prefix = classify_path_prefix(&exe, &home);
     let brew_path = probe_brew_aoe_path();
     Ok(classify_with_brew(prefix, brew_path.as_deref(), &exe))
@@ -556,6 +563,79 @@ mod tests {
         assert_eq!(
             classify_path_prefix(&p, &home()),
             InstallMethod::Unknown { binary_path: p }
+        );
+    }
+
+    /// Regression: on macOS `/tmp` is a symlink to `/private/tmp`. If the
+    /// caller passes a canonicalized exe (`/private/tmp/...`) but a
+    /// non-canonicalized home (`/tmp/...`), the parent-prefix comparison
+    /// fails and a perfectly fine tarball install at `~/.local/bin/aoe`
+    /// looks like Unknown.
+    ///
+    /// This test exercises classify_path_prefix specifically — the caller
+    /// is responsible for canonicalizing both sides. The fix lives in
+    /// detect_install_method (canonicalize home too).
+    #[test]
+    fn classifier_requires_consistent_canonicalization() {
+        let raw_home = PathBuf::from("/tmp/test-home");
+        let canon_home = PathBuf::from("/private/tmp/test-home");
+        let canonicalized_exe = canon_home.join(".local/bin/aoe");
+
+        // With raw home + canonicalized exe → misclassifies as Unknown.
+        assert!(matches!(
+            classify_path_prefix(&canonicalized_exe, &raw_home),
+            InstallMethod::Unknown { .. }
+        ));
+
+        // With both canonicalized → correct Tarball classification.
+        assert_eq!(
+            classify_path_prefix(&canonicalized_exe, &canon_home),
+            InstallMethod::Tarball {
+                binary_path: canonicalized_exe.clone()
+            }
+        );
+    }
+
+    /// Real-filesystem regression test: build a symlinked HOME on disk,
+    /// place an aoe binary at $HOME/.local/bin/aoe through the symlink,
+    /// and verify detect_install_method (which does its own canonicalize)
+    /// still classifies it as Tarball, not Unknown.
+    ///
+    /// Skipped if symlink creation fails (e.g., Windows without privileges).
+    #[cfg(unix)]
+    #[test]
+    fn detects_tarball_through_symlinked_home() {
+        use tempfile::TempDir;
+
+        let real_dir = TempDir::new().unwrap();
+        let bin_dir = real_dir.path().join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let exe = bin_dir.join("aoe");
+        std::fs::write(&exe, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Create a symlink that points at real_dir, then run the classifier
+        // with the symlink path as home and the canonical exe path.
+        let link_dir = TempDir::new().unwrap();
+        let symlinked_home = link_dir.path().join("symlinked-home");
+        std::os::unix::fs::symlink(real_dir.path(), &symlinked_home).unwrap();
+
+        // canonicalized exe goes through real_dir
+        let canon_exe = exe.canonicalize().unwrap();
+        // canonicalized home also goes through real_dir
+        let canon_home = symlinked_home.canonicalize().unwrap();
+
+        // Sanity: the symlinked path differs from the canonical one
+        assert_ne!(symlinked_home, canon_home);
+
+        // With both canonicalized (what detect_install_method does after
+        // the fix), the classifier sees a matching parent.
+        assert_eq!(
+            classify_path_prefix(&canon_exe, &canon_home),
+            InstallMethod::Tarball {
+                binary_path: canon_exe
+            }
         );
     }
 
