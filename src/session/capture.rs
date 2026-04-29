@@ -1106,7 +1106,7 @@ pub(crate) fn capture_codex_session_id(
         anyhow::bail!("No Codex sessions found in {}", sessions_dir.display());
     }
 
-    session_entries.sort_by(|a, b| b.1.cmp(&a.1));
+    session_entries.sort_by_key(|c| std::cmp::Reverse(c.1));
 
     let canonical_project = canonicalize_or_raw(project_path);
 
@@ -2354,7 +2354,7 @@ mod tests {
 
         let mut entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
         collect_codex_sessions(&sessions_dir, &mut entries).unwrap();
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|c| std::cmp::Reverse(c.1));
 
         let selected = entries
             .first()
