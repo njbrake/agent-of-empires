@@ -447,12 +447,13 @@ impl Instance {
     }
 
     pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
+        if self.tool != "opencode" || self.is_sandboxed() {
+            return None;
+        }
         let exclusion = build_exclusion_set(&self.id);
-        let result = match self.tool.as_str() {
-            "opencode" => try_capture_opencode_session_id(&self.project_path, &exclusion, 0.0).ok(),
-            _ => None,
-        };
-        result.and_then(validated_session_id)
+        try_capture_opencode_session_id(&self.project_path, &exclusion, 0.0)
+            .ok()
+            .and_then(validated_session_id)
     }
 
     fn apply_session_flags(&mut self, cmd: &mut String, context: &str) {
@@ -1026,6 +1027,14 @@ impl Instance {
                 }
             }
             "opencode" => {
+                if self.is_sandboxed() {
+                    tracing::debug!(
+                        "Skipping opencode session poller for sandboxed instance {}: \
+                         host-side `opencode session list` cannot see container sessions",
+                        self.id
+                    );
+                    return;
+                }
                 let launch_time_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as f64)

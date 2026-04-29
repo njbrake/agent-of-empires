@@ -275,7 +275,11 @@ pub(crate) fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let aoe_sessions: Vec<&str> = stdout
         .lines()
-        .filter(|name| name.starts_with(crate::tmux::SESSION_PREFIX))
+        .filter(|name| {
+            name.starts_with(crate::tmux::SESSION_PREFIX)
+                && !name.starts_with(crate::tmux::TERMINAL_PREFIX)
+                && !name.starts_with(crate::tmux::CONTAINER_TERMINAL_PREFIX)
+        })
         .collect();
 
     if aoe_sessions.is_empty() {
@@ -745,11 +749,19 @@ mod tests {
 
     #[test]
     fn test_opencode_capture_respects_command_timeout() {
+        let start = std::time::Instant::now();
         let result = try_capture_opencode_session_id(
             "/tmp/nonexistent-project-xyz-12345",
             &HashSet::new(),
             0.0,
         );
-        let _ = result;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "Expected Err for nonexistent project");
+        assert!(
+            elapsed < Duration::from_secs(OPENCODE_COMMAND_TIMEOUT_SECS + 2),
+            "Capture took {:?}, exceeds timeout budget",
+            elapsed
+        );
     }
 }
