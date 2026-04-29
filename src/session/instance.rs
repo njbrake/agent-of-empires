@@ -16,9 +16,10 @@ use super::environment::{build_docker_env_args, shell_escape};
 use super::poller::SessionPoller;
 
 use crate::session::capture::{
-    build_exclusion_set, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
-    generate_claude_session_id, is_valid_session_id, opencode_poll_fn, opencode_poll_fn_sandboxed,
-    try_capture_opencode_session_id, try_capture_opencode_session_id_in_container,
+    build_exclusion_set, capture_pi_session_id, capture_vibe_session_id, claude_poll_fn,
+    claude_poll_fn_sandboxed, generate_claude_session_id, is_valid_session_id, opencode_poll_fn,
+    opencode_poll_fn_sandboxed, pi_poll_fn, pi_poll_fn_sandboxed, try_capture_opencode_session_id,
+    try_capture_opencode_session_id_in_container, try_capture_pi_session_id_in_container,
     try_capture_vibe_session_id_in_container, validated_session_id, vibe_poll_fn,
     vibe_poll_fn_sandboxed,
 };
@@ -478,6 +479,19 @@ impl Instance {
                     .ok()
                 } else {
                     capture_vibe_session_id(&self.project_path, &exclusion).ok()
+                }
+            }
+            "pi" => {
+                if self.is_sandboxed() {
+                    let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+                    try_capture_pi_session_id_in_container(
+                        &container_name,
+                        &self.container_workdir(),
+                        &exclusion,
+                    )
+                    .ok()
+                } else {
+                    capture_pi_session_id(&self.project_path, &exclusion).ok()
                 }
             }
             _ => None,
@@ -1036,7 +1050,7 @@ impl Instance {
             .tmux_session()
             .map(|s| s.name().to_string())
             .unwrap_or_default();
-        let mut poller = SessionPoller::new(tmux_session_name);
+        let mut poller = SessionPoller::new(tmux_session_name.clone());
         let instance_id = self.id.clone();
         let initial_known = self.agent_session_id.clone();
 
@@ -1092,6 +1106,21 @@ impl Instance {
                     ))
                 } else {
                     Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone()))
+                }
+            }
+            "pi" => {
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(pi_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                    ))
+                } else {
+                    Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone()))
                 }
             }
             _ => return,
@@ -2221,6 +2250,15 @@ mod tests {
     fn test_build_unknown_tool_resume_flags() {
         let flags = build_resume_flags("mistral", "session-123", false);
         assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn test_build_pi_resume_flags() {
+        let flags = build_resume_flags("pi", "019342ab-1234-7def-8901-abcdef012345", true);
+        assert_eq!(flags, "--session 019342ab-1234-7def-8901-abcdef012345");
+
+        let flags_new = build_resume_flags("pi", "019342ab-1234-7def-8901-abcdef012345", false);
+        assert_eq!(flags_new, "--session 019342ab-1234-7def-8901-abcdef012345");
     }
 
     #[test]

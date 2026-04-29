@@ -250,6 +250,319 @@ pub(crate) fn claude_poll_fn_sandboxed(
     }
 }
 
+pub(crate) fn encode_pi_project_path(cwd: &str) -> String {
+    let stripped = cwd
+        .strip_prefix('/')
+        .or_else(|| cwd.strip_prefix('\\'))
+        .unwrap_or(cwd);
+
+    let encoded: String = stripped
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            _ => c,
+        })
+        .collect();
+
+    format!("--{encoded}--")
+}
+
+fn extract_pi_header_fields(path: &Path) -> Option<(Option<String>, Option<String>)> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let first_line = std::io::BufRead::lines(reader).next()?.ok()?;
+    parse_pi_header_json(&first_line)
+}
+
+/// Parse the first line of a Pi `.jsonl` session file (already in memory).
+///
+/// Shared by the host scanner and the container scanner, which receives
+/// header lines via `docker exec` rather than direct filesystem reads.
+fn parse_pi_header_json(line: &str) -> Option<(Option<String>, Option<String>)> {
+    let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+    if parsed.get("type")?.as_str()? != "session" {
+        return None;
+    }
+    let session_id = parsed.get("id").and_then(|v| v.as_str()).map(String::from);
+    let cwd = parsed
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    Some((session_id, cwd))
+}
+
+pub(crate) fn extract_pi_session_id_from_header(path: &Path) -> Option<String> {
+    extract_pi_header_fields(path).and_then(|(id, _)| id)
+}
+
+#[cfg(test)]
+pub(crate) fn extract_pi_cwd_from_header(path: &Path) -> Option<String> {
+    extract_pi_header_fields(path).and_then(|(_, cwd)| cwd)
+}
+
+pub(crate) fn extract_pi_uuid_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let uuid_part = stem.rsplit('_').next()?;
+    Uuid::parse_str(uuid_part).ok()?;
+    Some(uuid_part.to_string())
+}
+
+/// Capture Pi session ID by scanning the Pi agent sessions directory.
+///
+/// Looks for `.jsonl` session files under `~/.pi/agent/sessions/` (or
+/// `$PI_CODING_AGENT_DIR/sessions/`). The primary lookup uses the encoded
+/// project path as a directory name. Falls back to scanning all session
+/// directories and matching via the `cwd` header field.
+pub(crate) fn capture_pi_session_id(
+    project_path: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let pi_home = resolve_agent_home(Some("PI_CODING_AGENT_DIR"), ".pi/agent")?;
+    let sessions_dir = pi_home.join("sessions");
+
+    if !sessions_dir.exists() {
+        anyhow::bail!(
+            "Pi sessions directory not found: {}",
+            sessions_dir.display()
+        );
+    }
+
+    let encoded_name = encode_pi_project_path(project_path);
+    let project_dir = sessions_dir.join(&encoded_name);
+
+    if project_dir.is_dir() {
+        let mut candidates: Vec<(String, std::time::SystemTime)> = Vec::new();
+
+        for entry in resilient_read_dir(&project_dir)? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let session_id = match extract_pi_session_id_from_header(&path) {
+                Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
+                _ => continue,
+            };
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            candidates.push((session_id, modified));
+        }
+
+        candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
+
+        if let Some((id, _)) = candidates.first() {
+            return Ok(id.clone());
+        }
+    }
+
+    // Fallback: scan all subdirectories and match via CWD header
+    let canonical_project = canonicalize_or_raw(project_path);
+    let mut fallback_candidates: Vec<(String, std::time::SystemTime)> = Vec::new();
+
+    for subdir_entry in resilient_read_dir(&sessions_dir)? {
+        let subdir_path = subdir_entry.path();
+        if !subdir_path.is_dir() {
+            continue;
+        }
+        for file_entry in resilient_read_dir(&subdir_path)? {
+            let file_path = file_entry.path();
+            if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let fields = match extract_pi_header_fields(&file_path) {
+                Some(f) => f,
+                None => continue,
+            };
+            let cwd = match fields.1 {
+                Some(c) if !c.is_empty() => c,
+                _ => continue,
+            };
+            let canonical_cwd = canonicalize_or_raw(&cwd);
+            if canonical_cwd != canonical_project {
+                continue;
+            }
+            let session_id = match fields.0 {
+                Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
+                _ => continue,
+            };
+            let modified = file_entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            fallback_candidates.push((session_id, modified));
+        }
+    }
+
+    fallback_candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
+
+    if let Some((id, _)) = fallback_candidates.first() {
+        return Ok(id.clone());
+    }
+
+    // Third fallback: when all JSONL headers fail to parse, pick the most
+    // recently modified session directory and extract a UUID from its files.
+    let mut dirs_by_mtime: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+    if let Ok(entries) = resilient_read_dir(&sessions_dir) {
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let mtime = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            dirs_by_mtime.push((path, mtime));
+        }
+    }
+    dirs_by_mtime.sort_by_key(|c| std::cmp::Reverse(c.1));
+
+    for (dir, _) in &dirs_by_mtime {
+        if let Ok(entries) = resilient_read_dir(dir) {
+            let mut file_candidates: Vec<(String, std::time::SystemTime)> = Vec::new();
+            for entry in entries {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                if let Some(uuid) = extract_pi_uuid_from_filename(&path) {
+                    if !exclusion.contains(&uuid) {
+                        let mtime = entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        file_candidates.push((uuid, mtime));
+                    }
+                }
+            }
+            file_candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
+            if let Some((id, _)) = file_candidates.first() {
+                return Ok(id.clone());
+            }
+        }
+    }
+
+    anyhow::bail!("No Pi session found matching project path")
+}
+
+pub(crate) fn pi_poll_fn(
+    project_path: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        capture_pi_session_id(&project_path, &exclusion)
+            .map_err(|e| tracing::debug!("Pi poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+const PI_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Pi `.jsonl` session
+/// files inside the container. Each file is emitted as a `===PI:<unix-mtime>===`
+/// header followed by the first line of the file (the session header) and a
+/// `===END===` trailer; the host parses this stream rather than spawning one
+/// `docker exec head` per file.
+const PI_CONTAINER_LIST_SCRIPT: &str = r#"SESS_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/sessions"
+[ -d "$SESS_DIR" ] || exit 0
+for d in "$SESS_DIR"/*/; do
+  for f in "$d"*.jsonl; do
+    [ -f "$f" ] || continue
+    ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+    printf '===PI:%s===\n' "$ts"
+    head -n 1 "$f"
+    printf '\n===END===\n'
+  done
+done
+"#;
+
+/// Capture a Pi session ID from inside a Docker container.
+///
+/// Mirrors `capture_pi_session_id` but reads `.jsonl` headers via
+/// `docker exec sh` since pi-in-container writes to the container's
+/// `~/.pi/agent/sessions/`. Matches against `container_cwd` (the path
+/// pi-in-container records), not the host project path.
+pub(crate) fn try_capture_pi_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args(["exec", container_name, "sh", "-c", PI_CONTAINER_LIST_SCRIPT]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(PI_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (pi session scan)",
+    )?;
+    select_pi_session_in_container(&stdout_bytes, container_cwd, exclusion)
+}
+
+/// Parse the delimited stream emitted by `PI_CONTAINER_LIST_SCRIPT` and pick
+/// the most recent session whose recorded CWD matches `container_cwd`.
+fn select_pi_session_in_container(
+    stdout_bytes: &[u8],
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, Option<String>, u64)> = Vec::new();
+
+    for chunk in text.split("===PI:").skip(1) {
+        let (ts_str, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let (id_opt, cwd) = match parse_pi_header_json(json_part.trim()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let session_id = match id_opt {
+            Some(id) if !id.is_empty() && !exclusion.contains(&id) => id,
+            _ => continue,
+        };
+        candidates.push((session_id, cwd, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Pi sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.2));
+
+    let project_match = candidates
+        .iter()
+        .find(|(_, cwd, _)| cwd.as_deref() == Some(container_cwd));
+
+    project_match
+        .map(|(id, _, _)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Pi session matching container CWD"))
+}
+
+/// Polling closure for sandboxed (Docker) Pi session tracking.
+pub(crate) fn pi_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_pi_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Pi container poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
 pub(crate) fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 256
@@ -928,13 +1241,428 @@ mod tests {
 
     #[test]
     fn test_capture_claude_session_in_container_returns_error_for_missing_container() {
-        // No container with this name exists, so docker exec should fail and
-        // we should get a clean error rather than a panic.
         let result = capture_claude_session_id_in_container(
             "aoe-test-nonexistent-container-xyz",
             "/workspace/test",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_basic() {
+        assert_eq!(
+            encode_pi_project_path("/home/user/project"),
+            "--home-user-project--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_with_dashes() {
+        assert_eq!(
+            encode_pi_project_path("/home/user/my-project"),
+            "--home-user-my-project--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_trailing_slash() {
+        assert_eq!(
+            encode_pi_project_path("/home/user/project/"),
+            "--home-user-project---"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_double_slash() {
+        assert_eq!(
+            encode_pi_project_path("/a//double/slash"),
+            "--a--double-slash--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_spaces() {
+        assert_eq!(
+            encode_pi_project_path("/path/with spaces"),
+            "--path-with spaces--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_windows_backslash() {
+        assert_eq!(
+            encode_pi_project_path("C:\\Users\\bob\\proj"),
+            "--C--Users-bob-proj--"
+        );
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_colon() {
+        assert_eq!(encode_pi_project_path("C:/Users/bob"), "--C--Users-bob--");
+    }
+
+    #[test]
+    fn test_encode_pi_project_path_root() {
+        assert_eq!(encode_pi_project_path("/"), "----");
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"session","id":"019342ab-1234-7def-8901-abcdef012345","cwd":"/tmp"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_pi_session_id_from_header(&path),
+            Some("019342ab-1234-7def-8901-abcdef012345".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_missing_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, r#"{"type":"session","cwd":"/tmp"}"#).unwrap();
+        assert_eq!(extract_pi_session_id_from_header(&path), None);
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_invalid_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, "not valid json at all").unwrap();
+        assert_eq!(extract_pi_session_id_from_header(&path), None);
+    }
+
+    #[test]
+    fn test_extract_pi_session_id_from_header_empty_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(extract_pi_session_id_from_header(&path), None);
+    }
+
+    #[test]
+    fn test_extract_pi_cwd_from_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"session","id":"aaa","cwd":"/home/user/project"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_pi_cwd_from_header(&path),
+            Some("/home/user/project".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_pi_uuid_from_filename() {
+        let path =
+            PathBuf::from("2024-12-03T14-00-00-000Z_019342ab-1234-7def-8901-abcdef012345.jsonl");
+        assert_eq!(
+            extract_pi_uuid_from_filename(&path),
+            Some("019342ab-1234-7def-8901-abcdef012345".to_string())
+        );
+    }
+
+    /// Real e2e: run the same shell script we ship to `docker exec` against a
+    /// Pi session dir on disk, and feed the stdout into the parser to confirm
+    /// it picks up the live UUID. Set `AOE_PI_E2E_DIR=/path/to/.pi/agent` and
+    /// `AOE_PI_E2E_PROJECT=/abs/project/path` to enable; otherwise skipped.
+    /// Validates the production `PI_CONTAINER_LIST_SCRIPT` against real Pi
+    /// output without needing Docker.
+    #[test]
+    #[serial]
+    fn test_select_pi_session_in_container_against_real_script_output() {
+        let agent_dir = match std::env::var("AOE_PI_E2E_DIR") {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let project_path = match std::env::var("AOE_PI_E2E_PROJECT") {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(PI_CONTAINER_LIST_SCRIPT)
+            .env("PI_CODING_AGENT_DIR", &agent_dir)
+            .output()
+            .expect("script invocation failed");
+        assert!(
+            output.status.success(),
+            "script exited non-zero: {:?}",
+            output.status
+        );
+
+        let id = select_pi_session_in_container(&output.stdout, &project_path, &HashSet::new())
+            .expect("parser failed on real Pi output");
+        assert!(
+            Uuid::parse_str(&id).is_ok(),
+            "captured id {id:?} is not a UUID"
+        );
+        eprintln!("captured pi session id via container script: {id}");
+    }
+
+    /// Real e2e: when run against a session dir produced by an actual `pi`
+    /// binary, capture must return an ID that `pi --session <id>` accepts.
+    /// Set `AOE_PI_E2E_DIR=/path/to/.pi/agent` and
+    /// `AOE_PI_E2E_PROJECT=/abs/project/path` to enable; otherwise skipped.
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_against_real_pi_binary() {
+        let agent_dir = match std::env::var("AOE_PI_E2E_DIR") {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let project_path = match std::env::var("AOE_PI_E2E_PROJECT") {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", &agent_dir);
+
+        let result = capture_pi_session_id(&project_path, &HashSet::new());
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+
+        let id = result.expect("real Pi session capture failed");
+        assert!(
+            Uuid::parse_str(&id).is_ok(),
+            "captured id {id:?} is not a UUID"
+        );
+        eprintln!("captured pi session id: {id}");
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid = "019342ab-1234-7def-8901-abcdef012345";
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_most_recent_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        std::fs::write(
+            project_dir.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_old}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid_new}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_new}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid_new);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_exclusion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let project_encoded = encode_pi_project_path("/home/user/project");
+        let project_dir = sessions_dir.join(&project_encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_excluded = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_kept = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        std::fs::write(
+            project_dir.join(format!("2024-12-01T10-00-00-000Z_{uuid_excluded}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_excluded}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            project_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid_kept}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_kept}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert(uuid_excluded.to_string());
+
+        let result = capture_pi_session_id("/home/user/project", &exclusion);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), uuid_kept);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_cwd_fallback_most_recent_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        let dir_a = sessions_dir.join("--wrong-name-a--");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::write(
+            dir_a.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_old}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let dir_b = sessions_dir.join("--wrong-name-b--");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(
+            dir_b.join(format!("2024-12-03T14-00-00-000Z_{uuid_new}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid_new}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(
+            result.is_ok(),
+            "Fallback should find sessions via CWD header"
+        );
+        assert_eq!(result.unwrap(), uuid_new);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_cwd_fallback_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+
+        let wrong_encoded = "--some-other-name--";
+        let wrong_dir = sessions_dir.join(wrong_encoded);
+        std::fs::create_dir_all(&wrong_dir).unwrap();
+
+        let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        std::fs::write(
+            wrong_dir.join(format!("2024-12-03T14-00-00-000Z_{uuid}.jsonl")),
+            format!(r#"{{"type":"session","id":"{uuid}","cwd":"/home/user/project"}}"#),
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/home/user/project", &HashSet::new());
+        assert!(result.is_ok(), "Fallback CWD scan should find the session");
+        assert_eq!(result.unwrap(), uuid);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_pi_session_id_fallback_by_dir_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+
+        let uuid_old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let uuid_new = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+        let dir_old = sessions_dir.join("--old-dir--");
+        std::fs::create_dir_all(&dir_old).unwrap();
+        std::fs::write(
+            dir_old.join(format!("2024-12-01T10-00-00-000Z_{uuid_old}.jsonl")),
+            "not valid json\n",
+        )
+        .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let dir_new = sessions_dir.join("--new-dir--");
+        std::fs::create_dir_all(&dir_new).unwrap();
+        std::fs::write(
+            dir_new.join(format!("2024-12-03T14-00-00-000Z_{uuid_new}.jsonl")),
+            "also not valid json\n",
+        )
+        .unwrap();
+
+        let old_val = std::env::var("PI_CODING_AGENT_DIR").ok();
+        std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
+
+        let result = capture_pi_session_id("/nonexistent/path/for/test", &HashSet::new());
+        assert!(
+            result.is_ok(),
+            "Dir-mtime fallback should find session: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), uuid_new);
+
+        match old_val {
+            Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+            None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+        }
     }
 
     /// Sets `VIBE_HOME` for the test's lifetime and restores it on Drop, so a
@@ -1104,6 +1832,70 @@ mod tests {
     fn test_select_vibe_session_in_container_empty_input() {
         let result = select_vibe_session_in_container(b"", "/workspace", &HashSet::new());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_pi_session_in_container_picks_most_recent_match() {
+        let stdout = b"\
+===PI:1700000000===
+{\"type\":\"session\",\"id\":\"older-match\",\"cwd\":\"/workspace\"}
+===END===
+===PI:1700001000===
+{\"type\":\"session\",\"id\":\"newer-match\",\"cwd\":\"/workspace\"}
+===END===
+===PI:1700002000===
+{\"type\":\"session\",\"id\":\"other-project\",\"cwd\":\"/elsewhere\"}
+===END===
+";
+        let result = select_pi_session_in_container(stdout, "/workspace", &HashSet::new()).unwrap();
+        assert_eq!(result, "newer-match");
+    }
+
+    #[test]
+    fn test_select_pi_session_in_container_respects_exclusion() {
+        let stdout = b"\
+===PI:1700001000===
+{\"type\":\"session\",\"id\":\"already-claimed\",\"cwd\":\"/workspace\"}
+===END===
+===PI:1700000500===
+{\"type\":\"session\",\"id\":\"available\",\"cwd\":\"/workspace\"}
+===END===
+";
+        let mut exclusion = HashSet::new();
+        exclusion.insert("already-claimed".to_string());
+        let result = select_pi_session_in_container(stdout, "/workspace", &exclusion).unwrap();
+        assert_eq!(result, "available");
+    }
+
+    #[test]
+    fn test_select_pi_session_in_container_no_match_returns_error() {
+        let stdout = b"\
+===PI:1700000000===
+{\"type\":\"session\",\"id\":\"foo\",\"cwd\":\"/somewhere/else\"}
+===END===
+";
+        let result = select_pi_session_in_container(stdout, "/workspace", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_pi_session_in_container_empty_input() {
+        let result = select_pi_session_in_container(b"", "/workspace", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_pi_session_in_container_skips_non_session_lines() {
+        let stdout = b"\
+===PI:1700000000===
+{\"type\":\"message\",\"id\":\"not-a-session\",\"cwd\":\"/workspace\"}
+===END===
+===PI:1700001000===
+{\"type\":\"session\",\"id\":\"valid\",\"cwd\":\"/workspace\"}
+===END===
+";
+        let result = select_pi_session_in_container(stdout, "/workspace", &HashSet::new()).unwrap();
+        assert_eq!(result, "valid");
     }
 
     #[test]
