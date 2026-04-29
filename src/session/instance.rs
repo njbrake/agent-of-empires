@@ -19,7 +19,8 @@ use crate::session::capture::{
     build_exclusion_set, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
     generate_claude_session_id, is_valid_session_id, opencode_poll_fn, opencode_poll_fn_sandboxed,
     try_capture_opencode_session_id, try_capture_opencode_session_id_in_container,
-    validated_session_id, vibe_poll_fn,
+    try_capture_vibe_session_id_in_container, validated_session_id, vibe_poll_fn,
+    vibe_poll_fn_sandboxed,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,7 +467,19 @@ impl Instance {
                     try_capture_opencode_session_id(&self.project_path, &exclusion, None).ok()
                 }
             }
-            "vibe" => capture_vibe_session_id(&self.project_path, &exclusion).ok(),
+            "vibe" => {
+                if self.is_sandboxed() {
+                    let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+                    try_capture_vibe_session_id_in_container(
+                        &container_name,
+                        &self.container_workdir(),
+                        &exclusion,
+                    )
+                    .ok()
+                } else {
+                    capture_vibe_session_id(&self.project_path, &exclusion).ok()
+                }
+            }
             _ => None,
         };
         result.and_then(validated_session_id)
@@ -1066,7 +1079,21 @@ impl Instance {
                     ))
                 }
             }
-            "vibe" => Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone())),
+            "vibe" => {
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(vibe_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                    ))
+                } else {
+                    Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone()))
+                }
+            }
             _ => return,
         };
 

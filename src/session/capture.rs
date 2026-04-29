@@ -309,13 +309,6 @@ pub(crate) fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> 
     captured_ids.into_iter().filter_map(|(_, id)| id).collect()
 }
 
-/// Try the first matching key from a JSON object as a string.
-fn extract_cwd_from_json(parsed: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| parsed.get(*key).and_then(|v| v.as_str()))
-        .map(String::from)
-}
-
 /// Capture Vibe session ID from `meta.json` files in the session log directory.
 ///
 /// Default path: `~/.vibe/logs/session/`; overridden by `VIBE_HOME` env var
@@ -380,10 +373,22 @@ pub(crate) fn capture_vibe_session_id(
         .ok_or_else(|| anyhow::anyhow!("No Vibe session found matching project path"))
 }
 
-/// Parse a Vibe `meta.json` once, returning both `session_id` and the working directory.
+/// Parse a Vibe `meta.json`, returning `(session_id, working_directory)`.
+///
+/// Returns `None` if the file can't be read, isn't valid JSON, or lacks
+/// a `session_id` string. The working directory comes from
+/// `environment.working_directory`.
 fn extract_vibe_meta(path: &Path) -> Option<(String, Option<String>)> {
     let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    parse_vibe_meta_json(&content)
+}
+
+/// Parse the body of a Vibe `meta.json` (already in memory).
+///
+/// Shared by the host scanner and the container scanner, which receives
+/// `meta.json` contents via `docker exec` rather than direct filesystem reads.
+fn parse_vibe_meta_json(content: &str) -> Option<(String, Option<String>)> {
+    let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
     let session_id = parsed
         .get("session_id")
         .and_then(|v| v.as_str())
@@ -392,36 +397,8 @@ fn extract_vibe_meta(path: &Path) -> Option<(String, Option<String>)> {
         .get("environment")
         .and_then(|env| env.get("working_directory"))
         .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| extract_cwd_from_json(&parsed, &["cwd", "working_directory", "project_path"]));
+        .map(String::from);
     Some((session_id, cwd))
-}
-
-/// Extract CWD from a Vibe `meta.json`.
-///
-/// The actual path lives at `environment.working_directory` (nested object).
-/// Falls back to top-level `cwd` / `working_directory` for forward compatibility.
-#[cfg(test)]
-fn extract_vibe_cwd_from_meta(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed
-        .get("environment")
-        .and_then(|env| env.get("working_directory"))
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| extract_cwd_from_json(&parsed, &["cwd", "working_directory", "project_path"]))
-}
-
-/// Extract the `session_id` from a Vibe `meta.json` file.
-#[cfg(test)]
-fn extract_vibe_session_id_from_meta(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .map(String::from)
 }
 
 /// Polling closure for Vibe (Mistral) session tracking.
@@ -433,6 +410,109 @@ pub(crate) fn vibe_poll_fn(
         let exclusion = build_exclusion_set(&instance_id);
         capture_vibe_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Vibe poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+const VIBE_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Shell snippet executed via `docker exec` to enumerate Vibe `meta.json` files
+/// inside the container. Each file is emitted as a `===VIBE:<unix-mtime>===`
+/// header followed by the JSON body and a `===END===` trailer; the host parses
+/// this stream rather than spawning one `docker exec cat` per file.
+const VIBE_CONTAINER_LIST_SCRIPT: &str = r#"SESS_DIR="${VIBE_HOME:-$HOME/.vibe}/logs/session"
+[ -d "$SESS_DIR" ] || exit 0
+for d in "$SESS_DIR"/*/; do
+  m="$d/meta.json"
+  [ -f "$m" ] || continue
+  ts=$(stat -c %Y "$m" 2>/dev/null || stat -f %m "$m" 2>/dev/null || echo 0)
+  printf '===VIBE:%s===\n' "$ts"
+  cat "$m"
+  printf '\n===END===\n'
+done
+"#;
+
+/// Capture a Vibe session ID from inside a Docker container.
+///
+/// Mirrors `capture_vibe_session_id` but reads `meta.json` files via
+/// `docker exec sh` since vibe-in-container writes to the container's
+/// `~/.vibe/logs/session/`. Matches against `container_cwd` (the path
+/// vibe-in-container records), not the host project path.
+pub(crate) fn try_capture_vibe_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        VIBE_CONTAINER_LIST_SCRIPT,
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(VIBE_COMMAND_TIMEOUT_SECS),
+        "docker exec sh (vibe meta scan)",
+    )?;
+    select_vibe_session_in_container(&stdout_bytes, container_cwd, exclusion)
+}
+
+/// Parse the delimited stream emitted by `VIBE_CONTAINER_LIST_SCRIPT` and pick
+/// the most recent session whose recorded CWD matches `container_cwd`.
+fn select_vibe_session_in_container(
+    stdout_bytes: &[u8],
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let mut candidates: Vec<(String, Option<String>, u64)> = Vec::new();
+
+    for chunk in text.split("===VIBE:").skip(1) {
+        let (ts_str, rest) = match chunk.split_once("===\n") {
+            Some(p) => p,
+            None => continue,
+        };
+        let ts: u64 = ts_str.trim().parse().unwrap_or(0);
+        let json_part = match rest.split_once("\n===END===") {
+            Some((j, _)) => j,
+            None => rest,
+        };
+        let (session_id, cwd) = match parse_vibe_meta_json(json_part.trim()) {
+            Some(pair) if !pair.0.is_empty() && !exclusion.contains(&pair.0) => pair,
+            _ => continue,
+        };
+        candidates.push((session_id, cwd, ts));
+    }
+
+    if candidates.is_empty() {
+        anyhow::bail!("No Vibe sessions found in container");
+    }
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.2));
+
+    let project_match = candidates
+        .iter()
+        .find(|(_, cwd, _)| cwd.as_deref() == Some(container_cwd));
+
+    project_match
+        .map(|(id, _, _)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No Vibe session matching container CWD"))
+}
+
+/// Polling closure for sandboxed (Docker) Vibe session tracking.
+pub(crate) fn vibe_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_vibe_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Vibe container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -857,60 +937,60 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Sets `VIBE_HOME` for the test's lifetime and restores it on Drop, so a
+    /// panicking assertion can't leak the override into later serial tests.
+    struct VibeHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl VibeHomeGuard {
+        fn set(value: &Path) -> Self {
+            let previous = std::env::var("VIBE_HOME").ok();
+            std::env::set_var("VIBE_HOME", value);
+            Self { previous }
+        }
+    }
+
+    impl Drop for VibeHomeGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var("VIBE_HOME", v),
+                None => std::env::remove_var("VIBE_HOME"),
+            }
+        }
+    }
+
     #[test]
-    fn test_extract_vibe_cwd_from_meta_nested() {
+    fn test_extract_vibe_meta_nested() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("meta.json");
         std::fs::write(
             &path,
-            r#"{"session_id": "abc", "environment": {"working_directory": "/home/user/myrepo"}}"#,
+            r#"{"session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "environment": {"working_directory": "/home/user/myrepo"}}"#,
         )
         .unwrap();
         assert_eq!(
-            extract_vibe_cwd_from_meta(&path),
-            Some("/home/user/myrepo".to_string())
+            extract_vibe_meta(&path),
+            Some((
+                "a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string(),
+                Some("/home/user/myrepo".to_string()),
+            ))
         );
     }
 
     #[test]
-    fn test_extract_vibe_cwd_from_meta_top_level_fallback() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("meta.json");
-        std::fs::write(&path, r#"{"cwd": "/home/user/myrepo"}"#).unwrap();
-        assert_eq!(
-            extract_vibe_cwd_from_meta(&path),
-            Some("/home/user/myrepo".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_vibe_session_id_from_meta() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("meta.json");
-        std::fs::write(
-            &path,
-            r#"{"session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "environment": {"working_directory": "/tmp"}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            extract_vibe_session_id_from_meta(&path),
-            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_vibe_session_id_from_meta_missing() {
+    fn test_extract_vibe_meta_missing_session_id() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("meta.json");
         std::fs::write(&path, r#"{"environment": {"working_directory": "/tmp"}}"#).unwrap();
-        assert_eq!(extract_vibe_session_id_from_meta(&path), None);
+        assert_eq!(extract_vibe_meta(&path), None);
     }
 
     #[test]
-    fn test_extract_vibe_cwd_from_meta_missing_file() {
+    fn test_extract_vibe_meta_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nonexistent.json");
-        assert_eq!(extract_vibe_cwd_from_meta(&path), None);
+        assert_eq!(extract_vibe_meta(&path), None);
     }
 
     #[test]
@@ -940,17 +1020,11 @@ mod tests {
         });
         std::fs::write(s2_dir.join("meta.json"), s2_meta.to_string()).unwrap();
 
-        let old_val = std::env::var("VIBE_HOME").ok();
-        std::env::set_var("VIBE_HOME", tmp.path());
+        let _guard = VibeHomeGuard::set(tmp.path());
 
         let exclusion = HashSet::new();
         let result = capture_vibe_session_id(project_dir.to_str().unwrap(), &exclusion);
         assert_eq!(result.unwrap(), "vibe-sess-match");
-
-        match old_val {
-            Some(v) => std::env::set_var("VIBE_HOME", v),
-            None => std::env::remove_var("VIBE_HOME"),
-        }
     }
 
     #[test]
@@ -971,8 +1045,7 @@ mod tests {
         });
         std::fs::write(s1_dir.join("meta.json"), s1_meta.to_string()).unwrap();
 
-        let old_val = std::env::var("VIBE_HOME").ok();
-        std::env::set_var("VIBE_HOME", tmp.path());
+        let _guard = VibeHomeGuard::set(tmp.path());
 
         let exclusion = HashSet::new();
         let result = capture_vibe_session_id(project_dir.to_str().unwrap(), &exclusion);
@@ -980,11 +1053,57 @@ mod tests {
             result.is_err(),
             "Session with non-matching CWD should not be returned"
         );
+    }
 
-        match old_val {
-            Some(v) => std::env::set_var("VIBE_HOME", v),
-            None => std::env::remove_var("VIBE_HOME"),
-        }
+    #[test]
+    fn test_select_vibe_session_in_container_picks_most_recent_match() {
+        let stdout = b"\
+===VIBE:1700000000===
+{\"session_id\": \"older-match\", \"environment\": {\"working_directory\": \"/workspace\"}}
+===END===
+===VIBE:1700001000===
+{\"session_id\": \"newer-match\", \"environment\": {\"working_directory\": \"/workspace\"}}
+===END===
+===VIBE:1700002000===
+{\"session_id\": \"other-project\", \"environment\": {\"working_directory\": \"/elsewhere\"}}
+===END===
+";
+        let result =
+            select_vibe_session_in_container(stdout, "/workspace", &HashSet::new()).unwrap();
+        assert_eq!(result, "newer-match");
+    }
+
+    #[test]
+    fn test_select_vibe_session_in_container_respects_exclusion() {
+        let stdout = b"\
+===VIBE:1700001000===
+{\"session_id\": \"already-claimed\", \"environment\": {\"working_directory\": \"/workspace\"}}
+===END===
+===VIBE:1700000500===
+{\"session_id\": \"available\", \"environment\": {\"working_directory\": \"/workspace\"}}
+===END===
+";
+        let mut exclusion = HashSet::new();
+        exclusion.insert("already-claimed".to_string());
+        let result = select_vibe_session_in_container(stdout, "/workspace", &exclusion).unwrap();
+        assert_eq!(result, "available");
+    }
+
+    #[test]
+    fn test_select_vibe_session_in_container_no_match_returns_error() {
+        let stdout = b"\
+===VIBE:1700000000===
+{\"session_id\": \"foo\", \"environment\": {\"working_directory\": \"/somewhere/else\"}}
+===END===
+";
+        let result = select_vibe_session_in_container(stdout, "/workspace", &HashSet::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_vibe_session_in_container_empty_input() {
+        let result = select_vibe_session_in_container(b"", "/workspace", &HashSet::new());
+        assert!(result.is_err());
     }
 
     #[test]
