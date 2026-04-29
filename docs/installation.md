@@ -48,6 +48,16 @@ This requires Node.js and npm. The web frontend is built automatically during co
 aoe --version
 ```
 
+## Updating
+
+```bash
+aoe update
+```
+
+The `aoe update` command detects how aoe was installed (Homebrew, the curl install script, Nix, or Cargo) and dispatches to the right upgrade mechanism. For Nix and Cargo it prints the manual upgrade command instead of attempting an automatic update, since those cases need external tooling.
+
+Inside the TUI, press `u` when the update bar is visible to run the same flow without leaving the app. Press `Ctrl+x` to dismiss the bar for the current session.
+
 ## Uninstall
 
 To remove Agent of Empires:

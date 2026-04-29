@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "1.4.6"
+version = "1.5.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Agent of Empires Contributors"]
@@ -64,7 +64,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # HTTP client (for updates)
-reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+reqwest = { version = "0.13", features = ["json", "rustls", "stream"], default-features = false }
 
 # Unix sockets
 tokio-util = { version = "0.7", features = ["codec"] }
@@ -98,6 +98,9 @@ fs2 = "0.4"
 
 # Stream utilities (for crossterm EventStream)
 futures-util = "0.3"
+
+# Temporary files and directories
+tempfile = "3.14"
 
 # Web server (optional, behind "serve" feature)
 axum = { version = "0.8", features = ["ws"], optional = true }
@@ -137,12 +140,14 @@ serve = [
 ]
 
 [dev-dependencies]
-tempfile = "3.14"
 serial_test = "3.4"
 cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
+# Test-only axum dep, used by the update e2e fixture server that serves
+# a fake release tarball. The runtime code uses reqwest, not axum.
+axum = { version = "0.8", features = ["ws"] }
 # Self-dev-dependency: enables the `test-support` feature when building
 # integration tests so they can reach `crate::tmux::test_support`. This is
-# the standard Cargo pattern for opt-in test-only re-exports — the lib build
+# the standard Cargo pattern for opt-in test-only re-exports; the lib build
 # (and release binaries) never see the feature.
 agent-of-empires = { path = ".", features = ["test-support"] }
 

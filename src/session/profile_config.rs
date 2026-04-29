@@ -64,9 +64,6 @@ pub struct UpdatesConfigOverride {
     pub check_enabled: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_update: Option<bool>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval_hours: Option<u64>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -414,9 +411,6 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         if let Some(check_enabled) = updates_override.check_enabled {
             global.updates.check_enabled = check_enabled;
         }
-        if let Some(auto_update) = updates_override.auto_update {
-            global.updates.auto_update = auto_update;
-        }
         if let Some(check_interval_hours) = updates_override.check_interval_hours {
             global.updates.check_interval_hours = check_interval_hours;
         }
@@ -570,7 +564,6 @@ mod tests {
         let updates = config.updates.unwrap();
         assert_eq!(updates.check_enabled, Some(false));
         assert_eq!(updates.check_interval_hours, Some(48));
-        assert!(updates.auto_update.is_none());
 
         assert!(config.sandbox.is_some());
         let sandbox = config.sandbox.unwrap();

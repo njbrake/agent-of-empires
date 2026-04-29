@@ -18,6 +18,7 @@ pub mod status;
 pub mod theme;
 pub mod tmux;
 pub mod uninstall;
+pub mod update;
 pub mod worktree;
 
 pub use definition::{Cli, Commands};

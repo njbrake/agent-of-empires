@@ -2,11 +2,13 @@
 set -e
 
 REPO="njbrake/agent-of-empires"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+DEFAULT_INSTALL_DIR="$HOME/.local/bin"
+INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 BINARY_NAME="aoe"
 
 info() { printf "\033[34m[info]\033[0m %s\n" "$1"; }
 success() { printf "\033[32m[ok]\033[0m %s\n" "$1"; }
+warn() { printf "\033[33m[warn]\033[0m %s\n" "$1"; }
 error() { printf "\033[31m[error]\033[0m %s\n" "$1" >&2; exit 1; }
 
 detect_platform() {
@@ -35,6 +37,23 @@ get_latest_version() {
         | sed -E 's/.*"([^"]+)".*/\1/'
 }
 
+# Pick the right shell rc file for PATH guidance. Mirrors what most
+# install scripts (rustup, bun, deno) do.
+detect_shell_rc() {
+    local shell_name
+    shell_name=$(basename "${SHELL:-}")
+    case "$shell_name" in
+        zsh)  echo "$HOME/.zshrc" ;;
+        bash)
+            if [ -f "$HOME/.bashrc" ]; then echo "$HOME/.bashrc"
+            else echo "$HOME/.bash_profile"
+            fi
+            ;;
+        fish) echo "$HOME/.config/fish/config.fish" ;;
+        *)    echo "" ;;
+    esac
+}
+
 main() {
     info "Detecting platform..."
     platform=$(detect_platform)
@@ -59,15 +78,45 @@ main() {
     info "Extracting..."
     tar xzf "$tmp_dir/aoe.tar.gz" -C "$tmp_dir"
 
+    mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+
     info "Installing to $INSTALL_DIR..."
-    if [ -w "$INSTALL_DIR" ]; then
+    if [ -w "$INSTALL_DIR" ] || [ ! -e "$INSTALL_DIR" ]; then
         mv "$tmp_dir/aoe-${platform}" "$INSTALL_DIR/$BINARY_NAME"
     else
+        warn "$INSTALL_DIR is not user-writable; falling back to sudo."
+        warn "Consider re-running with INSTALL_DIR=\$HOME/.local/bin to avoid this."
         sudo mv "$tmp_dir/aoe-${platform}" "$INSTALL_DIR/$BINARY_NAME"
     fi
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
     success "Installed $BINARY_NAME $version to $INSTALL_DIR/$BINARY_NAME"
+
+    # Detect a leftover binary at the legacy /usr/local/bin location. Older
+    # versions of this script defaulted there; if a user re-runs install.sh
+    # with the new ~/.local/bin default they end up with two binaries and
+    # whichever directory comes first on PATH wins, which is confusing.
+    LEGACY_PATH=/usr/local/bin/aoe
+    if [ -e "$LEGACY_PATH" ] && [ "$INSTALL_DIR/$BINARY_NAME" != "$LEGACY_PATH" ]; then
+        echo ""
+        warn "Found a previous install at $LEGACY_PATH."
+        warn "PATH order will decide which one runs. Remove the old copy with:"
+        warn "  sudo rm $LEGACY_PATH"
+    fi
+
+    if ! command -v "$BINARY_NAME" >/dev/null 2>&1; then
+        echo ""
+        warn "$INSTALL_DIR is not on your PATH."
+        rc_file=$(detect_shell_rc)
+        if [ -n "$rc_file" ]; then
+            info "Add it by running:"
+            info "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> $rc_file"
+            info "Then restart your shell, or run: source $rc_file"
+        else
+            info "Add this line to your shell rc file:"
+            info "  export PATH=\"$INSTALL_DIR:\$PATH\""
+        fi
+    fi
 
     if ! command -v tmux &> /dev/null; then
         info ""
