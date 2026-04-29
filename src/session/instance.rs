@@ -17,7 +17,9 @@ use super::poller::SessionPoller;
 
 use crate::session::capture::{
     build_exclusion_set, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
-    generate_claude_session_id, is_valid_session_id, validated_session_id, vibe_poll_fn,
+    generate_claude_session_id, is_valid_session_id, opencode_poll_fn, opencode_poll_fn_sandboxed,
+    try_capture_opencode_session_id, try_capture_opencode_session_id_in_container,
+    validated_session_id, vibe_poll_fn,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,8 +323,11 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
     }
 }
 
-/// Publish captured session ID to tmux hidden env so other instances
-/// can see it via `build_exclusion_set()` without racing the TUI save.
+/// Publish a captured session ID to the tmux environment only.
+///
+/// Background threads (poller on_change) call this so that
+/// `build_exclusion_set()` on other instances can see the captured ID
+/// without racing with the TUI thread's `save()`.
 fn publish_session_to_tmux_env(tmux_session_name: &str, session_id: &str) {
     if let Err(e) = crate::tmux::env::set_hidden_env(
         tmux_session_name,
@@ -405,6 +410,13 @@ impl Instance {
         })
     }
 
+    /// Acquire a pre-launch session ID for the agent.
+    ///
+    /// Returns `(session_id, is_existing)`. If a persisted ID exists, returns it
+    /// with `is_existing = true`. Otherwise, only Claude gets a new UUID here
+    /// (it requires `--session-id <uuid>` at launch). Other agents discover
+    /// their session ID post-launch via the poller (or retroactively via
+    /// `try_retroactive_capture()` when an existing tmux session is reattached).
     pub fn acquire_session_id(&mut self) -> (Option<String>, bool) {
         if self.agent_session_id.is_some() {
             return (self.agent_session_id.clone(), true);
@@ -425,6 +437,7 @@ impl Instance {
 
         let session_id = match self.tool.as_str() {
             "claude" => Some(generate_claude_session_id()),
+            "opencode" => None,
             _ => None,
         };
 
@@ -438,7 +451,21 @@ impl Instance {
 
     pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
         let exclusion = build_exclusion_set(&self.id);
-        let result = match self.tool.as_str() {
+        let result: Option<String> = match self.tool.as_str() {
+            "opencode" => {
+                if self.is_sandboxed() {
+                    let container_name = self.sandbox_info.as_ref()?.container_name.clone();
+                    try_capture_opencode_session_id_in_container(
+                        &container_name,
+                        &self.container_workdir(),
+                        &exclusion,
+                        None,
+                    )
+                    .ok()
+                } else {
+                    try_capture_opencode_session_id(&self.project_path, &exclusion, None).ok()
+                }
+            }
             "vibe" => capture_vibe_session_id(&self.project_path, &exclusion).ok(),
             _ => None,
         };
@@ -1013,6 +1040,30 @@ impl Instance {
                     ))
                 } else {
                     Box::new(claude_poll_fn(self.project_path.clone()))
+                }
+            }
+            "opencode" => {
+                let launch_time_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as f64)
+                    .unwrap_or(0.0);
+                if self.is_sandboxed() {
+                    let container_name = match self.sandbox_info.as_ref() {
+                        Some(s) => s.container_name.clone(),
+                        None => return,
+                    };
+                    Box::new(opencode_poll_fn_sandboxed(
+                        container_name,
+                        self.container_workdir(),
+                        self.id.clone(),
+                        launch_time_ms,
+                    ))
+                } else {
+                    Box::new(opencode_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        launch_time_ms,
+                    ))
                 }
             }
             "vibe" => Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone())),
@@ -1977,6 +2028,40 @@ mod tests {
         let session_id = "abc123-def456";
         let flags = build_resume_flags("claude", session_id, false);
         assert_eq!(flags, "--session-id abc123-def456");
+    }
+
+    #[test]
+    fn test_build_opencode_resume_flags() {
+        let session_id = "session-789";
+        let flags = build_resume_flags("opencode", session_id, false);
+        assert_eq!(flags, "--session session-789");
+
+        let flags = build_resume_flags("opencode", session_id, true);
+        assert_eq!(flags, "--session session-789");
+    }
+
+    #[test]
+    fn test_opencode_acquire_returns_none_for_deferred_capture() {
+        let mut inst = Instance::new("Test", "/nonexistent/opencode/test");
+        inst.tool = "opencode".to_string();
+
+        let (session_id, is_existing) = inst.acquire_session_id();
+
+        assert!(session_id.is_none());
+        assert!(!is_existing);
+        assert!(inst.agent_session_id.is_none());
+    }
+
+    #[test]
+    fn test_persisted_opencode_session_id_reused() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.tool = "opencode".to_string();
+        inst.agent_session_id = Some("oc-session-42".to_string());
+
+        let (session_id, is_existing) = inst.acquire_session_id();
+
+        assert_eq!(session_id, Some("oc-session-42".to_string()));
+        assert!(is_existing);
     }
 
     // Test that instance with agent_session_id can be serialized and deserialized

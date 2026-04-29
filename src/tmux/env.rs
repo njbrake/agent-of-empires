@@ -135,6 +135,71 @@ pub fn remove_hidden_env(session_name: &str, key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Remove hidden environment variables from multiple sessions with a single tmux command.
+///
+/// Each tuple is `(session_name, key)`. Falls back to per-entry calls on
+/// batch failure; per-entry failures are logged but do not abort subsequent
+/// entries (best-effort cleanup).
+pub fn remove_hidden_env_batch(entries: &[(&str, &str)]) -> anyhow::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut args: Vec<String> = Vec::new();
+    for (i, (session_name, key)) in entries.iter().enumerate() {
+        if i > 0 {
+            args.push(";".to_string());
+        }
+        args.push("set-environment".to_string());
+        args.push("-h".to_string());
+        args.push("-u".to_string());
+        args.push("-t".to_string());
+        args.push(session_name.to_string());
+        args.push(key.to_string());
+    }
+
+    let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = Command::new("tmux").args(&str_args).output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            for (session_name, key) in entries {
+                invalidate_cache_entry(session_name, key);
+            }
+            Ok(())
+        }
+        Ok(out) => {
+            tracing::debug!(
+                "Batch tmux set-environment -u failed (exit {}), falling back to sequential unsets",
+                out.status
+            );
+            sequential_remove_fallback(entries);
+            Ok(())
+        }
+        Err(e) => {
+            tracing::debug!(
+                "Batch tmux set-environment -u error: {}, falling back to sequential unsets",
+                e
+            );
+            sequential_remove_fallback(entries);
+            Ok(())
+        }
+    }
+}
+
+fn sequential_remove_fallback(entries: &[(&str, &str)]) {
+    for (session_name, key) in entries {
+        if let Err(e) = remove_hidden_env(session_name, key) {
+            tracing::debug!(
+                "Sequential unset of {} on {} failed: {}",
+                key,
+                session_name,
+                e
+            );
+        }
+    }
+}
+
 /// Set hidden environment variables in multiple sessions with a single tmux command.
 ///
 /// Each tuple is `(session_name, key, value)`. Falls back to individual
@@ -173,9 +238,7 @@ pub fn set_hidden_env_batch(entries: &[(&str, &str, &str)]) -> anyhow::Result<()
                 "Batch tmux set-environment failed (exit {}), falling back to sequential writes",
                 out.status
             );
-            for (session_name, key, value) in entries {
-                set_hidden_env(session_name, key, value)?;
-            }
+            sequential_set_fallback(entries);
             Ok(())
         }
         Err(e) => {
@@ -183,10 +246,21 @@ pub fn set_hidden_env_batch(entries: &[(&str, &str, &str)]) -> anyhow::Result<()
                 "Batch tmux set-environment error: {}, falling back to sequential writes",
                 e
             );
-            for (session_name, key, value) in entries {
-                set_hidden_env(session_name, key, value)?;
-            }
+            sequential_set_fallback(entries);
             Ok(())
+        }
+    }
+}
+
+fn sequential_set_fallback(entries: &[(&str, &str, &str)]) {
+    for (session_name, key, value) in entries {
+        if let Err(e) = set_hidden_env(session_name, key, value) {
+            tracing::debug!(
+                "Sequential set of {} on {} failed: {}",
+                key,
+                session_name,
+                e
+            );
         }
     }
 }

@@ -2,9 +2,10 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use uuid::Uuid;
 
 /// Iterate directory entries, silently skipping unreadable ones.
@@ -274,7 +275,11 @@ pub(crate) fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let aoe_sessions: Vec<&str> = stdout
         .lines()
-        .filter(|name| name.starts_with(crate::tmux::SESSION_PREFIX))
+        .filter(|name| {
+            name.starts_with(crate::tmux::SESSION_PREFIX)
+                && !name.starts_with(crate::tmux::TERMINAL_PREFIX)
+                && !name.starts_with(crate::tmux::CONTAINER_TERMINAL_PREFIX)
+        })
         .collect();
 
     if aoe_sessions.is_empty() {
@@ -359,7 +364,7 @@ pub(crate) fn capture_vibe_session_id(
         );
     }
 
-    candidates.sort_by(|a, b| b.2.cmp(&a.2));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.2));
 
     let canonical_project = canonicalize_or_raw(project_path);
 
@@ -430,6 +435,235 @@ pub(crate) fn vibe_poll_fn(
             .map_err(|e| tracing::debug!("Vibe poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
+    }
+}
+
+/// Filter, sort, and deduplicate agent sessions by project directory.
+///
+/// Given a list of parsed session JSON values:
+/// 1. Filters to sessions matching `project_path` (canonicalized comparison on `directory`)
+/// 2. Sorts by `updated` timestamp descending (most recent first)
+/// 3. If `launch_time_ms` is `Some`, removes sessions older than that threshold
+/// 4. Removes sessions whose IDs appear in `exclusion`
+pub(crate) fn filter_agent_sessions<'a>(
+    session_entries: &'a [serde_json::Value],
+    project_path: Option<&str>,
+    exclusion: &HashSet<String>,
+    launch_time_ms: Option<f64>,
+) -> Vec<&'a serde_json::Value> {
+    let mut matching: Vec<&serde_json::Value> = if let Some(path) = project_path {
+        let canonical_path = canonicalize_or_raw(path);
+        let canonical_str = canonical_path.to_string_lossy();
+
+        session_entries
+            .iter()
+            .filter(|s| {
+                s.get("directory")
+                    .and_then(|v| v.as_str())
+                    .map(|dir| {
+                        let session_path = canonicalize_or_raw(dir);
+                        session_path.to_string_lossy() == canonical_str
+                    })
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        session_entries.iter().collect()
+    };
+
+    matching.sort_by(|a, b| {
+        let a_time = a.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let b_time = b.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        b_time
+            .partial_cmp(&a_time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    if let Some(threshold) = launch_time_ms {
+        matching.retain(|s| s.get("updated").and_then(|v| v.as_f64()).unwrap_or(0.0) >= threshold);
+    }
+
+    matching.retain(|s| {
+        s.get("id")
+            .and_then(|v| v.as_str())
+            .map(|id| !exclusion.contains(id))
+            .unwrap_or(true)
+    });
+
+    matching
+}
+
+const OPENCODE_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Spawn `cmd`, read stdout to EOF on a worker thread, and wait for the
+/// process to exit. Kills the child if `timeout` elapses first.
+fn run_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<Vec<u8>> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("Failed to spawn '{}'", label))?;
+
+    let stdout_pipe = child.stdout.take();
+    let stdout_handle = std::thread::spawn(move || {
+        stdout_pipe.map(|mut r| {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut r, &mut buf).ok();
+            buf
+        })
+    });
+
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(anyhow::anyhow!("{} timed out", label));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(anyhow::anyhow!("Failed to wait on {}: {}", label, e)),
+        }
+    };
+
+    let stdout_bytes = stdout_handle.join().ok().flatten().unwrap_or_default();
+
+    if !status.success() {
+        anyhow::bail!("{} command failed", label);
+    }
+
+    Ok(stdout_bytes)
+}
+
+/// Parse `opencode session list --format json` output and pick the best match.
+///
+/// `match_path` is the directory the session's `directory` field is compared
+/// against. For host capture this is the host project path; for sandboxed
+/// capture this is the container CWD (since opencode records its own CWD).
+fn select_opencode_session(
+    stdout_bytes: &[u8],
+    match_path: &str,
+    exclusion: &HashSet<String>,
+    launch_time_ms: Option<f64>,
+) -> Result<String> {
+    let stdout = String::from_utf8_lossy(stdout_bytes);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("No OpenCode sessions found");
+    }
+    let session_entries: Vec<serde_json::Value> =
+        serde_json::from_str(trimmed).context("Failed to parse OpenCode session list JSON")?;
+
+    let matching = filter_agent_sessions(
+        &session_entries,
+        Some(match_path),
+        exclusion,
+        launch_time_ms,
+    );
+
+    matching
+        .first()
+        .and_then(|s| s["id"].as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("No OpenCode sessions found matching project path"))
+}
+
+/// Capture an OpenCode session ID by running `opencode session list --format json`,
+/// parsing the output, and matching by CWD. Returns error (not fallback) when
+/// no unexcluded session matches.
+///
+/// `launch_time_ms` is the lower bound on the session's `updated` timestamp,
+/// used to ignore stale sessions left over from prior runs. Pass `None` for
+/// retroactive capture on TUI startup, when the launch time isn't known.
+pub(crate) fn try_capture_opencode_session_id(
+    project_path: &str,
+    exclusion: &HashSet<String>,
+    launch_time_ms: Option<f64>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("opencode");
+    cmd.args(["session", "list", "--format", "json"])
+        .current_dir(project_path);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(OPENCODE_COMMAND_TIMEOUT_SECS),
+        "opencode session list",
+    )?;
+    select_opencode_session(&stdout_bytes, project_path, exclusion, launch_time_ms)
+}
+
+/// Capture an OpenCode session ID from inside a Docker container.
+///
+/// Mirrors `try_capture_opencode_session_id` but runs `opencode session list`
+/// via `docker exec -w <cwd>`. Matching is done against `container_cwd` (the
+/// path opencode-in-container records as its working directory), not the host
+/// project path.
+pub(crate) fn try_capture_opencode_session_id_in_container(
+    container_name: &str,
+    container_cwd: &str,
+    exclusion: &HashSet<String>,
+    launch_time_ms: Option<f64>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        "-w",
+        container_cwd,
+        container_name,
+        "opencode",
+        "session",
+        "list",
+        "--format",
+        "json",
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(OPENCODE_COMMAND_TIMEOUT_SECS),
+        "opencode session list (container)",
+    )?;
+    select_opencode_session(&stdout_bytes, container_cwd, exclusion, launch_time_ms)
+}
+
+/// Polling closure for OpenCode session tracking.
+pub(crate) fn opencode_poll_fn(
+    project_path: String,
+    instance_id: String,
+    launch_time_ms: f64,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_opencode_session_id(&project_path, &exclusion, Some(launch_time_ms))
+            .map_err(|e| tracing::debug!("OpenCode poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+/// Polling closure for sandboxed (Docker) OpenCode session tracking.
+pub(crate) fn opencode_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+    launch_time_ms: f64,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_opencode_session_id_in_container(
+            &container_name,
+            &container_cwd,
+            &exclusion,
+            Some(launch_time_ms),
+        )
+        .map_err(|e| tracing::debug!("OpenCode container poll capture failed: {}", e))
+        .ok()
+        .and_then(validated_session_id)
     }
 }
 
@@ -754,6 +988,107 @@ mod tests {
     }
 
     #[test]
+    fn test_opencode_directory_matching() {
+        let sessions_json = serde_json::json!([
+            {"id": "wrong-session", "directory": "/home/user/other-project", "updated": 1735689600000_u64},
+            {"id": "correct-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "older-match", "directory": "/tmp/my-project", "updated": 1735689600000_u64},
+        ]);
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
+
+        let matching = filter_agent_sessions(
+            &session_entries,
+            Some("/tmp/my-project"),
+            &HashSet::new(),
+            None,
+        );
+
+        let session = matching.first().copied();
+        let id = session.and_then(|s| s["id"].as_str()).unwrap();
+
+        assert_eq!(id, "correct-session");
+        assert_eq!(matching.len(), 2);
+    }
+
+    #[test]
+    fn test_opencode_exclusion_filters_claimed_sessions() {
+        let sessions_json = serde_json::json!([
+            {"id": "best-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "second-best", "directory": "/tmp/my-project", "updated": 1735775000000_u64},
+        ]);
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("best-session".to_string());
+
+        let matching =
+            filter_agent_sessions(&session_entries, Some("/tmp/my-project"), &exclusion, None);
+
+        let session = matching.first().copied();
+        let id = session.and_then(|s| s["id"].as_str()).unwrap();
+        assert_eq!(id, "second-best");
+    }
+
+    #[test]
+    fn test_opencode_no_match_returns_error() {
+        let sessions_json = serde_json::json!([
+            {"id": "sess-1", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "sess-2", "directory": "/tmp/my-project", "updated": 1735775000000_u64},
+        ]);
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("sess-1".to_string());
+        exclusion.insert("sess-2".to_string());
+
+        let matching =
+            filter_agent_sessions(&session_entries, Some("/tmp/my-project"), &exclusion, None);
+
+        assert!(
+            matching.is_empty(),
+            "All sessions are excluded, matching should be empty (not fallback to first)"
+        );
+    }
+
+    #[test]
+    fn test_opencode_timestamp_guard() {
+        let sessions_json = serde_json::json!([
+            {"id": "old-session", "directory": "/tmp/my-project", "updated": 1000000000000_u64},
+            {"id": "new-session", "directory": "/tmp/my-project", "updated": 1735776000000_u64},
+            {"id": "stale-session", "directory": "/tmp/my-project", "updated": 1500000000000_u64},
+        ]);
+        let session_entries: Vec<serde_json::Value> =
+            serde_json::from_value(sessions_json).unwrap();
+
+        let launch_time_ms: f64 = 1735000000000.0;
+        let exclusion: HashSet<String> = HashSet::new();
+
+        let matching = filter_agent_sessions(
+            &session_entries,
+            Some("/tmp/my-project"),
+            &exclusion,
+            Some(launch_time_ms),
+        );
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0]["id"].as_str().unwrap(), "new-session");
+    }
+
+    #[test]
+    fn test_filter_agent_sessions_empty_input() {
+        let empty: Vec<serde_json::Value> = Vec::new();
+        let exclusion = HashSet::new();
+        let result = filter_agent_sessions(&empty, Some("/tmp/project"), &exclusion, None);
+        assert!(
+            result.is_empty(),
+            "Empty input should return empty result, not panic"
+        );
+    }
+
+    #[test]
     fn test_build_exclusion_set_empty() {
         let result = build_exclusion_set("nonexistent-instance-id-12345");
         // The exclusion set should never contain our own instance ID
@@ -761,5 +1096,23 @@ mod tests {
         // On a machine with active AoE tmux sessions, the set may be
         // non-empty, so we verify our own ID isn't self-excluded.
         assert!(!result.contains("nonexistent-instance-id-12345"));
+    }
+
+    #[test]
+    fn test_opencode_capture_respects_command_timeout() {
+        let start = std::time::Instant::now();
+        let result = try_capture_opencode_session_id(
+            "/tmp/nonexistent-project-xyz-12345",
+            &HashSet::new(),
+            None,
+        );
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "Expected Err for nonexistent project");
+        assert!(
+            elapsed < Duration::from_secs(OPENCODE_COMMAND_TIMEOUT_SECS + 2),
+            "Capture took {:?}, exceeds timeout budget",
+            elapsed
+        );
     }
 }

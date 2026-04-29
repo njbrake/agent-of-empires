@@ -42,6 +42,7 @@ name = "agent-of-empires"
 version = "1.4.6"
 dependencies = [
  "aes-gcm",
+ "agent-of-empires",
  "ansi-to-tui",
  "anyhow",
  "argon2",
