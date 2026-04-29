@@ -181,6 +181,11 @@ pub struct HomeView {
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
+    /// Pasted text captured at the home view that we couldn't immediately
+    /// route (no session selected, cursor on a group header, etc.). Drained
+    /// into the next compose dialog the user opens, so voice/dictation never
+    /// gets thrown on the floor with a scolding info dialog.
+    pub(super) pending_paste: Option<String>,
     /// Session to attach after the custom instruction warning dialog is dismissed
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
@@ -360,6 +365,7 @@ impl HomeView {
             update_confirm_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
+            pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
             pending_force_remove_session: None,

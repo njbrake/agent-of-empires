@@ -32,7 +32,12 @@ impl SendMessageDialog {
     }
 
     fn get_text(&self) -> String {
-        self.text_area.lines().join("\n")
+        // ratatui_textarea preserves embedded CRs from voice/dictation paste
+        // (iOS speech often emits lone \r as a sentence break). Sending raw \r
+        // through to claude-code causes the agent to submit prematurely or
+        // receive garbled input — normalize before submit.
+        let joined = self.text_area.lines().join("\n");
+        joined.replace("\r\n", "\n").replace('\r', "\n")
     }
 
     /// Run a kill operation and arm the restore hint only if it actually wrote

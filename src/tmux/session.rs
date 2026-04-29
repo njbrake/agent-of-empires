@@ -1,7 +1,8 @@
 //! tmux session management
 
 use anyhow::{bail, Result};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use super::{
     refresh_session_cache, session_exists_from_cache,
@@ -356,16 +357,34 @@ impl Session {
         }
 
         let target = format!("{}:^.0", self.name);
+        let byte_len = text.len();
+        let line_count = text.lines().count();
+        let max_line = text.lines().map(str::len).max().unwrap_or(0);
 
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
+        // Long messages and embedded-newline messages go through the tmux
+        // paste-buffer path (load-buffer over stdin → paste-buffer with
+        // bracketed-paste markers). The per-line `send-keys -l` path hits
+        // ARG_MAX for very large payloads and produces brittle Shift+Enter
+        // sequences for newlines; bracketed paste is what the receiving
+        // agent (claude-code in raw mode) is designed to ingest.
+        const PASTE_BYTE_THRESHOLD: usize = 2048;
+        let use_paste_buffer = byte_len >= PASTE_BYTE_THRESHOLD || text.contains('\n');
+
+        tracing::debug!(
+            "send_keys_with_delay: bytes={} lines={} max_line={} use_paste_buffer={} target={}",
+            byte_len,
+            line_count,
+            max_line,
+            use_paste_buffer,
+            target
+        );
+
+        if use_paste_buffer {
+            Self::send_via_paste_buffer(&target, text)?;
+        } else {
             // `--` ends option parsing so lines beginning with `-` (markdown
             // bullets, CLI flags in prompts) are not misread as tmux flags.
-            Self::tmux_send(&target, &["-l", "--", line])?;
-            if i < lines.len() - 1 {
-                // ESC + CR: what terminals send for Shift+Enter (inserts newline)
-                Self::tmux_send(&target, &["-H", "1b", "0d"])?;
-            }
+            Self::tmux_send(&target, &["-l", "--", text])?;
         }
 
         if enter_delay_ms > 0 {
@@ -374,6 +393,39 @@ impl Session {
 
         // Enter to submit
         Self::tmux_send(&target, &["Enter"])?;
+
+        Ok(())
+    }
+
+    /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
+    /// Uses a process-id-scoped buffer name so concurrent senders don't
+    /// clobber each other. `-p` enables bracketed-paste markers when the
+    /// receiving pane has DECSET 2004 set (claude-code does); `-d` deletes
+    /// the buffer after the paste. Avoids ARG_MAX on long voice/dictation
+    /// pastes that the per-line send-keys path can't handle.
+    fn send_via_paste_buffer(target: &str, text: &str) -> Result<()> {
+        let buf_name = format!("aoe-send-{}", std::process::id());
+
+        let mut child = Command::new("tmux")
+            .args(["load-buffer", "-b", &buf_name, "-"])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if !status.success() {
+            bail!("tmux load-buffer failed (status={:?})", status.code());
+        }
+
+        let output = Command::new("tmux")
+            .args(["paste-buffer", "-d", "-p", "-b", &buf_name, "-t", target])
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux paste-buffer failed: {}", stderr);
+        }
 
         Ok(())
     }

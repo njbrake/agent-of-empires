@@ -88,22 +88,41 @@ pub fn check_version_change() -> Result<Option<String>> {
 
 impl App {
     /// Is this key event a candidate for paste-burst accumulation?
-    /// Printable ASCII Char with no modifiers (or shift only). Burst
-    /// detection ignores Ctrl/Alt-modified chords because those are
-    /// genuine intentional shortcuts and never come from a paste-burst.
+    /// Printable ASCII Char or Enter, with no modifiers (or shift only).
+    /// Burst detection ignores Ctrl/Alt-modified chords because those
+    /// are genuine intentional shortcuts and never come from a paste-burst.
+    /// Enter is included so embedded CR/LF inside a Mosh-stripped paste
+    /// (voice/dictation often inserts sentence-break newlines) gets
+    /// captured into the burst as \n instead of breaking it in two and
+    /// firing Submit/select on the deferred Enter.
     fn is_burst_candidate(key: &KeyEvent) -> bool {
+        let mods = key.modifiers;
+        let mods_ok = mods.is_empty() || mods == KeyModifiers::SHIFT;
+        if !mods_ok {
+            return false;
+        }
         match key.code {
-            KeyCode::Char(c) => {
-                let mods = key.modifiers;
-                let mods_ok = mods.is_empty() || mods == KeyModifiers::SHIFT;
-                let printable = c == ' ' || c.is_ascii_graphic();
-                mods_ok && printable
-            }
+            KeyCode::Char(c) => c == ' ' || c.is_ascii_graphic(),
+            KeyCode::Enter => true,
             _ => false,
         }
     }
 
-    pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
+    /// Translate a burst-candidate key event back to its text byte for the
+    /// accumulated burst string. Char yields the char; Enter yields '\n'.
+    fn burst_char_for(key: &KeyEvent) -> Option<char> {
+        match key.code {
+            KeyCode::Char(c) => Some(c),
+            KeyCode::Enter => Some('\n'),
+            _ => None,
+        }
+    }
+
+    pub fn new(
+        profile: &str,
+        available_tools: AvailableTools,
+        suppress_first_run_dialogs: bool,
+    ) -> Result<Self> {
         let no_agents = !available_tools.any_available();
         let active_profile = if profile.is_empty() {
             None // all-profiles mode
@@ -388,9 +407,9 @@ impl App {
                             // of dispatching individually. Below the burst threshold
                             // we replay the captured chars as individual key events.
                             if Self::is_burst_candidate(&key) {
-                                let first_char = match key.code {
-                                    KeyCode::Char(c) => c,
-                                    _ => unreachable!(),
+                                let first_char = match Self::burst_char_for(&key) {
+                                    Some(c) => c,
+                                    None => unreachable!(),
                                 };
                                 let mut burst_str = String::new();
                                 burst_str.push(first_char);
@@ -403,7 +422,7 @@ impl App {
                                     ).await;
                                     match next {
                                         Ok(Some(Ok(Event::Key(k)))) if Self::is_burst_candidate(&k) => {
-                                            if let KeyCode::Char(c) = k.code {
+                                            if let Some(c) = Self::burst_char_for(&k) {
                                                 burst_str.push(c);
                                                 burst_keys.push(k);
                                             }

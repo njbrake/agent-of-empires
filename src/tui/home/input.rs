@@ -1035,22 +1035,11 @@ impl HomeView {
                     ));
                 }
             }
-            KeyCode::Char('m') => {
-                if let Some(id) = self.selected_session.clone() {
-                    if let Some(inst) = self.get_instance(&id) {
-                        if inst.status == Status::Creating {
-                            return None;
-                        }
-                        let title = inst.title.clone();
-                        let inst_id = inst.id.clone();
-                        let tmux_session = crate::tmux::Session::new(&inst_id, &title).ok();
-                        let is_running = tmux_session.as_ref().is_some_and(|s| s.exists());
-                        if is_running {
-                            self.pending_send_session = Some(id);
-                            self.send_message_dialog = Some(SendMessageDialog::new(&title));
-                        }
-                    }
-                }
+            KeyCode::Char('m') if !self.strict_hotkeys => {
+                self.open_send_message_dialog();
+            }
+            KeyCode::Char('M') if self.strict_hotkeys => {
+                self.open_send_message_dialog();
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.apply_sort_order(self.sort_order.cycle_reverse());
@@ -1535,6 +1524,91 @@ impl HomeView {
         if let Some(ref mut settings) = self.settings_view {
             settings.handle_paste(text);
         }
+        if let Some(ref mut dialog) = self.rename_dialog {
+            dialog.handle_paste(text);
+            return;
+        }
+        if let Some(ref mut dialog) = self.send_message_dialog {
+            dialog.handle_paste(text);
+            return;
+        }
+        if let Some(ref mut dialog) = self.new_dialog {
+            dialog.handle_paste(text);
+            return;
+        }
+
+        // No dialog open — try to route the paste into a compose dialog.
+        // If the cursor is on a running session, use it. Otherwise fall back
+        // to any running session (the most recent one is typically what voice
+        // dictation is targeting). If we still can't route, stash the text in
+        // pending_paste so the next 'm' press picks it up. Never throw voice
+        // text on the floor with a scolding info dialog — losing dictation is
+        // far worse than silently catching it.
+        if let Some((id, title)) = self.resolve_paste_target() {
+            self.pending_send_session = Some(id);
+            let mut dialog = SendMessageDialog::new(&title);
+            dialog.handle_paste(text);
+            self.send_message_dialog = Some(dialog);
+            return;
+        }
+
+        // No running sessions at all (or all Creating). Stash for later;
+        // the user will see the text on next 'm' / dialog open.
+        match self.pending_paste.as_mut() {
+            Some(buf) => buf.push_str(text),
+            None => self.pending_paste = Some(text.to_string()),
+        }
+    }
+
+    /// Open the send-message dialog for the currently-selected running session.
+    /// If pending_paste has accumulated text from earlier untargeted pastes,
+    /// drain it into the dialog so voice/dictation captured before a session
+    /// was picked still gets used. No-op if no running session is targetable.
+    fn open_send_message_dialog(&mut self) {
+        let Some((id, title)) = self.resolve_paste_target() else {
+            return;
+        };
+        self.pending_send_session = Some(id);
+        let mut dialog = SendMessageDialog::new(&title);
+        if let Some(buf) = self.pending_paste.take() {
+            if !buf.is_empty() {
+                dialog.handle_paste(&buf);
+            }
+        }
+        self.send_message_dialog = Some(dialog);
+    }
+
+    /// Resolve a target session id + title for an untargeted paste/type-burst.
+    /// Priority: currently-selected running session, then first running session
+    /// under the selected group, then any first running session.
+    fn resolve_paste_target(&self) -> Option<(String, String)> {
+        let pick = |inst: &crate::session::Instance| -> Option<(String, String)> {
+            if inst.status == Status::Creating {
+                return None;
+            }
+            let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title).ok();
+            if tmux_session.as_ref().is_some_and(|s| s.exists()) {
+                Some((inst.id.clone(), inst.title.clone()))
+            } else {
+                None
+            }
+        };
+
+        if let Some(id) = self.selected_session.clone() {
+            if let Some(inst) = self.get_instance(&id) {
+                if let Some(t) = pick(inst) {
+                    return Some(t);
+                }
+            }
+        }
+
+        // Fall back to any running session in the current view.
+        for inst in self.instances() {
+            if let Some(t) = pick(inst) {
+                return Some(t);
+            }
+        }
+        None
     }
 
     /// Re-score matches after a reload without moving the cursor.
