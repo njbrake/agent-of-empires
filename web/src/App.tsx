@@ -335,8 +335,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       setDiffCollapsed(false);
       return;
     }
+    if (target === "agent" && selectedFilePath) {
+      // Agent terminal is hidden under the diff viewer; close the diff first
+      // so the wrapper un-hides, then dispatch on the next frame because
+      // focus() on a display:none element is a no-op.
+      setSelectedFilePath(null);
+      requestAnimationFrame(() => dispatchFocusTerminal("agent"));
+      return;
+    }
     dispatchFocusTerminal(target);
-  }, [activeSessionId, diffCollapsed]);
+  }, [activeSessionId, diffCollapsed, selectedFilePath]);
 
   useKeyboardShortcuts(
     useCallback(
