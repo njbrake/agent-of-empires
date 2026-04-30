@@ -12,6 +12,8 @@
     "test:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.12.28",
+    "@assistant-ui/react-markdown": "^0.12.11",
     "@tailwindcss/vite": "^4.2.2",
     "@wterm/core": "^0.1.8",
     "@wterm/dom": "^0.1.8",

@@ -1,18 +1,28 @@
-// Cockpit conversation surface.
+// Cockpit conversation surface, built on @assistant-ui/react primitives.
 //
-// Layout matches the rest of the app shell: <ContentSplit> handles the
-// outer columns; this component owns the middle pane (chat feed +
-// composer + plan/system strips). It is intentionally chat-shaped, not
-// terminal-shaped, since the cockpit's whole point is to render
-// structured agent state instead of a tmux pane.
+// The chat shell (scroll viewport, message list, message editing, keyboard
+// shortcuts, accessibility) is delegated to assistant-ui. We slot our own
+// renderers into its component injection points:
+//   - Markdown.tsx for text parts (with shiki code blocks)
+//   - ToolCards.tsx for tool-call parts (per-kind dispatch)
+//   - ApprovalCard for ACP permission requests (pinned below messages)
+//   - WorkingSpinner with the empire-themed rattle
 //
-// Design references: Cursor agent chat, VSCode Copilot Chat, Claude Code
-// CLI. User turns are right-aligned chips; agent turns are full-width
-// markdown; tool calls render as per-kind cards inline (see ToolCards.tsx).
+// State lives in `useCockpit` (subscribes to /sessions/:id/cockpit/ws)
+// and reaches assistant-ui via `useExternalStoreRuntime` in
+// CockpitRuntime.tsx. We never let assistant-ui own the chat state; it
+// only renders what we feed it and surfaces user actions back.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useCockpit, type ConnectionStatus } from "../../hooks/useCockpit";
+import { useEffect, useRef, useState } from "react";
+import {
+  ComposerPrimitive,
+  MessagePrimitive,
+  ThreadPrimitive,
+  useThreadRuntime,
+} from "@assistant-ui/react";
+
 import { ApprovalCard } from "./ApprovalCard";
+import { CockpitRuntime, type CockpitContext } from "./CockpitRuntime";
 import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCards";
 import {
@@ -22,7 +32,6 @@ import {
   chooseVerb,
 } from "../../lib/cockpitRattle";
 import type {
-  ActivityRow,
   Approval,
   ApprovalDecision,
   CockpitState,
@@ -41,9 +50,14 @@ const STARTER_PROMPTS = [
 ];
 
 export function CockpitView({ sessionId }: Props) {
-  const { state, status, resolveApproval, sendPrompt, cancelPrompt } =
-    useCockpit(sessionId);
+  return (
+    <CockpitRuntime sessionId={sessionId}>
+      {(ctx) => <CockpitChrome {...ctx} />}
+    </CockpitRuntime>
+  );
+}
 
+function CockpitChrome({ state, status, resolveApproval, sendPrompt }: CockpitContext) {
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} mode={state.mode} />
@@ -58,175 +72,258 @@ export function CockpitView({ sessionId }: Props) {
 
       {state.startupError && <StartupErrorBanner message={state.startupError} />}
 
-      <ConversationFeed
-        state={state}
-        onResolve={resolveApproval}
-        onStarterPrompt={sendPrompt}
-      />
+      <ThreadPrimitive.Root className="flex flex-1 flex-col min-h-0">
+        <ThreadPrimitive.Viewport
+          autoScroll
+          className="flex-1 overflow-y-auto"
+        >
+          <div className="mx-auto max-w-3xl px-4 py-6">
+            <ThreadPrimitive.Empty>
+              <EmptyState onPick={sendPrompt} />
+            </ThreadPrimitive.Empty>
 
-      <Composer
-        sendPrompt={sendPrompt}
-        cancelPrompt={cancelPrompt}
-        thinking={state.thinking}
-        inFlight={!!state.inFlightTool}
-        turnActive={state.turnActive}
-      />
-    </div>
-  );
-}
-
-/* ── Conversation feed ───────────────────────────────────────────── */
-
-interface ConversationFeedProps {
-  state: CockpitState;
-  onResolve: (nonce: string, decision: ApprovalDecision) => Promise<void>;
-  onStarterPrompt: (text: string) => Promise<void>;
-}
-
-function ConversationFeed({ state, onResolve, onStarterPrompt }: ConversationFeedProps) {
-  const cells = useMemo(() => groupActivity(state.activity), [state.activity]);
-  const scroller = useRef<HTMLDivElement | null>(null);
-
-  // Auto-stick to bottom unless the user has scrolled up. Cheap heuristic:
-  // re-scroll on every state mutation iff the scroller is within ~80px of
-  // the bottom.
-  useEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distance < 80) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [cells, state.pendingApprovals.length, state.thinking]);
-
-  const empty = cells.length === 0 && state.pendingApprovals.length === 0;
-
-  return (
-    <div ref={scroller} className="flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-4 py-6">
-        {empty && <EmptyState onPick={onStarterPrompt} />}
-
-        {cells.map((cell, i) => (
-          <Turn key={cell.id} cell={cell} prev={cells[i - 1]} />
-        ))}
-
-        {state.turnActive && (
-          <div className="mt-3 ml-1">
-            <WorkingSpinner
-              thinking={state.thinking}
-              tool={state.inFlightTool?.name ?? null}
+            <ThreadPrimitive.Messages
+              components={{
+                UserMessage,
+                AssistantMessage,
+              }}
             />
-          </div>
-        )}
 
-        {state.pendingApprovals.map((approval) => (
-          <PendingApproval
-            key={approval.nonce}
-            approval={approval}
-            onResolve={onResolve}
+            <ThreadPrimitive.If running>
+              <div className="mt-3 ml-1">
+                <WorkingSpinner
+                  thinking={state.thinking}
+                  tool={state.inFlightTool?.name ?? null}
+                />
+              </div>
+            </ThreadPrimitive.If>
+
+            {state.pendingApprovals.map((approval) => (
+              <PendingApproval
+                key={approval.nonce}
+                approval={approval}
+                onResolve={resolveApproval}
+              />
+            ))}
+          </div>
+        </ThreadPrimitive.Viewport>
+
+        <Composer />
+      </ThreadPrimitive.Root>
+    </div>
+  );
+}
+
+/* ── User & Assistant message templates ──────────────────────────── */
+
+function UserMessage() {
+  return (
+    <MessagePrimitive.Root className="mt-4 flex justify-end">
+      <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm whitespace-pre-wrap">
+        <MessagePrimitive.Parts
+          components={{
+            Text: ({ text }) => <>{text}</>,
+          }}
+        />
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+function AssistantMessage() {
+  return (
+    <MessagePrimitive.Root className="mt-4 mr-auto w-full">
+      <div className="text-sm text-text-primary leading-relaxed">
+        <MessagePrimitive.Parts
+          components={{
+            Text: AssistantText,
+            tools: {
+              Override: AssistantToolCall,
+            },
+          }}
+        />
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+function AssistantText({ text }: { text: string }) {
+  if (!text) return null;
+  return <Markdown text={text} />;
+}
+
+// assistant-ui's tool-call props are typed as JSON-only; in our app the
+// `result` payload is set in CockpitRuntime to `{ content: string }`,
+// so we cast a narrow read of it here.
+interface ToolCallProps {
+  toolName: string;
+  toolCallId: string;
+  args?: Record<string, unknown>;
+  argsText?: string;
+  result?: unknown;
+  isError?: boolean;
+}
+
+function AssistantToolCall(props: ToolCallProps) {
+  // Reconstruct the ToolCall shape our existing ToolCards.tsx
+  // renderer expects. assistant-ui carries `toolName` (we set this to
+  // ACP's lowercased ToolKind in CockpitRuntime) plus argsText (the
+  // truncated JSON preview from the agent).
+  const tool: ToolCall = {
+    id: props.toolCallId,
+    name: prettifyToolName(props.toolName, props.args),
+    kind: props.toolName,
+    args_preview: props.argsText ?? safeStringify(props.args ?? null),
+    started_at: new Date().toISOString(),
+  };
+  const resultContent =
+    props.result &&
+    typeof props.result === "object" &&
+    "content" in (props.result as Record<string, unknown>)
+      ? String((props.result as { content?: unknown }).content ?? "")
+      : "";
+  const result =
+    props.result !== undefined
+      ? {
+          id: `done-${props.toolCallId}`,
+          kind: props.isError
+            ? ("tool_error" as const)
+            : ("tool_complete" as const),
+          text: resultContent,
+          toolCallId: props.toolCallId,
+          at: new Date().toISOString(),
+        }
+      : undefined;
+  return <ToolCard tool={tool} result={result} />;
+}
+
+function prettifyToolName(
+  kind: string,
+  args?: Record<string, unknown>,
+): string {
+  // Pick a human-readable label for the tool card header. Falls back to
+  // the path / command / query if available.
+  if (args) {
+    for (const key of [
+      "path",
+      "file_path",
+      "filePath",
+      "command",
+      "cmd",
+      "query",
+      "url",
+    ]) {
+      const v = (args as Record<string, unknown>)[key];
+      if (typeof v === "string" && v.length > 0) {
+        return v;
+      }
+    }
+  }
+  return kind || "tool";
+}
+
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v ?? null);
+  } catch {
+    return "";
+  }
+}
+
+/* ── Composer ────────────────────────────────────────────────────── */
+
+function Composer() {
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-grow the textarea up to ~6 lines.
+  const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  };
+
+  // wterm's async init() in the right pane focuses its hidden textarea
+  // ~200-500ms after mount and steals focus from us. Re-claim a couple
+  // of times so the agent input wins; only when focus is on body or
+  // inside .wterm so an intentional click into the host shell sticks.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.focus();
+    const reclaim = () => {
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || active === document.body || active === el) {
+        el.focus();
+        return;
+      }
+      if (active.closest?.(".wterm")) {
+        el.focus();
+      }
+    };
+    const t1 = window.setTimeout(reclaim, 250);
+    const t2 = window.setTimeout(reclaim, 700);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, []);
+
+  return (
+    <div className="border-t border-surface-800 bg-surface-900">
+      <div className="mx-auto max-w-3xl px-4 pt-3 pb-2">
+        <ComposerPrimitive.Root
+          className="flex items-end gap-2 rounded-xl border border-surface-700 bg-surface-800 px-3 py-2 focus-within:border-brand-600"
+        >
+          <ComposerPrimitive.Input
+            ref={taRef}
+            rows={1}
+            placeholder="Send a message…"
+            onInput={onInput}
+            autoFocus
+            className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-dim focus:outline-none"
           />
-        ))}
+          <ThreadPrimitive.If running>
+            <StopButton />
+          </ThreadPrimitive.If>
+          <ThreadPrimitive.If running={false}>
+            <ComposerPrimitive.Send
+              className="shrink-0 rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:bg-surface-700 disabled:text-text-dim"
+            >
+              Send
+            </ComposerPrimitive.Send>
+          </ThreadPrimitive.If>
+        </ComposerPrimitive.Root>
+        <div className="mt-1 px-1 text-[11px] text-text-dim">
+          <kbd className="font-mono">Enter</kbd> to send ·{" "}
+          <kbd className="font-mono">Shift+Enter</kbd> for newline
+        </div>
       </div>
     </div>
   );
 }
 
-/* ── Cell types ──────────────────────────────────────────────────── */
-
-type Cell =
-  | { id: string; kind: "user"; text: string }
-  | { id: string; kind: "agent"; text: string }
-  | { id: string; kind: "tool"; tool: ToolCall; result?: ActivityRow }
-  | { id: string; kind: "system"; text: string };
-
-function groupActivity(rows: ActivityRow[]): Cell[] {
-  const out: Cell[] = [];
-  for (const row of rows) {
-    if (row.kind === "message") {
-      const last = out[out.length - 1];
-      if (last && last.kind === "agent") {
-        last.text += row.text;
-        continue;
-      }
-      out.push({ id: row.id, kind: "agent", text: row.text });
-    } else if (row.kind === "user_prompt") {
-      out.push({ id: row.id, kind: "user", text: row.text });
-    } else if (row.kind === "tool_start" && row.tool) {
-      out.push({ id: row.id, kind: "tool", tool: row.tool });
-    } else if (row.kind === "tool_complete" || row.kind === "tool_error") {
-      const target = [...out]
-        .reverse()
-        .find(
-          (c) =>
-            c.kind === "tool" &&
-            (c.tool.id === row.toolCallId ||
-              `start-${c.tool.id}` === row.id.replace(/^done-/, "start-")),
-        );
-      if (target && target.kind === "tool") {
-        target.result = row;
-      } else {
-        out.push({ id: row.id, kind: "system", text: row.text });
-      }
-    } else if (row.kind === "thinking") {
-      // Suppressed; live state shown by ThinkingBubble below the feed.
-    } else {
-      out.push({ id: row.id, kind: "system", text: row.text });
-    }
-  }
-  return out;
-}
-
-/* ── Turn renderer ───────────────────────────────────────────────── */
-
-function Turn({ cell, prev }: { cell: Cell; prev?: Cell }) {
-  // Boundary divider above each user turn (except the first), so user→
-  // agent→user reads as discrete chunks instead of one long stream.
-  const showDivider = cell.kind === "user" && !!prev;
+function StopButton() {
+  const runtime = useThreadRuntime();
   return (
-    <>
-      {showDivider && <div className="my-5 border-t border-surface-800/70" />}
-      <div className={cellSpacing(cell, prev)}>
-        <CellContent cell={cell} />
-      </div>
-    </>
+    <button
+      type="button"
+      aria-label="Stop"
+      title="Stop the agent"
+      className="shrink-0 flex items-center justify-center rounded-md border border-surface-600 bg-surface-700 hover:bg-surface-700/70 px-2.5 py-1.5 text-text-secondary"
+      onClick={() => runtime.cancelRun()}
+    >
+      <span className="block h-3 w-3 rounded-sm bg-text-secondary" />
+    </button>
   );
-}
-
-function cellSpacing(cell: Cell, prev?: Cell): string {
-  // Tool cards hug the agent message above; agent text gets its own
-  // breathing room. User chips are right-aligned with a top margin.
-  if (cell.kind === "user") return "flex justify-end mt-2";
-  if (cell.kind === "tool") {
-    return prev?.kind === "tool" || prev?.kind === "agent" ? "mt-1" : "mt-3";
-  }
-  if (cell.kind === "agent") return "mt-3";
-  return "mt-2";
-}
-
-function CellContent({ cell }: { cell: Cell }) {
-  if (cell.kind === "user") {
-    return (
-      <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm whitespace-pre-wrap">
-        {cell.text}
-      </div>
-    );
-  }
-  if (cell.kind === "agent") {
-    return (
-      <div className="text-sm text-text-primary leading-relaxed">
-        <Markdown text={cell.text} />
-      </div>
-    );
-  }
-  if (cell.kind === "tool") {
-    return <ToolCard tool={cell.tool} result={cell.result} />;
-  }
-  return <div className="text-xs italic text-text-dim">{cell.text}</div>;
 }
 
 /* ── Empty state ─────────────────────────────────────────────────── */
 
-function EmptyState({ onPick }: { onPick: (text: string) => Promise<void> }) {
+function EmptyState({
+  onPick,
+}: {
+  onPick: (text: string) => Promise<void>;
+}) {
   return (
     <div className="mt-12 flex flex-col items-center gap-4 text-center">
       <div className="text-sm text-text-muted">
@@ -248,20 +345,8 @@ function EmptyState({ onPick }: { onPick: (text: string) => Promise<void> }) {
   );
 }
 
-/* ── Working spinner ─────────────────────────────────────────────── */
+/* ── Working spinner (rattle) ────────────────────────────────────── */
 
-/**
- * "Agent is working" indicator with AOE-themed verbs and a braille
- * rattle. Visible from prompt-sent until the agent emits `Stopped`.
- *
- * Two animations layered:
- *  - The glyph rattles through SPINNER_FRAMES at SPINNER_INTERVAL_MS,
- *    same vibe as the ratatui `rattles` spinners on the TUI side.
- *  - The verb cycles through WORKING_VERBS / THINKING_VERBS every
- *    VERB_INTERVAL_MS so long turns get variety. Tool runs override
- *    the verb with the tool's actual name dressed up with an empire
- *    verb ("Dispatching read", "Marshalling write"…).
- */
 function WorkingSpinner({
   thinking,
   tool,
@@ -272,7 +357,6 @@ function WorkingSpinner({
   const [frame, setFrame] = useState(0);
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 0xffffffff));
 
-  // Rattle the glyph.
   useEffect(() => {
     const t = window.setInterval(() => {
       setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
@@ -280,9 +364,6 @@ function WorkingSpinner({
     return () => window.clearInterval(t);
   }, []);
 
-  // Re-pick the verb every few seconds for variety on long turns.
-  // Tool changes (different tool name) implicitly bump the verb
-  // because chooseVerb hashes seed+context.
   useEffect(() => {
     const t = window.setInterval(() => {
       setSeed((s) => (s + 0x9e3779b9) | 0);
@@ -355,10 +436,7 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
         <div className="max-h-64 overflow-y-auto border-t border-surface-800 px-4 py-2 text-sm">
           <ul className="space-y-1">
             {plan.steps.map((step) => (
-              <li
-                key={step.id}
-                className="flex items-start gap-2 text-text-secondary"
-              >
+              <li key={step.id} className="flex items-start gap-2 text-text-secondary">
                 <StepGlyph status={step.status} />
                 <span
                   className={
@@ -399,142 +477,7 @@ function StepGlyph({ status }: { status: Plan["steps"][number]["status"] }) {
   }
 }
 
-/* ── Composer ────────────────────────────────────────────────────── */
-
-interface ComposerProps {
-  sendPrompt: (text: string) => Promise<void>;
-  cancelPrompt: () => Promise<void>;
-  thinking: boolean;
-  inFlight: boolean;
-  turnActive: boolean;
-}
-
-function Composer({
-  sendPrompt,
-  cancelPrompt,
-  thinking,
-  inFlight,
-  turnActive,
-}: ComposerProps) {
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const taRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // Auto-grow up to ~6 lines.
-  useEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
-  }, [text]);
-
-  // Focus the composer when the cockpit mounts so the user can type
-  // immediately without an extra click. The right-pane wterm calls
-  // `input.focus()` unconditionally at the end of its async WASM init
-  // (see node_modules/@wterm/dom/dist/wterm.js init()), which fires
-  // ~200-500ms after we mount and steals focus. Re-claim with a couple
-  // of staggered timeouts. The reclaim only fires while focus is on
-  // body or on a non-input element (i.e. wterm's internal textarea
-  // capture), so an intentional click into the host shell sticks.
-  useEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.focus();
-    const reclaim = () => {
-      const active = document.activeElement as HTMLElement | null;
-      if (!active || active === document.body || active === el) {
-        el.focus();
-        return;
-      }
-      // wterm's input is a textarea inside .wterm; treat it as
-      // "not yet a deliberate user choice" during the initial race.
-      if (active.closest?.(".wterm")) {
-        el.focus();
-      }
-    };
-    const t1 = setTimeout(reclaim, 250);
-    const t2 = setTimeout(reclaim, 700);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, []);
-
-  const submit = async () => {
-    const trimmed = text.trim();
-    if (!trimmed || sending) return;
-    setSending(true);
-    try {
-      await sendPrompt(trimmed);
-      setText("");
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void submit();
-    }
-  };
-
-  // The agent is "busy" any time it owes the user a Stopped event or
-  // is mid-tool / mid-thought. Drives the Send → Stop swap.
-  const busy = thinking || inFlight || turnActive;
-  const placeholder = busy
-    ? "Steer the agent…  (Enter to send)"
-    : "Send a message…";
-
-  return (
-    <div className="border-t border-surface-800 bg-surface-900">
-      <div className="mx-auto max-w-3xl px-4 pt-3 pb-2">
-        <div className="flex items-end gap-2 rounded-xl border border-surface-700 bg-surface-800 px-3 py-2 focus-within:border-brand-600">
-          <textarea
-            ref={taRef}
-            className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-dim focus:outline-none"
-            rows={1}
-            placeholder={placeholder}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={onKeyDown}
-            disabled={sending}
-          />
-          {busy ? (
-            <button
-              type="button"
-              aria-label="Stop"
-              title="Stop the agent"
-              className="shrink-0 flex items-center justify-center rounded-md border border-surface-600 bg-surface-700 hover:bg-surface-700/70 px-2.5 py-1.5 text-text-secondary"
-              onClick={() => void cancelPrompt()}
-            >
-              <span className="block h-3 w-3 rounded-sm bg-text-secondary" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium ${
-                sending || !text.trim()
-                  ? "bg-surface-700 text-text-dim cursor-not-allowed"
-                  : "bg-brand-600 text-white hover:bg-brand-500"
-              }`}
-              disabled={sending || !text.trim()}
-              onClick={() => void submit()}
-            >
-              {sending ? "…" : "Send"}
-            </button>
-          )}
-        </div>
-        <div className="mt-1 px-1 text-[11px] text-text-dim">
-          <kbd className="font-mono">Enter</kbd> to send ·{" "}
-          <kbd className="font-mono">Shift+Enter</kbd> for newline
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Pending approval card ───────────────────────────────────────── */
+/* ── Approvals ───────────────────────────────────────────────────── */
 
 function PendingApproval({
   approval,
@@ -563,7 +506,7 @@ function SystemNotices({
   lagged,
   rateLimit,
 }: {
-  status: ConnectionStatus;
+  status: CockpitContext["status"];
   lagged: boolean;
   rateLimit: CockpitState["rateLimit"];
 }) {
@@ -578,10 +521,7 @@ function SystemNotices({
     messages.push({ kind: "warn", text: "Cockpit disconnected." });
   }
   if (lagged) {
-    messages.push({
-      kind: "warn",
-      text: "Some events were missed during reconnect.",
-    });
+    messages.push({ kind: "warn", text: "Some events were missed during reconnect." });
   }
   if (rateLimit) {
     const reset = new Date(rateLimit.resets_at).toLocaleTimeString();
@@ -596,9 +536,7 @@ function SystemNotices({
       {messages.map((m, i) => (
         <div
           key={i}
-          className={`text-xs ${
-            m.kind === "warn" ? "text-brand-400" : "text-text-muted"
-          }`}
+          className={`text-xs ${m.kind === "warn" ? "text-brand-400" : "text-text-muted"}`}
         >
           {m.text}
         </div>
@@ -608,9 +546,6 @@ function SystemNotices({
 }
 
 function StartupErrorBanner({ message }: { message: string }) {
-  // Auth-required is a different remediation than missing-binary. The
-  // adapter throws "Authentication required" when the binary IS installed
-  // but no creds are reachable.
   const isAuth = /authentic|login|api[_ -]?key/i.test(message);
   return (
     <div className="border-b border-rose-900/60 bg-rose-950/40 px-4 py-3 text-rose-200">
