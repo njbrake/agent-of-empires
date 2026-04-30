@@ -13,16 +13,12 @@
 // CockpitRuntime.tsx. We never let assistant-ui own the chat state; it
 // only renders what we feed it and surfaces user actions back.
 
-import { useEffect, useRef, useState } from "react";
-import {
-  ComposerPrimitive,
-  MessagePrimitive,
-  ThreadPrimitive,
-  useThreadRuntime,
-} from "@assistant-ui/react";
+import { useEffect, useState } from "react";
+import { MessagePrimitive, ThreadPrimitive } from "@assistant-ui/react";
 
 import { ApprovalCard } from "./ApprovalCard";
 import { CockpitRuntime, type CockpitContext } from "./CockpitRuntime";
+import { Composer } from "./Composer";
 import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCards";
 import {
@@ -228,93 +224,6 @@ function safeStringify(v: unknown): string {
   } catch {
     return "";
   }
-}
-
-/* ── Composer ────────────────────────────────────────────────────── */
-
-function Composer() {
-  const taRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // Auto-grow the textarea up to ~6 lines.
-  const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
-    const el = e.currentTarget;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
-  };
-
-  // wterm's async init() in the right pane focuses its hidden textarea
-  // ~200-500ms after mount and steals focus from us. Re-claim a couple
-  // of times so the agent input wins; only when focus is on body or
-  // inside .wterm so an intentional click into the host shell sticks.
-  useEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.focus();
-    const reclaim = () => {
-      const active = document.activeElement as HTMLElement | null;
-      if (!active || active === document.body || active === el) {
-        el.focus();
-        return;
-      }
-      if (active.closest?.(".wterm")) {
-        el.focus();
-      }
-    };
-    const t1 = window.setTimeout(reclaim, 250);
-    const t2 = window.setTimeout(reclaim, 700);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
-  }, []);
-
-  return (
-    <div className="border-t border-surface-800 bg-surface-900">
-      <div className="mx-auto max-w-3xl px-4 pt-3 pb-2">
-        <ComposerPrimitive.Root
-          className="flex items-end gap-2 rounded-xl border border-surface-700 bg-surface-800 px-3 py-2 focus-within:border-brand-600"
-        >
-          <ComposerPrimitive.Input
-            ref={taRef}
-            rows={1}
-            placeholder="Send a message…"
-            onInput={onInput}
-            autoFocus
-            className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-dim focus:outline-none"
-          />
-          <ThreadPrimitive.If running>
-            <StopButton />
-          </ThreadPrimitive.If>
-          <ThreadPrimitive.If running={false}>
-            <ComposerPrimitive.Send
-              className="shrink-0 rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:bg-surface-700 disabled:text-text-dim"
-            >
-              Send
-            </ComposerPrimitive.Send>
-          </ThreadPrimitive.If>
-        </ComposerPrimitive.Root>
-        <div className="mt-1 px-1 text-[11px] text-text-dim">
-          <kbd className="font-mono">Enter</kbd> to send ·{" "}
-          <kbd className="font-mono">Shift+Enter</kbd> for newline
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StopButton() {
-  const runtime = useThreadRuntime();
-  return (
-    <button
-      type="button"
-      aria-label="Stop"
-      title="Stop the agent"
-      className="shrink-0 flex items-center justify-center rounded-md border border-surface-600 bg-surface-700 hover:bg-surface-700/70 px-2.5 py-1.5 text-text-secondary"
-      onClick={() => runtime.cancelRun()}
-    >
-      <span className="block h-3 w-3 rounded-sm bg-text-secondary" />
-    </button>
-  );
 }
 
 /* ── Empty state ─────────────────────────────────────────────────── */
