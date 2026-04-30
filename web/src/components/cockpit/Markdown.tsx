@@ -1,229 +1,111 @@
-// Markdown renderer for agent text. Uses `marked` to parse to a token
-// stream, then renders each token with our own React components so we
-// can theme code blocks consistently with the rest of the dashboard.
+// Markdown renderer for agent text. Thin wrapper around
+// @assistant-ui/react-markdown's MarkdownTextPrimitive — we just plug
+// in our shiki-based SyntaxHighlighter and a CodeHeader that matches
+// the rest of the dashboard's styling.
 //
-// Why not react-markdown? Smaller bundle, no need for a big remark/rehype
-// pipeline, and we want fenced code blocks to flow through the existing
-// shiki highlighter (lazy-loaded on demand) rather than highlight.js.
+// The primitive handles:
+//   - Streaming-aware rendering (incomplete fenced code blocks during
+//     streaming, partial paragraphs, etc.)
+//   - Smooth char-budget reveal (built-in `smooth` prop, defaults true)
+//   - Standard markdown: paragraphs, lists, headings, links, tables
+//
+// We previously hand-rolled all of this (~200 lines plus a custom
+// useStreamReveal hook). The primitive replaces both.
 
-import { Marked, type Tokens } from "marked";
+import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
+import type {
+  CodeHeaderProps,
+  SyntaxHighlighterProps,
+} from "@assistant-ui/react-markdown";
 import { useEffect, useState } from "react";
 
-import { getHighlighter, loadLanguage, langKeyForExt } from "../../lib/highlighter";
-
-const marked = new Marked({
-  gfm: true,
-  breaks: false,
-});
+import {
+  getHighlighter,
+  langKeyForExt,
+  loadLanguage,
+} from "../../lib/highlighter";
 
 interface Props {
   text: string;
 }
 
+/**
+ * Render assistant markdown. The text prop is the raw markdown body;
+ * the primitive parses + renders it with our overrides.
+ */
 export function Markdown({ text }: Props) {
-  // marked.lexer is sync; expensive only for very long messages. Fine to
-  // call on every render — agents stream short paragraphs.
-  const tokens = marked.lexer(text);
-  return <>{tokens.map((tok, i) => renderToken(tok, i))}</>;
+  return (
+    <MarkdownTextPrimitive
+      preprocess={() => text}
+      smooth
+      className="cockpit-markdown text-sm leading-relaxed"
+      components={{
+        SyntaxHighlighter: ShikiSyntaxHighlighter,
+        CodeHeader,
+      }}
+    />
+  );
 }
 
-function renderToken(token: Tokens.Generic, key: number): React.ReactNode {
-  switch (token.type) {
-    case "paragraph":
-      return (
-        <p key={key} className="my-2 leading-relaxed">
-          {(token as Tokens.Paragraph).tokens?.map((t, i) => renderInline(t, i))}
-        </p>
-      );
-    case "heading": {
-      const h = token as Tokens.Heading;
-      const level = Math.min(Math.max(h.depth, 1), 6);
-      const sizes = [
-        "text-2xl",
-        "text-xl",
-        "text-lg",
-        "text-base",
-        "text-sm",
-        "text-sm",
-      ];
-      const Tag = `h${level}` as keyof React.JSX.IntrinsicElements;
-      return (
-        <Tag
-          key={key}
-          className={`mt-4 mb-2 font-semibold ${sizes[level - 1]}`}
-        >
-          {h.tokens?.map((t, i) => renderInline(t, i))}
-        </Tag>
-      );
-    }
-    case "list": {
-      const l = token as Tokens.List;
-      const Tag = l.ordered ? "ol" : "ul";
-      const cls = l.ordered ? "list-decimal" : "list-disc";
-      return (
-        <Tag key={key} className={`my-2 pl-6 ${cls} space-y-1`}>
-          {l.items.map((item, i) => (
-            <li key={i}>
-              {item.tokens?.map((t, j) => renderInline(t, j))}
-            </li>
-          ))}
-        </Tag>
-      );
-    }
-    case "blockquote":
-      return (
-        <blockquote
-          key={key}
-          className="my-2 border-l-2 border-surface-700 pl-3 text-text-secondary italic"
-        >
-          {(token as Tokens.Blockquote).tokens?.map((t, i) => renderToken(t, i))}
-        </blockquote>
-      );
-    case "code":
-      return <CodeBlock key={key} block={token as Tokens.Code} />;
-    case "hr":
-      return <hr key={key} className="my-3 border-surface-800" />;
-    case "space":
-      return null;
-    case "table": {
-      const t = token as Tokens.Table;
-      return (
-        <div key={key} className="my-2 overflow-x-auto">
-          <table className="text-sm">
-            <thead>
-              <tr>
-                {t.header.map((h, i) => (
-                  <th key={i} className="border-b border-surface-700 px-2 py-1 text-left">
-                    {h.tokens?.map((tt, j) => renderInline(tt, j))}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {t.rows.map((row, ri) => (
-                <tr key={ri}>
-                  {row.map((cell, ci) => (
-                    <td key={ci} className="border-b border-surface-800/60 px-2 py-1">
-                      {cell.tokens?.map((tt, j) => renderInline(tt, j))}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
-    }
-    default:
-      return (
-        <span key={key}>
-          {(token as Tokens.Generic).raw ?? ""}
-        </span>
-      );
-  }
-}
-
-function renderInline(token: Tokens.Generic, key: number): React.ReactNode {
-  switch (token.type) {
-    case "text":
-      return (token as Tokens.Text).text;
-    case "strong":
-      return (
-        <strong key={key} className="font-semibold">
-          {(token as Tokens.Strong).tokens?.map((t, i) => renderInline(t, i))}
-        </strong>
-      );
-    case "em":
-      return (
-        <em key={key}>
-          {(token as Tokens.Em).tokens?.map((t, i) => renderInline(t, i))}
-        </em>
-      );
-    case "codespan":
-      return (
-        <code
-          key={key}
-          className="rounded bg-surface-800 px-1 py-0.5 font-mono text-[0.85em]"
-        >
-          {(token as Tokens.Codespan).text}
-        </code>
-      );
-    case "link": {
-      const l = token as Tokens.Link;
-      return (
-        <a
-          key={key}
-          href={l.href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-brand-500 underline hover:text-brand-400"
-        >
-          {l.tokens?.map((t, i) => renderInline(t, i))}
-        </a>
-      );
-    }
-    case "br":
-      return <br key={key} />;
-    case "del":
-      return (
-        <del key={key} className="line-through">
-          {(token as Tokens.Del).tokens?.map((t, i) => renderInline(t, i))}
-        </del>
-      );
-    default:
-      return (token as Tokens.Generic).raw ?? "";
-  }
-}
-
-function CodeBlock({ block }: { block: Tokens.Code }) {
-  const lang = (block.lang ?? "").trim().toLowerCase();
+/**
+ * Shiki-backed code block. Loads the language module on demand the
+ * first time we see it, then re-renders with the `github-dark` theme.
+ * Falls back to a plain <pre> while the language is loading or for
+ * unknown languages.
+ */
+function ShikiSyntaxHighlighter({
+  language,
+  code,
+}: SyntaxHighlighterProps) {
   const [html, setHtml] = useState<string | null>(null);
-
   useEffect(() => {
     let cancelled = false;
+    if (!language) return;
     (async () => {
-      if (!lang) return;
       try {
-        const langKey = langKeyForExt(lang) ?? lang;
+        const langKey = langKeyForExt(language) ?? language;
         await loadLanguage(langKey);
         const hl = await getHighlighter();
         if (cancelled) return;
-        const out = hl.codeToHtml(block.text, {
-          lang: langKey,
-          theme: "github-dark",
-        });
-        setHtml(out);
+        setHtml(
+          hl.codeToHtml(code, { lang: langKey, theme: "github-dark" }),
+        );
       } catch {
-        // Highlighting fails for unknown langs; fall back to plain.
+        // Unknown lang → fall through to plain rendering.
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [lang, block.text]);
+  }, [language, code]);
 
+  if (html) {
+    return (
+      <div
+        className="overflow-x-auto px-3 py-2 text-xs [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
   return (
-    <div className="my-2 overflow-hidden rounded-md border border-surface-700 bg-surface-950">
-      <div className="flex items-center justify-between border-b border-surface-800 px-3 py-1 text-[11px] font-mono uppercase tracking-wider text-text-dim">
-        <span>{lang || "text"}</span>
-        <button
-          type="button"
-          className="rounded px-2 py-0.5 hover:bg-surface-800 hover:text-text-secondary"
-          onClick={() => navigator.clipboard?.writeText(block.text).catch(() => {})}
-        >
-          copy
-        </button>
-      </div>
-      {html ? (
-        <div
-          className="overflow-x-auto px-3 py-2 text-xs [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      ) : (
-        <pre className="overflow-x-auto px-3 py-2 text-xs font-mono text-text-primary">
-          {block.text}
-        </pre>
-      )}
+    <pre className="overflow-x-auto px-3 py-2 text-xs font-mono text-text-primary">
+      {code}
+    </pre>
+  );
+}
+
+/** Header strip above each code block: language label + copy button. */
+function CodeHeader({ language, code }: CodeHeaderProps) {
+  return (
+    <div className="flex items-center justify-between border-b border-surface-800 bg-surface-950 px-3 py-1 text-[11px] font-mono uppercase tracking-wider text-text-dim">
+      <span>{language ?? "text"}</span>
+      <button
+        type="button"
+        className="rounded px-2 py-0.5 hover:bg-surface-800 hover:text-text-secondary"
+        onClick={() => navigator.clipboard?.writeText(code).catch(() => {})}
+      >
+        copy
+      </button>
     </div>
   );
 }

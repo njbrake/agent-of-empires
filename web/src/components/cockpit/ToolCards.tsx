@@ -8,6 +8,7 @@
 // header and put output in a syntax-highlighted body.
 
 import { useEffect, useState } from "react";
+import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import {
   ChevronDown,
   Copy as CopyIcon,
@@ -364,11 +365,11 @@ function EditToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
   const path = pickStr(args, "path", "file_path", "filePath", "filename");
-  const oldText = pickStr(args, "old_string", "oldString", "old_str");
-  const newText = pickStr(args, "new_string", "newString", "new_str", "content");
-  const ext = path?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  const oldText = pickStr(args, "old_string", "oldString", "old_str") ?? "";
+  const newText =
+    pickStr(args, "new_string", "newString", "new_str", "content") ?? "";
   const [open, setOpen] = useState(false);
-  const hasDiff = (oldText !== null && oldText !== "") || (newText !== null && newText !== "");
+  const hasDiff = oldText !== "" || newText !== "";
   const verb = oldText ? "edit" : "write";
 
   const adds = newText ? newText.split("\n").length : 0;
@@ -391,13 +392,17 @@ function EditToolCard({ tool, result }: Props) {
       onToggle={hasDiff ? () => setOpen((v) => !v) : undefined}
       body={
         hasDiff && (
-          <div className="border-t border-surface-800 bg-surface-950">
-            {oldText && (
-              <div className="border-b border-surface-900">
-                <DiffLines text={oldText} kind="del" language={ext} />
-              </div>
-            )}
-            {newText && <DiffLines text={newText} kind="add" language={ext} />}
+          <div className="cockpit-diff border-t border-surface-800">
+            <ReactDiffViewer
+              oldValue={oldText}
+              newValue={newText}
+              splitView={false}
+              useDarkTheme
+              compareMethod={DiffMethod.WORDS}
+              hideLineNumbers={false}
+              extraLinesSurroundingDiff={0}
+              styles={DIFF_STYLES}
+            />
           </div>
         )
       }
@@ -405,69 +410,49 @@ function EditToolCard({ tool, result }: Props) {
   );
 }
 
-function DiffLines({
-  text,
-  kind,
-  language,
-}: {
-  text: string;
-  kind: "add" | "del";
-  language?: string;
-}) {
-  // We render a leading + / - gutter and let shiki highlight the body.
-  // Shiki returns one <pre> with a single <code> child; we wrap each
-  // line client-side to add the gutter without touching the inner
-  // markup.
-  const [html, setHtml] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!language) return;
-      try {
-        const langKey = langKeyForExt(language) ?? language;
-        await loadLanguage(langKey);
-        const hl = await getHighlighter();
-        if (cancelled) return;
-        setHtml(hl.codeToHtml(text, { lang: langKey, theme: "github-dark" }));
-      } catch {
-        // ignore
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [language, text]);
-
-  const tone =
-    kind === "add"
-      ? "bg-status-running/10 text-status-running/90"
-      : "bg-status-error/10 text-status-error/85";
-  const sigil = kind === "add" ? "+" : "−";
-
-  if (html) {
-    return (
-      <div className={`flex font-mono text-[11px] ${tone}`}>
-        <div className="select-none px-2 py-1 text-text-dim">
-          {text.split("\n").map((_, i) => (
-            <div key={i}>{sigil}</div>
-          ))}
-        </div>
-        <div
-          className="overflow-x-auto py-1 pr-3 [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      </div>
-    );
-  }
-  return (
-    <pre className={`overflow-x-auto px-3 py-1 font-mono text-[11px] whitespace-pre-wrap break-all ${tone}`}>
-      {text
-        .split("\n")
-        .map((l) => `${sigil} ${l}`)
-        .join("\n")}
-    </pre>
-  );
-}
+/** Theme overrides for react-diff-viewer-continued — drag its colors
+ *  toward our zinc/brand palette so the diff doesn't look like it was
+ *  pasted in from another app. */
+const DIFF_STYLES = {
+  variables: {
+    dark: {
+      diffViewerBackground: "var(--color-surface-950)",
+      diffViewerColor: "var(--color-text-primary)",
+      addedBackground: "rgba(34, 197, 94, 0.08)",
+      addedColor: "rgb(187, 247, 208)",
+      removedBackground: "rgba(239, 68, 68, 0.08)",
+      removedColor: "rgb(254, 202, 202)",
+      wordAddedBackground: "rgba(34, 197, 94, 0.20)",
+      wordRemovedBackground: "rgba(239, 68, 68, 0.20)",
+      addedGutterBackground: "rgba(34, 197, 94, 0.05)",
+      removedGutterBackground: "rgba(239, 68, 68, 0.05)",
+      gutterBackground: "var(--color-surface-900)",
+      gutterBackgroundDark: "var(--color-surface-900)",
+      highlightBackground: "var(--color-surface-800)",
+      highlightGutterBackground: "var(--color-surface-800)",
+      codeFoldGutterBackground: "var(--color-surface-900)",
+      codeFoldBackground: "var(--color-surface-900)",
+      emptyLineBackground: "var(--color-surface-950)",
+      gutterColor: "var(--color-text-dim)",
+      addedGutterColor: "rgb(187, 247, 208)",
+      removedGutterColor: "rgb(254, 202, 202)",
+      codeFoldContentColor: "var(--color-text-dim)",
+      diffViewerTitleBackground: "var(--color-surface-900)",
+      diffViewerTitleColor: "var(--color-text-secondary)",
+      diffViewerTitleBorderColor: "var(--color-surface-800)",
+    },
+  },
+  contentText: {
+    fontSize: "11px",
+    fontFamily:
+      "'Geist Mono', ui-monospace, 'SFMono-Regular', monospace",
+  },
+  gutter: {
+    fontSize: "10px",
+    minWidth: "32px",
+    padding: "0 6px",
+  },
+} as const;
 
 /* ── delete ─────────────────────────────────────────────────────── */
 

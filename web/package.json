@@ -23,6 +23,7 @@
     "lucide-react": "^1.14.0",
     "marked": "^18.0.2",
     "react": "^19.2.4",
+    "react-diff-viewer-continued": "^4.2.2",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.14.2",
     "shiki": "^4.0.2",

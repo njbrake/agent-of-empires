@@ -216,70 +216,11 @@ function ActionIconButton({
 }
 
 function AssistantText({ text }: { text: string }) {
-  const visible = useStreamReveal(text);
-  if (!visible) return null;
-  return <Markdown text={visible} />;
-}
-
-/**
- * Token-buffered reveal. ACP emits agent text in fat chunks (often a
- * full paragraph at a time) that land as one big React update — the
- * user sees the message snap into existence rather than stream. We
- * gate the displayed text behind a chars-per-frame budget so it reads
- * like steady typing.
- *
- * - Budget: ~24 chars per 16ms frame ≈ 1500 chars/sec, fast enough
- *   that long replies don't feel laggy but slow enough that streaming
- *   reads as flowing text.
- * - When the buffer falls behind by a lot (e.g. agent finished but
- *   we're still revealing), we accelerate so we don't trail forever.
- * - On a fresh message (text shrinks because the parent rebuilt the
- *   message tree), we reset.
- */
-function useStreamReveal(target: string): string {
-  const [shown, setShown] = useState(target);
-  const targetRef = useRef(target);
-  const shownRef = useRef(target);
-  const rafRef = useRef<number>(0);
-
-  useEffect(() => {
-    targetRef.current = target;
-    if (target.length < shownRef.current.length) {
-      // Re-mount or upstream truncation: jump to current target.
-      shownRef.current = target;
-      setShown(target);
-      return;
-    }
-    if (shownRef.current === target) return;
-    const tick = () => {
-      const t = targetRef.current;
-      const have = shownRef.current.length;
-      const want = t.length;
-      if (have >= want) {
-        rafRef.current = 0;
-        return;
-      }
-      const remaining = want - have;
-      // Per-frame budget: 24 chars/16ms baseline; speed up when we
-      // fall more than 200 chars behind so a finished turn catches
-      // up quickly.
-      const step = Math.min(remaining, remaining > 200 ? 64 : 24);
-      shownRef.current = t.slice(0, have + step);
-      setShown(shownRef.current);
-      rafRef.current = window.requestAnimationFrame(tick);
-    };
-    if (!rafRef.current) {
-      rafRef.current = window.requestAnimationFrame(tick);
-    }
-    return () => {
-      if (rafRef.current) {
-        window.cancelAnimationFrame(rafRef.current);
-        rafRef.current = 0;
-      }
-    };
-  }, [target]);
-
-  return shown;
+  if (!text) return null;
+  // MarkdownTextPrimitive (in Markdown.tsx) handles smooth
+  // streaming via its built-in `smooth` prop, so we don't need the
+  // hand-rolled char-budget reveal anymore.
+  return <Markdown text={text} />;
 }
 
 // assistant-ui's tool-call props are typed as JSON-only; in our app the

@@ -1,21 +1,23 @@
 // VSCode/Cursor-style composer for the cockpit.
 //
-// Built on assistant-ui's `<ComposerPrimitive.Root>` so message-edit
-// affordances (Esc to cancel, draft persistence, send-on-Enter) come
-// for free; the chrome around it (tall multi-line input, top toolbar
-// with @/​/ affordances, footer strip with model placeholder + send/
-// stop icon button) is ours.
+// Built on assistant-ui's `<ComposerPrimitive.Root>` plus the official
+// `Unstable_TriggerPopover` family for `@` mentions and `/` slash
+// commands. We provide TriggerAdapters that feed categories/items
+// from our own state (the workspace file listing for `@`, a static
+// command list for `/`).
 //
-// References we matched against:
-//   - VSCode chat composer (Add Context chip, model picker, paper-plane
-//     send button, Cmd+Enter hint inside the button)
-//   - Cursor chat composer (subtle inner well, @ mention chip on the
-//     bottom row, single arrow send icon)
-//
-// Icons via lucide-react (same family VSCode/Cursor visually feel like —
-// Lucide is the rebrand of Feather).
+// Icons via lucide-react.
 
-import { ComposerPrimitive, ThreadPrimitive, useThreadRuntime } from "@assistant-ui/react";
+import {
+  ComposerPrimitive,
+  ThreadPrimitive,
+  useThreadRuntime,
+} from "@assistant-ui/react";
+import {
+  unstable_defaultDirectiveFormatter as defaultDirectiveFormatter,
+  type Unstable_TriggerAdapter,
+  type Unstable_TriggerItem,
+} from "@assistant-ui/core";
 import { useEffect, useMemo, useRef } from "react";
 import {
   AtSign,
@@ -25,38 +27,13 @@ import {
   Square,
 } from "lucide-react";
 
-import {
-  TriggerPopover,
-  fuzzyFilter,
-  useFilesIndex,
-  type PickerItem,
-} from "./TriggerPopover";
+import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 
-const SLASH_COMMANDS: ReadonlyArray<PickerItem> = [
-  {
-    id: "help",
-    label: "/help",
-    hint: "Show available commands",
-    insert: "/help",
-  },
-  {
-    id: "clear",
-    label: "/clear",
-    hint: "Reset conversation context",
-    insert: "/clear",
-  },
-  {
-    id: "tools",
-    label: "/tools",
-    hint: "List the agent's tools",
-    insert: "/tools",
-  },
-  {
-    id: "model",
-    label: "/model",
-    hint: "Show or switch the model",
-    insert: "/model",
-  },
+const SLASH_COMMANDS: ReadonlyArray<Unstable_TriggerItem> = [
+  { id: "help", type: "command", label: "/help", description: "Show available commands" },
+  { id: "clear", type: "command", label: "/clear", description: "Reset conversation context" },
+  { id: "tools", type: "command", label: "/tools", description: "List the agent's tools" },
+  { id: "model", type: "command", label: "/model", description: "Show or switch the model" },
 ];
 
 interface Props {
@@ -66,16 +43,39 @@ interface Props {
 export function Composer({ sessionId }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
-  const searchFiles = useMemo(
-    () => (query: string) => fuzzyFilter(files, query, 30),
+
+  // Adapter for the @ file picker. We deliberately skip the
+  // category step (return []) so the popover lands directly in
+  // search-results mode — the resource short-circuits to
+  // adapter.search() when there are no categories. That gives us a
+  // single-pane file list instead of a "Files" category drill-down.
+  const fileAdapter: Unstable_TriggerAdapter = useMemo(
+    () => ({
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query) => {
+        const items = files.map((path) => ({
+          id: path,
+          type: "file",
+          label: path,
+          description: extDescription(path),
+        }));
+        return fuzzyFilter(items, query, 30);
+      },
+    }),
     [files],
   );
-  const searchSlash = useMemo(
-    () => (query: string) => fuzzyFilter([...SLASH_COMMANDS], query, 30),
+
+  const slashAdapter: Unstable_TriggerAdapter = useMemo(
+    () => ({
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query) => fuzzyFilter([...SLASH_COMMANDS], query, 30),
+    }),
     [],
   );
 
-  // Auto-grow up to ~6 visible lines.
+  // Auto-grow the textarea up to ~6 visible lines.
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
     const el = e.currentTarget;
     el.style.height = "auto";
@@ -111,88 +111,160 @@ export function Composer({ sessionId }: Props) {
   return (
     <div className="border-t border-surface-800 bg-surface-900 px-4 pt-3 pb-3">
       <div className="mx-auto max-w-3xl">
-        <ComposerPrimitive.Root
-          className={[
-            "group relative flex flex-col gap-2 rounded-xl border border-surface-700 bg-surface-850",
-            "shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]",
-            "focus-within:border-brand-600/70 focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.02),0_0_0_3px_rgba(217,119,6,0.12)]",
-            "transition-colors duration-150",
-          ].join(" ")}
-        >
-          {/* @-mention file picker + /-slash command popover. Both
-              hang off the same textarea ref and only one ever shows
-              at a time (the trigger detection is mutually exclusive
-              by leading character). */}
-          <TriggerPopover
-            trigger="@"
-            textareaRef={taRef}
-            search={searchFiles}
-          />
-          <TriggerPopover
-            trigger="/"
-            textareaRef={taRef}
-            search={searchSlash}
-          />
-
-          {/* Input area — tall by default, grows up to 200px */}
-          <ComposerPrimitive.Input
-            ref={taRef}
-            rows={2}
-            placeholder="Send a message…  Type @ for files, / for commands"
-            onInput={onInput}
-            autoFocus
+        <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+          <ComposerPrimitive.Root
             className={[
-              "min-h-[56px] max-h-[200px] resize-none bg-transparent",
-              "px-4 pt-3 pb-1 text-sm leading-6 text-text-primary",
-              "placeholder:text-text-dim focus:outline-none",
+              "group relative flex flex-col gap-2 rounded-xl border border-surface-700 bg-surface-850",
+              "shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]",
+              "focus-within:border-brand-600/70 focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.02),0_0_0_3px_rgba(217,119,6,0.12)]",
+              "transition-colors duration-150",
             ].join(" ")}
-          />
+          >
+            {/* @ file picker — Directive behavior chips the path into
+                the prompt text using the default formatter. */}
+            <ComposerPrimitive.Unstable_TriggerPopover
+              char="@"
+              adapter={fileAdapter}
+              className="absolute bottom-full left-0 right-0 mb-2 z-30 overflow-hidden rounded-lg border border-surface-700 bg-surface-850 shadow-xl"
+            >
+              <ComposerPrimitive.Unstable_TriggerPopover.Directive
+                formatter={defaultDirectiveFormatter}
+              />
+              <PopoverItems trigger="@" />
+            </ComposerPrimitive.Unstable_TriggerPopover>
 
-          {/* Footer strip — affordances on the left, send/stop on the right */}
-          <div className="flex items-center justify-between gap-2 border-t border-surface-800/60 px-2 pb-2 pt-1.5">
-            <div className="flex items-center gap-0.5">
-              <ToolbarButton
-                icon={<AtSign className="h-3.5 w-3.5" />}
-                label="Add file context (@)"
-                hint="@"
-                onClick={() => insertAtCaret(taRef, "@")}
+            {/* / slash commands — Action behavior fires a handler and
+                strips the `/cmd` text from the input. */}
+            <ComposerPrimitive.Unstable_TriggerPopover
+              char="/"
+              adapter={slashAdapter}
+              className="absolute bottom-full left-0 right-0 mb-2 z-30 overflow-hidden rounded-lg border border-surface-700 bg-surface-850 shadow-xl"
+            >
+              <ComposerPrimitive.Unstable_TriggerPopover.Action
+                onExecute={(item) => runSlashCommand(item)}
+                removeOnExecute
               />
-              <ToolbarButton
-                icon={<Slash className="h-3.5 w-3.5" />}
-                label="Slash command (/)"
-                hint="/"
-                onClick={() => insertAtCaret(taRef, "/")}
-              />
-              <ToolbarButton
-                icon={<Paperclip className="h-3.5 w-3.5" />}
-                label="Attach (coming soon)"
-                disabled
-              />
-            </div>
+              <PopoverItems trigger="/" />
+            </ComposerPrimitive.Unstable_TriggerPopover>
 
-            <div className="flex items-center gap-2">
-              <kbd className="hidden md:inline-flex items-center gap-1 rounded border border-surface-700 bg-surface-800/80 px-1.5 py-0.5 font-mono text-[10px] text-text-dim">
-                <CornerDownLeft className="h-3 w-3" />
-                <span>Send</span>
-              </kbd>
-              <ThreadPrimitive.If running>
-                <StopButton />
-              </ThreadPrimitive.If>
-              <ThreadPrimitive.If running={false}>
-                <SendButton />
-              </ThreadPrimitive.If>
+            {/* Input area — tall by default, grows up to 200px */}
+            <ComposerPrimitive.Input
+              ref={taRef}
+              rows={2}
+              placeholder="Send a message…  Type @ for files, / for commands"
+              onInput={onInput}
+              autoFocus
+              className={[
+                "min-h-[56px] max-h-[200px] resize-none bg-transparent",
+                "px-4 pt-3 pb-1 text-sm leading-6 text-text-primary",
+                "placeholder:text-text-dim focus:outline-none",
+              ].join(" ")}
+            />
+
+            {/* Footer strip — affordances on the left, send/stop on the right */}
+            <div className="flex items-center justify-between gap-2 border-t border-surface-800/60 px-2 pb-2 pt-1.5">
+              <div className="flex items-center gap-0.5">
+                <ToolbarButton
+                  icon={<AtSign className="h-3.5 w-3.5" />}
+                  label="Add file context (@)"
+                  hint="@"
+                  onClick={() => insertAtCaret(taRef, "@")}
+                />
+                <ToolbarButton
+                  icon={<Slash className="h-3.5 w-3.5" />}
+                  label="Slash command (/)"
+                  hint="/"
+                  onClick={() => insertAtCaret(taRef, "/")}
+                />
+                <ToolbarButton
+                  icon={<Paperclip className="h-3.5 w-3.5" />}
+                  label="Attach (coming soon)"
+                  disabled
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <kbd className="hidden md:inline-flex items-center gap-1 rounded border border-surface-700 bg-surface-800/80 px-1.5 py-0.5 font-mono text-[10px] text-text-dim">
+                  <CornerDownLeft className="h-3 w-3" />
+                  <span>Send</span>
+                </kbd>
+                <ThreadPrimitive.If running>
+                  <StopButton />
+                </ThreadPrimitive.If>
+                <ThreadPrimitive.If running={false}>
+                  <SendButton />
+                </ThreadPrimitive.If>
+              </div>
             </div>
-          </div>
-        </ComposerPrimitive.Root>
+          </ComposerPrimitive.Root>
+        </ComposerPrimitive.Unstable_TriggerPopoverRoot>
       </div>
     </div>
   );
 }
 
+/** Popover items list — same render shape for @ and / since both
+ *  have a single category and we surface a flat list. */
+function PopoverItems({ trigger }: { trigger: string }) {
+  return (
+    <ComposerPrimitive.Unstable_TriggerPopoverItems className="max-h-64 overflow-y-auto">
+      {(items) =>
+        items.length === 0 ? (
+          <div className="px-3 py-2 text-xs italic text-text-dim">
+            No matches
+          </div>
+        ) : (
+          items.map((item, i) => (
+            <ComposerPrimitive.Unstable_TriggerPopoverItem
+              key={item.id}
+              item={item}
+              index={i}
+              className={[
+                "flex w-full items-start gap-2 px-3 py-2 text-left text-xs",
+                "hover:bg-surface-800/60",
+                "data-[highlighted=true]:bg-surface-800",
+              ].join(" ")}
+            >
+              <span className="font-mono text-text-dim">{trigger}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-text-primary">
+                  {item.label}
+                </span>
+                {item.description && (
+                  <span className="block truncate text-[11px] text-text-dim">
+                    {item.description}
+                  </span>
+                )}
+              </span>
+            </ComposerPrimitive.Unstable_TriggerPopoverItem>
+          ))
+        )
+      }
+    </ComposerPrimitive.Unstable_TriggerPopoverItems>
+  );
+}
+
+function runSlashCommand(item: Unstable_TriggerItem) {
+  // Handlers are placeholders for now; wired up properly when the
+  // backend grows real slash-command support. Keeps the UX honest:
+  // selecting one inserts no chip and signals what *would* happen.
+  switch (item.id) {
+    case "help":
+      // TODO: surface a help overlay or send a synthetic prompt.
+      break;
+    case "clear":
+      // TODO: reset assistant-ui's thread (runtime.clear()).
+      break;
+    case "tools":
+    case "model":
+      // TODO: open the corresponding picker.
+      break;
+  }
+}
+
 /** Insert `text` at the textarea's caret and re-focus. The toolbar
  *  buttons use this to inject `@` or `/` so the trigger popover opens
- *  without forcing the user to grab the keyboard.
- */
+ *  without forcing the user to grab the keyboard. */
 function insertAtCaret(
   ref: React.RefObject<HTMLTextAreaElement | null>,
   text: string,
@@ -202,12 +274,11 @@ function insertAtCaret(
   const start = ta.selectionStart ?? ta.value.length;
   const end = ta.selectionEnd ?? start;
   const before = ta.value.slice(0, start);
-  // Trigger detection requires whitespace (or start-of-string)
-  // before the trigger char; pad if we're mid-word.
+  // Trigger detection requires whitespace (or start-of-string) before
+  // the trigger char; pad if we're mid-word.
   const needsSpace =
     before.length > 0 && !/[\s\n\t]$/.test(before) ? " " : "";
   const next = before + needsSpace + text + ta.value.slice(end);
-  // Use the native setter so React picks the change up via input event.
   const setter = Object.getOwnPropertyDescriptor(
     HTMLTextAreaElement.prototype,
     "value",
@@ -217,6 +288,11 @@ function insertAtCaret(
   const pos = before.length + needsSpace.length + text.length;
   ta.focus();
   ta.setSelectionRange(pos, pos);
+}
+
+function extDescription(path: string): string | undefined {
+  const m = path.match(/\.([a-z0-9]+)$/i);
+  return m?.[1]?.toLowerCase();
 }
 
 /* ── Toolbar buttons ─────────────────────────────────────────────── */
@@ -299,11 +375,6 @@ function StopButton() {
   );
 }
 
-/**
- * Custom paper-plane glyph that points up-and-right (the ubiquitous
- * "send" icon). Sized to match lucide's stroke language so it sits
- * beside the toolbar icons cleanly.
- */
 function PaperPlaneIcon() {
   return (
     <svg
