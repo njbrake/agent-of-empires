@@ -120,6 +120,11 @@ export interface CockpitState {
   /** Latest agent startup failure message, if any. Cleared when a new
    *  prompt is sent or the worker successfully connects. */
   startupError: string | null;
+  /** True between sending a user prompt and receiving the
+   *  `Stopped { reason: "prompt_complete" }` event. Drives the global
+   *  "working" spinner so the UI feels alive even when the agent
+   *  isn't streaming text or running a tool yet. */
+  turnActive: boolean;
 }
 
 export interface ActivityRow {
@@ -158,6 +163,7 @@ export function emptyCockpitState(): CockpitState {
     lastSeq: 0,
     lagged: false,
     startupError: null,
+    turnActive: false,
   };
 }
 
@@ -243,13 +249,16 @@ export function applyEvent(
   }
   if ("Stopped" in event) {
     // Final marker; nothing to mutate, but reset the inflight tool just
-    // in case the agent forgot to emit a completion.
+    // in case the agent forgot to emit a completion. Also clears the
+    // turn-active flag so the global "working" spinner stops.
     next.inFlightTool = null;
+    next.turnActive = false;
     return next;
   }
   if ("AgentStartupError" in event) {
     next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
+    next.turnActive = false;
     return next;
   }
   // RawAgentUpdate, TodoListUpdated, anything else: pass through with

@@ -50,6 +50,9 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       assistantMessage: "",
       // Clear any previous startup-error banner: the user is retrying.
       startupError: null,
+      // Light up the global "working" spinner; reset by the Stopped
+      // event when the agent finishes (or by AgentStartupError).
+      turnActive: true,
     };
   }
   return emptyCockpitState();

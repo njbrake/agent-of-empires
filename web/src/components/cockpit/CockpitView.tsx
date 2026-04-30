@@ -63,6 +63,7 @@ export function CockpitView({ sessionId }: Props) {
         cancelPrompt={cancelPrompt}
         thinking={state.thinking}
         inFlight={!!state.inFlightTool}
+        turnActive={state.turnActive}
       />
     </div>
   );
@@ -103,9 +104,12 @@ function ConversationFeed({ state, onResolve, onStarterPrompt }: ConversationFee
           <Turn key={cell.id} cell={cell} prev={cells[i - 1]} />
         ))}
 
-        {state.thinking && (
-          <div className="mt-2 ml-1">
-            <ThinkingBubble />
+        {state.turnActive && (
+          <div className="mt-3 ml-1">
+            <WorkingSpinner
+              thinking={state.thinking}
+              tool={state.inFlightTool?.name ?? null}
+            />
           </div>
         )}
 
@@ -238,17 +242,33 @@ function EmptyState({ onPick }: { onPick: (text: string) => Promise<void> }) {
   );
 }
 
-/* ── Thinking bubble ─────────────────────────────────────────────── */
+/* ── Working spinner ─────────────────────────────────────────────── */
 
-function ThinkingBubble() {
+/**
+ * Single "agent is working" indicator. Stays visible from the moment
+ * the user sends a prompt until the agent emits `Stopped`. The label
+ * adapts to the current sub-state (thinking / running tool / idle in
+ * the turn) so the user always knows something is happening.
+ */
+function WorkingSpinner({
+  thinking,
+  tool,
+}: {
+  thinking: boolean;
+  tool: string | null;
+}) {
+  const label = thinking
+    ? "Thinking…"
+    : tool
+      ? `Running ${tool}…`
+      : "Working…";
   return (
     <div className="flex items-center gap-2 text-sm italic text-text-muted">
-      <span className="flex gap-1" aria-hidden="true">
-        <span className="h-1.5 w-1.5 rounded-full bg-text-dim animate-pulse" />
-        <span className="h-1.5 w-1.5 rounded-full bg-text-dim animate-pulse [animation-delay:120ms]" />
-        <span className="h-1.5 w-1.5 rounded-full bg-text-dim animate-pulse [animation-delay:240ms]" />
-      </span>
-      <span>Thinking…</span>
+      <span
+        className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-surface-700 border-t-brand-500"
+        aria-hidden="true"
+      />
+      <span>{label}</span>
     </div>
   );
 }
@@ -349,9 +369,16 @@ interface ComposerProps {
   cancelPrompt: () => Promise<void>;
   thinking: boolean;
   inFlight: boolean;
+  turnActive: boolean;
 }
 
-function Composer({ sendPrompt, cancelPrompt, thinking, inFlight }: ComposerProps) {
+function Composer({
+  sendPrompt,
+  cancelPrompt,
+  thinking,
+  inFlight,
+  turnActive,
+}: ComposerProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -365,9 +392,35 @@ function Composer({ sendPrompt, cancelPrompt, thinking, inFlight }: ComposerProp
   }, [text]);
 
   // Focus the composer when the cockpit mounts so the user can type
-  // immediately without an extra click.
+  // immediately without an extra click. The right-pane wterm calls
+  // `input.focus()` unconditionally at the end of its async WASM init
+  // (see node_modules/@wterm/dom/dist/wterm.js init()), which fires
+  // ~200-500ms after we mount and steals focus. Re-claim with a couple
+  // of staggered timeouts. The reclaim only fires while focus is on
+  // body or on a non-input element (i.e. wterm's internal textarea
+  // capture), so an intentional click into the host shell sticks.
   useEffect(() => {
-    taRef.current?.focus();
+    const el = taRef.current;
+    if (!el) return;
+    el.focus();
+    const reclaim = () => {
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || active === document.body || active === el) {
+        el.focus();
+        return;
+      }
+      // wterm's input is a textarea inside .wterm; treat it as
+      // "not yet a deliberate user choice" during the initial race.
+      if (active.closest?.(".wterm")) {
+        el.focus();
+      }
+    };
+    const t1 = setTimeout(reclaim, 250);
+    const t2 = setTimeout(reclaim, 700);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, []);
 
   const submit = async () => {
@@ -389,7 +442,9 @@ function Composer({ sendPrompt, cancelPrompt, thinking, inFlight }: ComposerProp
     }
   };
 
-  const busy = thinking || inFlight;
+  // The agent is "busy" any time it owes the user a Stopped event or
+  // is mid-tool / mid-thought. Drives the Send → Stop swap.
+  const busy = thinking || inFlight || turnActive;
   const placeholder = busy
     ? "Steer the agent…  (Enter to send)"
     : "Send a message…";
