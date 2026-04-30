@@ -237,7 +237,7 @@ async fn attach_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
     if !tmux_session.exists() {
         bail!(
-            "Session is not running. Start it first with: agent-of-empires session start {}",
+            "Session is not running. Start it first with: aoe session start {}",
             args.identifier
         );
     }

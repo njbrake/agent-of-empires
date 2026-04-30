@@ -46,6 +46,34 @@ fn test_cli_add_and_list() {
     );
 }
 
+/// Regression test for #848: `aoe add` "Next steps" hint should reference
+/// the actual binary name (`aoe`), not the long project name.
+#[test]
+#[serial]
+fn test_cli_add_next_steps_uses_aoe_binary_name() {
+    let h = TuiTestHarness::new("cli_add_next_steps_name");
+    let project = h.project_path();
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "-t", "NextStepsName"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&add_output.stdout);
+    assert!(
+        stdout.contains("aoe session start NextStepsName"),
+        "expected 'aoe session start' hint in next steps.\nOutput:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("agent-of-empires session start"),
+        "next steps should not reference the old 'agent-of-empires' name.\nOutput:\n{}",
+        stdout
+    );
+}
+
 #[test]
 #[serial]
 fn test_cli_add_invalid_path() {

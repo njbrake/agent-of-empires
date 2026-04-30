@@ -10,6 +10,7 @@ use crate::tui::styles::Theme;
 pub struct Preview;
 
 impl Preview {
+    #[allow(clippy::too_many_arguments)]
     pub fn render_terminal_preview(
         frame: &mut Frame,
         area: Rect,
@@ -18,62 +19,71 @@ impl Preview {
         cached_output: &str,
         scroll_offset: u16,
         theme: &Theme,
+        compact: bool,
     ) {
-        let info_height = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
-            4 // title + path + status + sandbox
+        // Compact mode (narrow viewports) skips the info header entirely:
+        // the outer block title already carries the session name + status,
+        // and on a phone every row of vertical space matters.
+        let output_area = if compact {
+            area
         } else {
-            3 // title + path + status
-        };
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(info_height), // Minimal info section
-                Constraint::Min(1),              // Output section
-            ])
-            .split(area);
+            let info_height = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
+                4 // title + path + status + sandbox
+            } else {
+                3 // title + path + status
+            };
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(info_height), // Minimal info section
+                    Constraint::Min(1),              // Output section
+                ])
+                .split(area);
 
-        // Minimal info for terminal view
-        let mut info_lines = vec![
-            Line::from(vec![
-                Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
-                Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
-            ]),
-            Line::from(vec![
-                Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
-                Span::styled(
-                    shorten_path(&instance.project_path),
-                    Style::default().fg(theme.text),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
-                Span::styled(
-                    if terminal_running {
-                        "Running"
-                    } else {
-                        "Not started"
-                    },
-                    Style::default().fg(if terminal_running {
-                        theme.terminal_active
-                    } else {
-                        theme.dimmed
-                    }),
-                ),
-            ]),
-        ];
-        if let Some(sandbox) = &instance.sandbox_info {
-            if sandbox.enabled {
-                info_lines.push(Line::from(vec![
-                    Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
-                    Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
-                ]));
+            // Minimal info for terminal view
+            let mut info_lines = vec![
+                Line::from(vec![
+                    Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
+                    Span::styled(&instance.title, Style::default().fg(theme.text).bold()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
+                    Span::styled(
+                        shorten_path(&instance.project_path),
+                        Style::default().fg(theme.text),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Status:  ", Style::default().fg(theme.dimmed)),
+                    Span::styled(
+                        if terminal_running {
+                            "Running"
+                        } else {
+                            "Not started"
+                        },
+                        Style::default().fg(if terminal_running {
+                            theme.terminal_active
+                        } else {
+                            theme.dimmed
+                        }),
+                    ),
+                ]),
+            ];
+            if let Some(sandbox) = &instance.sandbox_info {
+                if sandbox.enabled {
+                    info_lines.push(Line::from(vec![
+                        Span::styled("Sandbox: ", Style::default().fg(theme.dimmed)),
+                        Span::styled(&sandbox.container_name, Style::default().fg(theme.sandbox)),
+                    ]));
+                }
             }
-        }
-        let paragraph = Paragraph::new(info_lines);
-        frame.render_widget(paragraph, chunks[0]);
+            let paragraph = Paragraph::new(info_lines);
+            frame.render_widget(paragraph, chunks[0]);
+            chunks[1]
+        };
 
         // Output section
-        let visible_height = chunks[1].height.saturating_sub(1) as usize;
+        let visible_height = output_area.height.saturating_sub(1) as usize;
         let parsed_output = if terminal_running && !cached_output.is_empty() {
             Some(parse_output_text(cached_output))
         } else {
@@ -81,22 +91,29 @@ impl Preview {
         };
         let line_count = parsed_output.as_ref().map_or(0, |t| t.lines.len());
 
-        let mut block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Terminal Output ")
-            .title_style(Style::default().fg(theme.dimmed));
-        if let Some(indicator) = format_scroll_indicator(line_count, visible_height, scroll_offset)
-        {
-            block = block.title_top(
-                Line::from(indicator)
-                    .right_aligned()
-                    .style(Style::default().fg(theme.dimmed)),
-            );
-        }
-
-        let inner = block.inner(chunks[1]);
-        frame.render_widget(block, chunks[1]);
+        // Compact mode: no inner separator/title; the outer block already
+        // names the session. Scroll indicator is dropped to save a row.
+        let inner = if compact {
+            output_area
+        } else {
+            let mut block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(theme.border))
+                .title(" Terminal Output ")
+                .title_style(Style::default().fg(theme.dimmed));
+            if let Some(indicator) =
+                format_scroll_indicator(line_count, visible_height, scroll_offset)
+            {
+                block = block.title_top(
+                    Line::from(indicator)
+                        .right_aligned()
+                        .style(Style::default().fg(theme.dimmed)),
+                );
+            }
+            let inner = block.inner(output_area);
+            frame.render_widget(block, output_area);
+            inner
+        };
 
         if !terminal_running {
             let hint = Paragraph::new("Press Enter to start terminal")
@@ -126,7 +143,21 @@ impl Preview {
         cached_output: &str,
         scroll_offset: u16,
         theme: &Theme,
+        compact: bool,
     ) {
+        if compact {
+            Self::render_output_cached(
+                frame,
+                area,
+                instance,
+                cached_output,
+                scroll_offset,
+                theme,
+                true,
+            );
+            return;
+        }
+
         // 3 base lines (profile+tool / path / status) + optional sandbox + optional worktree block
         let base = 3;
         let sandbox_lines = if instance.is_sandboxed() { 1 } else { 0 };
@@ -152,6 +183,7 @@ impl Preview {
             cached_output,
             scroll_offset,
             theme,
+            false,
         );
     }
 
@@ -244,6 +276,7 @@ impl Preview {
         cached_output: &str,
         scroll_offset: u16,
         theme: &Theme,
+        compact: bool,
     ) {
         let visible_height = area.height.saturating_sub(1) as usize;
         let parsed_output = if instance.last_error.is_none() && !cached_output.is_empty() {
@@ -253,22 +286,30 @@ impl Preview {
         };
         let line_count = parsed_output.as_ref().map_or(0, |t| t.lines.len());
 
-        let mut block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Output ")
-            .title_style(Style::default().fg(theme.dimmed));
-        if let Some(indicator) = format_scroll_indicator(line_count, visible_height, scroll_offset)
-        {
-            block = block.title_top(
-                Line::from(indicator)
-                    .right_aligned()
-                    .style(Style::default().fg(theme.dimmed)),
-            );
-        }
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // Compact mode skips the inner separator/title; the outer block
+        // already names the session and scroll indicator is omitted to
+        // free a row.
+        let inner = if compact {
+            area
+        } else {
+            let mut block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(theme.border))
+                .title(" Output ")
+                .title_style(Style::default().fg(theme.dimmed));
+            if let Some(indicator) =
+                format_scroll_indicator(line_count, visible_height, scroll_offset)
+            {
+                block = block.title_top(
+                    Line::from(indicator)
+                        .right_aligned()
+                        .style(Style::default().fg(theme.dimmed)),
+                );
+            }
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            inner
+        };
 
         if let Some(error) = &instance.last_error {
             let mut error_lines: Vec<Line> = vec![

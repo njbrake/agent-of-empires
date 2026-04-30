@@ -49,17 +49,13 @@ pub struct UnifiedDeleteDialog {
 
 impl UnifiedDeleteDialog {
     pub fn new(session_title: String, config: DeleteDialogConfig, profile: &str) -> Self {
-        let user_config = config
-            .project_path
-            .as_ref()
-            .and_then(|p| {
-                crate::session::repo_config::resolve_config_with_repo(
-                    profile,
-                    std::path::Path::new(p),
-                )
-                .ok()
-            })
-            .unwrap_or_else(|| crate::session::resolve_config(profile).unwrap_or_default());
+        let user_config = match config.project_path.as_ref() {
+            Some(p) => crate::session::repo_config::resolve_config_with_repo_or_warn(
+                profile,
+                std::path::Path::new(p),
+            ),
+            None => crate::session::profile_config::resolve_config_or_warn(profile),
+        };
 
         let options = DeleteOptions {
             delete_worktree: config.worktree_branch.is_some() && user_config.worktree.auto_cleanup,
