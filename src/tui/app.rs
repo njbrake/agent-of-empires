@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
 use super::styles::Theme;
-use crate::session::{get_update_settings, load_config, save_config};
+use crate::session::{get_update_settings, load_config, save_config, Config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
@@ -74,7 +74,7 @@ pub struct App {
 /// Check if the app version changed and return the previous version if changelog should be shown.
 /// This is called before App::new to allow async cache refresh.
 pub fn check_version_change() -> Result<Option<String>> {
-    let config = load_config()?.unwrap_or_default();
+    let config = Config::load_or_warn();
     let current_version = env!("CARGO_PKG_VERSION");
 
     if config.app_state.has_seen_welcome
@@ -87,7 +87,11 @@ pub fn check_version_change() -> Result<Option<String>> {
 }
 
 impl App {
-    pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
+    pub fn new(
+        profile: &str,
+        available_tools: AvailableTools,
+        suppress_first_run_dialogs: bool,
+    ) -> Result<Self> {
         let no_agents = !available_tools.any_available();
         let active_profile = if profile.is_empty() {
             None // all-profiles mode
@@ -97,7 +101,7 @@ impl App {
         let mut home = HomeView::new(active_profile, available_tools)?;
 
         // Check if we need to show welcome or changelog dialogs
-        let mut config = load_config()?.unwrap_or_default();
+        let mut config = Config::load_or_warn();
 
         // Load theme from config, defaulting to empire if empty
         let theme_name = if config.theme.name.is_empty() {
@@ -115,6 +119,10 @@ impl App {
         if no_agents {
             // Show the no-agents onboarding dialog (takes priority over welcome/changelog)
             home.show_no_agents();
+        } else if suppress_first_run_dialogs {
+            // A startup warning will be shown by the caller; skip welcome and
+            // changelog so the warning is what the user sees first, and avoid
+            // overwriting a malformed config.toml with defaults via save_config.
         } else if !config.app_state.has_seen_welcome {
             home.show_welcome();
             config.app_state.has_seen_welcome = true;
@@ -218,7 +226,18 @@ impl App {
     }
 
     pub fn show_startup_warning(&mut self, message: &str) {
-        self.home.info_dialog = Some(crate::tui::dialogs::InfoDialog::new("Warning", message));
+        // Size the dialog to fit the message: borders + margin + button take
+        // ~5 rows; everything else is content. Width is wide enough for a
+        // typical config path on one line.
+        let line_count = message.lines().count() as u16;
+        let height = (line_count + 5).clamp(9, 30);
+        let width = 80;
+        // Warnings preempt onboarding dialogs so the user sees the problem
+        // before the welcome screen.
+        self.home.welcome_dialog = None;
+        self.home.changelog_dialog = None;
+        self.home.info_dialog =
+            Some(crate::tui::dialogs::InfoDialog::new("Warning", message).with_size(width, height));
     }
 
     pub fn set_theme(&mut self, name: &str) {
@@ -795,7 +814,7 @@ impl App {
                     && crate::agents::get_agent(&instance.tool)
                         .is_none_or(|a| a.instruction_flag.is_none())
                 {
-                    let config = load_config()?.unwrap_or_default();
+                    let config = Config::load_or_warn();
                     if !config.app_state.has_seen_custom_instruction_warning {
                         self.home.info_dialog = Some(
                             crate::tui::dialogs::InfoDialog::new(

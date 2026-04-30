@@ -98,14 +98,16 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app and run
-    let mut app = App::new(profile, available_tools)?;
-
-    // Combine the caller-supplied startup warning (e.g., debug-log file
+    // Combine the caller-supplied startup warning (e.g. debug-log file
     // failures) with any config-parse failures we detect at startup.
     // `tracing::warn!` events from the `_or_warn` config helpers are dropped
     // by default in TUI mode (no subscriber attached), so we surface them
     // through the same InfoDialog channel here.
+    //
+    // Detected before `App::new` so we can suppress the first-run welcome /
+    // changelog dialogs when there's a warning, both for UX (the warning is
+    // the more important thing for the user to see) and to avoid overwriting
+    // a malformed config.toml with defaults via `save_config`.
     let combined_warning = match (
         startup_warning,
         crate::session::collect_startup_config_warnings(profile),
@@ -115,6 +117,9 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
         (None, Some(b)) => Some(b),
         (None, None) => None,
     };
+
+    // Create app and run
+    let mut app = App::new(profile, available_tools, combined_warning.is_some())?;
     if let Some(warning) = combined_warning {
         app.show_startup_warning(&warning);
     }

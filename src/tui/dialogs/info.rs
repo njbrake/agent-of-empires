@@ -10,6 +10,8 @@ use crate::tui::styles::Theme;
 pub struct InfoDialog {
     title: String,
     message: String,
+    width: u16,
+    height: u16,
 }
 
 impl InfoDialog {
@@ -17,7 +19,18 @@ impl InfoDialog {
         Self {
             title: title.to_string(),
             message: message.to_string(),
+            width: 50,
+            height: 9,
         }
+    }
+
+    /// Customize the dialog's footprint. Useful for long, multi-paragraph
+    /// messages (e.g. the startup config-warning) that would clip at the
+    /// default 50x9.
+    pub fn with_size(mut self, width: u16, height: u16) -> Self {
+        self.width = width;
+        self.height = height;
+        self
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
@@ -28,7 +41,7 @@ impl InfoDialog {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_area = super::centered_rect(area, 50, 9);
+        let dialog_area = super::centered_rect(area, self.width, self.height);
 
         frame.render_widget(Clear, dialog_area);
 
