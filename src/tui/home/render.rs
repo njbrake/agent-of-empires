@@ -721,21 +721,59 @@ impl HomeView {
     }
 
     fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let title = match self.view_mode {
-            ViewMode::Agent => " Preview ",
-            ViewMode::Terminal => " Terminal Preview ",
-        };
+        let compact = area.width < responsive::STACKED_BREAKPOINT;
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
             ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
         };
-        let block = Block::default()
+
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(title)
-            .title_style(Style::default().fg(title_color))
             .padding(Padding::horizontal(1));
+
+        // In compact mode, hoist session name + status icon into the
+        // outer title so the (now omitted) info header isn't missed.
+        let compact_title: Option<Line> = if compact {
+            self.selected_session
+                .as_ref()
+                .and_then(|id| self.get_instance(id))
+                .map(|inst| {
+                    let (icon, icon_color) = match inst.status {
+                        Status::Running => (spinner_running(&inst.created_at), theme.running),
+                        Status::Waiting => (spinner_waiting(&inst.created_at), theme.waiting),
+                        Status::Idle => (ICON_IDLE, theme.idle),
+                        Status::Unknown => (ICON_UNKNOWN, theme.waiting),
+                        Status::Stopped => (ICON_STOPPED, theme.dimmed),
+                        Status::Error => (ICON_ERROR, theme.error),
+                        Status::Starting => (spinner_starting(&inst.created_at), theme.dimmed),
+                        Status::Deleting => (ICON_DELETING, theme.waiting),
+                        Status::Creating => (spinner_starting(&inst.created_at), theme.accent),
+                    };
+                    Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled(icon, Style::default().fg(icon_color)),
+                        Span::raw(" "),
+                        Span::styled(inst.title.clone(), Style::default().fg(title_color).bold()),
+                        Span::raw(" "),
+                    ])
+                })
+        } else {
+            None
+        };
+
+        if let Some(line) = compact_title {
+            block = block.title(line);
+        } else {
+            let title = match self.view_mode {
+                ViewMode::Agent => " Preview ",
+                ViewMode::Terminal => " Terminal Preview ",
+            };
+            block = block
+                .title(title)
+                .title_style(Style::default().fg(title_color));
+        }
 
         let inner = block.inner(area);
         self.preview_area = inner;
@@ -766,6 +804,7 @@ impl HomeView {
                                 &self.preview_cache.content,
                                 self.preview_scroll_offset,
                                 theme,
+                                compact,
                             );
                         }
                     } else {
@@ -835,6 +874,7 @@ impl HomeView {
                             preview_content,
                             self.preview_scroll_offset,
                             theme,
+                            compact,
                         );
                     }
                 } else {
