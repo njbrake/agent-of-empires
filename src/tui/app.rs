@@ -354,10 +354,10 @@ impl App {
                             // (and ordinary terminal resizes) emit Resize. The
                             // catch-all below would silently drop them, leaving
                             // the screen mid-stale until the next refresh tick.
-                            // Sync the backend's internal size + redraw now so
-                            // viewport-driven layout (responsive::dialog_width,
-                            // STACKED_BREAKPOINT, etc.) re-evaluates.
-                            terminal.autoresize()?;
+                            // Redraw now so viewport-driven layout
+                            // (responsive::dialog_width, STACKED_BREAKPOINT,
+                            // etc.) re-evaluates; ratatui's draw() autoresizes
+                            // internally before rendering.
                             terminal.draw(|f| self.render(f))?;
                             continue;
                         }

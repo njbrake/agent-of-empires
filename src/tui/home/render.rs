@@ -181,7 +181,7 @@ impl HomeView {
             .split(area);
 
         // Below STACKED_BREAKPOINT (60 cols), put the list above the preview
-        // instead of side-by-side — iPhone-portrait Mosh zoomed out is ~50
+        // instead of side-by-side; iPhone-portrait Mosh zoomed out is ~50
         // cols, where a 40-col preview floor leaves no usable list width.
         let available_width = main_chunks[0].width;
         if available_width < responsive::STACKED_BREAKPOINT {

@@ -35,7 +35,7 @@ pub const STACKED_LIST_HEIGHT_FRACTION: u16 = 3;
 /// show selection + 1 neighbor + spinner row.
 pub const STACKED_LIST_HEIGHT_MIN: u16 = 5;
 
-/// Upper bound on stacked-mode list height — keeps the preview from
+/// Upper bound on stacked-mode list height; keeps the preview from
 /// being squeezed on tall viewports.
 pub const STACKED_LIST_HEIGHT_MAX: u16 = 12;
 
@@ -48,7 +48,7 @@ pub const DIALOG_TARGET_PCT: u16 = 80;
 
 /// Below this width, the dialog takes the full viewport (truncates but
 /// stays visible). The 26-col floor is the width of the title hints
-/// (" Enter send Esc cancel " plus rounded borders) — below that the
+/// (" Enter send Esc cancel " plus rounded borders); below that the
 /// hints disappear regardless of clamp choice, so taking the full
 /// viewport at least preserves the message area.
 pub const DIALOG_MIN_WIDTH: u16 = 26;
@@ -83,8 +83,8 @@ mod tests {
 
     #[test]
     fn dialog_width_iphone_portrait() {
-        // ~50 cols (iPhone-portrait Mosh zoomed out): 80% = 40, clamped
-        // up to MIN_WIDTH 26 — so we get 40.
+        // ~50 cols (iPhone-portrait Mosh zoomed out): 80% of 50 = 40,
+        // above MIN_WIDTH 26 so the clamp is a no-op.
         assert_eq!(dialog_width(50), 40);
     }
 
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn dialog_width_does_not_exceed_viewport() {
-        // Any viewport ≥ MIN — width never exceeds viewport.
+        // Any viewport ≥ MIN; width never exceeds viewport.
         for w in DIALOG_MIN_WIDTH..=DIALOG_MAX_WIDTH * 2 {
             assert!(dialog_width(w) <= w, "dialog_width({w}) > {w}");
         }
