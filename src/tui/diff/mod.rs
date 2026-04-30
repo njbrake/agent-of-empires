@@ -74,7 +74,7 @@ pub struct DiffView {
 impl DiffView {
     /// Create a new diff view for a repository
     pub fn new(repo_path: PathBuf) -> anyhow::Result<Self> {
-        let config = Config::load().unwrap_or_default();
+        let config = Config::load_or_warn();
 
         // Determine base branch
         let base_branch = config

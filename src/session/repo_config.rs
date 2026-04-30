@@ -286,18 +286,21 @@ pub fn resolve_config_with_repo(profile: &str, project_path: &Path) -> Result<Co
     }
 }
 
-/// Like [`resolve_config_with_repo`], but logs a warning on failure and returns
-/// defaults instead of propagating the error.
+/// Like [`resolve_config_with_repo`], but logs a warning on failure and falls
+/// back gracefully instead of propagating the error: a malformed repo config
+/// degrades to the profile-merged config (preserving profile customization),
+/// and a malformed profile config degrades to defaults.
 pub fn resolve_config_with_repo_or_warn(profile: &str, project_path: &Path) -> Config {
-    match resolve_config_with_repo(profile, project_path) {
-        Ok(config) => config,
+    let base = super::profile_config::resolve_config_or_warn(profile);
+    match load_repo_config(project_path) {
+        Ok(Some(repo_config)) => merge_repo_config(base, &repo_config),
+        Ok(None) => base,
         Err(e) => {
             tracing::warn!(
-                "Failed to load config for profile '{}' at '{}', using defaults: {e}",
-                profile,
+                "Failed to load repo config at '{}', falling back to profile config: {e}",
                 project_path.display()
             );
-            Config::default()
+            base
         }
     }
 }

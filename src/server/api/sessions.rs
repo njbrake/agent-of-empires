@@ -576,7 +576,7 @@ pub async fn create_session(
         use crate::session::builder::{self, InstanceParams};
         use crate::session::Config;
 
-        let config = Config::load().unwrap_or_default();
+        let config = Config::load_or_warn();
         let sandbox_image = body.sandbox_image.unwrap_or_else(|| {
             if config.sandbox.default_image.is_empty() {
                 "ubuntu:latest".to_string()

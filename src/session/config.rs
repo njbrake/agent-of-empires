@@ -689,7 +689,7 @@ pub fn get_update_settings() -> UpdatesConfig {
 }
 
 pub fn get_claude_config_dir() -> Option<PathBuf> {
-    let config = load_config().ok().flatten()?;
+    let config = Config::load_or_warn();
     config.claude.config_dir.map(|s| {
         if let Some(stripped) = s.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
@@ -733,6 +733,36 @@ mod tests {
             effective_profile(""),
             "alpha",
             "empty profile must fall back to the user's globally configured default",
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_load_or_warn_returns_defaults_on_malformed_toml() {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        #[cfg(target_os = "linux")]
+        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let app_dir = temp_home.path().join(".agent-of-empires");
+
+        std::fs::create_dir_all(&app_dir).unwrap();
+        // Malformed: 'enabled_by_default' under [sandbox] expects a boolean.
+        std::fs::write(
+            app_dir.join("config.toml"),
+            "[sandbox]\nenabled_by_default = \"not-a-bool\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load_or_warn();
+        // Defaults restored rather than propagated; the parse error is logged.
+        let defaults = Config::default();
+        assert_eq!(
+            config.sandbox.enabled_by_default,
+            defaults.sandbox.enabled_by_default,
         );
     }
 
