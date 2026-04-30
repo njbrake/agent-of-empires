@@ -1,28 +1,124 @@
-//! Background polling for session ID changes.
-//!
-//! Each running instance gets a `SessionPoller` that wakes every
-//! `POLL_INTERVAL` seconds, calls the agent-specific `poll_fn` to discover
-//! the current session ID on disk, and reports changes back to the TUI via
-//! a channel.
-//!
-//! Polling exists because Claude can rotate its session ID at runtime
-//! (`/clear`, `/resume`, `--fork-session`, or a fresh `claude` invocation in
-//! the same tmux pane). Without polling, the launch-time UUID stored in
-//! `sessions.json` would diverge from the agent's actual current session.
+//! Adaptive polling interval and command channel for session monitoring
 
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
+use std::sync::mpsc::RecvTimeoutError;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Global count of active poller threads for budget enforcement
+static ACTIVE_POLLER_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// Maximum number of concurrent poller threads allowed
+const MAX_POLLER_THREADS: u32 = 20;
+
+/// RAII guard that decrements `ACTIVE_POLLER_COUNT` on drop.
+///
+/// Ensures the counter is always decremented even if the poller thread panics,
+/// preventing permanent budget exhaustion.
+struct PollerCountGuard;
+
+impl PollerCountGuard {
+    /// Atomically check the budget and increment. Returns `None` if at capacity.
+    fn try_acquire() -> Option<Self> {
+        let mut current = ACTIVE_POLLER_COUNT.load(Ordering::SeqCst);
+        loop {
+            if current >= MAX_POLLER_THREADS {
+                return None;
+            }
+            match ACTIVE_POLLER_COUNT.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Some(Self),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+impl Drop for PollerCountGuard {
+    fn drop(&mut self) {
+        ACTIVE_POLLER_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+const POLL_INITIAL_INTERVAL: Duration = Duration::from_secs(2);
+const POLL_MAX_INTERVAL: Duration = Duration::from_secs(60);
+const POLL_BACKOFF_FACTOR: f64 = 1.5;
+const POLL_STABLE_THRESHOLD: u32 = 3;
+
+/// Manages adaptive polling intervals that back off when no changes are detected
 #[derive(Debug)]
+struct AdaptiveInterval {
+    initial: Duration,
+    current: Duration,
+    max: Duration,
+    backoff_factor: f64,
+    stable_threshold: u32,
+    stable_count: u32,
+}
+
+impl AdaptiveInterval {
+    /// Create a new adaptive interval with custom parameters
+    fn new(initial: Duration, max: Duration, backoff_factor: f64, stable_threshold: u32) -> Self {
+        Self {
+            initial,
+            current: initial,
+            max,
+            backoff_factor,
+            stable_threshold,
+            stable_count: 0,
+        }
+    }
+
+    fn current(&self) -> Duration {
+        self.current
+    }
+
+    /// Record that no changes were detected; increases backoff if threshold is reached.
+    ///
+    /// Uses `Duration::from_secs_f64` for sub-second precision in the backoff calculation
+    /// (e.g., 2.0s * 1.5 = 3.0s, 3.0s * 1.5 = 4.5s).
+    fn record_no_change(&mut self) {
+        self.stable_count += 1;
+        if self.stable_count >= self.stable_threshold {
+            let next_secs = self.current.as_secs_f64() * self.backoff_factor;
+            let next_duration = Duration::from_secs_f64(next_secs);
+            self.current = next_duration.min(self.max);
+            self.stable_count = 0;
+        }
+    }
+
+    /// Record that a change was detected; reset to initial interval
+    fn record_change(&mut self) {
+        self.current = self.initial;
+        self.stable_count = 0;
+    }
+}
+
+/// Command sent to the session poller thread
+#[derive(Debug, Clone, Copy)]
 enum PollCommand {
+    /// Stop the poller thread
     Stop,
 }
 
-/// Runs an agent-specific session-id discovery function on a background
-/// thread and reports changes through a channel.
+/// Manages polling thread lifecycle and inter-thread communication via mpsc channels.
+///
+/// # Cleanup
+///
+/// Cleanup is performed explicitly via `stop()` rather than `Drop` because
+/// `Drop` alone cannot guarantee prompt shutdown. The poller thread holds
+/// the `cmd_rx` receiver; when `SessionPoller` drops, the corresponding
+/// `cmd_tx` sender is dropped too and `recv_timeout` returns `Disconnected`
+/// immediately -- so in the common case the thread exits promptly.
+///
+/// `stop()` sends an explicit `PollCommand::Stop` and joins the thread,
+/// providing a deterministic shutdown path for callers like `Instance::kill`
+/// and `Instance::restart`.
 pub struct SessionPoller {
     session_name: String,
     cmd_tx: mpsc::Sender<PollCommand>,
@@ -42,6 +138,7 @@ impl std::fmt::Debug for SessionPoller {
 }
 
 impl SessionPoller {
+    /// Create a new poller (does not start the thread)
     pub fn new(session_name: String) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
@@ -55,8 +152,10 @@ impl SessionPoller {
         }
     }
 
-    /// Start the polling thread. Returns `false` if already started or if
-    /// thread spawn failed.
+    /// Start the polling thread with the given callbacks.
+    ///
+    /// Returns `true` if the thread was successfully spawned, `false` if the
+    /// poller was already started, the thread budget was exhausted, or spawning failed.
     pub fn start(
         &mut self,
         instance_id: String,
@@ -75,6 +174,20 @@ impl SessionPoller {
             }
         };
 
+        let _guard = match PollerCountGuard::try_acquire() {
+            Some(g) => g,
+            None => {
+                tracing::warn!(
+                    "Poller thread budget exhausted ({}/{}), skipping poller for {}",
+                    ACTIVE_POLLER_COUNT.load(Ordering::SeqCst),
+                    MAX_POLLER_THREADS,
+                    instance_id
+                );
+                self.cmd_rx = Some(cmd_rx);
+                return false;
+            }
+        };
+
         let session_name = self.session_name.clone();
         let thread_label = format!("aoe-poller/{}", instance_id);
         let result_tx = self.result_tx.clone();
@@ -83,22 +196,39 @@ impl SessionPoller {
             .name(thread_label.clone())
             .stack_size(128 * 1024)
             .spawn(move || {
-                let mut last_known = initial_known;
+                // Rebind so the closure captures `_guard` and the counter only
+                // decrements when the thread exits (including via panic). Without
+                // this, `move` would not capture an unreferenced binding and the
+                // counter would decrement as soon as `start()` returned.
+                let _guard = _guard;
 
-                let mut report = |new_id: String| {
-                    if last_known.as_deref() != Some(&new_id) {
-                        on_change(&new_id);
-                        let _ = result_tx.send((instance_id.clone(), new_id.clone()));
-                        last_known = Some(new_id);
+                let mut last_known = initial_known;
+                let mut interval = AdaptiveInterval::new(
+                    POLL_INITIAL_INTERVAL,
+                    POLL_MAX_INTERVAL,
+                    POLL_BACKOFF_FACTOR,
+                    POLL_STABLE_THRESHOLD,
+                );
+
+                let report = |new_id_opt: Option<String>,
+                              last: &mut Option<String>,
+                              interval: &mut AdaptiveInterval| {
+                    match new_id_opt {
+                        Some(new_id) if last.as_deref() != Some(&new_id) => {
+                            on_change(&new_id);
+                            let _ = result_tx.send((instance_id.clone(), new_id.clone()));
+                            *last = Some(new_id);
+                            interval.record_change();
+                        }
+                        _ => interval.record_no_change(),
                     }
                 };
 
-                if let Some(new_id) = poll_fn() {
-                    report(new_id);
-                }
+                // Immediate first poll (e.g. pre-existing sessions loaded from disk).
+                report(poll_fn(), &mut last_known, &mut interval);
 
                 loop {
-                    match cmd_rx.recv_timeout(POLL_INTERVAL) {
+                    match cmd_rx.recv_timeout(interval.current()) {
                         Ok(PollCommand::Stop) => break,
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
@@ -109,9 +239,7 @@ impl SessionPoller {
                         break;
                     }
 
-                    if let Some(new_id) = poll_fn() {
-                        report(new_id);
-                    }
+                    report(poll_fn(), &mut last_known, &mut interval);
                 }
             });
 
@@ -122,6 +250,13 @@ impl SessionPoller {
             }
             Err(e) => {
                 tracing::warn!("Failed to spawn poller thread {}: {}", thread_label, e);
+                // Restore channels to allow retrying spawn
+                let (cmd_tx, cmd_rx) = mpsc::channel();
+                self.cmd_tx = cmd_tx;
+                self.cmd_rx = Some(cmd_rx);
+                let (result_tx, result_rx) = mpsc::channel();
+                self.result_tx = result_tx;
+                self.result_rx = Some(result_rx);
                 false
             }
         }
@@ -132,7 +267,7 @@ impl SessionPoller {
         self.result_rx.as_ref()?.try_recv().ok()
     }
 
-    /// Stop the poller thread and wait for it to finish.
+    /// Stop the poller thread and wait for it to finish
     pub fn stop(&mut self) {
         let _ = self.cmd_tx.send(PollCommand::Stop);
         if let Some(handle) = self.handle.take() {
@@ -142,6 +277,7 @@ impl SessionPoller {
         }
     }
 
+    /// Check if the poller thread is running
     pub fn is_running(&self) -> bool {
         match &self.handle {
             Some(handle) => !handle.is_finished(),
@@ -159,86 +295,342 @@ impl Default for SessionPoller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use serial_test::serial;
+    use std::sync::{Arc, Mutex};
 
     #[test]
-    fn test_poller_reports_initial_value() {
-        let mut poller = SessionPoller::new("test-session".to_string());
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_c = calls.clone();
-
-        let started = poller.start(
-            "inst-1".to_string(),
-            Box::new(move || {
-                calls_c.fetch_add(1, Ordering::SeqCst);
-                Some("session-abc".to_string())
-            }),
-            Box::new(|_| {}),
-            None,
-        );
-        assert!(started);
-
-        // Give the immediate first poll time to run and send.
-        std::thread::sleep(Duration::from_millis(100));
-        let update = poller.try_recv_session_update();
-        poller.stop();
-
-        assert_eq!(
-            update,
-            Some(("inst-1".to_string(), "session-abc".to_string()))
-        );
-        assert!(calls.load(Ordering::SeqCst) >= 1);
+    fn test_adaptive_interval_initial() {
+        let interval =
+            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
+        assert_eq!(interval.current(), Duration::from_secs(2));
     }
 
     #[test]
-    fn test_poller_skips_unchanged_value() {
-        let mut poller = SessionPoller::new("test-session".to_string());
-
-        poller.start(
-            "inst-2".to_string(),
-            Box::new(|| Some("same-id".to_string())),
-            Box::new(|_| {}),
-            Some("same-id".to_string()),
-        );
-
-        std::thread::sleep(Duration::from_millis(100));
-        let update = poller.try_recv_session_update();
-        poller.stop();
-
-        // initial_known matches poll result, so no update should fire.
-        assert!(update.is_none());
+    fn test_adaptive_interval_record_no_change_increments_count() {
+        let mut interval =
+            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
+        assert_eq!(interval.stable_count, 0);
+        interval.record_no_change();
+        assert_eq!(interval.stable_count, 1);
+        interval.record_no_change();
+        assert_eq!(interval.stable_count, 2);
     }
 
     #[test]
-    fn test_poller_stop_is_idempotent() {
-        let mut poller = SessionPoller::new("test-session".to_string());
-        poller.start(
-            "inst-3".to_string(),
-            Box::new(|| None),
-            Box::new(|_| {}),
-            None,
+    fn test_adaptive_interval_backoff_at_threshold() {
+        let mut interval =
+            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
+        interval.record_no_change();
+        interval.record_no_change();
+        interval.record_no_change();
+        // After 3 calls: 2 * 1.5 = 3 seconds
+        assert_eq!(interval.current(), Duration::from_secs(3));
+        assert_eq!(interval.stable_count, 0);
+    }
+
+    #[test]
+    fn test_adaptive_interval_multiple_backoffs() {
+        let mut interval =
+            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
+        // First backoff: 2 -> 3
+        for _ in 0..3 {
+            interval.record_no_change();
+        }
+        assert_eq!(interval.current(), Duration::from_secs(3));
+
+        // Second backoff: 3 -> 4.5 (with sub-second precision)
+        for _ in 0..3 {
+            interval.record_no_change();
+        }
+        let expected_secs = 3.0 * 1.5;
+        assert_eq!(interval.current(), Duration::from_secs_f64(expected_secs));
+    }
+
+    #[test]
+    fn test_adaptive_interval_respects_max() {
+        let mut interval = AdaptiveInterval::new(
+            Duration::from_secs(2),
+            Duration::from_secs(60),
+            1.5,
+            1, // threshold of 1 for faster test
         );
-        poller.stop();
-        poller.stop();
+        interval.record_no_change(); // 2 * 1.5 = 3.0
+        interval.record_no_change(); // 3.0 * 1.5 = 4.5
+        interval.record_no_change(); // 4.5 * 1.5 = 6.75
+        interval.record_no_change(); // 6.75 * 1.5 = 10.125
+        interval.record_no_change(); // 10.125 * 1.5 = 15.1875
+        interval.record_no_change(); // 15.1875 * 1.5 = 22.78125
+        interval.record_no_change(); // 22.78125 * 1.5 = 34.171875
+        interval.record_no_change(); // 34.171875 * 1.5 = 51.2578125
+        interval.record_no_change(); // 51.2578125 * 1.5 = 76.88671875 > 60, capped at 60
+        assert!(interval.current() <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_adaptive_interval_record_change_resets() {
+        let mut interval =
+            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
+        for _ in 0..3 {
+            interval.record_no_change();
+        }
+        assert_eq!(interval.current(), Duration::from_secs(3));
+
+        interval.record_change();
+        assert_eq!(interval.current(), Duration::from_secs(2));
+        assert_eq!(interval.stable_count, 0);
+    }
+
+    #[test]
+    fn test_session_poller_new() {
+        let poller = SessionPoller::new("test-session".to_string());
         assert!(!poller.is_running());
     }
 
     #[test]
-    fn test_poller_double_start_returns_false() {
+    fn test_session_poller_stop_when_no_thread() {
         let mut poller = SessionPoller::new("test-session".to_string());
-        assert!(poller.start(
-            "inst-4".to_string(),
-            Box::new(|| None),
+        poller.stop(); // Should not panic
+        assert!(!poller.is_running());
+    }
+
+    #[test]
+    fn test_session_poller_double_stop_safe() {
+        let mut poller = SessionPoller::new("test-session".to_string());
+        poller.stop();
+        poller.stop(); // Should not panic
+        assert!(!poller.is_running());
+    }
+
+    #[test]
+    fn test_session_poller_drop_is_clean() {
+        let poller = SessionPoller::new("test-session".to_string());
+        drop(poller); // Should not panic
+    }
+
+    #[test]
+    fn test_adaptive_interval_with_constants() {
+        let mut interval = AdaptiveInterval::new(
+            POLL_INITIAL_INTERVAL,
+            POLL_MAX_INTERVAL,
+            POLL_BACKOFF_FACTOR,
+            POLL_STABLE_THRESHOLD,
+        );
+        assert_eq!(interval.current(), Duration::from_secs(2));
+        for _ in 0..POLL_STABLE_THRESHOLD {
+            interval.record_no_change();
+        }
+        assert_eq!(interval.current(), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn test_poller_detects_change() {
+        let call_count = Arc::new(Mutex::new(0u32));
+        let call_count_clone = call_count.clone();
+
+        let poll_fn: Box<dyn Fn() -> Option<String> + Send + 'static> = Box::new(move || {
+            let mut count = call_count_clone.lock().unwrap();
+            *count += 1;
+            if *count <= 1 {
+                Some("id-1".to_string())
+            } else {
+                Some("id-2".to_string())
+            }
+        });
+
+        let changed_ids: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let changed_ids_clone = changed_ids.clone();
+
+        let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |id: &str| {
+            changed_ids_clone.lock().unwrap().push(id.to_string());
+        });
+
+        let mut poller = SessionPoller::new("test-session".to_string());
+        poller.start(
+            "test-change".to_string(),
+            poll_fn,
+            on_change,
+            Some("id-1".to_string()),
+        );
+
+        // Wait for the adaptive interval (2s initial) to fire at least once
+        std::thread::sleep(Duration::from_millis(2500));
+        poller.stop();
+
+        let ids = changed_ids.lock().unwrap();
+        assert!(
+            ids.contains(&"id-2".to_string()),
+            "on_change should have been called with id-2, got: {:?}",
+            *ids
+        );
+        assert!(
+            !ids.contains(&"id-1".to_string()),
+            "on_change should NOT have been called with id-1 (initial known)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_thread_budget_cap() {
+        let original = ACTIVE_POLLER_COUNT.load(Ordering::SeqCst);
+        ACTIVE_POLLER_COUNT.store(MAX_POLLER_THREADS, Ordering::SeqCst);
+
+        let mut poller = SessionPoller::new("test-session".to_string());
+        poller.start(
+            "test-budget".to_string(),
+            Box::new(|| Some("id".to_string())),
             Box::new(|_| {}),
             None,
-        ));
-        assert!(!poller.start(
-            "inst-4".to_string(),
-            Box::new(|| None),
+        );
+
+        assert!(
+            !poller.is_running(),
+            "poller should not have spawned when budget exhausted"
+        );
+        assert!(
+            poller.cmd_rx.is_some(),
+            "cmd_rx should be returned when budget exhausted"
+        );
+
+        ACTIVE_POLLER_COUNT.store(original, Ordering::SeqCst);
+    }
+
+    #[test]
+    #[serial]
+    fn test_poller_is_running_after_start() {
+        let mut poller = SessionPoller::new("test-session".to_string());
+        poller.start(
+            "test-running".to_string(),
+            Box::new(|| {
+                std::thread::sleep(Duration::from_millis(10));
+                Some("id".to_string())
+            }),
             Box::new(|_| {}),
             None,
-        ));
+        );
+
+        assert!(poller.is_running(), "poller should be running after start");
+        poller.stop();
+    }
+
+    #[test]
+    #[serial]
+    fn test_poller_cleanup_decrements_counter() {
+        let entered = Arc::new(Mutex::new(false));
+        let entered_clone = entered.clone();
+
+        let mut poller = SessionPoller::new("test-session".to_string());
+        poller.start(
+            "test-cleanup".to_string(),
+            Box::new(move || {
+                *entered_clone.lock().unwrap() = true;
+                Some("id".to_string())
+            }),
+            Box::new(|_| {}),
+            None,
+        );
+
+        // Wait for the immediate first poll to run
+        std::thread::sleep(Duration::from_millis(100));
+
+        let count_before_stop = ACTIVE_POLLER_COUNT.load(Ordering::SeqCst);
+        poller.stop();
+        let count_after_stop = ACTIVE_POLLER_COUNT.load(Ordering::SeqCst);
+
+        assert!(
+            count_after_stop < count_before_stop,
+            "counter should decrement after stop (before_stop={}, after_stop={})",
+            count_before_stop,
+            count_after_stop
+        );
+        assert!(*entered.lock().unwrap(), "poll_fn should have been called");
+    }
+
+    #[test]
+    fn test_interval_exact_at_threshold() {
+        let mut interval = AdaptiveInterval::new(
+            Duration::from_secs(2),
+            Duration::from_secs(60),
+            1.5,
+            POLL_STABLE_THRESHOLD,
+        );
+
+        for _ in 0..POLL_STABLE_THRESHOLD {
+            interval.record_no_change();
+        }
+        // 2 * 1.5 = 3
+        assert_eq!(interval.current(), Duration::from_secs(3));
+        assert_eq!(interval.stable_count, 0);
+
+        interval.record_no_change();
+        assert_eq!(interval.current(), Duration::from_secs(3));
+        assert_eq!(interval.stable_count, 1);
+    }
+
+    #[test]
+    fn test_interval_max_clamping_precision() {
+        let mut interval = AdaptiveInterval::new(
+            Duration::from_secs(2),
+            POLL_MAX_INTERVAL,
+            POLL_BACKOFF_FACTOR,
+            POLL_STABLE_THRESHOLD,
+        );
+
+        for _ in 0..1000 {
+            interval.record_no_change();
+            assert!(
+                interval.current() <= POLL_MAX_INTERVAL,
+                "interval {} exceeded max {}",
+                interval.current().as_secs(),
+                POLL_MAX_INTERVAL.as_secs()
+            );
+        }
+        assert_eq!(interval.current(), POLL_MAX_INTERVAL);
+    }
+
+    #[test]
+    fn test_interval_change_mid_backoff() {
+        let mut interval = AdaptiveInterval::new(
+            Duration::from_secs(2),
+            Duration::from_secs(60),
+            1.5,
+            POLL_STABLE_THRESHOLD,
+        );
+
+        interval.record_no_change();
+        interval.record_no_change();
+        assert_eq!(interval.stable_count, 2);
+        assert_eq!(interval.current(), Duration::from_secs(2));
+
+        interval.record_change();
+        assert_eq!(interval.current(), Duration::from_secs(2));
+        assert_eq!(interval.stable_count, 0);
+    }
+
+    #[test]
+    fn test_poller_starts_polling_immediately() {
+        let poll_count = Arc::new(Mutex::new(0u32));
+        let poll_count_clone = poll_count.clone();
+
+        let poll_fn: Box<dyn Fn() -> Option<String> + Send + 'static> = Box::new(move || {
+            let mut count = poll_count_clone.lock().unwrap();
+            *count += 1;
+            Some("ses_polled".to_string())
+        });
+
+        let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(|_| {});
+
+        let mut poller = SessionPoller::new("test-session".to_string());
+        poller.start("test-immediate".to_string(), poll_fn, on_change, None);
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let count = *poll_count.lock().unwrap();
+        assert!(
+            count > 0,
+            "poller should have started polling immediately (count={})",
+            count
+        );
+
         poller.stop();
     }
 }

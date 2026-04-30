@@ -7,7 +7,7 @@ use tui_input::Input;
 
 use super::{HomeView, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
-use crate::session::{list_profiles, repo_config, resolve_config, Item, Status};
+use crate::session::{list_profiles, repo_config, resolve_config_or_warn, Item, Status};
 use crate::tui::app::Action;
 #[cfg(feature = "serve")]
 use crate::tui::dialogs::ServeAction;
@@ -60,18 +60,15 @@ impl HomeView {
                         self.settings_view = None;
                         self.confirm_dialog = None;
                         self.settings_close_confirm = false;
-                        // Revert theme to saved config (undo any preview)
-                        if let Ok(config) =
-                            resolve_config(self.active_profile.as_deref().unwrap_or("default"))
-                        {
-                            let theme_name = if config.theme.name.is_empty() {
-                                "empire".to_string()
-                            } else {
-                                config.theme.name
-                            };
-                            return Some(Action::SetTheme(theme_name));
-                        }
-                        return None;
+                        let config = resolve_config_or_warn(
+                            self.active_profile.as_deref().unwrap_or("default"),
+                        );
+                        let theme_name = if config.theme.name.is_empty() {
+                            "empire".to_string()
+                        } else {
+                            config.theme.name
+                        };
+                        return Some(Action::SetTheme(theme_name));
                     }
                 }
             }
@@ -88,17 +85,14 @@ impl HomeView {
                     // Refresh config-dependent state in case settings changed
                     self.refresh_from_config();
                     // Reload theme from saved config
-                    if let Ok(config) =
-                        resolve_config(self.active_profile.as_deref().unwrap_or("default"))
-                    {
-                        let theme_name = if config.theme.name.is_empty() {
-                            "empire".to_string()
-                        } else {
-                            config.theme.name
-                        };
-                        return Some(Action::SetTheme(theme_name));
-                    }
-                    return None;
+                    let config =
+                        resolve_config_or_warn(self.active_profile.as_deref().unwrap_or("default"));
+                    let theme_name = if config.theme.name.is_empty() {
+                        "empire".to_string()
+                    } else {
+                        config.theme.name
+                    };
+                    return Some(Action::SetTheme(theme_name));
                 }
                 SettingsAction::UnsavedChangesWarning => {
                     // Show confirmation dialog
