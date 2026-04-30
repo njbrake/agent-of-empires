@@ -86,7 +86,7 @@
   <text x="680" y="292" font-family="'JetBrains Mono', 'SF Mono', monospace" font-size="14" fill="#64748b" letter-spacing="0.2em">AGENT OF EMPIRES</text>
 
   <!-- Tagline -->
-  <text x="640" y="398" font-family="'DM Sans', 'Inter', system-ui, sans-serif" font-size="22" fill="#94a3b8">Command your agents. Conquer your codebase.</text>
+  <text x="640" y="398" font-family="'DM Sans', 'Inter', system-ui, sans-serif" font-size="22" fill="#94a3b8">Conquer your codebase.</text>
 
   <!-- Accent line -->
   <rect x="640" y="430" width="200" height="2" fill="url(#accent-line)" rx="1"/>
