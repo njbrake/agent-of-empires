@@ -15,8 +15,8 @@ use tui_input::Input;
 use super::DialogResult;
 use crate::containers::{self, ContainerRuntimeInterface};
 use crate::session::config::{DefaultTerminalMode, SandboxConfig};
+use crate::session::profile_config::resolve_config_or_warn;
 use crate::session::repo_config::HookProgress;
-use crate::session::resolve_config;
 #[cfg(test)]
 use crate::session::Config;
 use crate::tmux::AvailableTools;
@@ -310,11 +310,10 @@ impl NewSessionDialog {
         let docker_available = containers::get_container_runtime().is_available();
 
         // Load resolved config (global + profile + repo overrides from cwd)
-        let config = crate::session::repo_config::resolve_config_with_repo(
+        let config = crate::session::repo_config::resolve_config_with_repo_or_warn(
             profile,
             std::path::Path::new(&current_dir),
-        )
-        .unwrap_or_else(|_| resolve_config(profile).unwrap_or_default());
+        );
 
         // Determine default tool index based on config
         let tool_index = if let Some(ref default_tool) = config.session.default_tool {
@@ -532,7 +531,7 @@ impl NewSessionDialog {
     fn reload_config_defaults(&mut self) {
         let profile = self.selected_profile().to_string();
         self.profile = profile.clone();
-        let config = resolve_config(&profile).unwrap_or_default();
+        let config = resolve_config_or_warn(&profile);
 
         // Reset tool index
         self.tool_index = if let Some(ref default_tool) = config.session.default_tool {
@@ -978,7 +977,7 @@ impl NewSessionDialog {
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
                 if self.sandbox_enabled {
-                    let config = resolve_config(&self.profile).unwrap_or_default();
+                    let config = resolve_config_or_warn(&self.profile);
                     self.extra_env = config.sandbox.environment.clone();
                     self.inherited_settings = build_inherited_settings(&config.sandbox);
                 } else {
@@ -1339,7 +1338,7 @@ impl NewSessionDialog {
 
     fn reload_tool_config(&mut self) {
         let profile = self.selected_profile().to_string();
-        let config = resolve_config(&profile).unwrap_or_default();
+        let config = resolve_config_or_warn(&profile);
         let tool = self
             .available_tools
             .get(self.tool_index)

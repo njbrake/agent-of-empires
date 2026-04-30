@@ -592,7 +592,7 @@ pub fn user_has_tmux_config() -> bool {
 
 /// Determine if status bar styling should be applied based on config and environment.
 pub fn should_apply_tmux_status_bar() -> bool {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_warn();
     match config.tmux.status_bar {
         TmuxStatusBarMode::Enabled => true,
         TmuxStatusBarMode::Disabled => false,
@@ -603,7 +603,7 @@ pub fn should_apply_tmux_status_bar() -> bool {
 /// Determine if mouse support should be enabled based on config and environment.
 /// Returns Some(true) to enable, Some(false) to disable, None to not touch the setting.
 pub fn should_apply_tmux_mouse() -> Option<bool> {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_warn();
     match config.tmux.mouse {
         TmuxMouseMode::Enabled => Some(true),
         TmuxMouseMode::Disabled => Some(false),
@@ -618,7 +618,7 @@ pub fn should_apply_tmux_mouse() -> Option<bool> {
     }
 }
 
-fn config_path() -> Result<PathBuf> {
+pub(crate) fn config_path() -> Result<PathBuf> {
     Ok(get_app_dir()?.join("config.toml"))
 }
 
@@ -632,6 +632,18 @@ impl Config {
         let content = fs::read_to_string(&path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
+    }
+
+    /// Like [`Config::load`], but logs a warning on failure and returns defaults
+    /// instead of propagating the error.
+    pub fn load_or_warn() -> Self {
+        match Self::load() {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!("Failed to load global config, using defaults: {e}");
+                Config::default()
+            }
+        }
     }
 }
 
@@ -652,9 +664,12 @@ pub fn save_config(config: &Config) -> Result<()> {
 
 /// Load the user's default profile name, falling back to "default" on error.
 pub fn resolve_default_profile() -> String {
-    Config::load()
-        .map(|c| c.default_profile)
-        .unwrap_or_else(|_| "default".to_string())
+    let config = Config::load_or_warn();
+    if config.default_profile.is_empty() {
+        "default".to_string()
+    } else {
+        config.default_profile
+    }
 }
 
 /// Return `profile` if non-empty, otherwise the user's globally configured
@@ -670,15 +685,11 @@ pub fn effective_profile(profile: &str) -> String {
 }
 
 pub fn get_update_settings() -> UpdatesConfig {
-    load_config()
-        .ok()
-        .flatten()
-        .map(|c| c.updates)
-        .unwrap_or_default()
+    Config::load_or_warn().updates
 }
 
 pub fn get_claude_config_dir() -> Option<PathBuf> {
-    let config = load_config().ok().flatten()?;
+    let config = Config::load_or_warn();
     config.claude.config_dir.map(|s| {
         if let Some(stripped) = s.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
@@ -722,6 +733,36 @@ mod tests {
             effective_profile(""),
             "alpha",
             "empty profile must fall back to the user's globally configured default",
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_load_or_warn_returns_defaults_on_malformed_toml() {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        #[cfg(target_os = "linux")]
+        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let app_dir = temp_home.path().join(".agent-of-empires");
+
+        std::fs::create_dir_all(&app_dir).unwrap();
+        // Malformed: 'enabled_by_default' under [sandbox] expects a boolean.
+        std::fs::write(
+            app_dir.join("config.toml"),
+            "[sandbox]\nenabled_by_default = \"not-a-bool\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load_or_warn();
+        // Defaults restored rather than propagated; the parse error is logged.
+        let defaults = Config::default();
+        assert_eq!(
+            config.sandbox.enabled_by_default,
+            defaults.sandbox.enabled_by_default,
         );
     }
 

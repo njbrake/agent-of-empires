@@ -1571,6 +1571,124 @@ fn extract_gemini_fields(path: &std::path::Path) -> Option<(Option<String>, Opti
     Some((session_id, project_hash))
 }
 
+// ─── Hermes session capture ───────────────────────────────────────────────────
+
+const HERMES_COMMAND_TIMEOUT_SECS: u64 = 5;
+
+/// Python one-liner executed via `docker exec` to query active Hermes sessions.
+/// Respects `$HERMES_HOME` env var, falling back to `~/.hermes/state.db`.
+/// Prints one session ID per line to stdout.
+const HERMES_CONTAINER_CAPTURE_SCRIPT: &str = "import sqlite3, os; \
+db=os.path.join(os.environ.get('HERMES_HOME', os.path.expanduser('~/.hermes')), 'state.db'); \
+conn=sqlite3.connect(db, timeout=1.0); \
+[print(r[0]) for r in conn.execute(\"SELECT id FROM sessions WHERE source='cli' AND ended_at IS NULL ORDER BY started_at DESC LIMIT 10\")]";
+
+/// Parse newline-separated session IDs from sqlite3/python3 output and return
+/// the first ID not present in the exclusion set.
+fn select_hermes_session(output: &[u8], exclusion: &HashSet<String>) -> Result<String> {
+    let text = String::from_utf8_lossy(output);
+    let id = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .find(|l| !exclusion.contains(*l));
+
+    match id {
+        Some(session_id) => Ok(session_id.to_string()),
+        None => anyhow::bail!("No active Hermes session found"),
+    }
+}
+
+/// Capture session ID from Hermes's SQLite state database.
+///
+/// Queries `~/.hermes/state.db` (or `$HERMES_HOME/state.db`) for active CLI
+/// sessions. Unlike other agents, Hermes does not record the working directory
+/// in its session table, so capture returns the most recent active CLI session
+/// regardless of project. Cross-instance isolation relies on the exclusion set.
+pub(crate) fn capture_hermes_session_id(
+    _project_path: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let hermes_home = resolve_agent_home(Some("HERMES_HOME"), ".hermes")?;
+    let db_path = hermes_home.join("state.db");
+
+    if !db_path.exists() {
+        anyhow::bail!("Hermes state.db not found: {}", db_path.display());
+    }
+
+    let mut cmd = std::process::Command::new("sqlite3");
+    cmd.args([
+        "-cmd",
+        ".timeout 1000",
+        db_path.to_string_lossy().as_ref(),
+        "SELECT id FROM sessions WHERE source='cli' AND ended_at IS NULL ORDER BY started_at DESC LIMIT 10;",
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(HERMES_COMMAND_TIMEOUT_SECS),
+        "sqlite3 (hermes session scan)",
+    )?;
+
+    select_hermes_session(&stdout_bytes, exclusion)
+}
+
+/// Capture a Hermes session ID from inside a Docker container.
+///
+/// Uses `python3` (guaranteed by Hermes's Python runtime) rather than the
+/// `sqlite3` CLI binary, which may not be installed in minimal containers.
+pub(crate) fn try_capture_hermes_session_id_in_container(
+    container_name: &str,
+    _container_cwd: &str,
+    exclusion: &HashSet<String>,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "exec",
+        container_name,
+        "python3",
+        "-c",
+        HERMES_CONTAINER_CAPTURE_SCRIPT,
+    ]);
+
+    let stdout_bytes = run_with_timeout(
+        cmd,
+        Duration::from_secs(HERMES_COMMAND_TIMEOUT_SECS),
+        "docker exec python3 (hermes session scan)",
+    )?;
+
+    select_hermes_session(&stdout_bytes, exclusion)
+}
+
+/// Polling closure for Hermes session tracking.
+pub(crate) fn hermes_poll_fn(
+    project_path: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        capture_hermes_session_id(&project_path, &exclusion)
+            .map_err(|e| tracing::debug!("Hermes poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
+/// Polling closure for sandboxed (Docker) Hermes session tracking.
+pub(crate) fn hermes_poll_fn_sandboxed(
+    container_name: String,
+    container_cwd: String,
+    instance_id: String,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    move || {
+        let exclusion = build_exclusion_set(&instance_id);
+        try_capture_hermes_session_id_in_container(&container_name, &container_cwd, &exclusion)
+            .map_err(|e| tracing::debug!("Hermes container poll capture failed: {}", e))
+            .ok()
+            .and_then(validated_session_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3049,5 +3167,143 @@ mod tests {
 ";
         let result = select_gemini_session_in_container(stdout, "abc123", &HashSet::new()).unwrap();
         assert_eq!(result, "jsonl-id");
+    }
+
+    // ─── Hermes tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_select_hermes_session_parsing() {
+        let output = b"20260429_193246_aaa\n20260429_193246_bbb\n";
+        let exclusion = HashSet::new();
+        let result = select_hermes_session(output, &exclusion).unwrap();
+        assert_eq!(result, "20260429_193246_aaa");
+    }
+
+    #[test]
+    fn test_select_hermes_session_with_exclusion() {
+        let output = b"20260429_193246_aaa\n20260429_193246_bbb\n";
+        let mut exclusion = HashSet::new();
+        exclusion.insert("20260429_193246_aaa".to_string());
+        let result = select_hermes_session(output, &exclusion).unwrap();
+        assert_eq!(result, "20260429_193246_bbb");
+    }
+
+    #[test]
+    fn test_select_hermes_session_empty_output() {
+        let output = b"";
+        let exclusion = HashSet::new();
+        let result = select_hermes_session(output, &exclusion);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_hermes_session_whitespace_lines() {
+        let output = b"  \n\n20260429_193246_ccc\n  \n";
+        let exclusion = HashSet::new();
+        let result = select_hermes_session(output, &exclusion).unwrap();
+        assert_eq!(result, "20260429_193246_ccc");
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_hermes_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("state.db");
+        let create_output = std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
+            .output()
+            .unwrap();
+        assert!(create_output.status.success());
+        std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("INSERT INTO sessions VALUES ('20260429_193246_adcddd','cli',1000.0,NULL);")
+            .output()
+            .unwrap();
+        unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
+        let exclusion = HashSet::new();
+        let result = capture_hermes_session_id(".", &exclusion).unwrap();
+        assert_eq!(result, "20260429_193246_adcddd");
+        unsafe { std::env::remove_var("HERMES_HOME") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_hermes_excludes_ended() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("state.db");
+        std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
+            .output()
+            .unwrap();
+        std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("INSERT INTO sessions VALUES ('ended_session','cli',1000.0,123456.0);")
+            .output()
+            .unwrap();
+        unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
+        let result = capture_hermes_session_id(".", &HashSet::new());
+        assert!(result.is_err());
+        unsafe { std::env::remove_var("HERMES_HOME") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_hermes_excludes_non_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("state.db");
+        std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
+            .output()
+            .unwrap();
+        std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("INSERT INTO sessions VALUES ('telegram_session','telegram',1000.0,NULL);")
+            .output()
+            .unwrap();
+        unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
+        let result = capture_hermes_session_id(".", &HashSet::new());
+        assert!(result.is_err());
+        unsafe { std::env::remove_var("HERMES_HOME") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_hermes_exclusion_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("state.db");
+        std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
+            .output()
+            .unwrap();
+        std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("INSERT INTO sessions VALUES ('first_session','cli',2000.0,NULL); INSERT INTO sessions VALUES ('second_session','cli',1000.0,NULL);")
+            .output()
+            .unwrap();
+        unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
+        let mut exclusion = HashSet::new();
+        exclusion.insert("first_session".to_string());
+        let result = capture_hermes_session_id(".", &exclusion).unwrap();
+        assert_eq!(result, "second_session");
+        unsafe { std::env::remove_var("HERMES_HOME") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_hermes_no_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
+        let result = capture_hermes_session_id(".", &HashSet::new());
+        assert!(result.is_err());
+        unsafe { std::env::remove_var("HERMES_HOME") };
+    }
+
+    #[test]
+    fn test_hermes_session_id_format_valid() {
+        assert!(is_valid_session_id("20260429_193246_adcddd"));
     }
 }

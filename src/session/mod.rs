@@ -29,16 +29,17 @@ pub use instance::{
     Instance, SandboxInfo, Status, TerminalInfo, WorkspaceInfo, WorkspaceRepo, WorktreeInfo,
 };
 pub use profile_config::{
-    load_profile_config, merge_configs, resolve_config, save_profile_config,
-    validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
-    ClaudeConfigOverride, HooksConfigOverride, ProfileConfig, SandboxConfigOverride,
-    SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride,
-    WorktreeConfigOverride,
+    load_profile_config, merge_configs, resolve_config, resolve_config_or_warn,
+    save_profile_config, validate_check_interval, validate_memory_limit, validate_path_exists,
+    validate_volume_format, ClaudeConfigOverride, HooksConfigOverride, ProfileConfig,
+    SandboxConfigOverride, SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride,
+    UpdatesConfigOverride, WorktreeConfigOverride,
 };
 pub use repo_config::{
     check_hook_trust, execute_hooks, execute_hooks_in_container, load_repo_config,
     merge_repo_config, profile_to_repo_config, repo_config_to_profile, resolve_config_with_repo,
-    save_repo_config, trust_repo, HookTrustStatus, HooksConfig, RepoConfig,
+    resolve_config_with_repo_or_warn, save_repo_config, trust_repo, HookTrustStatus, HooksConfig,
+    RepoConfig,
 };
 pub use storage::Storage;
 
@@ -180,6 +181,55 @@ pub fn set_default_profile(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Probe the global config and the active profile's config at startup so the
+/// TUI can show a single user-visible warning when either fails to parse.
+/// `tracing::warn!` calls inside the `_or_warn` helpers are silently dropped
+/// in default TUI mode (no subscriber), so this gives users a chance to see
+/// that their settings have been ignored without needing `AGENT_OF_EMPIRES_DEBUG=1`.
+pub fn collect_startup_config_warnings(profile: &str) -> Option<String> {
+    let mut messages: Vec<String> = Vec::new();
+
+    let global_path_display = config::config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "config.toml".to_string());
+
+    let global_ok = match Config::load() {
+        Ok(_) => true,
+        Err(e) => {
+            messages.push(format!(
+                "Failed to load global config ({global_path_display}); using defaults.\n{e}"
+            ));
+            false
+        }
+    };
+
+    let effective = if profile.is_empty() {
+        if global_ok {
+            config::resolve_default_profile()
+        } else {
+            DEFAULT_PROFILE.to_string()
+        }
+    } else {
+        profile.to_string()
+    };
+
+    let profile_path_display = profile_config::get_profile_config_path(&effective)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| format!("profiles/{effective}/config.toml"));
+
+    if let Err(e) = profile_config::load_profile_config(&effective) {
+        messages.push(format!(
+            "Failed to load profile config '{effective}' ({profile_path_display}); using defaults.\n{e}"
+        ));
+    }
+
+    if messages.is_empty() {
+        None
+    } else {
+        Some(messages.join("\n\n"))
+    }
+}
+
 // ── TUI heartbeat ──────────────────────────────────────────────────────────
 
 const TUI_HEARTBEAT_FILE: &str = "tui.active";
@@ -216,4 +266,67 @@ pub fn is_tui_active(threshold: Duration) -> bool {
         Err(_) => return false,
     };
     modified.elapsed().unwrap_or(Duration::MAX) < threshold
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn isolate_app_dir() -> tempfile::TempDir {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        temp_home
+    }
+
+    fn app_dir(temp_home: &tempfile::TempDir) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        let dir = temp_home.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let dir = temp_home.path().join(".agent-of-empires");
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_startup_config_warnings_clean() {
+        let _temp = isolate_app_dir();
+        // No config files written = defaults everywhere = no warning.
+        assert!(collect_startup_config_warnings("").is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_startup_config_warnings_bad_global() {
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        fs::write(
+            dir.join("config.toml"),
+            "[sandbox]\nenabled_by_default = \"not-a-bool\"\n",
+        )
+        .unwrap();
+
+        let warning = collect_startup_config_warnings("").expect("expected a warning");
+        assert!(warning.contains("Failed to load global config"));
+        assert!(warning.contains("config.toml"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_startup_config_warnings_bad_profile() {
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        let profile_dir = dir.join("profiles").join("default");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(
+            profile_dir.join("config.toml"),
+            "[worktree]\nenabled = \"not-a-bool\"\n",
+        )
+        .unwrap();
+
+        let warning = collect_startup_config_warnings("default").expect("expected a warning");
+        assert!(warning.contains("Failed to load profile config 'default'"));
+    }
 }

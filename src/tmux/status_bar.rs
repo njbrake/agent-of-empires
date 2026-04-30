@@ -109,7 +109,7 @@ pub fn apply_all_tmux_options(
     use crate::tui::styles::load_theme;
 
     if should_apply_tmux_status_bar() {
-        let config = crate::session::config::Config::load().unwrap_or_default();
+        let config = crate::session::config::Config::load_or_warn();
         let theme_name = if config.theme.name.is_empty() {
             "empire"
         } else {
