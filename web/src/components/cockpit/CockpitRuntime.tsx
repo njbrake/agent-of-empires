@@ -223,11 +223,26 @@ class AssistantBuilder {
   }
 
   appendToolCall(tool: ToolCall) {
+    // Forward the ACP tool title alongside the args so per-kind
+    // renderers can show a descriptive label when raw_input is
+    // empty (Claude's bash tool, for example, often emits an empty
+    // raw_input on the initial tool_call frame). The `_aoe_title`
+    // key is namespaced so it can't collide with real tool args.
+    let argsObj: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(tool.args_preview);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        argsObj = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // args_preview wasn't a JSON object — keep argsObj empty.
+    }
+    if (tool.name) argsObj._aoe_title = tool.name;
     this.parts.push({
       type: "tool-call",
       toolCallId: tool.id,
       toolName: tool.kind || "other",
-      argsText: tool.args_preview,
+      argsText: JSON.stringify(argsObj),
     });
   }
 

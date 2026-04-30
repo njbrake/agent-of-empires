@@ -79,6 +79,13 @@ export type CockpitEvent =
   | "ThinkingEnded"
   | { RateLimit: { info: RateLimitInfo } }
   | { ModeChanged: { mode: SessionMode } }
+  | {
+      ModesAvailable: {
+        current_mode_id: string;
+        modes: Array<{ id: string; name: string; description?: string | null }>;
+      };
+    }
+  | { CurrentModeChanged: { current_mode_id: string } }
   | { RawAgentUpdate: { payload: unknown } }
   | { AgentMessageChunk: { text: string } }
   | { Stopped: { reason: string } }
@@ -125,6 +132,12 @@ export interface CockpitState {
    *  "working" spinner so the UI feels alive even when the agent
    *  isn't streaming text or running a tool yet. */
   turnActive: boolean;
+  /** Real ACP-advertised modes from the agent's NewSessionResponse,
+   *  plus the agent's currently-active mode id. Empty until the
+   *  agent reports them; the picker falls back to the hard-coded
+   *  four-mode taxonomy in that case. */
+  availableModes: Array<{ id: string; name: string; description?: string | null }>;
+  currentModeId: string | null;
 }
 
 export interface ActivityRow {
@@ -164,6 +177,8 @@ export function emptyCockpitState(): CockpitState {
     lagged: false,
     startupError: null,
     turnActive: false,
+    availableModes: [],
+    currentModeId: null,
   };
 }
 
@@ -235,6 +250,19 @@ export function applyEvent(
   }
   if ("ModeChanged" in event) {
     next.mode = event.ModeChanged.mode;
+    return next;
+  }
+  if ("ModesAvailable" in event) {
+    next.availableModes = event.ModesAvailable.modes.map((m) => ({
+      id: m.id,
+      name: m.name,
+      description: m.description ?? null,
+    }));
+    next.currentModeId = event.ModesAvailable.current_mode_id;
+    return next;
+  }
+  if ("CurrentModeChanged" in event) {
+    next.currentModeId = event.CurrentModeChanged.current_mode_id;
     return next;
   }
   if ("AgentMessageChunk" in event) {

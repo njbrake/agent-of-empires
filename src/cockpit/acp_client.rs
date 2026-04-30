@@ -38,7 +38,8 @@ use super::approvals::{is_destructive, ApprovalDecision, Nonce};
 use super::fs_handler::{self, FsPolicy};
 use super::permissions::build_approval;
 use super::state::{
-    CockpitSessionId, DiffPreview, Event, Plan, PlanStep, PlanStepStatus, SessionMode, ToolCall,
+    CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep, PlanStepStatus, SessionMode,
+    ToolCall,
 };
 use super::terminal_handler::TerminalManager;
 
@@ -574,14 +575,23 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             vec![Event::PlanUpdated { plan }]
         }
         SessionUpdate::CurrentModeUpdate(mode_update) => {
-            let mode = match mode_update.current_mode_id.0.as_ref() {
+            let id = mode_update.current_mode_id.0.to_string();
+            // Emit both events: CurrentModeChanged (the real id) and
+            // a best-effort ModeChanged (for the legacy enum-based
+            // UI, in case that path is still used somewhere).
+            let mode = match id.as_str() {
                 "default" => SessionMode::Default,
                 "plan" => SessionMode::Plan,
                 "accept_edits" | "acceptEdits" => SessionMode::AcceptEdits,
                 "bypass_permissions" | "bypassPermissions" => SessionMode::BypassPermissions,
                 _ => SessionMode::Default,
             };
-            vec![Event::ModeChanged { mode }]
+            vec![
+                Event::CurrentModeChanged {
+                    current_mode_id: id,
+                },
+                Event::ModeChanged { mode },
+            ]
         }
         // Variants we don't have a typed mapping for yet pass through as
         // RawAgentUpdate so the UI can render best-effort and we can
@@ -795,7 +805,30 @@ async fn run_connection_task<W, R>(
                 .send_request(NewSessionRequest::new(cwd))
                 .block_task()
                 .await?;
-            let acp_session_id = new_session.session_id;
+            let acp_session_id = new_session.session_id.clone();
+
+            // Surface the agent-advertised modes (if any) so the UI
+            // can render the actual modes the agent supports rather
+            // than the hard-coded four. Claude's adapter typically
+            // ships a mode set with ids like "default" / "plan" /
+            // "accept_edits" / "bypass_permissions".
+            if let Some(modes) = &new_session.modes {
+                let infos: Vec<ModeInfo> = modes
+                    .available_modes
+                    .iter()
+                    .map(|m| ModeInfo {
+                        id: m.id.0.to_string(),
+                        name: m.name.clone(),
+                        description: m.description.clone(),
+                    })
+                    .collect();
+                let _ = event_tx_for_block
+                    .send(Event::ModesAvailable {
+                        current_mode_id: modes.current_mode_id.0.to_string(),
+                        modes: infos,
+                    })
+                    .await;
+            }
 
             if let Some(tx) = ready_for_block.lock().await.take() {
                 let _ = tx.send(Ok(()));

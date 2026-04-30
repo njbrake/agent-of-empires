@@ -751,6 +751,15 @@ impl Instance {
         size: Option<(u16, u16)>,
         skip_on_launch: bool,
     ) -> Result<()> {
+        // Cockpit-mode sessions are not backed by tmux. The cockpit
+        // worker supervisor spawns the ACP agent process directly;
+        // calling start() on a cockpit session is a no-op (status
+        // updates flow through the ACP event channel, not tmux).
+        #[cfg(feature = "cockpit")]
+        if self.cockpit_mode {
+            return Ok(());
+        }
+
         let session = self.tmux_session()?;
 
         if session.exists() {

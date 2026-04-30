@@ -94,6 +94,17 @@ pub enum SessionMode {
     BypassPermissions,
 }
 
+/// One mode advertised by the agent. Mirrors ACP's `SessionMode`
+/// shape: id is the canonical token (passed back via `set_mode`),
+/// name is what the user sees, description is an optional tooltip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModeInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CockpitState {
     pub session_id: CockpitSessionId,
@@ -183,6 +194,20 @@ pub enum Event {
     ModeChanged {
         mode: SessionMode,
     },
+    /// Real ACP-advertised modes. Emitted once when the agent
+    /// announces them (in `NewSessionResponse.modes`) so the UI can
+    /// render the actual modes the agent supports rather than the
+    /// hard-coded four. The id is the token that goes back via
+    /// `session/set_mode`.
+    ModesAvailable {
+        current_mode_id: String,
+        modes: Vec<ModeInfo>,
+    },
+    /// Agent-driven mode switch. Comes from ACP
+    /// `SessionUpdate::CurrentModeUpdate`; UI swaps `current_mode_id`.
+    CurrentModeChanged {
+        current_mode_id: String,
+    },
     /// Passthrough for an ACP `session/update` payload that we have not yet
     /// finished mapping to a typed variant. Useful while the cockpit's
     /// typed schema is still expanding to cover every ACP update kind.
@@ -252,7 +277,13 @@ impl CockpitState {
             Event::ThinkingEnded => self.thinking = None,
             Event::RateLimit { info } => self.rate_limit = Some(info),
             Event::ModeChanged { mode } => self.mode = mode,
-            // The next three variants don't directly mutate persistent
+            // ModesAvailable + CurrentModeChanged carry the real ACP-
+            // advertised modes. The cockpit's persistent state doesn't
+            // track them yet (the UI stores them in the broadcast
+            // replay), so this is just a no-op that bumps seq.
+            Event::ModesAvailable { .. } => {}
+            Event::CurrentModeChanged { .. } => {}
+            // The next four variants don't directly mutate persistent
             // CockpitState fields (yet); they bump seq/updated_at so
             // clients see them in the replay buffer and know the session
             // made progress.

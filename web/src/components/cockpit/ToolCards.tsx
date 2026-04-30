@@ -162,6 +162,14 @@ function pickStr(o: Record<string, unknown> | null, ...keys: string[]): string |
   return null;
 }
 
+/** Return the first non-empty string in the chain, or null. */
+function pickFirst(...candidates: Array<string | null | undefined>): string | null {
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim() !== "") return c;
+  }
+  return null;
+}
+
 function truncateLines(text: string, max: number): {
   shown: string;
   truncated: number;
@@ -262,8 +270,12 @@ function HighlightedBlock({
 function ExecuteToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
-  const command =
-    pickStr(args, "command", "cmd", "args") ?? tool.args_preview;
+  const argCommand = pickStr(args, "command", "cmd", "args");
+  // Fallback chain: real command → ACP-provided title (forwarded via
+  // _aoe_title in CockpitRuntime) → tool's own kind/name. Never show
+  // the literal `{}` from an empty raw_input.
+  const title = pickStr(args, "_aoe_title");
+  const command = pickFirst(argCommand, title, tool.name) ?? "(no command)";
   const description = pickStr(args, "description");
   const output = result?.text ?? "";
   const [open, setOpen] = useState(false);
@@ -314,9 +326,11 @@ function ExecuteToolCard({ tool, result }: Props) {
 function ReadToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
-  const path = pickStr(args, "path", "file_path", "filePath", "filename");
+  const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
+  const title = pickStr(args, "_aoe_title");
+  const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
   const range = formatRange(args);
-  const ext = path?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  const ext = argPath?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
   const content = result?.text ?? "";
   const [open, setOpen] = useState(false);
 
@@ -331,7 +345,7 @@ function ReadToolCard({ tool, result }: Props) {
       status={status}
       icon={<FileText className="h-3.5 w-3.5" />}
       label="read"
-      primary={path ?? tool.name}
+      primary={path}
       meta={
         <>
           {range && <span className="text-[11px] text-text-dim">{range}</span>}
@@ -364,7 +378,9 @@ function formatRange(args: Record<string, unknown> | null): string | null {
 function EditToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
-  const path = pickStr(args, "path", "file_path", "filePath", "filename");
+  const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
+  const title = pickStr(args, "_aoe_title");
+  const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
   const oldText = pickStr(args, "old_string", "oldString", "old_str") ?? "";
   const newText =
     pickStr(args, "new_string", "newString", "new_str", "content") ?? "";
@@ -386,7 +402,7 @@ function EditToolCard({ tool, result }: Props) {
       status={status}
       icon={<Pencil className="h-3.5 w-3.5" />}
       label={verb}
-      primary={path ?? tool.name}
+      primary={path}
       meta={meta}
       expanded={open}
       onToggle={hasDiff ? () => setOpen((v) => !v) : undefined}
@@ -459,13 +475,15 @@ const DIFF_STYLES = {
 function DeleteToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
-  const path = pickStr(args, "path", "file_path", "filePath", "filename");
+  const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
+  const title = pickStr(args, "_aoe_title");
+  const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
   return (
     <CardChrome
       status={status}
       icon={<Trash2 className="h-3.5 w-3.5 text-rose-400" />}
       label="delete"
-      primary={path ?? tool.name}
+      primary={path}
       expanded={false}
     />
   );
@@ -476,8 +494,9 @@ function DeleteToolCard({ tool, result }: Props) {
 function SearchToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
-  const query =
-    pickStr(args, "query", "pattern", "q", "search") ?? tool.args_preview;
+  const argQuery = pickStr(args, "query", "pattern", "q", "search");
+  const title = pickStr(args, "_aoe_title");
+  const query = pickFirst(argQuery, title, tool.name) ?? "(no query)";
   const path = pickStr(args, "path", "directory", "scope");
   const output = result?.text ?? "";
   const lines = output ? output.split("\n").filter(Boolean) : [];
@@ -538,7 +557,9 @@ function SearchToolCard({ tool, result }: Props) {
 function FetchToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
-  const url = pickStr(args, "url", "uri", "endpoint") ?? tool.name;
+  const argUrl = pickStr(args, "url", "uri", "endpoint");
+  const title = pickStr(args, "_aoe_title");
+  const url = pickFirst(argUrl, title, tool.name) ?? "(no url)";
   const output = result?.text ?? "";
   const [open, setOpen] = useState(false);
 
