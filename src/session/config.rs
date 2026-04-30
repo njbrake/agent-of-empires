@@ -618,7 +618,7 @@ pub fn should_apply_tmux_mouse() -> Option<bool> {
     }
 }
 
-fn config_path() -> Result<PathBuf> {
+pub(crate) fn config_path() -> Result<PathBuf> {
     Ok(get_app_dir()?.join("config.toml"))
 }
 

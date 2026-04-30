@@ -100,7 +100,22 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
 
     // Create app and run
     let mut app = App::new(profile, available_tools)?;
-    if let Some(warning) = startup_warning {
+
+    // Combine the caller-supplied startup warning (e.g., debug-log file
+    // failures) with any config-parse failures we detect at startup.
+    // `tracing::warn!` events from the `_or_warn` config helpers are dropped
+    // by default in TUI mode (no subscriber attached), so we surface them
+    // through the same InfoDialog channel here.
+    let combined_warning = match (
+        startup_warning,
+        crate::session::collect_startup_config_warnings(profile),
+    ) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+    if let Some(warning) = combined_warning {
         app.show_startup_warning(&warning);
     }
     let result = app.run(&mut terminal).await;
