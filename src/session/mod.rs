@@ -29,16 +29,17 @@ pub use instance::{
     Instance, SandboxInfo, Status, TerminalInfo, WorkspaceInfo, WorkspaceRepo, WorktreeInfo,
 };
 pub use profile_config::{
-    load_profile_config, merge_configs, resolve_config, save_profile_config,
-    validate_check_interval, validate_memory_limit, validate_path_exists, validate_volume_format,
-    ClaudeConfigOverride, HooksConfigOverride, ProfileConfig, SandboxConfigOverride,
-    SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride,
-    WorktreeConfigOverride,
+    load_profile_config, merge_configs, resolve_config, resolve_config_or_warn,
+    save_profile_config, validate_check_interval, validate_memory_limit, validate_path_exists,
+    validate_volume_format, ClaudeConfigOverride, HooksConfigOverride, ProfileConfig,
+    SandboxConfigOverride, SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride,
+    UpdatesConfigOverride, WorktreeConfigOverride,
 };
 pub use repo_config::{
     check_hook_trust, execute_hooks, execute_hooks_in_container, load_repo_config,
     merge_repo_config, profile_to_repo_config, repo_config_to_profile, resolve_config_with_repo,
-    save_repo_config, trust_repo, HookTrustStatus, HooksConfig, RepoConfig,
+    resolve_config_with_repo_or_warn, save_repo_config, trust_repo, HookTrustStatus, HooksConfig,
+    RepoConfig,
 };
 pub use storage::Storage;
 

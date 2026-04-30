@@ -592,7 +592,7 @@ pub fn user_has_tmux_config() -> bool {
 
 /// Determine if status bar styling should be applied based on config and environment.
 pub fn should_apply_tmux_status_bar() -> bool {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_warn();
     match config.tmux.status_bar {
         TmuxStatusBarMode::Enabled => true,
         TmuxStatusBarMode::Disabled => false,
@@ -603,7 +603,7 @@ pub fn should_apply_tmux_status_bar() -> bool {
 /// Determine if mouse support should be enabled based on config and environment.
 /// Returns Some(true) to enable, Some(false) to disable, None to not touch the setting.
 pub fn should_apply_tmux_mouse() -> Option<bool> {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_warn();
     match config.tmux.mouse {
         TmuxMouseMode::Enabled => Some(true),
         TmuxMouseMode::Disabled => Some(false),
@@ -633,6 +633,18 @@ impl Config {
         let config: Config = toml::from_str(&content)?;
         Ok(config)
     }
+
+    /// Like [`Config::load`], but logs a warning on failure and returns defaults
+    /// instead of propagating the error.
+    pub fn load_or_warn() -> Self {
+        match Self::load() {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!("Failed to load global config, using defaults: {e}");
+                Config::default()
+            }
+        }
+    }
 }
 
 pub fn load_config() -> Result<Option<Config>> {
@@ -652,9 +664,12 @@ pub fn save_config(config: &Config) -> Result<()> {
 
 /// Load the user's default profile name, falling back to "default" on error.
 pub fn resolve_default_profile() -> String {
-    Config::load()
-        .map(|c| c.default_profile)
-        .unwrap_or_else(|_| "default".to_string())
+    let config = Config::load_or_warn();
+    if config.default_profile.is_empty() {
+        "default".to_string()
+    } else {
+        config.default_profile
+    }
 }
 
 /// Return `profile` if non-empty, otherwise the user's globally configured
@@ -670,11 +685,7 @@ pub fn effective_profile(profile: &str) -> String {
 }
 
 pub fn get_update_settings() -> UpdatesConfig {
-    load_config()
-        .ok()
-        .flatten()
-        .map(|c| c.updates)
-        .unwrap_or_default()
+    Config::load_or_warn().updates
 }
 
 pub fn get_claude_config_dir() -> Option<PathBuf> {

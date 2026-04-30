@@ -831,9 +831,9 @@ impl Instance {
         }
 
         // Start with global+profile hooks as the base
-        let mut resolved_on_launch = super::profile_config::resolve_config(profile)
-            .map(|c| c.hooks.on_launch)
-            .unwrap_or_default();
+        let mut resolved_on_launch = super::profile_config::resolve_config_or_warn(profile)
+            .hooks
+            .on_launch;
 
         // Check if repo has trusted hooks that override
         match super::repo_config::check_hook_trust(Path::new(&self.project_path)) {

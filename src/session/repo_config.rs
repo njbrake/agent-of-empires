@@ -286,6 +286,22 @@ pub fn resolve_config_with_repo(profile: &str, project_path: &Path) -> Result<Co
     }
 }
 
+/// Like [`resolve_config_with_repo`], but logs a warning on failure and returns
+/// defaults instead of propagating the error.
+pub fn resolve_config_with_repo_or_warn(profile: &str, project_path: &Path) -> Config {
+    match resolve_config_with_repo(profile, project_path) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to load config for profile '{}' at '{}', using defaults: {e}",
+                profile,
+                project_path.display()
+            );
+            Config::default()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hook trust system
 // ---------------------------------------------------------------------------
@@ -464,7 +480,7 @@ pub fn check_hook_trust(project_path: &Path) -> Result<HookTrustStatus> {
 /// Resolve hooks from global+profile config when no repo hooks are defined.
 /// Returns `None` if no on_create or on_launch hooks are configured.
 pub fn resolve_global_profile_hooks(profile: &str) -> Option<HooksConfig> {
-    let config = super::profile_config::resolve_config(profile).ok()?;
+    let config = super::profile_config::resolve_config_or_warn(profile);
     if config.hooks.on_create.is_empty() && config.hooks.on_launch.is_empty() {
         None
     } else {
@@ -476,9 +492,7 @@ pub fn resolve_global_profile_hooks(profile: &str) -> Option<HooksConfig> {
 /// Repo hooks override (not append) global hooks per-field.
 /// Returns `None` if the merged result has no on_create or on_launch hooks.
 pub fn merge_hooks_with_config(profile: &str, repo_hooks: HooksConfig) -> Option<HooksConfig> {
-    let mut base = super::profile_config::resolve_config(profile)
-        .map(|c| c.hooks)
-        .unwrap_or_default();
+    let mut base = super::profile_config::resolve_config_or_warn(profile).hooks;
 
     if !repo_hooks.on_create.is_empty() {
         base.on_create = repo_hooks.on_create;

@@ -125,17 +125,12 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
         let mut fresh: HashMap<String, CleanupDefaults> = HashMap::new();
         for session in &sessions {
             fresh.entry(session.profile.clone()).or_insert_with(|| {
-                crate::session::resolve_config(&session.profile)
-                    .map(|cfg| CleanupDefaults {
-                        delete_worktree: cfg.worktree.auto_cleanup,
-                        delete_branch: cfg.worktree.delete_branch_on_cleanup,
-                        delete_sandbox: cfg.sandbox.auto_cleanup,
-                    })
-                    .unwrap_or(CleanupDefaults {
-                        delete_worktree: true,
-                        delete_branch: false,
-                        delete_sandbox: true,
-                    })
+                let cfg = crate::session::profile_config::resolve_config_or_warn(&session.profile);
+                CleanupDefaults {
+                    delete_worktree: cfg.worktree.auto_cleanup,
+                    delete_branch: cfg.worktree.delete_branch_on_cleanup,
+                    delete_sandbox: cfg.sandbox.auto_cleanup,
+                }
             });
         }
         *state.cleanup_defaults_cache.write().await = crate::server::CleanupDefaultsCache {

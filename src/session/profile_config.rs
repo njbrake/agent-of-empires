@@ -259,6 +259,21 @@ pub fn resolve_config(profile: &str) -> Result<Config> {
     Ok(merge_configs(global, &profile_config))
 }
 
+/// Like [`resolve_config`], but logs a warning on failure and returns defaults
+/// instead of propagating the error.
+pub fn resolve_config_or_warn(profile: &str) -> Config {
+    match resolve_config(profile) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to load config for profile '{}', using defaults: {e}",
+                profile
+            );
+            Config::default()
+        }
+    }
+}
+
 /// Apply sandbox config overrides to a target config.
 pub fn apply_sandbox_overrides(
     target: &mut super::config::SandboxConfig,
