@@ -16,8 +16,22 @@ interface WizardData {
   extraArgs: string;
   commandOverride: string;
   group: string;
+  cockpitMode: boolean;
   [key: string]: unknown;
 }
+
+/** Tools known to have a published ACP server. Anything not in this
+ *  set falls back to tmux automatically — the wizard greys out the
+ *  cockpit toggle for those. Kept in sync with the default registry
+ *  in src/cockpit/agent_registry.rs. */
+const ACP_CAPABLE_TOOLS = new Set([
+  "claude",
+  "opencode",
+  "gemini",
+  "codex",
+  "vibe",
+  "pi",
+]);
 
 interface Props {
   data: WizardData;
@@ -26,6 +40,73 @@ interface Props {
   profiles: ProfileInfo[];
   dockerAvailable: boolean;
   onApplyProfileDefaults: (defaults: { yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] }) => void;
+}
+
+function SubstratePicker({
+  tool,
+  cockpitMode,
+  onChange,
+}: {
+  tool: string;
+  cockpitMode: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  const acpAvailable = ACP_CAPABLE_TOOLS.has(tool);
+  // Lock to terminal mode when the tool has no ACP adapter.
+  const effective = acpAvailable ? cockpitMode : false;
+  return (
+    <div className="mb-5 rounded-lg border border-surface-700 bg-surface-950 overflow-hidden">
+      <div className="grid grid-cols-2">
+        <button
+          type="button"
+          onClick={() => acpAvailable && onChange(true)}
+          disabled={!acpAvailable}
+          className={[
+            "p-3 text-left transition-colors border-r border-surface-700",
+            effective
+              ? "bg-surface-900 border-l-2 border-l-brand-600"
+              : "hover:bg-surface-900/60",
+            !acpAvailable && "opacity-50 cursor-not-allowed",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-text-primary">Cockpit</span>
+            <span className="rounded bg-brand-700/40 px-1.5 py-px text-[10px] font-mono uppercase tracking-wide text-brand-400">
+              Beta
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-text-dim leading-snug">
+            {acpAvailable
+              ? "Structured chat: tool cards, diffs, approvals, mode picker."
+              : `${tool} doesn't have an ACP adapter yet — cockpit unavailable.`}
+          </p>
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange(false)}
+          className={[
+            "p-3 text-left transition-colors",
+            !effective
+              ? "bg-surface-900 border-l-2 border-l-brand-600"
+              : "hover:bg-surface-900/60",
+          ].join(" ")}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-text-primary">Terminal</span>
+            <span className="rounded bg-surface-700 px-1.5 py-px text-[10px] font-mono uppercase tracking-wide text-text-dim">
+              Stable
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-text-dim leading-snug">
+            Run the agent in a tmux pane. Raw terminal fidelity, no
+            structured rendering.
+          </p>
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
@@ -130,6 +211,15 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
           </button>
         ))}
       </div>
+
+      {/* Substrate (cockpit vs terminal) — surfaces the choice that
+          used to be a hidden default. Greyed for tools without an
+          ACP adapter. */}
+      <SubstratePicker
+        tool={data.tool}
+        cockpitMode={data.cockpitMode}
+        onChange={(v) => onChange("cockpitMode", v)}
+      />
 
       {/* Profile selector */}
       {showProfilePicker && (

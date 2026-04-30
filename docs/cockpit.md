@@ -1,4 +1,10 @@
-# Cockpit (Native Agent Rendering)
+# Cockpit (Native Agent Rendering, Beta)
+
+> **Beta**: Cockpit is opt-in per session. Tmux passthrough remains
+> the default — pass `--cockpit` on the CLI, or pick **Cockpit** in the
+> web wizard, to use the structured-rendering path. The data model
+> (`cockpit_mode: bool` per session) is stable; the UI is still
+> evolving.
 
 Cockpit is aoe's native rendering surface for AI coding agents. Instead
 of viewing the agent through a terminal pane (PTY bytes piped through
@@ -10,6 +16,29 @@ Cockpit speaks the [Agent Client Protocol](https://agentclientprotocol.com/)
 (ACP), a JSON-RPC standard for editor-agent communication. aoe is the
 *client*; the agent (Anthropic's Claude Code, our `aoe-agent`, Google's
 Gemini CLI, etc.) is the *server*. Any ACP-conformant agent works.
+
+## Supported agents
+
+aoe ships a registry entry for each tool whose ACP server we've verified
+against [agentclientprotocol.com](https://agentclientprotocol.com/get-started/agents.md).
+The wizard greys out the cockpit option for tools not in this set.
+
+| aoe tool   | Substrate B (cockpit)                                      | Auth                                   |
+|------------|------------------------------------------------------------|----------------------------------------|
+| `claude`   | `claude-agent-acp` (Zed adapter for the Claude SDK)        | `claude /login` writes `~/.claude/credentials`; or `ANTHROPIC_API_KEY` |
+| `opencode` | `opencode acp` (native, SST)                               | `OPENCODE_API_KEY` env var; or provider-specific env (set up via `opencode auth`) |
+| `gemini`   | `gemini --acp` (native, Google)                            | `GEMINI_API_KEY` env var, OAuth via `gemini auth`, or Vertex `GOOGLE_API_KEY` |
+| `codex`    | `codex-acp` (Zed adapter, npm `@zed-industries/codex-acp`) | `OPENAI_API_KEY` env var, or ChatGPT login (local-only) |
+| `vibe`     | `vibe-acp` (native, Mistral)                               | Mistral API key; set up via `vibe` first |
+| `pi`       | `pi-acp` (adapter, requires `@mariozechner/pi-coding-agent`) | `pi-acp --terminal-login` for OAuth, or env vars per provider |
+| `aoe-agent`| Bundled multi-provider agent (Vercel AI SDK 6)             | Whatever provider env vars Vercel AI SDK expects |
+| *aider, cursor, copilot, droid, settl, hermes* | not yet wired into the cockpit registry — fall back to terminal mode |
+
+The four env vars cockpit always forwards to the agent process are
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`CLAUDE_CONFIG_DIR`. For the others, set them in the env that runs
+`aoe serve` (or use the per-session `extra_env` field) and the agent's
+own auth path will pick them up via the forwarded `HOME`.
 
 ## Quickstart
 
@@ -47,21 +76,41 @@ an actionable error pointing at the install path for your OS.
 aoe cockpit doctor
 ```
 
-Sample output on a clean machine:
+Sample output on a machine where Claude is installed but the others
+aren't:
 
 ```
-Cockpit doctor
-==============
+Cockpit doctor  (Beta)
+======================
+
+Cockpit is the structured-rendering substrate (ACP-based).
+Tmux passthrough remains the default for tool sessions; cockpit
+is opt-in per session via `aoe add --cockpit` or the web wizard.
 
 [OK] Node runtime  v22.21.0
     path: /opt/homebrew/bin/node
 
 Configured agents:
-[OK] aoe-agent      aoe's multi-provider agent (Vercel AI SDK 6)
-[OK] claude-code    Anthropic Claude via the official ACP adapter
+[!! ] aoe-agent  (aoe's bundled multi-provider agent (Vercel AI SDK 6))
+[OK] claude  (Anthropic Claude via the official ACP adapter …)
+[OK] claude-code  (Alias for `claude` (legacy name))
+[!! ] codex  (OpenAI Codex CLI via Zed adapter …)
+    install: npm install -g @zed-industries/codex-acp
+[!! ] gemini  (Google Gemini CLI — native ACP via `gemini --acp`)
+    install: npm install -g @google/gemini-cli  (then `gemini --acp`)
+[!! ] opencode  (OpenCode (SST) — native ACP via `opencode acp`)
+    install: curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)
+[!! ] pi  (Hermes coding agent (`pi`) via the pi-acp adapter …)
+    install: npm install -g pi-acp  (also requires `npm i -g @mariozechner/pi-coding-agent`)
+[!! ] vibe  (Mistral Vibe — native ACP via the bundled `vibe-acp` binary)
+    install: follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)
 
-Overall: ok
+Overall: partial
 ```
+
+`aoe cockpit doctor --fix` will `npm install -g` the npm-distributed
+adapters (claude / codex / pi). The native CLIs (opencode / gemini /
+vibe) you install through their own channels.
 
 If Node is missing the report exits 1; if some agents are unreachable
 it exits 2; otherwise 0. Pass `--json` for machine-readable output.

@@ -77,6 +77,34 @@ struct AgentDoctorEntry {
     description: String,
 }
 
+/// ACP adapters that ship as npm packages (binary name → package id).
+/// The doctor's `--fix` path runs `npm install -g <package>` for each
+/// entry whose binary isn't already on PATH.
+const NPM_INSTALLABLE_ACP: &[(&str, &str)] = &[
+    ("claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
+    ("codex-acp", "@zed-industries/codex-acp"),
+    ("pi-acp", "pi-acp"),
+];
+
+/// Native CLIs whose ACP server is shipped as part of the agent
+/// itself, not as a separate npm adapter. These get a one-line
+/// install hint in the doctor output instead of an `npm i -g`.
+fn install_hint_for(binary: &str) -> Option<&'static str> {
+    Some(match binary {
+        "claude-agent-acp" => "npm install -g @agentclientprotocol/claude-agent-acp",
+        "codex-acp" => "npm install -g @zed-industries/codex-acp",
+        "pi-acp" => {
+            "npm install -g pi-acp  (also requires `npm i -g @mariozechner/pi-coding-agent`)"
+        }
+        "opencode" => "curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)",
+        "gemini" => "npm install -g @google/gemini-cli  (then `gemini --acp`)",
+        "vibe-acp" => {
+            "follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)"
+        }
+        _ => return None,
+    })
+}
+
 async fn doctor(json: bool, fix: bool) -> Result<()> {
     if fix {
         // Auto-remediate: download the bundled Node runtime if Node is
@@ -102,21 +130,25 @@ async fn doctor(json: bool, fix: bool) -> Result<()> {
                 Err(e) => println!("Cannot probe Node: {e}"),
             }
         }
-        // Auto-install the claude-code ACP adapter globally if
-        // `claude-agent-acp` isn't on PATH. We surface output so a
-        // failure (no npm, no internet, etc.) is obvious rather than
-        // silently leaving the user with a wedged cockpit.
-        if find_in_path("claude-agent-acp").is_none() {
-            println!("Installing @agentclientprotocol/claude-agent-acp globally via npm...");
+        // Auto-install npm-distributed ACP adapters that aren't on
+        // PATH. Native CLIs (opencode / gemini / vibe) have to be
+        // installed via their own channels; we only print a hint for
+        // those.
+        for (binary, npm_pkg) in NPM_INSTALLABLE_ACP {
+            if find_in_path(binary).is_some() {
+                continue;
+            }
+            println!("Installing {npm_pkg} globally via npm...");
             let status = std::process::Command::new("npm")
-                .args(["install", "-g", "@agentclientprotocol/claude-agent-acp"])
+                .args(["install", "-g", npm_pkg])
                 .status();
             match status {
-                Ok(s) if s.success() => {
-                    println!("Installed @agentclientprotocol/claude-agent-acp.");
+                Ok(s) if s.success() => println!("Installed {npm_pkg}."),
+                Ok(s) => println!("npm install {npm_pkg} exited with status {s}"),
+                Err(e) => {
+                    println!("Could not run npm: {e}. Install Node.js + npm first.");
+                    break;
                 }
-                Ok(s) => println!("npm install exited with status {s}"),
-                Err(e) => println!("Could not run npm: {e}. Install Node.js + npm first."),
             }
         }
     }
@@ -153,8 +185,12 @@ async fn doctor(json: bool, fix: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("Cockpit doctor");
-    println!("==============");
+    println!("Cockpit doctor  (Beta)");
+    println!("======================");
+    println!();
+    println!("Cockpit is the structured-rendering substrate (ACP-based).");
+    println!("Tmux passthrough remains the default for tool sessions; cockpit");
+    println!("is opt-in per session via `aoe add --cockpit` or the web wizard.");
     println!();
     let node = &report.node;
     let node_mark = if node.meets_minimum.unwrap_or(false) {
@@ -172,6 +208,7 @@ async fn doctor(json: bool, fix: bool) -> Result<()> {
     }
     println!();
     println!("Configured agents:");
+    let registry_for_hints = AgentRegistry::with_defaults();
     for entry in &report.agents {
         let mark = if entry.command_present {
             "[OK]"
@@ -179,6 +216,17 @@ async fn doctor(json: bool, fix: bool) -> Result<()> {
             "[!! ]"
         };
         println!("{} {}  ({})", mark, entry.name, entry.description);
+        if !entry.command_present {
+            // Look up the binary name via the registry so we can
+            // print a tailored install hint instead of generic
+            // "missing".
+            if let Some(spec) = registry_for_hints.get(&entry.name) {
+                let bin = spec.command.split('/').next_back().unwrap_or(&spec.command);
+                if let Some(hint) = install_hint_for(bin) {
+                    println!("    install: {hint}");
+                }
+            }
+        }
     }
     println!();
     println!("Overall: {}", overall);

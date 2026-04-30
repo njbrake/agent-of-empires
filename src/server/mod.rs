@@ -487,15 +487,11 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 .collect()
         };
         for (id, tool, agent_override, model, project_path) in cockpit_targets {
-            let agent = agent_override.unwrap_or_else(|| {
-                if tool == "claude" {
-                    "claude-code".into()
-                } else {
-                    "aoe-agent".into()
-                }
-            });
-            let cwd = std::path::PathBuf::from(project_path);
             let supervisor = state.cockpit_supervisor.clone();
+            let agent = supervisor
+                .pick_agent_for_tool(&tool, agent_override.as_deref())
+                .await;
+            let cwd = std::path::PathBuf::from(project_path);
             tokio::spawn(async move {
                 if let Err(e) = supervisor
                     .spawn(id.clone(), &agent, cwd, vec![], vec![], model)

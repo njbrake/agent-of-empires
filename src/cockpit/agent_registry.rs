@@ -29,20 +29,34 @@ impl AgentRegistry {
         Self::default()
     }
 
-    /// Returns a registry seeded with the day-one defaults from the v4
-    /// design doc: `claude-code` (Anthropic via the official ACP adapter)
-    /// and `aoe-agent` (our Node binary).
+    /// Returns a registry seeded with one entry per aoe tool that has
+    /// a published ACP server, plus our own `aoe-agent` as a generic
+    /// multi-provider fallback. Each entry is keyed on the same name
+    /// the tmux substrate uses (claude / opencode / gemini / codex /
+    /// vibe / pi) so the spawn path can map `instance.tool` directly
+    /// to a registry key.
+    ///
+    /// Sources verified against
+    /// https://agentclientprotocol.com/get-started/agents.md
+    /// (Jan 2026):
+    ///
+    ///   claude   → claude-agent-acp     (Zed adapter for Claude SDK)
+    ///   opencode → `opencode acp`       (native, SST)
+    ///   gemini   → `gemini --acp`       (native, Google)
+    ///   codex    → codex-acp            (Zed adapter, OpenAI Codex CLI)
+    ///   vibe     → vibe-acp             (native, Mistral)
+    ///   pi       → pi-acp               (adapter, Hermes coding agent)
+    ///
+    /// We deliberately don't use `npx -y` for these. First-run
+    /// downloads can hang for tens of seconds with no output, which
+    /// used to leave the cockpit worker silently wedged before the
+    /// handshake. `aoe cockpit doctor --fix` can install missing
+    /// binaries on demand.
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
-        // Default to a global install (`npm install -g
-        // @agentclientprotocol/claude-agent-acp`). The doctor surfaces a
-        // clear remediation hint when the binary isn't on PATH. We
-        // deliberately don't use `npx -y @agentclientprotocol/claude-agent-acp`
-        // here because the first-run download can hang for tens of
-        // seconds with no output, which used to leave the cockpit
-        // worker silently wedged before the handshake.
+
         reg.agents.insert(
-            "claude-code".into(),
+            "claude".into(),
             AgentSpec {
                 command: "claude-agent-acp".into(),
                 args: vec![],
@@ -52,12 +66,71 @@ impl AgentRegistry {
                 env_allowlist: None,
             },
         );
+        // Legacy alias used by older session records before the
+        // tool-keyed naming. Kept so persisted sessions with
+        // cockpit_agent="claude-code" still resolve.
+        reg.agents.insert(
+            "claude-code".into(),
+            AgentSpec {
+                command: "claude-agent-acp".into(),
+                args: vec![],
+                description: "Alias for `claude` (legacy name)".into(),
+                env_allowlist: None,
+            },
+        );
+        reg.agents.insert(
+            "opencode".into(),
+            AgentSpec {
+                command: "opencode".into(),
+                args: vec!["acp".into()],
+                description: "OpenCode (SST) — native ACP via `opencode acp`".into(),
+                env_allowlist: None,
+            },
+        );
+        reg.agents.insert(
+            "gemini".into(),
+            AgentSpec {
+                command: "gemini".into(),
+                args: vec!["--acp".into()],
+                description: "Google Gemini CLI — native ACP via `gemini --acp`".into(),
+                env_allowlist: None,
+            },
+        );
+        reg.agents.insert(
+            "codex".into(),
+            AgentSpec {
+                command: "codex-acp".into(),
+                args: vec![],
+                description:
+                    "OpenAI Codex CLI via Zed adapter (npm i -g @zed-industries/codex-acp)".into(),
+                env_allowlist: None,
+            },
+        );
+        reg.agents.insert(
+            "vibe".into(),
+            AgentSpec {
+                command: "vibe-acp".into(),
+                args: vec![],
+                description: "Mistral Vibe — native ACP via the bundled `vibe-acp` binary".into(),
+                env_allowlist: None,
+            },
+        );
+        reg.agents.insert(
+            "pi".into(),
+            AgentSpec {
+                command: "pi-acp".into(),
+                args: vec![],
+                description: "Hermes coding agent (`pi`) via the pi-acp adapter (npm i -g pi-acp)"
+                    .into(),
+                env_allowlist: None,
+            },
+        );
         reg.agents.insert(
             "aoe-agent".into(),
             AgentSpec {
                 command: "${aoe_data_dir}/cockpit-worker/dist/aoe-agent".into(),
                 args: vec![],
-                description: "aoe's multi-provider agent (Vercel AI SDK 6)".into(),
+                description: "aoe's bundled multi-provider agent (Vercel AI SDK 6)".into(),
                 env_allowlist: None,
             },
         );

@@ -91,6 +91,36 @@ impl<S: BroadcastSink> Supervisor<S> {
             .ok_or_else(|| SupervisorError::UnknownAgent(name.into()))
     }
 
+    /// Pick the agent name to spawn for an instance. Precedence:
+    ///   1. explicit `cockpit_agent` override on the instance
+    ///   2. registry entry keyed on the instance's tool name
+    ///      (so `tool="opencode"` → registry `"opencode"` →
+    ///      `opencode acp`, etc.)
+    ///   3. legacy fallback: `claude` for the claude tool, otherwise
+    ///      `aoe-agent` (our bundled multi-provider agent)
+    pub async fn pick_agent_for_tool(&self, tool: &str, explicit_override: Option<&str>) -> String {
+        if let Some(name) = explicit_override {
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+        // Step 2: tool-keyed registry lookup. Done under the same
+        // lock as resolve_agent so a custom override registered via
+        // upsert_agent is honored.
+        {
+            let reg = self.registry.lock().await;
+            if reg.get(tool).is_some() {
+                return tool.to_string();
+            }
+        }
+        // Step 3: legacy fallbacks.
+        if tool == "claude" {
+            "claude".into()
+        } else {
+            "aoe-agent".into()
+        }
+    }
+
     pub async fn registry_snapshot(&self) -> AgentRegistry {
         self.registry.lock().await.clone()
     }

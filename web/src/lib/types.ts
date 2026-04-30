@@ -211,4 +211,8 @@ export interface CreateSessionRequest {
   command_override?: string;
   custom_instruction?: string;
   profile?: string;
+  /** Substrate selection: true → ACP-based cockpit (Beta),
+   *  false → tmux passthrough (legacy). Server defaults to true on
+   *  web-created sessions; the wizard may override. */
+  cockpit_mode?: boolean;
 }

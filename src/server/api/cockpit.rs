@@ -58,20 +58,14 @@ pub async fn spawn_cockpit(
     };
     drop(instances);
 
-    let agent = req
-        .agent
-        .or_else(|| instance.cockpit_agent.clone())
-        .unwrap_or_else(|| {
-            // Default agent picks: claude-code for "claude", aoe-agent
-            // otherwise. Settings-side default is consulted via the
-            // existing config when the supervisor is wired into the TUI
-            // creation flow. For the REST surface we keep it simple.
-            if instance.tool == "claude" {
-                "claude-code".into()
-            } else {
-                "aoe-agent".into()
-            }
-        });
+    // Pick the cockpit agent: explicit request override > stored
+    // cockpit_agent on the instance > registry entry keyed on the
+    // tool name (so tool="opencode" → opencode-acp, etc).
+    let explicit = req.agent.clone().or_else(|| instance.cockpit_agent.clone());
+    let agent = state
+        .cockpit_supervisor
+        .pick_agent_for_tool(&instance.tool, explicit.as_deref())
+        .await;
 
     let cwd = PathBuf::from(&instance.project_path);
     let provider_env: Vec<(String, String)> = req

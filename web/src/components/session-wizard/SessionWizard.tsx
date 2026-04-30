@@ -21,6 +21,9 @@ export interface WizardData {
   customInstruction: string;
   extraArgs: string;
   commandOverride: string;
+  /** Substrate selection. true → ACP-based cockpit (structured
+   *  rendering, Beta). false → tmux passthrough (raw terminal). */
+  cockpitMode: boolean;
   /** Tracks whether the user has manually edited fields after a profile selection */
   profileDirty: boolean;
   [key: string]: unknown;
@@ -54,6 +57,11 @@ const initialData: WizardData = {
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
   advancedEnabled: false, profileDirty: false,
   customInstruction: "", extraArgs: "", commandOverride: "",
+  // Cockpit (Beta) is the default substrate for browser-created
+  // sessions because structured rendering is the whole point of the
+  // web dashboard. The wizard exposes this as an explicit toggle so
+  // users can fall back to tmux if cockpit gives them grief.
+  cockpitMode: true,
 };
 
 function reducer(state: WizardState, action: Action): WizardState {
@@ -195,6 +203,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
       command_override: d.commandOverride || undefined,
       custom_instruction: d.customInstruction || undefined,
       profile: d.profile || undefined,
+      cockpit_mode: d.cockpitMode,
     };
     const result = await createSession(body);
     if (result.ok) { dispatch({ type: "SUBMIT_SUCCESS" }); onCreated(result.session); }

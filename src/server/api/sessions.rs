@@ -724,13 +724,10 @@ pub async fn create_session(
 
             #[cfg(feature = "cockpit")]
             if let Some((id, tool, agent_override, model, project_path)) = cockpit_spawn_target {
-                let agent = agent_override.unwrap_or_else(|| {
-                    if tool == "claude" {
-                        "claude-code".into()
-                    } else {
-                        "aoe-agent".into()
-                    }
-                });
+                let agent = state
+                    .cockpit_supervisor
+                    .pick_agent_for_tool(&tool, agent_override.as_deref())
+                    .await;
                 let cwd = std::path::PathBuf::from(project_path);
                 let supervisor = state.cockpit_supervisor.clone();
                 tokio::spawn(async move {
