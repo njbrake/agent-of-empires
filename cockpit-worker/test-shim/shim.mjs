@@ -55,6 +55,12 @@ class ShimAgent {
       .map((c) => c.text)
       .join("\n");
 
+    // Optional slow path: tests that need to observe mid-turn UI
+    // (e.g. the working spinner) include "SLOW" in the prompt so the
+    // shim adds a configurable delay between events.
+    const slow = userText.includes("SLOW");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
     await this.connection.sessionUpdate({
       sessionId: params.sessionId,
       update: {
@@ -62,6 +68,7 @@ class ShimAgent {
         content: { type: "text", text: `received: ${userText}` },
       },
     });
+    if (slow) await sleep(800);
 
     await this.connection.sessionUpdate({
       sessionId: params.sessionId,
@@ -75,6 +82,7 @@ class ShimAgent {
         rawInput: { path: "/tmp/shim.txt" },
       },
     });
+    if (slow) await sleep(800);
 
     await this.connection.sessionUpdate({
       sessionId: params.sessionId,
@@ -85,6 +93,7 @@ class ShimAgent {
         rawOutput: { content: "shim file contents" },
       },
     });
+    if (slow) await sleep(800);
 
     // Optional fs round-trip exercised by tests via prompt keywords.
     if (userText.includes("FS_READ_WRITE")) {

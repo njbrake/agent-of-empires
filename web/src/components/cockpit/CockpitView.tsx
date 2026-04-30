@@ -15,6 +15,12 @@ import { useCockpit, type ConnectionStatus } from "../../hooks/useCockpit";
 import { ApprovalCard } from "./ApprovalCard";
 import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCards";
+import {
+  SPINNER_FRAMES,
+  SPINNER_INTERVAL_MS,
+  VERB_INTERVAL_MS,
+  chooseVerb,
+} from "../../lib/cockpitRattle";
 import type {
   ActivityRow,
   Approval,
@@ -245,10 +251,16 @@ function EmptyState({ onPick }: { onPick: (text: string) => Promise<void> }) {
 /* ── Working spinner ─────────────────────────────────────────────── */
 
 /**
- * Single "agent is working" indicator. Stays visible from the moment
- * the user sends a prompt until the agent emits `Stopped`. The label
- * adapts to the current sub-state (thinking / running tool / idle in
- * the turn) so the user always knows something is happening.
+ * "Agent is working" indicator with AOE-themed verbs and a braille
+ * rattle. Visible from prompt-sent until the agent emits `Stopped`.
+ *
+ * Two animations layered:
+ *  - The glyph rattles through SPINNER_FRAMES at SPINNER_INTERVAL_MS,
+ *    same vibe as the ratatui `rattles` spinners on the TUI side.
+ *  - The verb cycles through WORKING_VERBS / THINKING_VERBS every
+ *    VERB_INTERVAL_MS so long turns get variety. Tool runs override
+ *    the verb with the tool's actual name dressed up with an empire
+ *    verb ("Dispatching read", "Marshalling write"…).
  */
 function WorkingSpinner({
   thinking,
@@ -257,17 +269,42 @@ function WorkingSpinner({
   thinking: boolean;
   tool: string | null;
 }) {
-  const label = thinking
-    ? "Thinking…"
+  const [frame, setFrame] = useState(0);
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 0xffffffff));
+
+  // Rattle the glyph.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
+    }, SPINNER_INTERVAL_MS);
+    return () => window.clearInterval(t);
+  }, []);
+
+  // Re-pick the verb every few seconds for variety on long turns.
+  // Tool changes (different tool name) implicitly bump the verb
+  // because chooseVerb hashes seed+context.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setSeed((s) => (s + 0x9e3779b9) | 0);
+    }, VERB_INTERVAL_MS);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const state: "thinking" | "tool" | "working" = thinking
+    ? "thinking"
     : tool
-      ? `Running ${tool}…`
-      : "Working…";
+      ? "tool"
+      : "working";
+  const label = chooseVerb(state, seed, tool);
+
   return (
     <div className="flex items-center gap-2 text-sm italic text-text-muted">
       <span
-        className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-surface-700 border-t-brand-500"
+        className="inline-block w-3 text-center font-mono text-brand-500"
         aria-hidden="true"
-      />
+      >
+        {SPINNER_FRAMES[frame]}
+      </span>
       <span>{label}</span>
     </div>
   );
