@@ -13,8 +13,19 @@
 // CockpitRuntime.tsx. We never let assistant-ui own the chat state; it
 // only renders what we feed it and surfaces user actions back.
 
-import { useEffect, useState } from "react";
-import { MessagePrimitive, ThreadPrimitive } from "@assistant-ui/react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ActionBarPrimitive,
+  MessagePrimitive,
+  ThreadPrimitive,
+} from "@assistant-ui/react";
+import {
+  ChevronDown,
+  Copy as CopyIcon,
+  ListChecks,
+  Pencil,
+  RefreshCcw,
+} from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
 import { CockpitRuntime, type CockpitContext } from "./CockpitRuntime";
@@ -48,15 +59,21 @@ const STARTER_PROMPTS = [
 export function CockpitView({ sessionId }: Props) {
   return (
     <CockpitRuntime sessionId={sessionId}>
-      {(ctx) => <CockpitChrome {...ctx} />}
+      {(ctx) => <CockpitChrome sessionId={sessionId} {...ctx} />}
     </CockpitRuntime>
   );
 }
 
-function CockpitChrome({ state, status, resolveApproval, sendPrompt }: CockpitContext) {
+function CockpitChrome({
+  sessionId,
+  state,
+  status,
+  resolveApproval,
+  sendPrompt,
+}: CockpitContext & { sessionId: string }) {
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
-      <PlanStrip plan={state.plan} mode={state.mode} />
+      <PlanStrip sessionId={sessionId} plan={state.plan} mode={state.mode} />
 
       {(status !== "open" || state.lagged || state.rateLimit) && (
         <SystemNotices
@@ -104,7 +121,7 @@ function CockpitChrome({ state, status, resolveApproval, sendPrompt }: CockpitCo
           </div>
         </ThreadPrimitive.Viewport>
 
-        <Composer />
+        <Composer sessionId={sessionId} />
       </ThreadPrimitive.Root>
     </div>
   );
@@ -114,7 +131,7 @@ function CockpitChrome({ state, status, resolveApproval, sendPrompt }: CockpitCo
 
 function UserMessage() {
   return (
-    <MessagePrimitive.Root className="mt-4 flex justify-end">
+    <MessagePrimitive.Root className="group mt-4 flex flex-col items-end gap-1">
       <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm whitespace-pre-wrap">
         <MessagePrimitive.Parts
           components={{
@@ -122,13 +139,26 @@ function UserMessage() {
           }}
         />
       </div>
+      <ActionBarPrimitive.Root
+        autohide="not-last"
+        className="opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100"
+      >
+        <div className="flex items-center gap-0.5 rounded-md border border-surface-700/60 bg-surface-850 p-0.5">
+          <ActionBarPrimitive.Edit asChild>
+            <ActionIconButton label="Edit" icon={<Pencil className="h-3 w-3" />} />
+          </ActionBarPrimitive.Edit>
+          <ActionBarPrimitive.Copy asChild>
+            <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
+          </ActionBarPrimitive.Copy>
+        </div>
+      </ActionBarPrimitive.Root>
     </MessagePrimitive.Root>
   );
 }
 
 function AssistantMessage() {
   return (
-    <MessagePrimitive.Root className="mt-4 mr-auto w-full">
+    <MessagePrimitive.Root className="group mt-4 mr-auto w-full">
       <div className="text-sm text-text-primary leading-relaxed">
         <MessagePrimitive.Parts
           components={{
@@ -139,13 +169,117 @@ function AssistantMessage() {
           }}
         />
       </div>
+      <ActionBarPrimitive.Root
+        autohide="not-last"
+        className="mt-1 opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100"
+      >
+        <div className="flex items-center gap-0.5 rounded-md border border-surface-700/60 bg-surface-850 p-0.5">
+          <ActionBarPrimitive.Copy asChild>
+            <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
+          </ActionBarPrimitive.Copy>
+          <ActionBarPrimitive.Reload asChild>
+            <ActionIconButton
+              label="Regenerate"
+              icon={<RefreshCcw className="h-3 w-3" />}
+            />
+          </ActionBarPrimitive.Reload>
+        </div>
+      </ActionBarPrimitive.Root>
     </MessagePrimitive.Root>
   );
 }
 
+function ActionIconButton({
+  label,
+  icon,
+  ...rest
+}: {
+  label: string;
+  icon: React.ReactNode;
+} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      {...rest}
+      className={[
+        "inline-flex h-6 w-6 items-center justify-center rounded text-text-dim",
+        "hover:bg-surface-800 hover:text-text-secondary",
+        "transition-colors",
+        rest.className ?? "",
+      ].join(" ")}
+    >
+      {icon}
+    </button>
+  );
+}
+
 function AssistantText({ text }: { text: string }) {
-  if (!text) return null;
-  return <Markdown text={text} />;
+  const visible = useStreamReveal(text);
+  if (!visible) return null;
+  return <Markdown text={visible} />;
+}
+
+/**
+ * Token-buffered reveal. ACP emits agent text in fat chunks (often a
+ * full paragraph at a time) that land as one big React update — the
+ * user sees the message snap into existence rather than stream. We
+ * gate the displayed text behind a chars-per-frame budget so it reads
+ * like steady typing.
+ *
+ * - Budget: ~24 chars per 16ms frame ≈ 1500 chars/sec, fast enough
+ *   that long replies don't feel laggy but slow enough that streaming
+ *   reads as flowing text.
+ * - When the buffer falls behind by a lot (e.g. agent finished but
+ *   we're still revealing), we accelerate so we don't trail forever.
+ * - On a fresh message (text shrinks because the parent rebuilt the
+ *   message tree), we reset.
+ */
+function useStreamReveal(target: string): string {
+  const [shown, setShown] = useState(target);
+  const targetRef = useRef(target);
+  const shownRef = useRef(target);
+  const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    targetRef.current = target;
+    if (target.length < shownRef.current.length) {
+      // Re-mount or upstream truncation: jump to current target.
+      shownRef.current = target;
+      setShown(target);
+      return;
+    }
+    if (shownRef.current === target) return;
+    const tick = () => {
+      const t = targetRef.current;
+      const have = shownRef.current.length;
+      const want = t.length;
+      if (have >= want) {
+        rafRef.current = 0;
+        return;
+      }
+      const remaining = want - have;
+      // Per-frame budget: 24 chars/16ms baseline; speed up when we
+      // fall more than 200 chars behind so a finished turn catches
+      // up quickly.
+      const step = Math.min(remaining, remaining > 200 ? 64 : 24);
+      shownRef.current = t.slice(0, have + step);
+      setShown(shownRef.current);
+      rafRef.current = window.requestAnimationFrame(tick);
+    };
+    if (!rafRef.current) {
+      rafRef.current = window.requestAnimationFrame(tick);
+    }
+    return () => {
+      if (rafRef.current) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+    };
+  }, [target]);
+
+  return shown;
 }
 
 // assistant-ui's tool-call props are typed as JSON-only; in our app the
@@ -300,46 +434,65 @@ function WorkingSpinner({
   );
 }
 
-/* ── Plan strip ──────────────────────────────────────────────────── */
+/* ── Plan strip & mode picker ────────────────────────────────────── */
 
 interface PlanStripProps {
+  sessionId: string;
   plan: Plan | null;
   mode: CockpitState["mode"];
 }
 
-function PlanStrip({ plan, mode }: PlanStripProps) {
+function PlanStrip({ sessionId, plan, mode }: PlanStripProps) {
   const [expanded, setExpanded] = useState(false);
-  if (!plan && mode === "Default") return null;
+  // Hide entirely on the most common case: no plan, default mode.
+  if (!plan && mode === "Default") {
+    // Still render a thin status bar so the mode picker is reachable.
+    return (
+      <div className="flex items-center justify-end gap-2 border-b border-surface-800 bg-surface-900/95 px-4 py-1.5 backdrop-blur">
+        <ModePicker sessionId={sessionId} mode={mode} />
+      </div>
+    );
+  }
 
   const current = plan?.steps.find((s) => s.status === "InProgress");
-  const upcoming = plan?.steps.filter((s) => s.status === "Pending") ?? [];
-  const completed = plan?.steps.filter((s) => s.status === "Done") ?? [];
+  const completed = plan?.steps.filter((s) => s.status === "Done").length ?? 0;
   const totalSteps = plan?.steps.length ?? 0;
+  const pct = totalSteps > 0 ? Math.round((completed / totalSteps) * 100) : 0;
 
   return (
     <div className="border-b border-surface-800 bg-surface-900/95 backdrop-blur">
-      <button
-        type="button"
-        className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-surface-800/40"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <span className="font-mono text-[11px] uppercase tracking-wide text-text-dim">
-          plan
-        </span>
-        <span className="truncate text-text-primary">
-          {current?.title ?? (plan ? "all steps complete" : "—")}
-        </span>
-        {plan && (
-          <span className="ml-auto text-xs text-text-dim">
-            {completed.length}/{totalSteps}
+      <div className="flex items-center gap-3 px-4 py-2 text-sm">
+        <button
+          type="button"
+          className="flex flex-1 min-w-0 items-center gap-3 text-left hover:bg-surface-800/40 -mx-2 px-2 py-1 rounded"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          <ListChecks className="h-3.5 w-3.5 shrink-0 text-text-dim" />
+          <span className="truncate text-text-primary">
+            {current?.title ?? (plan ? "all steps complete" : "—")}
           </span>
-        )}
-        {mode !== "Default" && (
-          <span className="rounded bg-brand-700/40 px-2 py-0.5 text-[11px] uppercase tracking-wide text-brand-400">
-            {mode}
-          </span>
-        )}
-      </button>
+          {plan && (
+            <span className="ml-auto flex items-center gap-2">
+              <span className="text-[11px] tabular-nums text-text-dim">
+                {completed}/{totalSteps}
+              </span>
+              <span className="hidden sm:block h-1 w-16 overflow-hidden rounded-full bg-surface-800">
+                <span
+                  className="block h-full bg-brand-500 transition-[width] duration-300"
+                  style={{ width: `${pct}%` }}
+                />
+              </span>
+              <ChevronDown
+                className={[
+                  "h-3.5 w-3.5 text-text-dim transition-transform",
+                  expanded ? "rotate-180" : "",
+                ].join(" ")}
+              />
+            </span>
+          )}
+        </button>
+        <ModePicker sessionId={sessionId} mode={mode} />
+      </div>
 
       {expanded && plan && (
         <div className="max-h-64 overflow-y-auto border-t border-surface-800 px-4 py-2 text-sm">
@@ -361,11 +514,6 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
               </li>
             ))}
           </ul>
-          {upcoming.length === 0 && current && (
-            <p className="mt-2 text-xs text-text-dim">
-              No upcoming steps after the current one.
-            </p>
-          )}
         </div>
       )}
     </div>
@@ -386,6 +534,136 @@ function StepGlyph({ status }: { status: Plan["steps"][number]["status"] }) {
   }
 }
 
+const MODE_OPTIONS: ReadonlyArray<{
+  id: CockpitState["mode"];
+  label: string;
+  hint: string;
+}> = [
+  { id: "Default", label: "Default", hint: "Approve each tool individually" },
+  { id: "Plan", label: "Plan", hint: "Plan first, no edits applied" },
+  {
+    id: "AcceptEdits",
+    label: "Accept edits",
+    hint: "Auto-approve safe file edits",
+  },
+  {
+    id: "BypassPermissions",
+    label: "Yolo",
+    hint: "Skip all approvals (destructive)",
+  },
+];
+
+function ModePicker({
+  sessionId,
+  mode,
+}: {
+  sessionId: string;
+  mode: CockpitState["mode"];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  // Close on outside click / Esc.
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const select = async (id: CockpitState["mode"]) => {
+    setOpen(false);
+    if (id === mode) return;
+    try {
+      await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/mode`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode_id: id.toLowerCase() }),
+        },
+      );
+    } catch {
+      // The agent will broadcast a ModeChanged event on success; if
+      // the request fails the UI stays on the current mode.
+    }
+  };
+
+  const current =
+    MODE_OPTIONS.find((m) => m.id === mode) ?? MODE_OPTIONS[0]!;
+  const tone =
+    mode === "BypassPermissions"
+      ? "border-rose-700/50 bg-rose-950/30 text-rose-300 hover:border-rose-700"
+      : mode === "AcceptEdits"
+        ? "border-amber-700/50 bg-amber-950/30 text-amber-300 hover:border-amber-700"
+        : mode === "Plan"
+          ? "border-cyan-800/50 bg-cyan-950/30 text-cyan-300 hover:border-cyan-700"
+          : "border-surface-700 bg-surface-800 text-text-secondary hover:border-surface-600";
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={current.hint}
+        className={[
+          "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium",
+          "transition-colors",
+          tone,
+        ].join(" ")}
+      >
+        <span>{current.label}</span>
+        <ChevronDown className="h-3 w-3 opacity-70" />
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 z-20 mt-1 w-56 rounded-md border border-surface-700 bg-surface-850 shadow-lg overflow-hidden"
+          role="menu"
+        >
+          {MODE_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              role="menuitem"
+              onClick={() => void select(opt.id)}
+              className={[
+                "flex w-full items-start gap-2 px-3 py-2 text-left text-xs hover:bg-surface-800",
+                opt.id === mode ? "bg-surface-800/60" : "",
+              ].join(" ")}
+            >
+              <span
+                className={[
+                  "mt-0.5 inline-block h-3 w-3 shrink-0 rounded-full border",
+                  opt.id === mode
+                    ? "border-brand-500 bg-brand-500"
+                    : "border-surface-700",
+                ].join(" ")}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium text-text-primary">
+                  {opt.label}
+                </span>
+                <span className="block text-[11px] text-text-dim">
+                  {opt.hint}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Approvals ───────────────────────────────────────────────────── */
 
 function PendingApproval({
@@ -395,16 +673,12 @@ function PendingApproval({
   approval: Approval;
   onResolve: (nonce: string, decision: ApprovalDecision) => Promise<void>;
 }) {
+  // ApprovalCard owns its own chrome (matches the tool-card style).
   return (
-    <div className="mt-4 rounded-lg border border-surface-700 bg-surface-900/80 p-3 shadow-md">
-      <div className="text-xs font-mono uppercase tracking-wide text-brand-500 mb-2">
-        agent is asking permission
-      </div>
-      <ApprovalCard
-        approval={approval}
-        onResolve={(decision) => onResolve(approval.nonce, decision)}
-      />
-    </div>
+    <ApprovalCard
+      approval={approval}
+      onResolve={(decision) => onResolve(approval.nonce, decision)}
+    />
   );
 }
 

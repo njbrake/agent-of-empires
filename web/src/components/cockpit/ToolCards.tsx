@@ -1,11 +1,26 @@
 // Per-kind tool call renderers. Each component takes the started tool
-// and (optionally) the completion row, and renders a card that fits the
-// shape of the tool's inputs and outputs.
+// and (optionally) the completion row, and renders a card that fits
+// the shape of the tool's inputs and outputs.
 //
 // Patterns inspired by Cursor agent chat and VSCode Copilot Chat: each
-// tool feels purpose-built rather than a generic "tool ran" box.
+// tool feels purpose-built rather than a generic "tool ran" box. We
+// surface the key fields (path, command, query) inline in the card
+// header and put output in a syntax-highlighted body.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  ChevronDown,
+  Copy as CopyIcon,
+  FileText,
+  Globe,
+  Pencil,
+  Search,
+  Sparkles,
+  Terminal,
+  Trash2,
+} from "lucide-react";
+
+import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
 
 interface Props {
@@ -13,9 +28,6 @@ interface Props {
   result?: ActivityRow;
 }
 
-/**
- * Pick the right per-kind component. Falls back to the generic card.
- */
 export function ToolCard({ tool, result }: Props) {
   switch (tool.kind) {
     case "execute":
@@ -25,7 +37,7 @@ export function ToolCard({ tool, result }: Props) {
     case "edit":
       return <EditToolCard tool={tool} result={result} />;
     case "delete":
-      return <EditToolCard tool={tool} result={result} />;
+      return <DeleteToolCard tool={tool} result={result} />;
     case "search":
       return <SearchToolCard tool={tool} result={result} />;
     case "fetch":
@@ -37,14 +49,16 @@ export function ToolCard({ tool, result }: Props) {
   }
 }
 
-/* ── shared bits ─────────────────────────────────────────────────── */
+/* ── Shared header bits ──────────────────────────────────────────── */
 
-function statusFor(result?: ActivityRow): "running" | "ok" | "err" {
+type Status = "running" | "ok" | "err";
+
+function statusFor(result?: ActivityRow): Status {
   if (!result) return "running";
   return result.kind === "tool_error" ? "err" : "ok";
 }
 
-function StatusDot({ status }: { status: "running" | "ok" | "err" }) {
+function StatusDot({ status }: { status: Status }) {
   const cls =
     status === "running"
       ? "bg-brand-400 animate-pulse"
@@ -54,11 +68,78 @@ function StatusDot({ status }: { status: "running" | "ok" | "err" }) {
   return <span className={`h-2 w-2 shrink-0 rounded-full ${cls}`} />;
 }
 
-function StatusLabel({ status }: { status: "running" | "ok" | "err" }) {
-  if (status === "running") return <span className="text-text-dim">running…</span>;
-  if (status === "err") return <span className="text-status-error">failed</span>;
-  return <span className="text-text-dim">done</span>;
+function StatusBadge({ status }: { status: Status }) {
+  if (status === "running") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-text-dim">
+        <span className="h-1.5 w-1.5 rounded-full bg-brand-400 animate-pulse" />
+        running
+      </span>
+    );
+  }
+  if (status === "err") {
+    return <span className="text-[11px] text-status-error">failed</span>;
+  }
+  return <span className="text-[11px] text-text-dim">done</span>;
 }
+
+interface CardChromeProps {
+  status: Status;
+  icon: React.ReactNode;
+  label: string;
+  primary: React.ReactNode;
+  meta?: React.ReactNode;
+  expanded: boolean;
+  onToggle?: () => void;
+  body?: React.ReactNode;
+}
+
+function CardChrome({
+  status,
+  icon,
+  label,
+  primary,
+  meta,
+  expanded,
+  onToggle,
+  body,
+}: CardChromeProps) {
+  const Header = onToggle ? "button" : "div";
+  return (
+    <div className="my-1 overflow-hidden rounded-md border border-surface-700 bg-surface-800/50 text-sm">
+      <Header
+        type={onToggle ? "button" : undefined}
+        onClick={onToggle}
+        className={[
+          "flex w-full items-center gap-2 px-3 py-1.5 text-left",
+          onToggle ? "cursor-pointer hover:bg-surface-800" : "",
+        ].join(" ")}
+      >
+        <StatusDot status={status} />
+        <span className="text-text-dim">{icon}</span>
+        <span className="text-[11px] uppercase tracking-wider text-text-dim">
+          {label}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">
+          {primary}
+        </span>
+        {meta}
+        <StatusBadge status={status} />
+        {onToggle && (
+          <ChevronDown
+            className={[
+              "h-3.5 w-3.5 text-text-dim transition-transform",
+              expanded ? "rotate-180" : "",
+            ].join(" ")}
+          />
+        )}
+      </Header>
+      {expanded && body}
+    </div>
+  );
+}
+
+/* ── Helpers ─────────────────────────────────────────────────────── */
 
 function tryParseJson(s: string): Record<string, unknown> | null {
   try {
@@ -80,6 +161,101 @@ function pickStr(o: Record<string, unknown> | null, ...keys: string[]): string |
   return null;
 }
 
+function truncateLines(text: string, max: number): {
+  shown: string;
+  truncated: number;
+} {
+  const lines = text.split("\n");
+  if (lines.length <= max) return { shown: text, truncated: 0 };
+  return {
+    shown: lines.slice(0, max).join("\n"),
+    truncated: lines.length - max,
+  };
+}
+
+function copy(text: string) {
+  navigator.clipboard?.writeText(text).catch(() => {});
+}
+
+function CopyButton({ text }: { text: string }) {
+  return (
+    <button
+      type="button"
+      title="Copy"
+      onClick={(e) => {
+        e.stopPropagation();
+        copy(text);
+      }}
+      className="rounded p-1 text-text-dim hover:bg-surface-800 hover:text-text-secondary"
+    >
+      <CopyIcon className="h-3 w-3" />
+    </button>
+  );
+}
+
+/* ── Highlighted code block (used by Read, Edit, Execute output) ── */
+
+function HighlightedBlock({
+  text,
+  language,
+  maxLines = 20,
+}: {
+  text: string;
+  language?: string;
+  maxLines?: number;
+}) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const { shown, truncated } = truncateLines(text, showAll ? 1_000_000 : maxLines);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!language) return;
+    (async () => {
+      try {
+        const langKey = langKeyForExt(language) ?? language;
+        await loadLanguage(langKey);
+        const hl = await getHighlighter();
+        if (cancelled) return;
+        const out = hl.codeToHtml(shown, {
+          lang: langKey,
+          theme: "github-dark",
+        });
+        setHtml(out);
+      } catch {
+        // unknown language — fall back to plain
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [language, shown]);
+
+  return (
+    <div className="border-t border-surface-800 bg-surface-950">
+      {html ? (
+        <div
+          className="overflow-x-auto px-3 py-2 text-xs [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      ) : (
+        <pre className="overflow-x-auto px-3 py-2 text-xs font-mono text-text-secondary whitespace-pre-wrap break-all">
+          {shown}
+        </pre>
+      )}
+      {truncated > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="block w-full border-t border-surface-800 px-3 py-1 text-center text-[11px] text-text-dim hover:bg-surface-800"
+        >
+          Show {truncated} more line{truncated === 1 ? "" : "s"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ── execute (bash) ─────────────────────────────────────────────── */
 
 function ExecuteToolCard({ tool, result }: Props) {
@@ -88,35 +264,47 @@ function ExecuteToolCard({ tool, result }: Props) {
   const command =
     pickStr(args, "command", "cmd", "args") ?? tool.args_preview;
   const description = pickStr(args, "description");
+  const output = result?.text ?? "";
   const [open, setOpen] = useState(false);
 
+  const meta =
+    output && status !== "running" ? (
+      <span className="hidden md:inline text-[11px] text-text-dim">
+        {output.split("\n").length} lines
+      </span>
+    ) : undefined;
+
   return (
-    <div className="my-1 overflow-hidden rounded-md border border-surface-700 bg-surface-800/50 text-sm">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-800"
-      >
-        <StatusDot status={status} />
-        <span className="font-mono text-xs text-text-dim">$</span>
-        <span className="truncate font-mono text-xs text-text-secondary">
+    <CardChrome
+      status={status}
+      icon={<Terminal className="h-3.5 w-3.5" />}
+      label="bash"
+      primary={
+        <>
+          <span className="mr-1 text-text-dim">$</span>
           {command}
-        </span>
-        <span className="ml-auto text-[11px]">
-          <StatusLabel status={status} />
-        </span>
-      </button>
-      {description && !open && (
-        <div className="border-t border-surface-800 px-3 py-1 text-[11px] text-text-dim italic">
-          {description}
-        </div>
-      )}
-      {open && (
-        <pre className="border-t border-surface-800 bg-surface-950 px-3 py-2 text-xs font-mono text-text-secondary whitespace-pre-wrap break-all">
-          {command}
-        </pre>
-      )}
-    </div>
+        </>
+      }
+      meta={meta}
+      expanded={open}
+      onToggle={() => setOpen((v) => !v)}
+      body={
+        <>
+          {description && (
+            <div className="border-t border-surface-800 bg-surface-900/40 px-3 py-1 text-[11px] text-text-muted italic">
+              {description}
+            </div>
+          )}
+          {output ? (
+            <HighlightedBlock text={output} language="bash" maxLines={20} />
+          ) : (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2 text-[11px] text-text-dim italic">
+              {status === "running" ? "Running…" : "(no output)"}
+            </div>
+          )}
+        </>
+      }
+    />
   );
 }
 
@@ -127,19 +315,36 @@ function ReadToolCard({ tool, result }: Props) {
   const args = tryParseJson(tool.args_preview);
   const path = pickStr(args, "path", "file_path", "filePath", "filename");
   const range = formatRange(args);
+  const ext = path?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  const content = result?.text ?? "";
+  const [open, setOpen] = useState(false);
+
+  const meta = content && (
+    <span className="hidden md:inline text-[11px] text-text-dim">
+      {content.split("\n").length} lines
+    </span>
+  );
 
   return (
-    <div className="my-1 flex items-center gap-2 rounded-md border border-surface-800 bg-surface-800/30 px-3 py-1.5 text-sm">
-      <StatusDot status={status} />
-      <span className="text-[11px] uppercase tracking-wider text-text-dim">read</span>
-      <span className="truncate font-mono text-xs text-text-secondary">
-        {path ?? tool.name}
-      </span>
-      {range && <span className="text-[11px] text-text-dim">{range}</span>}
-      <span className="ml-auto text-[11px]">
-        <StatusLabel status={status} />
-      </span>
-    </div>
+    <CardChrome
+      status={status}
+      icon={<FileText className="h-3.5 w-3.5" />}
+      label="read"
+      primary={path ?? tool.name}
+      meta={
+        <>
+          {range && <span className="text-[11px] text-text-dim">{range}</span>}
+          {meta}
+        </>
+      }
+      expanded={open}
+      onToggle={content ? () => setOpen((v) => !v) : undefined}
+      body={
+        content && (
+          <HighlightedBlock text={content} language={ext} maxLines={16} />
+        )
+      }
+    />
   );
 }
 
@@ -153,7 +358,7 @@ function formatRange(args: Record<string, unknown> | null): string | null {
   return null;
 }
 
-/* ── edit / write / delete ──────────────────────────────────────── */
+/* ── edit / write ───────────────────────────────────────────────── */
 
 function EditToolCard({ tool, result }: Props) {
   const status = statusFor(result);
@@ -161,49 +366,123 @@ function EditToolCard({ tool, result }: Props) {
   const path = pickStr(args, "path", "file_path", "filePath", "filename");
   const oldText = pickStr(args, "old_string", "oldString", "old_str");
   const newText = pickStr(args, "new_string", "newString", "new_str", "content");
+  const ext = path?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
   const [open, setOpen] = useState(false);
   const hasDiff = (oldText !== null && oldText !== "") || (newText !== null && newText !== "");
+  const verb = oldText ? "edit" : "write";
 
-  const verb = tool.kind === "delete" ? "delete" : oldText ? "edit" : "write";
+  const adds = newText ? newText.split("\n").length : 0;
+  const dels = oldText ? oldText.split("\n").length : 0;
+  const meta = hasDiff && (
+    <span className="hidden md:inline text-[11px]">
+      <span className="text-emerald-400">+{adds}</span>{" "}
+      <span className="text-rose-400">−{dels}</span>
+    </span>
+  );
 
   return (
-    <div className="my-1 overflow-hidden rounded-md border border-surface-700 bg-surface-800/50 text-sm">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={!hasDiff}
-        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${hasDiff ? "hover:bg-surface-800 cursor-pointer" : "cursor-default"}`}
-      >
-        <StatusDot status={status} />
-        <span className="text-[11px] uppercase tracking-wider text-text-dim">{verb}</span>
-        <span className="truncate font-mono text-xs text-text-secondary">
-          {path ?? tool.name}
-        </span>
-        <span className="ml-auto text-[11px]">
-          <StatusLabel status={status} />
-        </span>
-      </button>
-      {open && hasDiff && (
-        <div className="border-t border-surface-800 bg-surface-950 font-mono text-[11px]">
-          {oldText && (
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all bg-status-error/10 px-3 py-1 text-status-error/80">
-              {oldText
-                .split("\n")
-                .map((l) => `- ${l}`)
-                .join("\n")}
-            </pre>
-          )}
-          {newText && (
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all bg-status-running/10 px-3 py-1 text-status-running/90">
-              {newText
-                .split("\n")
-                .map((l) => `+ ${l}`)
-                .join("\n")}
-            </pre>
-          )}
+    <CardChrome
+      status={status}
+      icon={<Pencil className="h-3.5 w-3.5" />}
+      label={verb}
+      primary={path ?? tool.name}
+      meta={meta}
+      expanded={open}
+      onToggle={hasDiff ? () => setOpen((v) => !v) : undefined}
+      body={
+        hasDiff && (
+          <div className="border-t border-surface-800 bg-surface-950">
+            {oldText && (
+              <div className="border-b border-surface-900">
+                <DiffLines text={oldText} kind="del" language={ext} />
+              </div>
+            )}
+            {newText && <DiffLines text={newText} kind="add" language={ext} />}
+          </div>
+        )
+      }
+    />
+  );
+}
+
+function DiffLines({
+  text,
+  kind,
+  language,
+}: {
+  text: string;
+  kind: "add" | "del";
+  language?: string;
+}) {
+  // We render a leading + / - gutter and let shiki highlight the body.
+  // Shiki returns one <pre> with a single <code> child; we wrap each
+  // line client-side to add the gutter without touching the inner
+  // markup.
+  const [html, setHtml] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!language) return;
+      try {
+        const langKey = langKeyForExt(language) ?? language;
+        await loadLanguage(langKey);
+        const hl = await getHighlighter();
+        if (cancelled) return;
+        setHtml(hl.codeToHtml(text, { lang: langKey, theme: "github-dark" }));
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [language, text]);
+
+  const tone =
+    kind === "add"
+      ? "bg-status-running/10 text-status-running/90"
+      : "bg-status-error/10 text-status-error/85";
+  const sigil = kind === "add" ? "+" : "−";
+
+  if (html) {
+    return (
+      <div className={`flex font-mono text-[11px] ${tone}`}>
+        <div className="select-none px-2 py-1 text-text-dim">
+          {text.split("\n").map((_, i) => (
+            <div key={i}>{sigil}</div>
+          ))}
         </div>
-      )}
-    </div>
+        <div
+          className="overflow-x-auto py-1 pr-3 [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </div>
+    );
+  }
+  return (
+    <pre className={`overflow-x-auto px-3 py-1 font-mono text-[11px] whitespace-pre-wrap break-all ${tone}`}>
+      {text
+        .split("\n")
+        .map((l) => `${sigil} ${l}`)
+        .join("\n")}
+    </pre>
+  );
+}
+
+/* ── delete ─────────────────────────────────────────────────────── */
+
+function DeleteToolCard({ tool, result }: Props) {
+  const status = statusFor(result);
+  const args = tryParseJson(tool.args_preview);
+  const path = pickStr(args, "path", "file_path", "filePath", "filename");
+  return (
+    <CardChrome
+      status={status}
+      icon={<Trash2 className="h-3.5 w-3.5 text-rose-400" />}
+      label="delete"
+      primary={path ?? tool.name}
+      expanded={false}
+    />
   );
 }
 
@@ -215,21 +494,57 @@ function SearchToolCard({ tool, result }: Props) {
   const query =
     pickStr(args, "query", "pattern", "q", "search") ?? tool.args_preview;
   const path = pickStr(args, "path", "directory", "scope");
+  const output = result?.text ?? "";
+  const lines = output ? output.split("\n").filter(Boolean) : [];
+  const [open, setOpen] = useState(false);
 
   return (
-    <div className="my-1 flex items-center gap-2 rounded-md border border-surface-800 bg-surface-800/30 px-3 py-1.5 text-sm">
-      <StatusDot status={status} />
-      <span className="text-[11px] uppercase tracking-wider text-text-dim">search</span>
-      <span className="truncate font-mono text-xs text-text-secondary">
-        {query}
-      </span>
-      {path && (
-        <span className="truncate text-[11px] text-text-dim">in {path}</span>
-      )}
-      <span className="ml-auto text-[11px]">
-        <StatusLabel status={status} />
-      </span>
-    </div>
+    <CardChrome
+      status={status}
+      icon={<Search className="h-3.5 w-3.5" />}
+      label="search"
+      primary={query}
+      meta={
+        <>
+          {path && (
+            <span className="hidden md:inline text-[11px] text-text-dim">
+              in {path}
+            </span>
+          )}
+          {lines.length > 0 && (
+            <span className="text-[11px] text-text-dim">
+              {lines.length} match{lines.length === 1 ? "" : "es"}
+            </span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={lines.length > 0 ? () => setOpen((v) => !v) : undefined}
+      body={
+        lines.length > 0 && (
+          <div className="border-t border-surface-800 bg-surface-950 max-h-64 overflow-y-auto">
+            {lines.slice(0, 50).map((l, i) => (
+              <div
+                key={i}
+                className="flex font-mono text-[11px] hover:bg-surface-900"
+              >
+                <span className="select-none w-10 shrink-0 px-2 py-0.5 text-right text-text-dim">
+                  {i + 1}
+                </span>
+                <span className="px-2 py-0.5 text-text-secondary truncate">
+                  {l}
+                </span>
+              </div>
+            ))}
+            {lines.length > 50 && (
+              <div className="border-t border-surface-800 px-3 py-1 text-center text-[11px] text-text-dim">
+                {lines.length - 50} more match{lines.length - 50 === 1 ? "" : "es"}
+              </div>
+            )}
+          </div>
+        )
+      }
+    />
   );
 }
 
@@ -239,16 +554,21 @@ function FetchToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const args = tryParseJson(tool.args_preview);
   const url = pickStr(args, "url", "uri", "endpoint") ?? tool.name;
+  const output = result?.text ?? "";
+  const [open, setOpen] = useState(false);
 
   return (
-    <div className="my-1 flex items-center gap-2 rounded-md border border-surface-800 bg-surface-800/30 px-3 py-1.5 text-sm">
-      <StatusDot status={status} />
-      <span className="text-[11px] uppercase tracking-wider text-text-dim">fetch</span>
-      <span className="truncate font-mono text-xs text-text-secondary">{url}</span>
-      <span className="ml-auto text-[11px]">
-        <StatusLabel status={status} />
-      </span>
-    </div>
+    <CardChrome
+      status={status}
+      icon={<Globe className="h-3.5 w-3.5" />}
+      label="fetch"
+      primary={url}
+      expanded={open}
+      onToggle={output ? () => setOpen((v) => !v) : undefined}
+      body={
+        output && <HighlightedBlock text={output} language="json" maxLines={16} />
+      }
+    />
   );
 }
 
@@ -257,7 +577,7 @@ function FetchToolCard({ tool, result }: Props) {
 function ThinkToolCard({ tool }: Props) {
   return (
     <div className="my-1 flex items-center gap-2 px-3 py-1 text-xs italic text-text-muted">
-      <span className="h-1.5 w-1.5 rounded-full bg-text-dim" />
+      <Sparkles className="h-3 w-3 text-text-dim" />
       <span>{tool.name || "thinking…"}</span>
     </div>
   );
@@ -268,27 +588,41 @@ function ThinkToolCard({ tool }: Props) {
 function GenericToolCard({ tool, result }: Props) {
   const status = statusFor(result);
   const [open, setOpen] = useState(false);
+  const output = result?.text ?? "";
   return (
-    <div className="my-1 overflow-hidden rounded-md border border-surface-700 bg-surface-800/50 text-sm">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-800"
-      >
-        <StatusDot status={status} />
-        <span className="text-[11px] uppercase tracking-wider text-text-dim">{tool.kind || "tool"}</span>
-        <span className="truncate font-mono text-xs text-text-secondary">
-          {tool.name}
-        </span>
-        <span className="ml-auto text-[11px]">
-          <StatusLabel status={status} />
-        </span>
-      </button>
-      {open && tool.args_preview && (
-        <pre className="border-t border-surface-800 bg-surface-950 px-3 py-2 text-xs font-mono text-text-dim whitespace-pre-wrap break-all">
-          {tool.args_preview}
-        </pre>
-      )}
-    </div>
+    <CardChrome
+      status={status}
+      icon={<Sparkles className="h-3.5 w-3.5" />}
+      label={tool.kind || "tool"}
+      primary={tool.name}
+      expanded={open}
+      onToggle={tool.args_preview || output ? () => setOpen((v) => !v) : undefined}
+      body={
+        <>
+          {tool.args_preview && (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
+                <span>input</span>
+                <CopyButton text={tool.args_preview} />
+              </div>
+              <pre className="overflow-x-auto font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all">
+                {tool.args_preview}
+              </pre>
+            </div>
+          )}
+          {output && (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
+                <span>output</span>
+                <CopyButton text={output} />
+              </div>
+              <pre className="overflow-x-auto font-mono text-[11px] text-text-secondary whitespace-pre-wrap break-all">
+                {output}
+              </pre>
+            </div>
+          )}
+        </>
+      }
+    />
   );
 }

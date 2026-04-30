@@ -22,9 +22,10 @@ use agent_client_protocol::schema::{
     KillTerminalResponse, NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
     ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TerminalId,
-    TerminalOutputRequest, TerminalOutputResponse, TextContent, WaitForTerminalExitRequest,
-    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
+    SelectedPermissionOutcome, SessionNotification, SessionUpdate, SetSessionModeRequest,
+    TerminalId, TerminalOutputRequest, TerminalOutputResponse, TextContent,
+    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
+    WriteTextFileResponse,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
 use thiserror::Error;
@@ -80,6 +81,7 @@ pub struct SpawnConfig {
 enum ClientCmd {
     Prompt(String),
     Cancel,
+    SetMode(String),
     Shutdown,
 }
 
@@ -349,6 +351,15 @@ impl AcpClient {
         let cmd_tx = self.cmd_tx.as_ref().ok_or(AcpError::NotRunning)?;
         cmd_tx
             .send(ClientCmd::Cancel)
+            .await
+            .map_err(|_| AcpError::AgentExited)
+    }
+
+    /// Switch the active session mode via ACP `session/set_mode`.
+    pub async fn set_mode(&self, mode_id: &str) -> Result<(), AcpError> {
+        let cmd_tx = self.cmd_tx.as_ref().ok_or(AcpError::NotRunning)?;
+        cmd_tx
+            .send(ClientCmd::SetMode(mode_id.to_string()))
             .await
             .map_err(|_| AcpError::AgentExited)
     }
@@ -815,6 +826,16 @@ async fn run_connection_task<W, R>(
                         info!(target: "cockpit.acp", "sending session/cancel");
                         connection
                             .send_notification(CancelNotification::new(acp_session_id.clone()))?;
+                    }
+                    Some(ClientCmd::SetMode(mode_id)) => {
+                        info!(target: "cockpit.acp", "sending session/set_mode mode={mode_id}");
+                        let _ = connection
+                            .send_request(SetSessionModeRequest::new(
+                                acp_session_id.clone(),
+                                mode_id,
+                            ))
+                            .block_task()
+                            .await?;
                     }
                     Some(ClientCmd::Shutdown) | None => {
                         info!(target: "cockpit.acp", "shutdown received, exiting connection loop");

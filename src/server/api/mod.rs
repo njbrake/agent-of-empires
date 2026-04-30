@@ -18,7 +18,8 @@ mod system;
 
 #[cfg(feature = "cockpit")]
 pub use cockpit::{
-    cockpit_cancel, cockpit_prompt, resolve_approval, shutdown_cockpit, spawn_cockpit,
+    cockpit_cancel, cockpit_files, cockpit_prompt, cockpit_set_mode, resolve_approval,
+    shutdown_cockpit, spawn_cockpit,
 };
 
 pub use git::{clone_repo, list_branches};

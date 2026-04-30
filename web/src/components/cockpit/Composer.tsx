@@ -16,7 +16,7 @@
 // Lucide is the rebrand of Feather).
 
 import { ComposerPrimitive, ThreadPrimitive, useThreadRuntime } from "@assistant-ui/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   AtSign,
   CornerDownLeft,
@@ -25,8 +25,55 @@ import {
   Square,
 } from "lucide-react";
 
-export function Composer() {
+import {
+  TriggerPopover,
+  fuzzyFilter,
+  useFilesIndex,
+  type PickerItem,
+} from "./TriggerPopover";
+
+const SLASH_COMMANDS: ReadonlyArray<PickerItem> = [
+  {
+    id: "help",
+    label: "/help",
+    hint: "Show available commands",
+    insert: "/help",
+  },
+  {
+    id: "clear",
+    label: "/clear",
+    hint: "Reset conversation context",
+    insert: "/clear",
+  },
+  {
+    id: "tools",
+    label: "/tools",
+    hint: "List the agent's tools",
+    insert: "/tools",
+  },
+  {
+    id: "model",
+    label: "/model",
+    hint: "Show or switch the model",
+    insert: "/model",
+  },
+];
+
+interface Props {
+  sessionId: string;
+}
+
+export function Composer({ sessionId }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const { files } = useFilesIndex(sessionId);
+  const searchFiles = useMemo(
+    () => (query: string) => fuzzyFilter(files, query, 30),
+    [files],
+  );
+  const searchSlash = useMemo(
+    () => (query: string) => fuzzyFilter([...SLASH_COMMANDS], query, 30),
+    [],
+  );
 
   // Auto-grow up to ~6 visible lines.
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -72,11 +119,26 @@ export function Composer() {
             "transition-colors duration-150",
           ].join(" ")}
         >
+          {/* @-mention file picker + /-slash command popover. Both
+              hang off the same textarea ref and only one ever shows
+              at a time (the trigger detection is mutually exclusive
+              by leading character). */}
+          <TriggerPopover
+            trigger="@"
+            textareaRef={taRef}
+            search={searchFiles}
+          />
+          <TriggerPopover
+            trigger="/"
+            textareaRef={taRef}
+            search={searchSlash}
+          />
+
           {/* Input area — tall by default, grows up to 200px */}
           <ComposerPrimitive.Input
             ref={taRef}
             rows={2}
-            placeholder="Send a message…"
+            placeholder="Send a message…  Type @ for files, / for commands"
             onInput={onInput}
             autoFocus
             className={[
@@ -91,15 +153,15 @@ export function Composer() {
             <div className="flex items-center gap-0.5">
               <ToolbarButton
                 icon={<AtSign className="h-3.5 w-3.5" />}
-                label="Add file context"
+                label="Add file context (@)"
                 hint="@"
-                disabled
+                onClick={() => insertAtCaret(taRef, "@")}
               />
               <ToolbarButton
                 icon={<Slash className="h-3.5 w-3.5" />}
-                label="Slash command"
+                label="Slash command (/)"
                 hint="/"
-                disabled
+                onClick={() => insertAtCaret(taRef, "/")}
               />
               <ToolbarButton
                 icon={<Paperclip className="h-3.5 w-3.5" />}
@@ -125,6 +187,36 @@ export function Composer() {
       </div>
     </div>
   );
+}
+
+/** Insert `text` at the textarea's caret and re-focus. The toolbar
+ *  buttons use this to inject `@` or `/` so the trigger popover opens
+ *  without forcing the user to grab the keyboard.
+ */
+function insertAtCaret(
+  ref: React.RefObject<HTMLTextAreaElement | null>,
+  text: string,
+) {
+  const ta = ref.current;
+  if (!ta) return;
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? start;
+  const before = ta.value.slice(0, start);
+  // Trigger detection requires whitespace (or start-of-string)
+  // before the trigger char; pad if we're mid-word.
+  const needsSpace =
+    before.length > 0 && !/[\s\n\t]$/.test(before) ? " " : "";
+  const next = before + needsSpace + text + ta.value.slice(end);
+  // Use the native setter so React picks the change up via input event.
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(ta, next);
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  const pos = before.length + needsSpace.length + text.length;
+  ta.focus();
+  ta.setSelectionRange(pos, pos);
 }
 
 /* ── Toolbar buttons ─────────────────────────────────────────────── */

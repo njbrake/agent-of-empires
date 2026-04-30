@@ -1,14 +1,17 @@
-// Approval card. Renders a pending tool-call approval with the
-// destructive-vs-benign UX from the design spike:
-// - Benign: single tap on a primary button.
-// - Destructive: long-press 800ms with a haptic confirm; swipe is
-//   reserved for dismiss-only and never approves.
+// Approval card. Renders a pending tool-call approval inline in the
+// conversation, matching the visual language of ToolCards.tsx so it
+// reads as part of the same flow rather than a separate widget.
 //
-// The optimistic state (after a tap) shows a spinner + greyed label
-// until the server's broadcast removes the approval from state. If the
-// remote rejects, the card flips to the rolled-back state.
+// Destructive vs benign:
+//   - Benign: single-tap "Allow" / "Always" / "Deny" trio.
+//   - Destructive: "Allow" requires an 800ms hold (haptic on touch),
+//     swipe is reserved for dismiss-only and never approves.
+//
+// Optimistic state shows a spinner until the server's broadcast removes
+// the approval from CockpitState.pendingApprovals.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, Check, Shield, X } from "lucide-react";
 import type { Approval, ApprovalDecision } from "../../lib/cockpitTypes";
 
 interface Props {
@@ -81,46 +84,57 @@ export function ApprovalCard({ approval, onResolve }: Props) {
     setProgress(0);
   };
 
-  const borderClass = approval.destructive
-    ? "border-l-4 border-red-500"
-    : "border-l-4 border-teal-600";
-
   return (
     <div
-      className={`rounded-md bg-surface-800 p-4 mb-3 shadow-md ${borderClass}`}
+      className={[
+        "my-2 overflow-hidden rounded-md border bg-surface-800/50 text-sm",
+        approval.destructive
+          ? "border-rose-900/60 bg-rose-950/20"
+          : "border-brand-700/40 bg-brand-700/5",
+      ].join(" ")}
       role="alertdialog"
       aria-label={`Approval needed: ${approval.tool_call.name}`}
     >
-      <div className="flex items-center gap-2 mb-2">
-        {approval.destructive && (
-          <span className="text-red-400 text-xs uppercase tracking-wide font-semibold">
-            destructive
-          </span>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-surface-800/60">
+        {approval.destructive ? (
+          <AlertTriangle className="h-3.5 w-3.5 text-rose-400" />
+        ) : (
+          <Shield className="h-3.5 w-3.5 text-brand-500" />
         )}
-        <span className="text-text-primary font-medium">
+        <span
+          className={[
+            "text-[11px] uppercase tracking-wider",
+            approval.destructive ? "text-rose-400" : "text-brand-500",
+          ].join(" ")}
+        >
+          {approval.destructive ? "Destructive action" : "Approval needed"}
+        </span>
+        <span className="truncate font-mono text-xs text-text-secondary">
           {approval.tool_call.name}
         </span>
       </div>
 
-      <pre className="font-mono text-xs text-text-secondary bg-surface-900 rounded p-2 mb-3 overflow-x-auto">
+      <pre className="border-b border-surface-800/60 bg-surface-950 px-3 py-2 font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
         {approval.tool_call.args_preview}
       </pre>
 
       {phase === "rolled-back" && (
-        <p className="text-red-400 text-sm mb-2">
+        <p className="px-3 pt-2 text-rose-400 text-xs">
           Could not reach the server. Tap to retry.
         </p>
       )}
 
-      <div className="flex items-stretch gap-2">
+      <div className="flex items-stretch gap-1.5 p-2">
         {approval.destructive ? (
           <button
             type="button"
-            className={`relative flex-1 rounded text-white font-medium py-3 px-4 text-sm overflow-hidden ${
+            className={[
+              "relative flex flex-1 items-center justify-center gap-1.5 overflow-hidden",
+              "rounded-md text-white text-xs font-medium py-2 px-3",
               phase === "pending"
-                ? "bg-red-600 hover:bg-red-500"
-                : "bg-red-700 opacity-70 cursor-wait"
-            }`}
+                ? "bg-rose-600 hover:bg-rose-500"
+                : "bg-rose-700 opacity-70 cursor-wait",
+            ].join(" ")}
             disabled={phase !== "pending" && phase !== "rolled-back"}
             onMouseDown={startLongPress}
             onMouseUp={cancelLongPress}
@@ -129,38 +143,68 @@ export function ApprovalCard({ approval, onResolve }: Props) {
             onTouchEnd={cancelLongPress}
             onTouchCancel={cancelLongPress}
           >
+            <Check className="h-3.5 w-3.5 relative z-10" />
             <span className="relative z-10">
-              {phase === "submitting"
-                ? "Approving…"
-                : `Hold to allow (${LONG_PRESS_MS}ms)`}
+              {phase === "submitting" ? "Approving…" : "Hold to allow"}
             </span>
             <span
-              className="absolute inset-0 bg-red-400 origin-left"
+              className="absolute inset-0 bg-rose-400 origin-left"
               style={{ transform: `scaleX(${progress / 100})` }}
               aria-hidden="true"
             />
           </button>
         ) : (
-          <button
-            type="button"
-            className={`flex-1 rounded text-white font-medium py-3 px-4 text-sm ${
-              phase === "pending"
-                ? "bg-brand-600 hover:bg-brand-500"
-                : "bg-brand-700 opacity-70 cursor-wait"
-            }`}
-            disabled={phase !== "pending"}
-            onClick={() => void submit("Allow")}
-          >
-            {phase === "submitting" ? "Approving…" : "Allow"}
-          </button>
+          <>
+            <button
+              type="button"
+              className={[
+                "flex flex-1 items-center justify-center gap-1.5",
+                "rounded-md text-white text-xs font-medium py-2 px-3",
+                phase === "pending"
+                  ? "bg-brand-600 hover:bg-brand-500"
+                  : "bg-brand-700 opacity-70 cursor-wait",
+              ].join(" ")}
+              disabled={phase !== "pending"}
+              onClick={() => void submit("Allow")}
+            >
+              <Check className="h-3.5 w-3.5" />
+              Allow
+            </button>
+            <button
+              type="button"
+              className={[
+                "flex items-center justify-center gap-1.5",
+                "rounded-md border border-surface-700 bg-surface-800",
+                "text-xs font-medium text-text-secondary py-2 px-3",
+                "hover:bg-surface-700",
+                phase === "submitting" && "opacity-60 cursor-wait",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              disabled={phase === "submitting"}
+              onClick={() => void submit("AllowAlways")}
+              title="Allow this tool for the whole session"
+            >
+              Always
+            </button>
+          </>
         )}
 
         <button
           type="button"
-          className="rounded bg-surface-700 hover:bg-surface-700 text-text-primary font-medium py-3 px-4 text-sm"
+          className={[
+            "flex items-center justify-center gap-1.5",
+            "rounded-md border border-surface-700 bg-surface-800",
+            "text-xs font-medium text-text-secondary py-2 px-3",
+            "hover:border-rose-700/60 hover:bg-rose-950/30 hover:text-rose-300",
+            phase === "submitting" && "opacity-60 cursor-wait",
+          ]
+            .filter(Boolean)
+            .join(" ")}
           disabled={phase === "submitting"}
           onClick={() => void submit("Deny")}
         >
+          <X className="h-3.5 w-3.5" />
           Deny
         </button>
       </div>

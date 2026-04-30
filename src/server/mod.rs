@@ -902,6 +902,11 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions/{id}/cockpit/cancel",
             post(api::cockpit_cancel),
         )
+        .route("/api/sessions/{id}/cockpit/files", get(api::cockpit_files))
+        .route(
+            "/api/sessions/{id}/cockpit/mode",
+            post(api::cockpit_set_mode),
+        )
         .route(
             "/api/sessions/{id}/cockpit/approvals/{nonce}",
             post(api::resolve_approval),

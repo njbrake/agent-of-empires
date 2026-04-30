@@ -170,6 +170,127 @@ pub async fn cockpit_cancel(
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct FilesResponse {
+    pub files: Vec<String>,
+    pub truncated: bool,
+}
+
+/// List workspace files for the @-mention picker. Walks the session's
+/// project_path tree, skipping VCS/build dirs and dot-files at the
+/// top level. Capped at 5000 entries.
+pub async fn cockpit_files(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let instances = state.instances.read().await;
+    let Some(inst) = instances.iter().find(|i| i.id == id).cloned() else {
+        return (StatusCode::NOT_FOUND, "session not found").into_response();
+    };
+    drop(instances);
+
+    let root = std::path::PathBuf::from(&inst.project_path);
+    let result = tokio::task::spawn_blocking(move || list_files(&root, 5000)).await;
+    match result {
+        Ok(Ok((files, truncated))) => Json(FilesResponse { files, truncated }).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("file listing failed: {e}"),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("blocking task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+fn list_files(root: &std::path::Path, cap: usize) -> std::io::Result<(Vec<String>, bool)> {
+    // Names we never want to recurse into. Top-level only — a deep
+    // `node_modules` inside a sub-package would still show up via its
+    // parent path which is fine.
+    const SKIP_DIRS: &[&str] = &[
+        ".git",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".venv",
+        ".cache",
+        ".turbo",
+        ".idea",
+        ".vscode",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    let mut truncated = false;
+    while let Some(dir) = stack.pop() {
+        if out.len() >= cap {
+            truncated = true;
+            break;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            if SKIP_DIRS.iter().any(|d| *d == name_str.as_ref()) {
+                continue;
+            }
+            let path = entry.path();
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().to_string());
+                    if out.len() >= cap {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok((out, truncated))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetModeRequest {
+    pub mode_id: String,
+}
+
+/// Set the active session mode (Default / Plan / AcceptEdits /
+/// BypassPermissions). Sends an ACP `session/set_mode` request.
+pub async fn cockpit_set_mode(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SetModeRequest>,
+) -> impl IntoResponse {
+    match state.cockpit_supervisor.set_mode(&id, &req.mode_id).await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(SupervisorError::UnknownSession(_)) => {
+            (StatusCode::NOT_FOUND, "session has no running cockpit").into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("set_mode failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ResolveApprovalRequest {
     pub decision: ApprovalDecisionWire,

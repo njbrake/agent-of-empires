@@ -228,6 +228,17 @@ impl<S: BroadcastSink> Supervisor<S> {
         Ok(())
     }
 
+    /// Set the active session mode via ACP session/set_mode.
+    pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<(), SupervisorError> {
+        let workers = self.workers.lock().await;
+        let handle = workers
+            .get(session_id)
+            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
+        let client = handle.client.lock().await;
+        client.set_mode(mode_id).await?;
+        Ok(())
+    }
+
     /// Resolve a pending approval.
     pub async fn resolve_permission(
         &self,
