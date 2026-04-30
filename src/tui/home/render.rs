@@ -180,9 +180,10 @@ impl HomeView {
             .constraints(constraints)
             .split(area);
 
-        // Below STACKED_BREAKPOINT (60 cols), put the list above the preview
-        // instead of side-by-side; iPhone-portrait Mosh zoomed out is ~50
-        // cols, where a 40-col preview floor leaves no usable list width.
+        // Below STACKED_BREAKPOINT (80 cols), put the list above the preview
+        // instead of side-by-side. At 80 cols a side-by-side preview is only
+        // ~45 cols (with default list_width 35), too cramped for output;
+        // stacking gives the preview the full width.
         let available_width = main_chunks[0].width;
         if available_width < responsive::STACKED_BREAKPOINT {
             let main_height = main_chunks[0].height;

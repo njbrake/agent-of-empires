@@ -17,12 +17,16 @@
 //!   code, not the use of fixed sizes per se.
 
 /// Below this width, the home view switches from side-by-side
-/// (list | preview) to stacked (list above preview).
+/// (list | preview) to stacked (list above preview), and the preview
+/// pane drops its info header in favor of just the session title +
+/// status icon in the outer block title.
 ///
-/// iPhone-portrait Mosh zoomed out is ~50 cols. Side-by-side with a
-/// 40-col preview floor leaves ~10 cols for the list, which can't
-/// render a session title plus the status badge.
-pub const STACKED_BREAKPOINT: u16 = 60;
+/// 80 is the conventional "narrow terminal" boundary: at default
+/// list_width (35), side-by-side preview at viewport 80 is 45 cols,
+/// barely usable; below that the floor binds and both panes lose. A
+/// full-width stacked preview reads better than a 45-col side-by-side
+/// one, and phone widths (Mosh landscape, Termius) live in this range.
+pub const STACKED_BREAKPOINT: u16 = 80;
 
 /// Minimum width the preview pane needs to render a tmux capture
 /// without hash-soup wrapping. Used as the side-by-side preview floor.
