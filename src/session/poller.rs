@@ -179,7 +179,7 @@ impl SessionPoller {
             None => {
                 tracing::warn!(
                     "Poller thread budget exhausted ({}/{}), skipping poller for {}",
-                    ACTIVE_POLLER_COUNT.load(Ordering::Relaxed),
+                    ACTIVE_POLLER_COUNT.load(Ordering::SeqCst),
                     MAX_POLLER_THREADS,
                     instance_id
                 );
@@ -196,11 +196,13 @@ impl SessionPoller {
             .name(thread_label.clone())
             .stack_size(128 * 1024)
             .spawn(move || {
-                // Move the guard into the thread so it decrements on exit (including panic)
+                // Rebind so the closure captures `_guard` and the counter only
+                // decrements when the thread exits (including via panic). Without
+                // this, `move` would not capture an unreferenced binding and the
+                // counter would decrement as soon as `start()` returned.
                 let _guard = _guard;
 
                 let mut last_known = initial_known;
-
                 let mut interval = AdaptiveInterval::new(
                     POLL_INITIAL_INTERVAL,
                     POLL_MAX_INTERVAL,
@@ -208,15 +210,22 @@ impl SessionPoller {
                     POLL_STABLE_THRESHOLD,
                 );
 
-                // Immediate first poll (e.g. pre-existing sessions loaded from disk)
-                if let Some(new_id) = poll_fn() {
-                    if last_known.as_deref() != Some(&new_id) {
-                        on_change(&new_id);
-                        let _ = result_tx.send((instance_id.clone(), new_id.clone()));
-                        last_known = Some(new_id);
-                        interval.record_change();
+                let report = |new_id_opt: Option<String>,
+                              last: &mut Option<String>,
+                              interval: &mut AdaptiveInterval| {
+                    match new_id_opt {
+                        Some(new_id) if last.as_deref() != Some(&new_id) => {
+                            on_change(&new_id);
+                            let _ = result_tx.send((instance_id.clone(), new_id.clone()));
+                            *last = Some(new_id);
+                            interval.record_change();
+                        }
+                        _ => interval.record_no_change(),
                     }
-                }
+                };
+
+                // Immediate first poll (e.g. pre-existing sessions loaded from disk).
+                report(poll_fn(), &mut last_known, &mut interval);
 
                 loop {
                     match cmd_rx.recv_timeout(interval.current()) {
@@ -230,19 +239,7 @@ impl SessionPoller {
                         break;
                     }
 
-                    if let Some(new_id) = poll_fn() {
-                        let changed = last_known.as_deref() != Some(&new_id);
-                        if changed {
-                            on_change(&new_id);
-                            let _ = result_tx.send((instance_id.clone(), new_id.clone()));
-                            last_known = Some(new_id);
-                            interval.record_change();
-                        } else {
-                            interval.record_no_change();
-                        }
-                    } else {
-                        interval.record_no_change();
-                    }
+                    report(poll_fn(), &mut last_known, &mut interval);
                 }
             });
 
