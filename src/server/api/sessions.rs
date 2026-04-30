@@ -1547,6 +1547,11 @@ pub struct SendMessageRequest {
     pub message: String,
 }
 
+enum SendKeysError {
+    NotRunning,
+    Tmux(anyhow::Error),
+}
+
 pub async fn send_message(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1578,15 +1583,24 @@ pub async fn send_message(
     };
     drop(instances);
 
+    // Serialize concurrent sends (and other tmux mutations) for this id.
+    // Without this, two POSTs racing against the same session would issue
+    // overlapping `tmux send-keys -l` invocations and the bytes can interleave
+    // inside the pane.
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
+
     let tool = instance.tool.clone();
     let message = req.message;
-    let send_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let tmux_session = instance.tmux_session()?;
+    let send_result = tokio::task::spawn_blocking(move || -> Result<(), SendKeysError> {
+        let tmux_session = instance.tmux_session().map_err(SendKeysError::Tmux)?;
         if !tmux_session.exists() {
-            anyhow::bail!("session_not_running");
+            return Err(SendKeysError::NotRunning);
         }
         let delay = crate::agents::send_keys_enter_delay(&tool);
-        tmux_session.send_keys_with_delay(&message, delay)?;
+        tmux_session
+            .send_keys_with_delay(&message, delay)
+            .map_err(SendKeysError::Tmux)?;
         Ok(())
     })
     .await;
@@ -1596,39 +1610,44 @@ pub async fn send_message(
             // Stamp last_accessed_at so the activity column reflects API-driven
             // interaction the same way TUI/web interaction does.
             let mut instances = state.instances.write().await;
-            if let Some(i) = instances.iter_mut().find(|i| i.id == id) {
+            let profile = if let Some(i) = instances.iter_mut().find(|i| i.id == id) {
                 i.touch_last_accessed();
-            }
-            // Best-effort persist; tmux send already succeeded so a save miss
-            // shouldn't fail the whole call.
-            let profile = state.profile.clone();
-            let snapshot: Vec<Instance> = instances.clone();
+                i.source_profile.clone()
+            } else {
+                // Session was deleted between the send and the stamp; nothing
+                // left to persist.
+                return (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response();
+            };
+            // Persist only the target session's profile, mirroring the pattern
+            // used by rename/delete. Saving `state.instances` wholesale would
+            // write every profile's sessions into one profile's storage file.
+            let profile_instances: Vec<Instance> = instances
+                .iter()
+                .filter(|i| i.source_profile == profile)
+                .cloned()
+                .collect();
             drop(instances);
             tokio::task::spawn_blocking(move || {
                 if let Ok(storage) = Storage::new(&profile) {
-                    if let Err(e) = storage.save(&snapshot) {
+                    if let Err(e) = storage.save(&profile_instances) {
                         tracing::warn!("send_message: persist failed: {e}");
                     }
                 }
             });
             (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response()
         }
-        Ok(Err(e)) => {
-            let msg = e.to_string();
-            if msg.contains("session_not_running") {
-                (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({"error": "session_not_running"})),
-                )
-                    .into_response()
-            } else {
-                tracing::error!("send_message: tmux error for {id}: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "tmux_error"})),
-                )
-                    .into_response()
-            }
+        Ok(Err(SendKeysError::NotRunning)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session_not_running"})),
+        )
+            .into_response(),
+        Ok(Err(SendKeysError::Tmux(e))) => {
+            tracing::error!("send_message: tmux error for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "tmux_error"})),
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!("send_message: blocking task panicked for {id}: {e}");
@@ -1655,6 +1674,11 @@ fn default_output_lines() -> u32 {
 
 fn default_output_format() -> String {
     "text".to_string()
+}
+
+enum CaptureError {
+    NotRunning,
+    Tmux(anyhow::Error),
 }
 
 pub async fn read_output(
@@ -1688,12 +1712,14 @@ pub async fn read_output(
     };
     drop(instances);
 
-    let capture_result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        let tmux_session = instance.tmux_session()?;
+    let capture_result = tokio::task::spawn_blocking(move || -> Result<String, CaptureError> {
+        let tmux_session = instance.tmux_session().map_err(CaptureError::Tmux)?;
         if !tmux_session.exists() {
-            return Ok(String::new());
+            return Err(CaptureError::NotRunning);
         }
-        let raw = tmux_session.capture_pane(lines)?;
+        let raw = tmux_session
+            .capture_pane(lines)
+            .map_err(CaptureError::Tmux)?;
         if want_ansi {
             Ok(raw)
         } else {
@@ -1713,7 +1739,12 @@ pub async fn read_output(
             })),
         )
             .into_response(),
-        Ok(Err(e)) => {
+        Ok(Err(CaptureError::NotRunning)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session_not_running"})),
+        )
+            .into_response(),
+        Ok(Err(CaptureError::Tmux(e))) => {
             tracing::error!("read_output: tmux error for {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
