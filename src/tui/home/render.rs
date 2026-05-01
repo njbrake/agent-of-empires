@@ -295,11 +295,7 @@ impl HomeView {
             ""
         };
         let title = match self.view_mode {
-            ViewMode::Agent => format!(
-                " Agent of Empires [{}]{} ",
-                self.active_profile_display(),
-                group_suffix
-            ),
+            ViewMode::Agent => format!(" AOE [{}]{} ", self.active_profile_display(), group_suffix),
             ViewMode::Terminal => format!(
                 " Terminals [{}]{} ",
                 self.active_profile_display(),

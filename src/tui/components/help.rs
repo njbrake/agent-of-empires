@@ -172,7 +172,7 @@ impl HelpOverlay {
 
         frame.render_widget(Clear, dialog_area);
 
-        let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
+        let version = format!(" Agent of Empires v{} ", env!("CARGO_PKG_VERSION"));
         let block = Block::default()
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
