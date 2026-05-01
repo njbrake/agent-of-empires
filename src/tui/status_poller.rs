@@ -44,9 +44,9 @@ pub struct StatusUpdate {
     pub last_error: Option<String>,
     /// Snapshot of the polled clone's `idle_entered_at` after
     /// `update_status_with_metadata` ran. Propagating this field is what
-    /// keeps the gradient working in the TUI: without it, the wrapper's
-    /// timestamp write lives only on the polling clone and is lost when we
-    /// project the result back into a `StatusUpdate`.
+    /// keeps the freshness signal working in the TUI: without it, the
+    /// wrapper's timestamp write lives only on the polling clone and is
+    /// lost when we project the result back into a `StatusUpdate`.
     pub idle_entered_at: Option<DateTime<Utc>>,
 }
 
@@ -211,8 +211,9 @@ mod tests {
         // Regression: the polling loop runs `update_status_with_metadata`
         // on a clone, then projects the result into a `StatusUpdate`. If
         // `idle_entered_at` falls off the projection (the original bug),
-        // the gradient + filled-dot icon never fire in the TUI even
-        // though the wrapper sets the timestamp on the clone correctly.
+        // the breathe rattle + fresh-idle color never fire in the TUI
+        // even though the wrapper sets the timestamp on the clone
+        // correctly.
         let ts = Utc::now();
         let update = StatusUpdate {
             id: "abc".into(),

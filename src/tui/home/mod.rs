@@ -233,8 +233,8 @@ pub struct HomeView {
 
     /// Resolved decay window from `Config.theme.idle_decay_minutes`. Read
     /// at startup and re-resolved on settings reload. Used by render to
-    /// drive the gradient + breathe rattle, and by the `w` keybind to
-    /// gate which Idle sessions are still "actionable".
+    /// drive the breathe rattle and fresh-idle color, and by the `w`
+    /// keybind to gate which Idle sessions are still "actionable".
     pub(super) idle_decay_window: std::time::Duration,
 
     // When true, letter-based action hotkeys require SHIFT (guard against

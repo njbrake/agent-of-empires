@@ -1760,7 +1760,7 @@ mod tests {
         inst.status = Status::Idle;
         // Future timestamp (clock skew, hand-crafted state). `to_std()` on a
         // negative `chrono::Duration` returns Err, which we map to None so
-        // the gradient renderer sees "fully decayed" rather than panicking
+        // the freshness logic sees "fully decayed" rather than panicking
         // or treating the session as freshly stopped.
         inst.idle_entered_at = Some(Utc::now() + chrono::Duration::seconds(60));
         assert_eq!(inst.idle_age(), None);

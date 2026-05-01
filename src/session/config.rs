@@ -340,11 +340,12 @@ pub struct ThemeConfig {
     /// See `ColorMode` for the truecolor vs palette trade-off.
     #[serde(default)]
     pub color_mode: ColorMode,
-    /// Minutes over which a freshly-stopped Idle session's color decays
-    /// from `fresh_idle` to `idle`. Inside this window the row also gets
-    /// an animated `breathe` rattle and is included in the `w` keybind's
-    /// "needs attention" bucket. 0 disables the gradient entirely
-    /// (every Idle row renders as fully decayed slate immediately).
+    /// Minutes a freshly-stopped Idle session keeps the fresh-idle color
+    /// and animated `breathe` rattle before snapping back to the regular
+    /// static idle look. Sessions inside the window are also included in
+    /// the `w` keybind's "needs attention" bucket. 0 disables the
+    /// freshness signal entirely (every Idle row renders with the
+    /// regular static look the moment its Stop hook fires).
     #[serde(default = "default_idle_decay_minutes")]
     pub idle_decay_minutes: u64,
 }
@@ -847,9 +848,9 @@ mod tests {
 
     #[test]
     fn test_theme_config_idle_decay_zero_disables() {
-        // 0 is a valid setting that disables the gradient entirely.
-        // Verifying it round-trips cleanly so users can opt out without
-        // having to remove the field.
+        // 0 is a valid setting that disables the freshness signal
+        // entirely. Verifying it round-trips cleanly so users can opt
+        // out without having to remove the field.
         let toml = r#"
             idle_decay_minutes = 0
         "#;

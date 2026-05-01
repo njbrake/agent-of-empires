@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use super::palette::color_to_palette;
 
 /// Convert the user-configured decay duration (minutes) into a `Duration`.
-/// `0` returns `Duration::ZERO`, which the rest of the gradient code treats
-/// as "fully decayed immediately" — a documented opt-out.
+/// `0` returns `Duration::ZERO`, which the freshness logic treats as
+/// "fully decayed immediately" — a documented opt-out: every Idle row
+/// renders with the static idle look the moment its Stop hook fires.
 pub fn idle_decay_window(minutes: u64) -> Duration {
     Duration::from_secs(minutes.saturating_mul(60))
 }
@@ -162,11 +163,11 @@ impl Theme {
 
             running: Color::Rgb(34, 197, 94),
             // Waiting sits at the brightest point in the brand ramp
-            // (amber-400) so it wins on luminance against the gradient's
-            // fresh-idle endpoint. Saturation alone wasn't enough on dark
-            // backgrounds — the deeper copper read as dimmer, not more
-            // urgent. fresh-idle drops one rung to amber-500 so the
-            // hierarchy is bright-amber > copper-amber > slate.
+            // (amber-400) so it wins on luminance against the fresh-idle
+            // color. Saturation alone wasn't enough on dark backgrounds —
+            // the deeper copper read as dimmer, not more urgent.
+            // Fresh-idle drops one rung to amber-500 so the hierarchy is
+            // bright-amber > copper-amber > slate.
             waiting: Color::Rgb(251, 191, 36),
             fresh_idle: Color::Rgb(245, 158, 11),
             idle: Color::Rgb(100, 116, 139),
