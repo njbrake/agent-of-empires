@@ -523,6 +523,15 @@ mod tests {
         // the bright surface). The check picks the comparison direction
         // off the theme's own background. Rec. 601 is good enough for a
         // pairwise sanity check, not a formal contrast metric.
+        //
+        // Heuristic limit: a custom user theme with a mid-tone background
+        // (luminance near the 128 cutoff) could fall on the wrong side of
+        // the dark/light split and fail this assertion in surprising
+        // ways. That's intentional — the test guards the 5 built-ins, not
+        // arbitrary user themes loaded from `~/.config/agent-of-empires/
+        // themes/*.toml`. If a custom-theme contributor needs to bypass
+        // this, they should pick `fresh_idle` themselves rather than rely
+        // on the test to validate it.
         fn luminance(c: Color) -> f32 {
             match c {
                 Color::Rgb(r, g, b) => 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32,

@@ -1,9 +1,13 @@
 import type { SessionResponse, SessionStatus } from "./types";
 
-/** How long a Stop-hooked Idle session keeps decaying from `fresh_idle` to
- *  `idle`. After this window the color is fully neutral and the session is
- *  no longer in the "needs attention" bucket. Mirrors the Rust constant
- *  `IDLE_DECAY_WINDOW` in src/tui/styles/themes.rs. */
+/** How long a Stop-hooked Idle session keeps the freshness signal active
+ *  (animated icon, fresh-idle color, "needs attention" bucketing). After
+ *  this window the row drops back to the regular static idle look.
+ *  Hard-coded mirror of the Rust default
+ *  (`Config.theme.idle_decay_minutes`, default 20 min). The dashboard
+ *  doesn't currently fetch the server's configured value; if the user
+ *  customizes it via the TUI, the web side stays at this default until we
+ *  wire `idle_decay_minutes` into the `/api/config` payload. */
 export const IDLE_DECAY_WINDOW_MS = 20 * 60 * 1000;
 
 /** Tailwind class for status dot background color by session status */

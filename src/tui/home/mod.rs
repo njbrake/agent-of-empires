@@ -506,9 +506,9 @@ impl HomeView {
                     inst.last_start_time = prev.last_start_time;
                     inst.session_id_poller = prev.session_id_poller.clone();
                     // Carry the in-memory idle_entered_at across reloads
-                    // so the gradient doesn't snap back to fully-decayed
-                    // when the user toggles a setting that triggers a
-                    // reload mid-window.
+                    // so a freshly-stopped session doesn't lose its
+                    // freshness state when the user toggles a setting
+                    // that triggers a reload mid-window.
                     inst.idle_entered_at = prev.idle_entered_at;
                     // Use in-memory session_id if present; fallback to disk.
                     // In-memory state takes priority over disk: the poller

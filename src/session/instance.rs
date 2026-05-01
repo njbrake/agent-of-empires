@@ -147,17 +147,19 @@ pub struct Instance {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_accessed_at: Option<DateTime<Utc>>,
-    /// Wall-clock time of the most recent transition into `Idle`. Used by the
-    /// TUI and web dashboard to fade a freshly-stopped session's color toward
-    /// neutral over `IDLE_DECAY_WINDOW`. Distinct from `last_accessed_at`,
-    /// which is also bumped on user interaction (a viewed session stays
-    /// "fresh" by design). `None` for non-Idle sessions or those that
-    /// transitioned before this field existed.
+    /// Wall-clock time of the most recent transition into `Idle`. Used by
+    /// the TUI and web dashboard to highlight a freshly-stopped session
+    /// for the duration of the configured idle-decay window
+    /// (`Config.theme.idle_decay_minutes`); past the window the row drops
+    /// back to the regular static idle look. Distinct from
+    /// `last_accessed_at`, which is also bumped on user interaction (a
+    /// viewed session stays "fresh" by design). `None` for non-Idle
+    /// sessions or those that transitioned before this field existed.
     ///
     /// Named `idle_entered_at` rather than `idle_since` to avoid collision
     /// with `DwellState::idle_since` in `src/server/push.rs`, which is an
-    /// in-process `Instant` for push-notification dwell timing — a different
-    /// concept with a different type and lifetime.
+    /// in-process `Instant` for push-notification dwell timing — a
+    /// different concept with a different type and lifetime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_entered_at: Option<DateTime<Utc>>,
 

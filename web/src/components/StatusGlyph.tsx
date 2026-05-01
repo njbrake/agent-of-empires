@@ -31,22 +31,23 @@ const STATIC_GLYPH: Record<SessionStatus, string> = {
 };
 
 /** Slowed-down `breathe` rattle for a freshly-stopped Idle session.
- *  Reuses the same animation as Starting on purpose; differentiation is by
- *  color (Starting=dimmed, fresh-idle=amber gradient). The longer interval
- *  (vs Starting) reads as "gentle reminder" rather than "actively
- *  transitioning". */
+ *  Reuses the same animation as Starting on purpose; differentiation is
+ *  by color (Starting uses `--color-text-muted`, fresh-idle uses
+ *  `--color-status-fresh-idle`). The longer interval (vs Starting) reads
+ *  as "gentle reminder" rather than "actively transitioning". */
 const FRESH_IDLE_RATTLE = { frames: RATTLES.breathe!.frames, interval: 280 };
 
 /** Animated status glyph that cycles through rattles frames.
  *  Each instance offsets by `createdAt` so spinners look unique.
  *
- *  When `idleEnteredAt` is within the gradient window, an Idle session
- *  renders an animated `breathe` rattle in the gradient color, matching
- *  the visual language of the other attention-worthy states (Running,
- *  Waiting, Starting all animate). Without the rattle the row would be the
- *  only static-glyph state in the "needs attention" bucket, which reads
- *  inconsistent. The motion also serves as a redundant cue alongside the
- *  color decay for colorblind users / monochrome terminals. */
+ *  When `idleEnteredAt` is within the decay window, an Idle session
+ *  renders an animated `breathe` rattle styled with
+ *  `--color-status-fresh-idle`. The motion matches the visual language of
+ *  the other attention-worthy states (Running, Waiting, Starting all
+ *  animate); without it the row would be the only static-glyph state in
+ *  the "needs attention" bucket, which reads inconsistent. The shape
+ *  variation also serves as a redundant cue alongside color for
+ *  colorblind users and monochrome terminals. */
 export function StatusGlyph({
   status,
   createdAt,
