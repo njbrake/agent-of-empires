@@ -80,6 +80,23 @@ fn spinner_starting(created_at: &DateTime<Utc>) -> &'static str {
         .current_frame()
 }
 
+/// Slow `breathe` rattle for a freshly-stopped Idle session. Reuses the
+/// same animation as Starting on purpose; differentiation is by color
+/// (Starting uses `theme.dimmed`, fresh-idle uses `theme.fresh_idle`).
+/// The longer interval reads as "gentle reminder" rather than "actively
+/// transitioning". Phase offset uses `idle_entered_at` when available so
+/// sessions that just stopped don't all sync to the same frame.
+fn spinner_idle_fresh(
+    created_at: &DateTime<Utc>,
+    idle_entered_at: Option<DateTime<Utc>>,
+) -> &'static str {
+    let offset_ts = idle_entered_at.unwrap_or(*created_at);
+    spinners::breathe()
+        .set_interval(Duration::from_millis(280))
+        .offset(session_offset(&offset_ts))
+        .current_frame()
+}
+
 /// Format a timestamp as a compact relative age (e.g. `3m`, `2h`, `4d`, `2mo`).
 /// Returns an empty string for `None` so callers can unconditionally substitute
 /// the result without guarding for absence.
@@ -111,18 +128,15 @@ fn format_relative_age(ts: Option<DateTime<Utc>>) -> String {
     format!("{}mo", months)
 }
 
-/// Minimum column width required to render the last-activity column.
-/// When the session list is narrower than this, the column is hidden entirely.
-/// Compared against `inner.width` (list pane minus 2-char border), so this is
-/// effectively `home_list_width - 2`. Keeping it at 30 lets the column appear
-/// for users who set `home_list_width` in the 35–45 range (the common narrow-
-/// pane setting) and for mobile clients with tight pane widths; the 6-char
-/// age slot plus ~24 chars for title/branch still fits comfortably.
-const LAST_ACTIVITY_MIN_WIDTH: u16 = 30;
-
-/// Width reserved for the right-aligned last-activity column:
-/// 5 chars for the label (e.g. `"<1m"`, `"30mo"`) + 1 char left padding.
+/// Width of the last-activity label slot itself: 5 chars for the value
+/// (e.g. `"<1m"`, `"30mo"`) + 1 char of left padding inside the slot.
 const LAST_ACTIVITY_SLOT: usize = 6;
+
+/// Trailing gap between the activity slot (or terminal-mode badge) and the
+/// pane's right border. One cell looks consistent with the breathing room
+/// other ratatui widgets leave around the rounded border without burning
+/// horizontal budget on narrow panes.
+const LAST_ACTIVITY_RIGHT_MARGIN: usize = 1;
 
 impl HomeView {
     pub fn render(
@@ -466,9 +480,23 @@ impl HomeView {
                 if let Some(inst) = self.get_instance(id) {
                     match self.view_mode {
                         ViewMode::Agent => {
+                            // For Idle sessions, decay color from `fresh_idle`
+                            // toward `idle` over `idle_decay_window`. A slow
+                            // `breathe` rattle replaces the static braille
+                            // glyph while we're inside the window, matching
+                            // the animated visual language of the other
+                            // attention-worthy states (Running, Waiting,
+                            // Starting). Also serves as a redundant cue for
+                            // colorblind users / monochrome terminals.
+                            let idle_age = inst.idle_age();
+                            let is_fresh_idle =
+                                matches!(idle_age, Some(age) if age < self.idle_decay_window);
                             let icon = match inst.status {
                                 Status::Running => spinner_running(&inst.created_at),
                                 Status::Waiting => spinner_waiting(&inst.created_at),
+                                Status::Idle if is_fresh_idle => {
+                                    spinner_idle_fresh(&inst.created_at, inst.idle_entered_at)
+                                }
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
@@ -480,7 +508,9 @@ impl HomeView {
                             let color = match inst.status {
                                 Status::Running => theme.running,
                                 Status::Waiting => theme.waiting,
-                                Status::Idle => theme.idle,
+                                Status::Idle => {
+                                    theme.idle_color_at_age(idle_age, self.idle_decay_window)
+                                }
                                 Status::Unknown => theme.waiting,
                                 Status::Stopped => theme.dimmed,
                                 Status::Error => theme.error,
@@ -556,27 +586,72 @@ impl HomeView {
                     }
                 }
 
-                // Last-activity column: right-aligned, fixed-width slot just
-                // before the terminal-mode/status badge. Hidden when the list
-                // pane is too narrow to justify spending the horizontal budget.
-                if list_width >= LAST_ACTIVITY_MIN_WIDTH {
-                    let age = format_relative_age(inst.last_accessed_at);
-                    // Reserve LAST_ACTIVITY_SLOT cells; right-align inside the
-                    // slot so columns line up across rows of varying title
-                    // length. Empty `age` still reserves space — keeping the
-                    // column aligned is why we don't conditionally skip per
-                    // row.
+                // Right edge of the row: optional terminal-mode badge, and
+                // an activity column (last-accessed for non-Idle rows,
+                // time-since-stop for Idle rows). Both pin to the pane's
+                // right edge so the column lines up vertically across the
+                // session list — without right-alignment each row would
+                // place its column at a different x depending on title
+                // length, which reads as visually noisy.
+                //
+                // Decision is per-row: show the column only if the prefix
+                // (indent + icon + title + branch info) plus the column
+                // slot and any badge fits inside `list_width`. On narrow
+                // panes a long title would otherwise clip the column or
+                // push it off-screen, so we hide the column for that row
+                // rather than mangle the title. The badge follows existing
+                // behavior (always pushed in Terminal+sandboxed mode).
+                //
+                // Idle-row note: column drives off `idle_entered_at`, not
+                // `last_accessed_at`. The latter is bumped by user
+                // interaction (attach, send-keys), which would lie about
+                // how long it's actually been since the agent stopped.
+                // Color tracks the fresh/decayed binary used by the icon so
+                // the readout fades in step.
+                let badge_text: Option<&'static str> =
+                    if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
+                        Some(match self.get_terminal_mode(id) {
+                            TerminalMode::Container => " [container]",
+                            TerminalMode::Host => " [host]",
+                        })
+                    } else {
+                        None
+                    };
+                let badge_width = badge_text.map_or(0, |s| s.len());
+
+                let used_width: usize = line_spans.iter().map(|s| s.width()).sum();
+                let trailing = LAST_ACTIVITY_SLOT + badge_width + LAST_ACTIVITY_RIGHT_MARGIN;
+                let column_fits = used_width + trailing <= list_width as usize;
+                if column_fits {
+                    let pad_len = list_width as usize - used_width - trailing;
+                    if pad_len > 0 {
+                        line_spans.push(Span::raw(" ".repeat(pad_len)));
+                    }
+                    // Idle rows show time-since-stop (`idle_entered_at`)
+                    // since `last_accessed_at` would lie after attach/send.
+                    // Fall back to `last_accessed_at` when `idle_entered_at`
+                    // is missing — sessions that were Idle before this
+                    // field existed (or that haven't transitioned since
+                    // upgrade) shouldn't render a blank column. The
+                    // fallback timestamp is approximate but better than no
+                    // signal at all. Color stays `theme.dimmed` for every
+                    // status — the icon already carries the urgency
+                    // signal, so a colored timestamp would just add noise.
+                    let age_ts = if inst.status == Status::Idle {
+                        inst.idle_entered_at.or(inst.last_accessed_at)
+                    } else {
+                        inst.last_accessed_at
+                    };
+                    let age = format_relative_age(age_ts);
                     let padded = format!("{:>width$}", age, width = LAST_ACTIVITY_SLOT);
                     line_spans.push(Span::styled(padded, Style::default().fg(theme.dimmed)));
                 }
 
-                if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
-                    let mode = self.get_terminal_mode(id);
-                    let mode_text = match mode {
-                        TerminalMode::Container => " [container]",
-                        TerminalMode::Host => " [host]",
-                    };
-                    line_spans.push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
+                if let Some(badge) = badge_text {
+                    line_spans.push(Span::styled(badge, Style::default().fg(theme.sandbox)));
+                }
+                if column_fits {
+                    line_spans.push(Span::raw(" ".repeat(LAST_ACTIVITY_RIGHT_MARGIN)));
                 }
             }
         }
@@ -741,10 +816,20 @@ impl HomeView {
                 .as_ref()
                 .and_then(|id| self.get_instance(id))
                 .map(|inst| {
+                    let idle_age = inst.idle_age();
+                    let is_fresh_idle =
+                        matches!(idle_age, Some(age) if age < self.idle_decay_window);
                     let (icon, icon_color) = match inst.status {
                         Status::Running => (spinner_running(&inst.created_at), theme.running),
                         Status::Waiting => (spinner_waiting(&inst.created_at), theme.waiting),
-                        Status::Idle => (ICON_IDLE, theme.idle),
+                        Status::Idle if is_fresh_idle => (
+                            spinner_idle_fresh(&inst.created_at, inst.idle_entered_at),
+                            theme.idle_color_at_age(idle_age, self.idle_decay_window),
+                        ),
+                        Status::Idle => (
+                            ICON_IDLE,
+                            theme.idle_color_at_age(idle_age, self.idle_decay_window),
+                        ),
                         Status::Unknown => (ICON_UNKNOWN, theme.waiting),
                         Status::Stopped => (ICON_STOPPED, theme.dimmed),
                         Status::Error => (ICON_ERROR, theme.error),
@@ -805,6 +890,7 @@ impl HomeView {
                                 &self.preview_cache.content,
                                 self.preview_scroll_offset,
                                 theme,
+                                self.idle_decay_window,
                                 compact,
                             );
                         }

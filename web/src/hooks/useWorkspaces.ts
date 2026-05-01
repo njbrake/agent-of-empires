@@ -29,7 +29,7 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
     for (const [id, groupSessions] of groups) {
       const first = groupSessions[0]!;
       const agents = [...new Set(groupSessions.map((s) => s.tool))];
-      const status = groupSessions.some((s) => isSessionActive(s.status))
+      const status = groupSessions.some((s) => isSessionActive(s))
         ? "active"
         : "idle";
 

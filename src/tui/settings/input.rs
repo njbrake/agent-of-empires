@@ -541,6 +541,11 @@ impl SettingsView {
                     t.color_mode = None;
                 }
             }
+            FieldKey::IdleDecayMinutes => {
+                if let Some(ref mut t) = config.theme {
+                    t.idle_decay_minutes = None;
+                }
+            }
             // Updates
             FieldKey::CheckEnabled => {
                 if let Some(ref mut u) = config.updates {

@@ -231,6 +231,12 @@ pub struct HomeView {
     // Sound config for state transition sounds
     pub(super) sound_config: crate::sound::SoundConfig,
 
+    /// Resolved decay window from `Config.theme.idle_decay_minutes`. Read
+    /// at startup and re-resolved on settings reload. Used by render to
+    /// drive the gradient + breathe rattle, and by the `w` keybind to
+    /// gate which Idle sessions are still "actionable".
+    pub(super) idle_decay_window: std::time::Duration,
+
     // When true, letter-based action hotkeys require SHIFT (guard against
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
@@ -289,6 +295,8 @@ impl HomeView {
         };
         let sound_config = resolved.sound.clone();
         let strict_hotkeys = resolved.session.strict_hotkeys;
+        let idle_decay_window =
+            crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         let user_config = load_config().ok().flatten();
         let sort_order = user_config
             .as_ref()
@@ -373,6 +381,7 @@ impl HomeView {
             default_terminal_mode,
             sound_config,
             strict_hotkeys,
+            idle_decay_window,
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -496,6 +505,11 @@ impl HomeView {
                     inst.last_error_check = prev.last_error_check;
                     inst.last_start_time = prev.last_start_time;
                     inst.session_id_poller = prev.session_id_poller.clone();
+                    // Carry the in-memory idle_entered_at across reloads
+                    // so the gradient doesn't snap back to fully-decayed
+                    // when the user toggles a setting that triggers a
+                    // reload mid-window.
+                    inst.idle_entered_at = prev.idle_entered_at;
                     // Use in-memory session_id if present; fallback to disk.
                     // In-memory state takes priority over disk: the poller
                     // may have updated the ID since last save.
@@ -612,9 +626,14 @@ impl HomeView {
                 if should_update {
                     let new_status = update.status;
                     let new_error = update.last_error;
+                    let new_idle_entered_at = update.idle_entered_at;
                     self.mutate_instance(&update.id, |inst| {
                         inst.status = new_status;
                         inst.last_error = new_error;
+                        // Propagate the timestamp the polling clone wrote;
+                        // see StatusPoller for why this isn't a simple
+                        // `inst.idle_entered_at = …` from inside the poll.
+                        inst.idle_entered_at = new_idle_entered_at;
                     });
 
                     if let Some(old) = old_status {
@@ -1456,6 +1475,8 @@ impl HomeView {
         };
         self.sound_config = config.sound.clone();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.idle_decay_window =
+            crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
     }
 
     /// Toggle terminal mode between Container and Host for a session

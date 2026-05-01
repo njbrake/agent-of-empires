@@ -1126,7 +1126,12 @@ impl HomeView {
             return;
         }
 
-        // Pass 1: forward-walk from cursor+1, wrapping, for the next Waiting session.
+        // Pass 1: forward-walk from cursor+1, wrapping, for the next Waiting
+        // session OR a freshly-stopped Idle session (within
+        // `idle_decay_window`). Both states are "needs your attention" and
+        // cycle together so repeated `w` taps move through the actionable
+        // backlog regardless of which hook fired.
+        let window = self.idle_decay_window;
         let start = (self.cursor + 1) % len;
         for i in 0..len - 1 {
             let idx = (start + i) % len;
@@ -1135,7 +1140,9 @@ impl HomeView {
                 _ => continue,
             };
             if let Some(inst) = self.get_instance(&id) {
-                if inst.status == Status::Waiting {
+                let is_actionable = inst.status == Status::Waiting
+                    || matches!(inst.idle_age(), Some(age) if age < window);
+                if is_actionable {
                     self.cursor = idx;
                     self.update_selected();
                     return;

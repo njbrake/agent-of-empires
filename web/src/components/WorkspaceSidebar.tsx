@@ -1,7 +1,11 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
-import { STATUS_DOT_CLASS, STATUS_TEXT_CLASS, isSessionActive } from "../lib/session";
+import {
+  STATUS_DOT_CLASS,
+  getStatusTextClass,
+  isSessionActive,
+} from "../lib/session";
 import { renameSession, setSessionNotifications } from "../lib/api";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
@@ -36,13 +40,33 @@ interface Props {
   readOnly?: boolean;
 }
 
-function bestSession(ws: Workspace): { status: SessionStatus; createdAt: string | null } {
-  const running = ws.sessions.find((s) => isSessionActive(s.status));
-  if (running) return { status: running.status, createdAt: running.created_at };
+function bestSession(
+  ws: Workspace,
+): {
+  status: SessionStatus;
+  createdAt: string | null;
+  idleEnteredAt: string | null;
+} {
+  const running = ws.sessions.find((s) => isSessionActive(s));
+  if (running)
+    return {
+      status: running.status,
+      createdAt: running.created_at,
+      idleEnteredAt: running.idle_entered_at ?? null,
+    };
   const error = ws.sessions.find((s) => s.status === "Error");
-  if (error) return { status: "Error", createdAt: error.created_at };
+  if (error)
+    return {
+      status: "Error",
+      createdAt: error.created_at,
+      idleEnteredAt: null,
+    };
   const first = ws.sessions[0];
-  return { status: first?.status ?? "Unknown", createdAt: first?.created_at ?? null };
+  return {
+    status: first?.status ?? "Unknown",
+    createdAt: first?.created_at ?? null,
+    idleEnteredAt: first?.idle_entered_at ?? null,
+  };
 }
 
 /** Derive which of the three context-menu presets best describes a
@@ -89,8 +113,11 @@ const SessionRow = memo(function SessionRow({
   readOnly?: boolean;
   indented?: boolean;
 }) {
-  const { status: sessionStatus, createdAt } = bestSession(workspace);
-  const textClass = STATUS_TEXT_CLASS[sessionStatus] ?? "text-status-idle";
+  const { status: sessionStatus, createdAt, idleEnteredAt } = bestSession(workspace);
+  const textClass = getStatusTextClass({
+    status: sessionStatus,
+    idle_entered_at: idleEnteredAt,
+  });
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
   const firstSession = workspace.sessions[0];
@@ -252,9 +279,13 @@ const SessionRow = memo(function SessionRow({
           <span
             className={`text-sm shrink-0 leading-none font-mono ${textClass}`}
           >
-            <StatusGlyph status={sessionStatus} createdAt={createdAt} />
+            <StatusGlyph
+              status={sessionStatus}
+              createdAt={createdAt}
+              idleEnteredAt={idleEnteredAt}
+            />
           </span>
-          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive(sessionStatus) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
             {label}
           </span>
         </div>

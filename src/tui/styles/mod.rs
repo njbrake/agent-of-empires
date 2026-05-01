@@ -10,7 +10,7 @@
 mod palette;
 mod themes;
 
-pub use themes::Theme;
+pub use themes::{idle_decay_window, Theme};
 
 use std::path::PathBuf;
 use tracing::warn;

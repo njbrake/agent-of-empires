@@ -9,6 +9,11 @@ export interface SessionResponse {
   yolo_mode: boolean;
   created_at: string;
   last_accessed_at: string | null;
+  /** Wall-clock time of the most recent transition into Idle. Used by the
+   *  dashboard to fade a freshly-stopped session's color toward neutral.
+   *  Distinct from `last_accessed_at`: viewing or messaging a session bumps
+   *  `last_accessed_at` but leaves `idle_entered_at` alone. */
+  idle_entered_at: string | null;
   last_error: string | null;
   branch: string | null;
   main_repo_path: string | null;

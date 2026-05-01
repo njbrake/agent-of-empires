@@ -47,6 +47,7 @@ pub enum FieldKey {
     // Theme
     ThemeName,
     ThemeColorMode,
+    IdleDecayMinutes,
     // Updates
     CheckEnabled,
     CheckIntervalHours,
@@ -365,6 +366,12 @@ fn build_theme_fields(
         },
     );
 
+    let (idle_decay_minutes, idle_decay_override) = resolve_value(
+        scope,
+        global.theme.idle_decay_minutes,
+        theme.and_then(|t| t.idle_decay_minutes),
+    );
+
     vec![
         SettingField {
             key: FieldKey::ThemeName,
@@ -386,6 +393,18 @@ fn build_theme_fields(
             category: SettingsCategory::Theme,
             has_override: cm_has_override,
             inherited_display: cm_inherited,
+        },
+        SettingField {
+            key: FieldKey::IdleDecayMinutes,
+            label: "Idle Decay (minutes)",
+            description: "Minutes a freshly-stopped Idle session keeps the fresh-idle tint and animated icon before fading to neutral. Also gates the `w` keybind. 0 disables.",
+            value: FieldValue::Number(idle_decay_minutes),
+            category: SettingsCategory::Theme,
+            has_override: idle_decay_override,
+            inherited_display: inherited_if(
+                idle_decay_override,
+                FieldValue::Number(global.theme.idle_decay_minutes),
+            ),
         },
     ]
 }
@@ -1396,6 +1415,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => crate::session::config::ColorMode::Truecolor,
             };
         }
+        (FieldKey::IdleDecayMinutes, FieldValue::Number(v)) => {
+            config.theme.idle_decay_minutes = *v;
+        }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
@@ -1554,6 +1576,13 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 1 => crate::session::config::ColorMode::Palette,
                 _ => crate::session::config::ColorMode::Truecolor,
             });
+        }
+        (FieldKey::IdleDecayMinutes, FieldValue::Number(v)) => {
+            use crate::session::ThemeConfigOverride;
+            let t = config
+                .theme
+                .get_or_insert_with(ThemeConfigOverride::default);
+            t.idle_decay_minutes = Some(*v);
         }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {

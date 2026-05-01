@@ -50,6 +50,8 @@ pub struct ThemeConfigOverride {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_mode: Option<ColorMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_decay_minutes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -413,6 +415,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(ref color_mode) = theme_override.color_mode {
             global.theme.color_mode = color_mode.clone();
+        }
+        if let Some(idle_decay_minutes) = theme_override.idle_decay_minutes {
+            global.theme.idle_decay_minutes = idle_decay_minutes;
         }
     }
 

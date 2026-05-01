@@ -25,7 +25,7 @@ export function Dashboard({
     let errors = 0;
     for (const s of sessions) {
       projects.add(s.main_repo_path || s.project_path);
-      if (isSessionActive(s.status)) active++;
+      if (isSessionActive(s)) active++;
       if (s.status === "Waiting") waiting++;
       if (s.status === "Error") errors++;
     }

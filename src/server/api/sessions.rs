@@ -26,6 +26,11 @@ pub struct SessionResponse {
     pub yolo_mode: bool,
     pub created_at: String,
     pub last_accessed_at: Option<String>,
+    /// Wall-clock time of the most recent transition into Idle. Used by the
+    /// web dashboard to fade a freshly-stopped session's color toward neutral.
+    /// Distinct from `last_accessed_at`: viewing or messaging a session bumps
+    /// `last_accessed_at` but leaves `idle_entered_at` alone.
+    pub idle_entered_at: Option<String>,
     pub last_error: Option<String>,
     pub branch: Option<String>,
     pub main_repo_path: Option<String>,
@@ -73,6 +78,7 @@ impl SessionResponse {
             yolo_mode: inst.yolo_mode,
             created_at: inst.created_at.to_rfc3339(),
             last_accessed_at: inst.last_accessed_at.map(|t| t.to_rfc3339()),
+            idle_entered_at: inst.idle_entered_at.map(|t| t.to_rfc3339()),
             last_error: inst.last_error.clone(),
             branch: inst.worktree_info.as_ref().map(|w| w.branch.clone()),
             main_repo_path: inst

@@ -163,7 +163,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
-      const running = ws.sessions.find((s) => isSessionActive(s.status));
+      const running = ws.sessions.find((s) => isSessionActive(s));
       const picked = running?.id ?? ws.sessions[0]?.id ?? null;
       if (picked) {
         navigate(`/session/${encodeURIComponent(picked)}`);

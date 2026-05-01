@@ -332,7 +332,7 @@ pub enum ColorMode {
     Palette,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeConfig {
     #[serde(default)]
     pub name: String,
@@ -340,6 +340,27 @@ pub struct ThemeConfig {
     /// See `ColorMode` for the truecolor vs palette trade-off.
     #[serde(default)]
     pub color_mode: ColorMode,
+    /// Minutes over which a freshly-stopped Idle session's color decays
+    /// from `fresh_idle` to `idle`. Inside this window the row also gets
+    /// an animated `breathe` rattle and is included in the `w` keybind's
+    /// "needs attention" bucket. 0 disables the gradient entirely
+    /// (every Idle row renders as fully decayed slate immediately).
+    #[serde(default = "default_idle_decay_minutes")]
+    pub idle_decay_minutes: u64,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            color_mode: ColorMode::default(),
+            idle_decay_minutes: default_idle_decay_minutes(),
+        }
+    }
+}
+
+fn default_idle_decay_minutes() -> u64 {
+    20
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -801,6 +822,7 @@ mod tests {
     fn test_theme_config_default() {
         let theme = ThemeConfig::default();
         assert_eq!(theme.name, "");
+        assert_eq!(theme.idle_decay_minutes, 20);
     }
 
     #[test]
@@ -808,6 +830,31 @@ mod tests {
         let toml = r#"name = "dark""#;
         let theme: ThemeConfig = toml::from_str(toml).unwrap();
         assert_eq!(theme.name, "dark");
+        // Missing field falls back to the documented default so existing
+        // configs don't suddenly snap to "no decay" after upgrade.
+        assert_eq!(theme.idle_decay_minutes, 20);
+    }
+
+    #[test]
+    fn test_theme_config_idle_decay_override() {
+        let toml = r#"
+            name = "dracula"
+            idle_decay_minutes = 5
+        "#;
+        let theme: ThemeConfig = toml::from_str(toml).unwrap();
+        assert_eq!(theme.idle_decay_minutes, 5);
+    }
+
+    #[test]
+    fn test_theme_config_idle_decay_zero_disables() {
+        // 0 is a valid setting that disables the gradient entirely.
+        // Verifying it round-trips cleanly so users can opt out without
+        // having to remove the field.
+        let toml = r#"
+            idle_decay_minutes = 0
+        "#;
+        let theme: ThemeConfig = toml::from_str(toml).unwrap();
+        assert_eq!(theme.idle_decay_minutes, 0);
     }
 
     // Tests for UpdatesConfig

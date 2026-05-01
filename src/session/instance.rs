@@ -147,6 +147,19 @@ pub struct Instance {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_accessed_at: Option<DateTime<Utc>>,
+    /// Wall-clock time of the most recent transition into `Idle`. Used by the
+    /// TUI and web dashboard to fade a freshly-stopped session's color toward
+    /// neutral over `IDLE_DECAY_WINDOW`. Distinct from `last_accessed_at`,
+    /// which is also bumped on user interaction (a viewed session stays
+    /// "fresh" by design). `None` for non-Idle sessions or those that
+    /// transitioned before this field existed.
+    ///
+    /// Named `idle_entered_at` rather than `idle_since` to avoid collision
+    /// with `DwellState::idle_since` in `src/server/push.rs`, which is an
+    /// in-process `Instant` for push-notification dwell timing — a different
+    /// concept with a different type and lifetime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_entered_at: Option<DateTime<Utc>>,
 
     // Git worktree integration
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -360,6 +373,7 @@ impl Instance {
             status: Status::Idle,
             created_at: Utc::now(),
             last_accessed_at: None,
+            idle_entered_at: None,
             worktree_info: None,
             workspace_info: None,
             sandbox_info: None,
@@ -381,6 +395,19 @@ impl Instance {
     /// timestamp reflects actual activity, not just status transitions.
     pub fn touch_last_accessed(&mut self) {
         self.last_accessed_at = Some(Utc::now());
+    }
+
+    /// Time elapsed since this session most recently transitioned into
+    /// `Idle`. `None` for non-Idle sessions, sessions with a missing
+    /// timestamp (legacy state), or sessions whose `idle_entered_at` is in
+    /// the future (clock skew). Negative deltas are clamped away rather than
+    /// returned as `Duration` since `chrono::Duration::to_std` rejects them.
+    pub fn idle_age(&self) -> Option<std::time::Duration> {
+        if self.status != Status::Idle {
+            return None;
+        }
+        let since = self.idle_entered_at?;
+        (Utc::now() - since).to_std().ok()
     }
 
     /// Return the profile that should drive config resolution for this
@@ -1307,7 +1334,13 @@ impl Instance {
         let prev_status = self.status;
         self.update_status_with_metadata_inner(metadata);
         if self.status != prev_status {
-            self.last_accessed_at = Some(Utc::now());
+            let now = Utc::now();
+            self.last_accessed_at = Some(now);
+            self.idle_entered_at = if self.status == Status::Idle {
+                Some(now)
+            } else {
+                None
+            };
         }
     }
 
@@ -1688,6 +1721,47 @@ mod tests {
 
         inst.parent_session_id = Some("parent123".to_string());
         assert!(inst.is_sub_session());
+    }
+
+    #[test]
+    fn test_idle_age_returns_none_for_non_idle() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Running;
+        inst.idle_entered_at = Some(Utc::now() - chrono::Duration::seconds(60));
+        // A Running session never has an idle age, even if a stale
+        // `idle_entered_at` timestamp is sitting around (e.g. a transition
+        // that bumped from Idle → Running but missed the cleanup path).
+        assert_eq!(inst.idle_age(), None);
+    }
+
+    #[test]
+    fn test_idle_age_returns_none_when_no_timestamp() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Idle;
+        inst.idle_entered_at = None;
+        assert_eq!(inst.idle_age(), None);
+    }
+
+    #[test]
+    fn test_idle_age_returns_positive_duration() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Idle;
+        inst.idle_entered_at = Some(Utc::now() - chrono::Duration::seconds(5));
+        let age = inst.idle_age().expect("idle age should be present");
+        // Allow generous slack so the test isn't flaky on slow CI.
+        assert!(age.as_secs() >= 4 && age.as_secs() <= 30);
+    }
+
+    #[test]
+    fn test_idle_age_clamps_negative_to_none() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Idle;
+        // Future timestamp (clock skew, hand-crafted state). `to_std()` on a
+        // negative `chrono::Duration` returns Err, which we map to None so
+        // the gradient renderer sees "fully decayed" rather than panicking
+        // or treating the session as freshly stopped.
+        inst.idle_entered_at = Some(Utc::now() + chrono::Duration::seconds(60));
+        assert_eq!(inst.idle_age(), None);
     }
 
     #[test]
