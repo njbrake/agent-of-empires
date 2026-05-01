@@ -343,9 +343,14 @@ pub struct ThemeConfig {
     /// Minutes a freshly-stopped Idle session keeps the fresh-idle color
     /// and animated `breathe` rattle before snapping back to the regular
     /// static idle look. Sessions inside the window are also included in
-    /// the `w` keybind's "needs attention" bucket. 0 disables the
-    /// freshness signal entirely (every Idle row renders with the
-    /// regular static look the moment its Stop hook fires).
+    /// the `w` keybind's "needs attention" bucket.
+    ///
+    /// Default is `0` (off): the freshness rattle and fresh-idle color
+    /// stay off, every Idle row renders with the regular static look
+    /// the moment its Stop hook fires. The time-since-stop column on
+    /// Idle rows is independent of this setting and shows regardless.
+    /// Set a positive value (e.g. 20) to opt in to the visual freshness
+    /// signal.
     #[serde(default = "default_idle_decay_minutes")]
     pub idle_decay_minutes: u64,
 }
@@ -361,7 +366,7 @@ impl Default for ThemeConfig {
 }
 
 fn default_idle_decay_minutes() -> u64 {
-    20
+    0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -823,7 +828,10 @@ mod tests {
     fn test_theme_config_default() {
         let theme = ThemeConfig::default();
         assert_eq!(theme.name, "");
-        assert_eq!(theme.idle_decay_minutes, 20);
+        // Freshness signal is off by default; users opt in by setting a
+        // positive value via Settings -> Theme -> Idle Decay (minutes)
+        // or in config.toml directly.
+        assert_eq!(theme.idle_decay_minutes, 0);
     }
 
     #[test]
@@ -831,9 +839,10 @@ mod tests {
         let toml = r#"name = "dark""#;
         let theme: ThemeConfig = toml::from_str(toml).unwrap();
         assert_eq!(theme.name, "dark");
-        // Missing field falls back to the documented default so existing
-        // configs don't suddenly snap to "no decay" after upgrade.
-        assert_eq!(theme.idle_decay_minutes, 20);
+        // Missing field defaults to the off state. Existing configs
+        // without `idle_decay_minutes` get the calmer (no-rattle)
+        // default rather than being opted into the visual signal.
+        assert_eq!(theme.idle_decay_minutes, 0);
     }
 
     #[test]

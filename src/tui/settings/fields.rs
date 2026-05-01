@@ -397,7 +397,7 @@ fn build_theme_fields(
         SettingField {
             key: FieldKey::IdleDecayMinutes,
             label: "Idle Decay (minutes)",
-            description: "Minutes a freshly-stopped Idle session keeps the fresh-idle tint and animated icon before fading to neutral. Also gates the `w` keybind. 0 disables.",
+            description: "Off by default (0). Set a positive value to opt in: a freshly-stopped Idle session keeps a fresh-idle tint and an animated breathe icon for this many minutes before snapping back to the static look, and is treated as actionable by the `w` keybind. The time-since-stop column on Idle rows shows regardless of this setting.",
             value: FieldValue::Number(idle_decay_minutes),
             category: SettingsCategory::Theme,
             has_override: idle_decay_override,
