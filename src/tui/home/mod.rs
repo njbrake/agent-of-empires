@@ -31,7 +31,7 @@ use super::dialogs::{
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
-use super::status_poller::StatusPoller;
+use super::status_poller::{StatusPoller, StatusUpdate};
 
 /// Extract a project group name from a session instance.
 /// Uses `worktree_info.main_repo_path` for worktree sessions (so all branches of the
@@ -610,43 +610,51 @@ impl HomeView {
     /// Apply any pending status updates from the background poller.
     /// Returns true if updates were applied.
     pub fn apply_status_updates(&mut self) -> bool {
-        use crate::session::Status;
-
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
-                let old_status = self.get_instance(&update.id).map(|i| i.status);
-
-                let should_update = old_status.is_some_and(|s| {
-                    s != Status::Deleting
-                        && s != Status::Creating
-                        && s != Status::Stopped
-                        && update.status != Status::Stopped
-                });
-
-                if should_update {
-                    let new_status = update.status;
-                    let new_error = update.last_error;
-                    let new_idle_entered_at = update.idle_entered_at;
-                    self.mutate_instance(&update.id, |inst| {
-                        inst.status = new_status;
-                        inst.last_error = new_error;
-                        // Propagate the timestamp the polling clone wrote;
-                        // see StatusPoller for why this isn't a simple
-                        // `inst.idle_entered_at = …` from inside the poll.
-                        inst.idle_entered_at = new_idle_entered_at;
-                    });
-
-                    if let Some(old) = old_status {
-                        if old != new_status {
-                            crate::sound::play_for_transition(old, new_status, &self.sound_config);
-                        }
-                    }
-                }
+                self.apply_one_status_update(update);
             }
             self.pending_status_refresh = false;
             return true;
         }
         false
+    }
+
+    /// Apply a single status update from the poller. Extracted from the
+    /// channel-pulling loop in `apply_status_updates` so tests can drive
+    /// the apply path directly without having to push through the
+    /// background polling thread.
+    pub(super) fn apply_one_status_update(&mut self, update: StatusUpdate) {
+        use crate::session::Status;
+
+        let old_status = self.get_instance(&update.id).map(|i| i.status);
+        let should_update = old_status.is_some_and(|s| {
+            s != Status::Deleting
+                && s != Status::Creating
+                && s != Status::Stopped
+                && update.status != Status::Stopped
+        });
+        if !should_update {
+            return;
+        }
+
+        let new_status = update.status;
+        let new_error = update.last_error;
+        let new_idle_entered_at = update.idle_entered_at;
+        self.mutate_instance(&update.id, |inst| {
+            inst.status = new_status;
+            inst.last_error = new_error;
+            // Propagate the timestamp the polling clone wrote;
+            // see StatusPoller for why this isn't a simple
+            // `inst.idle_entered_at = …` from inside the poll.
+            inst.idle_entered_at = new_idle_entered_at;
+        });
+
+        if let Some(old) = old_status {
+            if old != new_status {
+                crate::sound::play_for_transition(old, new_status, &self.sound_config);
+            }
+        }
     }
 
     pub fn apply_deletion_results(&mut self) -> bool {

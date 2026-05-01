@@ -2644,3 +2644,118 @@ fn wants_text_selection_tracks_copy_friendly_surfaces() {
         assert!(!env.view.wants_text_selection());
     }
 }
+
+// -- apply_one_status_update -------------------------------------------------
+//
+// These guard the bug discovered in #872: the polling loop runs
+// `update_status_with_metadata` on a clone, then projects the result into
+// a `StatusUpdate`. The first version of that struct dropped the
+// freshly-set `idle_entered_at`, which meant the breathe rattle and
+// fresh-idle color never fired in the TUI even though everything looked
+// right via the API.
+
+#[test]
+#[serial]
+fn apply_status_update_propagates_idle_entered_at_into_live_instance() {
+    use crate::session::Status;
+    use crate::tui::status_poller::StatusUpdate;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+
+    // The instance was just created (Idle, no transition observed yet).
+    assert_eq!(env.view.get_instance(&id).unwrap().idle_entered_at, None);
+
+    // Simulate the poller observing a Stop hook: status stays Idle on
+    // disk but the wrapper writes `idle_entered_at` on the polling
+    // clone. The apply path must carry that timestamp into the live
+    // instance, otherwise nothing downstream sees it.
+    let now = chrono::Utc::now();
+    env.view.apply_one_status_update(StatusUpdate {
+        id: id.clone(),
+        status: Status::Idle,
+        last_error: None,
+        idle_entered_at: Some(now),
+    });
+
+    let inst = env.view.get_instance(&id).unwrap();
+    assert_eq!(inst.status, Status::Idle);
+    assert_eq!(inst.idle_entered_at, Some(now));
+}
+
+#[test]
+#[serial]
+fn apply_status_update_clears_idle_entered_at_on_idle_to_running() {
+    use crate::session::Status;
+    use crate::tui::status_poller::StatusUpdate;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+
+    // Seed: session is Idle with a freshness timestamp set.
+    let stop_time = chrono::Utc::now() - chrono::Duration::seconds(60);
+    env.view.apply_one_status_update(StatusUpdate {
+        id: id.clone(),
+        status: Status::Idle,
+        last_error: None,
+        idle_entered_at: Some(stop_time),
+    });
+    assert_eq!(
+        env.view.get_instance(&id).unwrap().idle_entered_at,
+        Some(stop_time)
+    );
+
+    // Transition Idle -> Running. The poller's wrapper clears
+    // `idle_entered_at` on the clone for non-Idle states; the apply
+    // path has to honor that, otherwise a Running session would still
+    // claim a freshness age.
+    env.view.apply_one_status_update(StatusUpdate {
+        id: id.clone(),
+        status: Status::Running,
+        last_error: None,
+        idle_entered_at: None,
+    });
+
+    let inst = env.view.get_instance(&id).unwrap();
+    assert_eq!(inst.status, Status::Running);
+    assert_eq!(inst.idle_entered_at, None);
+    // And `idle_age()` must not synthesize one out of stale state.
+    assert_eq!(inst.idle_age(), None);
+}
+
+#[test]
+#[serial]
+fn apply_status_update_skips_terminal_states() {
+    use crate::session::Status;
+    use crate::tui::status_poller::StatusUpdate;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+
+    // Move the session into a terminal state that the apply path is
+    // supposed to leave alone.
+    env.view
+        .mutate_instance(&id, |inst| inst.status = Status::Deleting);
+    let stale_ts = chrono::Utc::now() - chrono::Duration::seconds(10);
+
+    env.view.apply_one_status_update(StatusUpdate {
+        id: id.clone(),
+        status: Status::Idle,
+        last_error: None,
+        idle_entered_at: Some(stale_ts),
+    });
+
+    // Status and timestamp should both stay untouched.
+    let inst = env.view.get_instance(&id).unwrap();
+    assert_eq!(inst.status, Status::Deleting);
+    assert_eq!(inst.idle_entered_at, None);
+}

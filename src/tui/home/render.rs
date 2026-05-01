@@ -138,6 +138,32 @@ const LAST_ACTIVITY_SLOT: usize = 6;
 /// horizontal budget on narrow panes.
 const LAST_ACTIVITY_RIGHT_MARGIN: usize = 1;
 
+/// Decide where the right-aligned activity column lives on a session row.
+///
+/// `prefix_width` is the display width of the spans already pushed (indent,
+/// icon, title, optional branch info). `list_width` is the inner width of
+/// the list pane. `badge_width` is 0 when no terminal-mode badge follows
+/// the column, otherwise the badge string's length.
+///
+/// Returns `Some(pad_len)` if the column fits with `LAST_ACTIVITY_SLOT` for
+/// the value, the badge after, and `LAST_ACTIVITY_RIGHT_MARGIN` of trailing
+/// space. The padding is what the row should push between the prefix and
+/// the column to right-align it. `None` means the row is too wide and the
+/// column should be skipped entirely (the title takes priority).
+fn activity_column_padding(
+    prefix_width: usize,
+    list_width: u16,
+    badge_width: usize,
+) -> Option<usize> {
+    let trailing = LAST_ACTIVITY_SLOT + badge_width + LAST_ACTIVITY_RIGHT_MARGIN;
+    let total = prefix_width.checked_add(trailing)?;
+    if total <= list_width as usize {
+        Some(list_width as usize - total)
+    } else {
+        None
+    }
+}
+
 impl HomeView {
     pub fn render(
         &mut self,
@@ -620,10 +646,9 @@ impl HomeView {
                 let badge_width = badge_text.map_or(0, |s| s.len());
 
                 let used_width: usize = line_spans.iter().map(|s| s.width()).sum();
-                let trailing = LAST_ACTIVITY_SLOT + badge_width + LAST_ACTIVITY_RIGHT_MARGIN;
-                let column_fits = used_width + trailing <= list_width as usize;
-                if column_fits {
-                    let pad_len = list_width as usize - used_width - trailing;
+                let column_pad = activity_column_padding(used_width, list_width, badge_width);
+                let column_fits = column_pad.is_some();
+                if let Some(pad_len) = column_pad {
                     if pad_len > 0 {
                         line_spans.push(Span::raw(" ".repeat(pad_len)));
                     }
@@ -1320,5 +1345,66 @@ mod tests {
     fn scroll_exceeds_cache_true_for_empty_cache() {
         // First render: nothing captured yet, so any request forces capture.
         assert!(scroll_exceeds_cache(0, 30, 0));
+    }
+
+    // -- activity_column_padding -------------------------------------------
+    //
+    // The column lives at `list_width - badge_width - SLOT - MARGIN`; the
+    // returned pad_len is what goes between the row prefix and the column
+    // to right-align it. None means the row is too wide and the column
+    // should be hidden so the title doesn't get clipped.
+
+    #[test]
+    fn activity_column_padding_short_title_with_room_to_spare() {
+        // 35-col pane, 12-col prefix, no badge: trailing reserves 6 (slot)
+        // + 0 (badge) + 1 (margin) = 7, total = 19, pad_len = 35 - 19 = 16.
+        assert_eq!(activity_column_padding(12, 35, 0), Some(16));
+    }
+
+    #[test]
+    fn activity_column_padding_exact_fit_yields_zero_pad() {
+        // Prefix ends right where the trailing block begins.
+        // list_width(20) - prefix(13) - trailing(7) = 0.
+        assert_eq!(activity_column_padding(13, 20, 0), Some(0));
+    }
+
+    #[test]
+    fn activity_column_padding_one_short_hides_column() {
+        // One column over budget: prefix(14) + trailing(7) = 21 > 20.
+        assert_eq!(activity_column_padding(14, 20, 0), None);
+    }
+
+    #[test]
+    fn activity_column_padding_accounts_for_terminal_mode_badge() {
+        // " [host]" is 7 chars. trailing = SLOT(6) + 7 + MARGIN(1) = 14.
+        // 35 - 14 - prefix(10) = 11.
+        assert_eq!(activity_column_padding(10, 35, 7), Some(11));
+        // " [container]" is 12 chars. trailing = 6 + 12 + 1 = 19.
+        // 35 - 19 - 10 = 6.
+        assert_eq!(activity_column_padding(10, 35, 12), Some(6));
+    }
+
+    #[test]
+    fn activity_column_padding_long_title_with_badge_hides_column() {
+        // The badge by itself fits but the column doesn't. The decision
+        // is per-row "show the column or not" — the badge gets its own
+        // unconditional render path.
+        // prefix(20) + slot(6) + badge(12) + margin(1) = 39 > 35.
+        assert_eq!(activity_column_padding(20, 35, 12), None);
+    }
+
+    #[test]
+    fn activity_column_padding_narrow_pane_short_title() {
+        // Was the regression: a 25-col pane was previously hidden by the
+        // old fixed-30 floor, even when there was easily room.
+        // prefix(8) + 7 trailing = 15 ≤ 25. Now shows.
+        assert_eq!(activity_column_padding(8, 25, 0), Some(10));
+    }
+
+    #[test]
+    fn activity_column_padding_saturates_on_overflow() {
+        // Defensive: prefix near usize::MAX must not wrap. The checked_add
+        // returns None which we map to "doesn't fit".
+        assert_eq!(activity_column_padding(usize::MAX, 1000, 0), None);
     }
 }
