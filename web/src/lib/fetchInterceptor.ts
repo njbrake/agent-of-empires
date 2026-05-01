@@ -76,10 +76,8 @@ export function installFetchErrorToasts(): void {
         const authError = await classifyAuthError(res);
         if (authError === "login_required") {
           handleLoginRequired();
-        } else if (getToken()) {
-          handleTokenRejected();
         } else {
-          handleNoToken();
+          handleTokenAuthFailure();
         }
       }
       if (isApi && res.status >= 500 && !isServerDown()) {
@@ -106,23 +104,14 @@ export function installFetchErrorToasts(): void {
   };
 }
 
-// On 401 with a token present, the stored token is dead (server restart,
-// rotated past grace period, or revoked). Clear it once and show the token
-// entry page. We dedupe so a burst of concurrent 401s produces one event.
+// 401 with no `login_required` body: token is dead, missing, or revoked.
+// Clear localStorage (idempotent if no token) and show the token entry
+// page. Dedupe so a burst of concurrent 401s produces one event.
 let tokenExpiredDispatched = false;
-function handleTokenRejected(): void {
+function handleTokenAuthFailure(): void {
   clearToken();
   if (tokenExpiredDispatched) return;
   tokenExpiredDispatched = true;
-  window.dispatchEvent(new CustomEvent(TOKEN_EXPIRED_EVENT));
-}
-
-// On 401 with no token at all (cookie expired AND localStorage cleared).
-// Show the token entry page so the user can paste their token.
-let noTokenDispatched = false;
-function handleNoToken(): void {
-  if (noTokenDispatched) return;
-  noTokenDispatched = true;
   window.dispatchEvent(new CustomEvent(TOKEN_EXPIRED_EVENT));
 }
 
@@ -141,7 +130,6 @@ function handleLoginRequired(): void {
  *  the passphrase login. */
 export function resetTokenExpired(): void {
   tokenExpiredDispatched = false;
-  noTokenDispatched = false;
   loginRequiredDispatched = false;
 }
 

@@ -581,6 +581,11 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         // rotation. Behavior otherwise matches the original: wait one
         // lifetime, rotate, wait 300s grace, clear previous.
         let rot_state = state.clone();
+        // The tunnel URL is stable across the daemon's lifetime (Tailscale
+        // and named CF tunnels are stable; quick CF rotates only on
+        // restart, which is outside this task's scope). Capture once so
+        // the rotation task can rebuild `serve.url` with the new token.
+        let rot_base_url: Option<String> = tunnel_handle.as_ref().map(|h| h.url.clone());
         tokio::spawn(async move {
             loop {
                 let lifetime = rot_state.token_manager.lifetime_secs().await;
@@ -592,6 +597,19 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 let pre_rotate_current = rot_state.token_manager.current_token().await;
                 rot_state.token_manager.rotate().await;
                 let post_rotate_current = rot_state.token_manager.current_token().await;
+
+                // Refresh `serve.url` so the TUI display and the QR-code
+                // URL stay in sync with the rotated token. Without this
+                // the TUI keeps showing `?token=<old>`, which is invalid
+                // 5 minutes after rotation (end of grace period).
+                if let (Some(base_url), Some(token)) =
+                    (rot_base_url.as_ref(), post_rotate_current.as_ref())
+                {
+                    let url_with_token = format!("{}/?token={}", base_url, token);
+                    if let Ok(app_dir) = crate::session::get_app_dir() {
+                        write_secret_file(&app_dir.join("serve.url"), &url_with_token);
+                    }
+                }
 
                 if let Some(push) = rot_state.push.as_ref() {
                     let mut valid_hashes: Vec<[u8; 32]> = Vec::new();
