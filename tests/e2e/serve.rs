@@ -74,7 +74,7 @@ fn tui_serve_dialog_opens_to_mode_picker() {
     let mut h = TuiTestHarness::new("serve_mode_picker");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
     h.send_keys("R");
 
     h.wait_for("How should this be reachable?");
@@ -97,7 +97,7 @@ fn tui_serve_dialog_escape_returns_home() {
     let mut h = TuiTestHarness::new("serve_mode_picker_esc");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
     h.send_keys("R");
     h.wait_for("How should this be reachable?");
 
