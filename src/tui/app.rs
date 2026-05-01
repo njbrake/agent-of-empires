@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use super::home::{HomeView, TerminalMode};
 use super::styles::Theme;
-use crate::session::{get_update_settings, load_config, save_config};
+use crate::session::{get_update_settings, load_config, save_config, Config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
@@ -74,7 +74,7 @@ pub struct App {
 /// Check if the app version changed and return the previous version if changelog should be shown.
 /// This is called before App::new to allow async cache refresh.
 pub fn check_version_change() -> Result<Option<String>> {
-    let config = load_config()?.unwrap_or_default();
+    let config = Config::load_or_warn();
     let current_version = env!("CARGO_PKG_VERSION");
 
     if config.app_state.has_seen_welcome
@@ -87,7 +87,11 @@ pub fn check_version_change() -> Result<Option<String>> {
 }
 
 impl App {
-    pub fn new(profile: &str, available_tools: AvailableTools) -> Result<Self> {
+    pub fn new(
+        profile: &str,
+        available_tools: AvailableTools,
+        suppress_first_run_dialogs: bool,
+    ) -> Result<Self> {
         let no_agents = !available_tools.any_available();
         let active_profile = if profile.is_empty() {
             None // all-profiles mode
@@ -97,7 +101,7 @@ impl App {
         let mut home = HomeView::new(active_profile, available_tools)?;
 
         // Check if we need to show welcome or changelog dialogs
-        let mut config = load_config()?.unwrap_or_default();
+        let mut config = Config::load_or_warn();
 
         // Load theme from config, defaulting to empire if empty
         let theme_name = if config.theme.name.is_empty() {
@@ -115,6 +119,10 @@ impl App {
         if no_agents {
             // Show the no-agents onboarding dialog (takes priority over welcome/changelog)
             home.show_no_agents();
+        } else if suppress_first_run_dialogs {
+            // A startup warning will be shown by the caller; skip welcome and
+            // changelog so the warning is what the user sees first, and avoid
+            // overwriting a malformed config.toml with defaults via save_config.
         } else if !config.app_state.has_seen_welcome {
             home.show_welcome();
             config.app_state.has_seen_welcome = true;
@@ -218,7 +226,31 @@ impl App {
     }
 
     pub fn show_startup_warning(&mut self, message: &str) {
-        self.home.info_dialog = Some(crate::tui::dialogs::InfoDialog::new("Warning", message));
+        // Size the dialog to fit the message after wrapping. The message area
+        // is `width - 4` columns wide (borders + 1-cell margin on each side),
+        // so each \n-separated line wraps to ceil(len / inner_width) visual
+        // rows. Borders + margin + the OK button take 6 rows.
+        const WIDTH: u16 = 80;
+        let inner_width = WIDTH.saturating_sub(4) as usize;
+        let visual_lines: usize = message
+            .lines()
+            .map(|l| {
+                if l.is_empty() {
+                    1
+                } else {
+                    l.len().div_ceil(inner_width)
+                }
+            })
+            .sum();
+        // +6 for borders/margin/button; +1 safety margin since byte-length
+        // wrap estimation under-counts when Paragraph word-wraps mid-line.
+        let height = ((visual_lines as u16).saturating_add(7)).clamp(9, 35);
+        // Warnings preempt onboarding dialogs so the user sees the problem
+        // before the welcome screen.
+        self.home.welcome_dialog = None;
+        self.home.changelog_dialog = None;
+        self.home.info_dialog =
+            Some(crate::tui::dialogs::InfoDialog::new("Warning", message).with_size(WIDTH, height));
     }
 
     pub fn set_theme(&mut self, name: &str) {
@@ -347,6 +379,18 @@ impl App {
 
                             terminal.draw(|f| self.render(f))?;
 
+                            continue;
+                        }
+                        Some(Ok(Event::Resize(_, _))) => {
+                            // Soft keyboard slides up/down on iPad/iPhone Mosh
+                            // (and ordinary terminal resizes) emit Resize. The
+                            // catch-all below would silently drop them, leaving
+                            // the screen mid-stale until the next refresh tick.
+                            // Redraw now so viewport-driven layout
+                            // (responsive::dialog_width, STACKED_BREAKPOINT,
+                            // etc.) re-evaluates; ratatui's draw() autoresizes
+                            // internally before rendering.
+                            terminal.draw(|f| self.render(f))?;
                             continue;
                         }
                         Some(Ok(_)) => {}
@@ -795,7 +839,7 @@ impl App {
                     && crate::agents::get_agent(&instance.tool)
                         .is_none_or(|a| a.instruction_flag.is_none())
                 {
-                    let config = load_config()?.unwrap_or_default();
+                    let config = Config::load_or_warn();
                     if !config.app_state.has_seen_custom_instruction_warning {
                         self.home.info_dialog = Some(
                             crate::tui::dialogs::InfoDialog::new(

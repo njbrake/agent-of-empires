@@ -321,9 +321,7 @@ fn resolved_sandbox_config(
     project_path: &std::path::Path,
 ) -> super::config::SandboxConfig {
     let resolved = super::config::effective_profile(profile);
-    super::repo_config::resolve_config_with_repo(&resolved, project_path)
-        .map(|c| c.sandbox)
-        .unwrap_or_default()
+    super::repo_config::resolve_config_with_repo_or_warn(&resolved, project_path).sandbox
 }
 
 /// Result of building docker exec environment arguments.

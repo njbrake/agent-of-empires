@@ -201,9 +201,9 @@ fn run_on_destroy_hooks(instance: &Instance) {
     let project_path = Path::new(&instance.project_path);
 
     // Start with global+profile on_destroy hooks (implicitly trusted).
-    let mut resolved_on_destroy = crate::session::profile_config::resolve_config(profile)
-        .map(|c| c.hooks.on_destroy)
-        .unwrap_or_default();
+    let mut resolved_on_destroy = crate::session::profile_config::resolve_config_or_warn(profile)
+        .hooks
+        .on_destroy;
 
     // Check if repo has trusted hooks that override.
     match repo_config::check_hook_trust(project_path) {

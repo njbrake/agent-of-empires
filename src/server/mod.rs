@@ -342,7 +342,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 
     // Push notifications: initialize only when the operator flag is on at
     // startup. Flipping it later requires a server restart to take effect.
-    let config = crate::session::resolve_config(profile).unwrap_or_default();
+    let config = crate::session::profile_config::resolve_config_or_warn(profile);
     let push_enabled = config.web.notifications_enabled;
     let push_state = if push_enabled {
         match crate::session::get_app_dir() {
@@ -707,6 +707,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}/diff/file", get(api::session_diff_file))
         .route("/api/sessions/{id}/ensure", post(api::ensure_session))
+        .route("/api/sessions/{id}/send", post(api::send_message))
+        .route("/api/sessions/{id}/output", get(api::read_output))
         .route(
             "/api/sessions/{id}/notifications",
             patch(api::update_session_notifications),

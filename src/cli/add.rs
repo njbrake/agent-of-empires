@@ -87,7 +87,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("--repo requires --worktree to specify a branch\nTip: aoe add /path --repo /other -w branch-name");
     }
 
-    let config = repo_config::resolve_config_with_repo(profile, &path).unwrap_or_default();
+    let config = repo_config::resolve_config_with_repo_or_warn(profile, &path);
 
     // Preserve the original project path for hook trust checking.
     // `path` gets reassigned to the worktree/workspace directory below,

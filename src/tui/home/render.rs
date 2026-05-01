@@ -14,6 +14,7 @@ use super::{
 use crate::session::config::GroupByMode;
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
+use crate::tui::responsive;
 use crate::tui::styles::Theme;
 use crate::update::UpdateInfo;
 
@@ -179,23 +180,42 @@ impl HomeView {
             .constraints(constraints)
             .split(area);
 
-        // Layout: left panel (list) and right panel (preview)
-        // On small screens, cap list width so the preview pane gets adequate space
+        // Below STACKED_BREAKPOINT (80 cols), put the list above the preview
+        // instead of side-by-side. At 80 cols a side-by-side preview is only
+        // ~45 cols (with default list_width 35), too cramped for output;
+        // stacking gives the preview the full width.
         let available_width = main_chunks[0].width;
-        let effective_list_width = self
-            .list_width
-            .min(available_width.saturating_sub(40))
-            .max(10);
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(effective_list_width),
-                Constraint::Min(40),
-            ])
-            .split(main_chunks[0]);
+        if available_width < responsive::STACKED_BREAKPOINT {
+            let main_height = main_chunks[0].height;
+            let list_height = responsive::stacked_list_height(main_height);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(list_height),
+                    Constraint::Min(responsive::STACKED_PREVIEW_MIN),
+                ])
+                .split(main_chunks[0]);
 
-        self.render_list(frame, chunks[0], theme);
-        self.render_preview(frame, chunks[1], theme);
+            self.render_list(frame, chunks[0], theme);
+            self.render_preview(frame, chunks[1], theme);
+        } else {
+            // Side-by-side: cap list width so the preview pane keeps its
+            // usability floor (PREVIEW_MIN_WIDTH).
+            let effective_list_width = self
+                .list_width
+                .min(available_width.saturating_sub(responsive::PREVIEW_MIN_WIDTH))
+                .max(10);
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(effective_list_width),
+                    Constraint::Min(responsive::PREVIEW_MIN_WIDTH),
+                ])
+                .split(main_chunks[0]);
+
+            self.render_list(frame, chunks[0], theme);
+            self.render_preview(frame, chunks[1], theme);
+        }
         self.render_status_bar(frame, main_chunks[1], theme);
 
         if let Some(info) = update_info {
@@ -702,21 +722,59 @@ impl HomeView {
     }
 
     fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let title = match self.view_mode {
-            ViewMode::Agent => " Preview ",
-            ViewMode::Terminal => " Terminal Preview ",
-        };
+        let compact = area.width < responsive::STACKED_BREAKPOINT;
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
             ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
         };
-        let block = Block::default()
+
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
-            .title(title)
-            .title_style(Style::default().fg(title_color))
             .padding(Padding::horizontal(1));
+
+        // In compact mode, hoist session name + status icon into the
+        // outer title so the (now omitted) info header isn't missed.
+        let compact_title: Option<Line> = if compact {
+            self.selected_session
+                .as_ref()
+                .and_then(|id| self.get_instance(id))
+                .map(|inst| {
+                    let (icon, icon_color) = match inst.status {
+                        Status::Running => (spinner_running(&inst.created_at), theme.running),
+                        Status::Waiting => (spinner_waiting(&inst.created_at), theme.waiting),
+                        Status::Idle => (ICON_IDLE, theme.idle),
+                        Status::Unknown => (ICON_UNKNOWN, theme.waiting),
+                        Status::Stopped => (ICON_STOPPED, theme.dimmed),
+                        Status::Error => (ICON_ERROR, theme.error),
+                        Status::Starting => (spinner_starting(&inst.created_at), theme.dimmed),
+                        Status::Deleting => (ICON_DELETING, theme.waiting),
+                        Status::Creating => (spinner_starting(&inst.created_at), theme.accent),
+                    };
+                    Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled(icon, Style::default().fg(icon_color)),
+                        Span::raw(" "),
+                        Span::styled(inst.title.clone(), Style::default().fg(title_color).bold()),
+                        Span::raw(" "),
+                    ])
+                })
+        } else {
+            None
+        };
+
+        if let Some(line) = compact_title {
+            block = block.title(line);
+        } else {
+            let title = match self.view_mode {
+                ViewMode::Agent => " Preview ",
+                ViewMode::Terminal => " Terminal Preview ",
+            };
+            block = block
+                .title(title)
+                .title_style(Style::default().fg(title_color));
+        }
 
         let inner = block.inner(area);
         self.preview_area = inner;
@@ -747,6 +805,7 @@ impl HomeView {
                                 &self.preview_cache.content,
                                 self.preview_scroll_offset,
                                 theme,
+                                compact,
                             );
                         }
                     } else {
@@ -816,6 +875,7 @@ impl HomeView {
                             preview_content,
                             self.preview_scroll_offset,
                             theme,
+                            compact,
                         );
                     }
                 } else {
@@ -937,114 +997,124 @@ impl HomeView {
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);
+        let strict = self.strict_hotkeys;
 
-        let mut spans: Vec<Span> = Vec::new();
+        // Priority-tagged shortcut groups. Lower priority = kept longer when
+        // the footer can't fit everything (iPhone Mosh landscape is ~80 cols,
+        // where the full label set used to truncate Help/Quit). Essentials
+        // (Nav / Enter / Help / Quit / Serve indicator) survive first;
+        // Diff / Search / Mode / Group drop first. Groups render in the
+        // declared order; a │ separator is inserted between kept groups
+        // at render time.
+        let mk = |key: &str, desc: &str| -> Vec<Span<'static>> {
+            vec![
+                Span::styled(format!(" {}", key), key_style),
+                Span::styled(format!(" {} ", desc), desc_style),
+            ]
+        };
+
+        let mut groups: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
 
         // Serve indicator: shown only when the `aoe serve` daemon is live.
         // The TUI does not own the daemon, so we probe the PID file each
         // render. Mode comes from a PID-keyed cache so we don't read the
-        // serve.mode file from disk on every frame; the cache invalidates
-        // whenever the daemon PID changes (restart / fresh spawn).
+        // serve.mode file from disk on every frame.
         #[cfg(feature = "serve")]
         {
             let mode_label = crate::cli::serve::cached_serve_mode_label();
-            // cached_serve_mode_label() returns None both for "no daemon"
-            // and "daemon but mode unknown", so check the daemon PID to
-            // distinguish — only render the indicator when there's a
-            // daemon, with the mode tag if we have it.
             if crate::cli::serve::daemon_pid().is_some() {
                 let label = match mode_label {
                     Some(m) => format!(" \u{25CF} Serving ({}) ", m),
                     None => " \u{25CF} Serving ".to_string(),
                 };
-                spans.extend([
-                    Span::styled(label, Style::default().fg(theme.running).bold()),
-                    Span::styled("│", sep_style),
-                ]);
+                groups.push((
+                    0,
+                    vec![Span::styled(
+                        label,
+                        Style::default().fg(theme.running).bold(),
+                    )],
+                ));
             }
         }
 
-        spans.extend([
-            Span::styled(" j/k", key_style),
-            Span::styled(" Nav ", desc_style),
-        ]);
+        groups.push((0, mk("j/k", "Nav")));
+
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
             Some(Item::Group {
                 collapsed: true, ..
-            }) => Some(" Expand "),
+            }) => Some("Expand"),
             Some(Item::Group {
                 collapsed: false, ..
-            }) => Some(" Collapse "),
-            Some(Item::Session { .. }) => Some(" Attach "),
+            }) => Some("Collapse"),
+            Some(Item::Session { .. }) => Some("Attach"),
             None => None,
         } {
-            spans.extend([
-                Span::styled("│", sep_style),
-                Span::styled(" Enter", key_style),
-                Span::styled(enter_action_text, desc_style),
-            ])
+            groups.push((0, mk("Enter", enter_action_text)));
         }
-        let strict = self.strict_hotkeys;
-        spans.extend([
-            Span::styled("│", sep_style),
-            Span::styled(if strict { " T" } else { " t" }, key_style),
-            Span::styled(" View ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(if strict { " ^G" } else { " g" }, key_style),
-            Span::styled(" Group ", desc_style),
-        ]);
 
-        // Show c: container/host hint for sandboxed sessions in Terminal view
+        groups.push((2, mk(if strict { "T" } else { "t" }, "View")));
+        groups.push((3, mk(if strict { "^G" } else { "g" }, "Group")));
+
+        // c: container/host toggle hint for sandboxed sessions in Terminal view
         if self.view_mode == ViewMode::Terminal {
             if let Some(id) = &self.selected_session {
                 if let Some(inst) = self.get_instance(id) {
                     if inst.is_sandboxed() {
-                        spans.extend([
-                            Span::styled("│", sep_style),
-                            Span::styled(if strict { " C" } else { " c" }, key_style),
-                            Span::styled(" Mode ", desc_style),
-                        ]);
+                        groups.push((4, mk(if strict { "C" } else { "c" }, "Mode")));
                     }
                 }
             }
         }
 
-        spans.extend([
-            Span::styled("│", sep_style),
-            Span::styled(if strict { " N" } else { " n" }, key_style),
-            Span::styled(" New ", desc_style),
-        ]);
+        groups.push((2, mk(if strict { "N" } else { "n" }, "New")));
 
         if self.selected_session.is_some() {
-            spans.extend([
-                Span::styled("│", sep_style),
-                Span::styled(if strict { " M" } else { " m" }, key_style),
-                Span::styled(" Msg ", desc_style),
-            ]);
+            groups.push((3, mk(if strict { "M" } else { "m" }, "Msg")));
         }
-
         if !self.flat_items.is_empty() {
-            spans.extend([
-                Span::styled("│", sep_style),
-                Span::styled(if strict { " D" } else { " d" }, key_style),
-                Span::styled(" Del ", desc_style),
-            ]);
+            groups.push((3, mk(if strict { "D" } else { "d" }, "Del")));
         }
 
-        spans.extend([
-            Span::styled("│", sep_style),
-            Span::styled(" /", key_style),
-            Span::styled(" Search ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(if strict { " ^D" } else { " D" }, key_style),
-            Span::styled(" Diff ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(" ?", key_style),
-            Span::styled(" Help ", desc_style),
-            Span::styled("│", sep_style),
-            Span::styled(if strict { " Q" } else { " q" }, key_style),
-            Span::styled(" Quit", desc_style),
-        ]);
+        groups.push((4, mk("/", "Search")));
+        groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
+        groups.push((0, mk("?", "Help")));
+        groups.push((0, mk(if strict { "Q" } else { "q" }, "Quit")));
+
+        // Greedy pack by priority. Width of a group = sum of span char counts;
+        // separator between kept groups adds 1 col each.
+        let widths: Vec<usize> = groups
+            .iter()
+            .map(|(_, g)| g.iter().map(|s| s.content.chars().count()).sum::<usize>())
+            .collect();
+        let avail = area.width as usize;
+
+        let mut order: Vec<usize> = (0..groups.len()).collect();
+        order.sort_by_key(|&i| groups[i].0);
+
+        let mut keep = vec![false; groups.len()];
+        let mut used = 0usize;
+        let mut count = 0usize;
+        for i in order {
+            let sep = if count == 0 { 0 } else { 1 };
+            if used + widths[i] + sep <= avail {
+                keep[i] = true;
+                used += widths[i] + sep;
+                count += 1;
+            }
+        }
+
+        let mut spans: Vec<Span> = Vec::new();
+        let mut first = true;
+        for (i, (_, group)) in groups.into_iter().enumerate() {
+            if !keep[i] {
+                continue;
+            }
+            if !first {
+                spans.push(Span::styled("│", sep_style));
+            }
+            spans.extend(group);
+            first = false;
+        }
 
         let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.selection));
         frame.render_widget(status, area);

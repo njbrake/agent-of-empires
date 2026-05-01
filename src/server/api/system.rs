@@ -109,7 +109,7 @@ pub async fn update_settings(
     }
 
     let result = tokio::task::spawn_blocking(move || {
-        let config = crate::session::Config::load().unwrap_or_default();
+        let config = crate::session::Config::load_or_warn();
         let mut current = serde_json::to_value(&config)?;
         if let (Some(current_obj), Some(update_obj)) = (current.as_object_mut(), body.as_object()) {
             for (key, value) in update_obj {
@@ -354,7 +354,7 @@ pub async fn docker_status() -> Json<DockerStatus> {
         let runtime = crate::containers::get_container_runtime();
         let available = runtime.is_available() && runtime.is_daemon_running();
         let runtime_name = if available {
-            let config = crate::session::Config::load().unwrap_or_default();
+            let config = crate::session::Config::load_or_warn();
             Some(
                 serde_json::to_value(config.sandbox.container_runtime)
                     .ok()

@@ -15,8 +15,8 @@ use tui_input::Input;
 
 use crate::session::{
     config::{load_config, save_config, GroupByMode, SortOrder},
-    flatten_tree, flatten_tree_all_profiles, resolve_config, DefaultTerminalMode, Group, GroupTree,
-    Instance, Item, Storage,
+    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode, Group,
+    GroupTree, Instance, Item, Storage,
 };
 use crate::tmux::AvailableTools;
 
@@ -282,22 +282,13 @@ impl HomeView {
 
         // In unified mode, config comes from "default" profile
         let config_profile = active_profile.as_deref().unwrap_or("default");
-        let resolved = resolve_config(config_profile);
-        let default_terminal_mode = resolved
-            .as_ref()
-            .map(|config| match config.sandbox.default_terminal_mode {
-                DefaultTerminalMode::Host => TerminalMode::Host,
-                DefaultTerminalMode::Container => TerminalMode::Container,
-            })
-            .unwrap_or_default();
-        let sound_config = resolved
-            .as_ref()
-            .map(|config| config.sound.clone())
-            .unwrap_or_default();
-        let strict_hotkeys = resolved
-            .as_ref()
-            .map(|config| config.session.strict_hotkeys)
-            .unwrap_or(false);
+        let resolved = resolve_config_or_warn(config_profile);
+        let default_terminal_mode = match resolved.sandbox.default_terminal_mode {
+            DefaultTerminalMode::Host => TerminalMode::Host,
+            DefaultTerminalMode::Container => TerminalMode::Container,
+        };
+        let sound_config = resolved.sound.clone();
+        let strict_hotkeys = resolved.session.strict_hotkeys;
         let user_config = load_config().ok().flatten();
         let sort_order = user_config
             .as_ref()
@@ -1458,19 +1449,13 @@ impl HomeView {
     /// Call this after settings are saved to pick up any changes.
     pub fn refresh_from_config(&mut self) {
         let profile = self.active_profile.as_deref().unwrap_or("default");
-        if let Ok(config) = resolve_config(profile) {
-            // Refresh default terminal mode for sandboxed sessions
-            self.default_terminal_mode = match config.sandbox.default_terminal_mode {
-                DefaultTerminalMode::Host => TerminalMode::Host,
-                DefaultTerminalMode::Container => TerminalMode::Container,
-            };
-
-            // Refresh sound config
-            self.sound_config = config.sound.clone();
-
-            // Refresh strict-hotkeys mode
-            self.strict_hotkeys = config.session.strict_hotkeys;
-        }
+        let config = resolve_config_or_warn(profile);
+        self.default_terminal_mode = match config.sandbox.default_terminal_mode {
+            DefaultTerminalMode::Host => TerminalMode::Host,
+            DefaultTerminalMode::Container => TerminalMode::Container,
+        };
+        self.sound_config = config.sound.clone();
+        self.strict_hotkeys = config.session.strict_hotkeys;
     }
 
     /// Toggle terminal mode between Container and Host for a session
