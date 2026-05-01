@@ -50,9 +50,11 @@ interface Props {
    * parent (TerminalView) is permanently padding the layout for the
    * keyboard, so the strip should not add its own env() fallback (which
    * would oscillate with live keyboardHeight and resize the wterm
-   * container by py-1.5's 6px on every show/hide).
+   * container by py-1.5's 6px on every show/hide). Optional: PairedTerminal
+   * doesn't apply the sticky reservation, so it omits this and the strip
+   * falls back to the env() behavior.
    */
-  reservedKeyboardHeight: number;
+  reservedKeyboardHeight?: number;
   ctrlActive: boolean;
   onCtrlToggle: () => void;
 }
@@ -66,7 +68,7 @@ export function MobileTerminalToolbar({
   sendData,
   termRef,
   keyboardHeight,
-  reservedKeyboardHeight,
+  reservedKeyboardHeight = 0,
   ctrlActive,
   onCtrlToggle,
 }: Props) {
