@@ -8,6 +8,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
+import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
 import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
@@ -496,8 +497,24 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     );
   };
 
+  // Lock the root height to the latched max innerHeight on mobile. Without
+  // this, iOS PWA / iOS 26 Safari / Android Chrome shrink innerHeight
+  // (and therefore 100dvh) when the soft keyboard opens, which propagates
+  // to the terminal pane and SIGWINCHes claude on every show/hide.
+  // Pinning to the no-keyboard height combined with the keyboard
+  // reservation in TerminalView keeps the layout stable across the
+  // keyboard cycle.
+  const { isMobile, stableViewportHeight } = useMobileKeyboard();
+  const rootStyle =
+    isMobile && stableViewportHeight > 0
+      ? { height: `${stableViewportHeight}px` }
+      : undefined;
+
   return (
-    <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset">
+    <div
+      className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset"
+      style={rootStyle}
+    >
       <TopBar
         activeWorkspace={activeWorkspace}
         activeSession={activeSession ?? null}

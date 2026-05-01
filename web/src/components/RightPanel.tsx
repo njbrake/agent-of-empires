@@ -5,6 +5,7 @@ import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
+import { ViewportFullscreenFab } from "./ViewportFullscreenFab";
 import { ensureTerminal } from "../lib/api";
 import type { RichDiffFile, SessionResponse } from "../lib/types";
 import {
@@ -67,9 +68,20 @@ function PairedTerminal({
     ctrlActiveRef,
     clearCtrlRef,
   } = useTerminal(ready ? sessionId : null, wsPath, false);
-  const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
+  const { isMobile, keyboardOpen, keyboardHeight, reservedKeyboardHeight } =
+    useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
   const [termFocused, setTermFocused] = useState(false);
+  // Mirrors TerminalView: each PairedTerminal owns its own fullscreen
+  // toggle so the user can independently expand the side terminal even
+  // if the agent terminal stays in keyboard-reserved mode.
+  const [viewportFullscreen, setViewportFullscreen] = useState(false);
+  const toggleViewportFullscreen = useCallback(() => {
+    setViewportFullscreen((v) => !v);
+  }, []);
+  const appliedKeyboardPadding = viewportFullscreen
+    ? 0
+    : reservedKeyboardHeight;
 
   // See TerminalView.tsx for why these syncs live in effects rather
   // than running during render.
@@ -91,7 +103,9 @@ function PairedTerminal({
     };
   }, [sessionId, mode]);
 
-  // Scroll-to-bottom on keyboard height changes (same fix as TerminalView).
+  // Scroll-to-bottom on keyboard reservation changes (same fix as TerminalView).
+  // Depends on the latched reservation, not live keyboardHeight, so it
+  // doesn't fire on every soft-keyboard show/hide.
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRafRef = useRef(0);
   useLayoutEffect(() => {
@@ -113,7 +127,7 @@ function PairedTerminal({
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       cancelAnimationFrame(scrollRafRef.current);
     };
-  }, [keyboardHeight, keyboardOpen, termRef]);
+  }, [appliedKeyboardPadding, termRef]);
 
   // Pin scrollTop on wterm scrollTop=0 mid-session resets (same fix
   // as TerminalView). See that file for the rationale; this mirror
@@ -199,8 +213,13 @@ function PairedTerminal({
     );
   }
 
+  // Sticky reservation: pad the layout by the latched keyboard height so
+  // showing/hiding the soft keyboard no longer SIGWINCHes claude. See
+  // TerminalView.tsx for the full rationale. The fullscreen toggle
+  // releases the reservation when the user wants the full viewport.
   const rootStyle = {
-    paddingBottom: keyboardHeight > 0 ? keyboardHeight : undefined,
+    paddingBottom:
+      appliedKeyboardPadding > 0 ? appliedKeyboardPadding : undefined,
   } as const;
 
   return (
@@ -242,12 +261,20 @@ function PairedTerminal({
         {isMobile && state.connected && (
           <KeyboardFab keyboardOpen={keyboardOpen} onToggle={toggleKeyboard} />
         )}
+
+        {isMobile && state.connected && reservedKeyboardHeight > 0 && (
+          <ViewportFullscreenFab
+            fullscreen={viewportFullscreen}
+            onToggle={toggleViewportFullscreen}
+          />
+        )}
       </div>
       {isMobile && state.connected && (
         <MobileTerminalToolbar
           sendData={sendData}
           termRef={termRef}
           keyboardHeight={keyboardHeight}
+          reservedKeyboardHeight={reservedKeyboardHeight}
           ctrlActive={ctrlActive}
           onCtrlToggle={() => setCtrlActive((v) => !v)}
         />

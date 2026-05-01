@@ -10,6 +10,7 @@ import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
+import { ViewportFullscreenFab } from "./ViewportFullscreenFab";
 import { ensureSession } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
 import {
@@ -48,9 +49,24 @@ export function TerminalView({ session }: Props) {
     true,
     session.claude_fullscreen,
   );
-  const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
+  const { isMobile, keyboardOpen, keyboardHeight, reservedKeyboardHeight } =
+    useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
   const [termFocused, setTermFocused] = useState(false);
+  // Default behavior on mobile: pad the viewport by reservedKeyboardHeight
+  // so the wterm container stays the same size whether the soft keyboard
+  // is up or not. Toggle this on (via the FAB) to release the reservation
+  // and use the full viewport. Each toggle is one explicit PTY resize.
+  const [viewportFullscreen, setViewportFullscreen] = useState(false);
+  const toggleViewportFullscreen = useCallback(() => {
+    setViewportFullscreen((v) => !v);
+  }, []);
+  // The actual padding applied. On desktop reservedKeyboardHeight stays 0
+  // and this is a no-op. On mobile in fullscreen mode it's also 0.
+  // Otherwise we apply the latched reservation.
+  const appliedKeyboardPadding = viewportFullscreen
+    ? 0
+    : reservedKeyboardHeight;
 
   // Sync React state → hook ref in an effect. The mobile toolbar toggles
   // `ctrlActive` but the wterm native onData callback reads the ref to
@@ -107,16 +123,19 @@ export function TerminalView({ session }: Props) {
   });
   const showScrollHint = isMobile && state.connected && !hintDismissed;
 
-  // When the keyboard opens (keyboardHeight goes from 0 → positive), the
-  // terminal container shrinks. wterm's ResizeObserver fires and checks
-  // _isScrolledToBottom() BEFORE the DOM has reflowed, sees the reduced
-  // clientHeight while scrollTop/scrollHeight are stale, and concludes "not
-  // at bottom." This makes it skip _scrollToBottom() after the resize,
-  // leaving the cursor off-screen.
+  // The terminal container shrinks when appliedKeyboardPadding changes
+  // (first keyboard open of the session, orientation flip, or fullscreen
+  // toggle). wterm's ResizeObserver fires and checks _isScrolledToBottom()
+  // BEFORE the DOM has reflowed, sees the reduced clientHeight while
+  // scrollTop/scrollHeight are stale, and concludes "not at bottom." This
+  // makes it skip _scrollToBottom() after the resize, leaving the cursor
+  // off-screen.
   //
   // Fix: force a scroll-to-bottom via double-rAF (fires after wterm's own
-  // rAF render) on every keyboardHeight change, plus a debounced final
-  // scroll after the animation settles.
+  // rAF render) on every padding change, plus a debounced final scroll
+  // after the animation settles. Note we depend on appliedKeyboardPadding
+  // (which is sticky), not the live keyboardHeight, so this no longer
+  // fires on every soft-keyboard show/hide.
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRafRef = useRef(0);
   useLayoutEffect(() => {
@@ -144,7 +163,7 @@ export function TerminalView({ session }: Props) {
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       cancelAnimationFrame(scrollRafRef.current);
     };
-  }, [keyboardHeight, keyboardOpen, termRef]);
+  }, [appliedKeyboardPadding, termRef]);
 
   // wterm sometimes resets scrollTop=0 mid-session when its renderer
   // redraws (observed on backspace), and its post-render scroll-to-
@@ -294,8 +313,15 @@ export function TerminalView({ session }: Props) {
     );
   }
 
+  // Pad the viewport by the latched reservation, not the live keyboard
+  // height. The pane stays the "keyboard is here" size whether the
+  // keyboard is currently up or not, so showing/hiding it stops sending
+  // SIGWINCH and stops claude from re-rendering into the scrollback.
+  // The fullscreen FAB releases the reservation when the user wants the
+  // full viewport (one explicit resize per toggle).
   const rootStyle = {
-    paddingBottom: keyboardHeight > 0 ? keyboardHeight : undefined,
+    paddingBottom:
+      appliedKeyboardPadding > 0 ? appliedKeyboardPadding : undefined,
   } as const;
   return (
     <div
@@ -365,6 +391,13 @@ export function TerminalView({ session }: Props) {
         {isMobile && state.connected && (
           <KeyboardFab keyboardOpen={keyboardOpen} onToggle={toggleKeyboard} />
         )}
+
+        {isMobile && state.connected && reservedKeyboardHeight > 0 && (
+          <ViewportFullscreenFab
+            fullscreen={viewportFullscreen}
+            onToggle={toggleViewportFullscreen}
+          />
+        )}
       </div>
 
       {isMobile && state.connected && (
@@ -372,6 +405,7 @@ export function TerminalView({ session }: Props) {
           sendData={sendData}
           termRef={termRef}
           keyboardHeight={keyboardHeight}
+          reservedKeyboardHeight={reservedKeyboardHeight}
           ctrlActive={ctrlActive}
           onCtrlToggle={() => setCtrlActive((v) => !v)}
         />
