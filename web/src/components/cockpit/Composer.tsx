@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 
 import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
+import { SwitchSubstrateAction } from "./SwitchSubstrateAction";
 import type { CockpitState } from "../../lib/cockpitTypes";
 
 const SLASH_COMMANDS: ReadonlyArray<Unstable_TriggerItem> = [
@@ -199,6 +200,10 @@ export function Composer({
                   availableModes={availableModes}
                   currentModeId={currentModeId}
                   legacyMode={legacyMode}
+                />
+                <SwitchSubstrateAction
+                  sessionId={sessionId}
+                  cockpitMode={true}
                 />
               </div>
 

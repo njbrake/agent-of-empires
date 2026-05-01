@@ -10,8 +10,21 @@ import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
+import { SwitchSubstrateAction } from "./cockpit/SwitchSubstrateAction";
 import { ensureSession } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
+
+/** Tools known to have a published ACP adapter, kept in sync with
+ *  ACP_CAPABLE_TOOLS in the wizard. Determines whether the
+ *  switch-to-cockpit button on this view is enabled. */
+const ACP_CAPABLE_TOOLS = new Set([
+  "claude",
+  "opencode",
+  "gemini",
+  "codex",
+  "vibe",
+  "pi",
+]);
 import {
   FOCUS_TERMINAL_EVENT,
   consumePendingTerminalFocus,
@@ -302,6 +315,19 @@ export function TerminalView({ session }: Props) {
       className="flex-1 flex flex-col overflow-hidden relative md:bg-surface-800 md:pb-1.5"
       style={rootStyle}
     >
+      {/* Top-right substrate switch — discreet pill that lets the
+          user flip this session into cockpit mode. Only enabled for
+          tools whose ACP adapter we ship in the registry. */}
+      {session?.id && (
+        <div className="absolute right-2 top-2 z-10">
+          <SwitchSubstrateAction
+            sessionId={session.id}
+            cockpitMode={false}
+            acpCapable={ACP_CAPABLE_TOOLS.has(session.tool)}
+            variant="icon"
+          />
+        </div>
+      )}
       {!state.connected && state.reconnecting && (
         <div className="bg-status-waiting/15 border-b border-status-waiting/30 px-4 py-1.5 flex items-center gap-2 shrink-0">
           <span className="text-xs text-status-waiting">

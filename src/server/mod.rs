@@ -904,6 +904,14 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(api::cockpit_set_mode),
         )
         .route(
+            "/api/sessions/{id}/cockpit/enable",
+            post(api::cockpit_enable),
+        )
+        .route(
+            "/api/sessions/{id}/cockpit/disable",
+            post(api::cockpit_disable),
+        )
+        .route(
             "/api/sessions/{id}/cockpit/approvals/{nonce}",
             post(api::resolve_approval),
         );

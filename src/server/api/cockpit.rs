@@ -260,6 +260,183 @@ fn list_files(root: &std::path::Path, cap: usize) -> std::io::Result<(Vec<String
     Ok((out, truncated))
 }
 
+/* ── Substrate switching: cockpit ↔ tmux ─────────────────────── */
+
+#[derive(Debug, Serialize)]
+pub struct SubstrateSwitchResponse {
+    pub session_id: String,
+    pub cockpit_mode: bool,
+}
+
+/// Switch a tmux-mode session to cockpit. Idempotent: a session that
+/// is already cockpit-mode returns 200 with no work done.
+///
+/// History is destroyed in the swap: the tmux scrollback is dropped
+/// when the pane is killed; cockpit starts with an empty conversation.
+/// The frontend warns the user before calling this endpoint.
+pub async fn cockpit_enable(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let (mut instance, profile) = {
+        let instances = state.instances.read().await;
+        let Some(inst) = instances.iter().find(|i| i.id == id).cloned() else {
+            return (StatusCode::NOT_FOUND, "session not found").into_response();
+        };
+        let profile = inst.source_profile.clone();
+        (inst, profile)
+    };
+
+    if instance.cockpit_mode {
+        return Json(SubstrateSwitchResponse {
+            session_id: id,
+            cockpit_mode: true,
+        })
+        .into_response();
+    }
+
+    // Verify the tool has an ACP-capable registry entry. Otherwise
+    // there's no agent to spawn and the swap would just produce a
+    // dead cockpit. Falls back to "tool not in registry" → 400.
+    let agent_name = state
+        .cockpit_supervisor
+        .pick_agent_for_tool(&instance.tool, instance.cockpit_agent.as_deref())
+        .await;
+    let registry = state.cockpit_supervisor.registry_snapshot().await;
+    if registry.get(&agent_name).is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("no cockpit agent registered for tool {:?}", instance.tool),
+        )
+            .into_response();
+    }
+
+    // Tear down the tmux side. Best-effort: a stale tmux name should
+    // not block the swap.
+    if let Err(e) = instance.kill() {
+        tracing::warn!(target: "cockpit.switch", session = %id, "kill tmux failed: {e}");
+    }
+    instance.cockpit_mode = true;
+
+    // Persist before spawning so a crash mid-swap leaves us in the
+    // declared end state, not a half-broken intermediate.
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
+            *slot = instance.clone();
+        }
+        if let Ok(storage) = crate::session::Storage::new(&profile) {
+            let scoped: Vec<_> = instances
+                .iter()
+                .filter(|i| i.source_profile == profile)
+                .cloned()
+                .collect();
+            if let Err(e) = storage.save(&scoped) {
+                tracing::error!(target: "cockpit.switch", "save after enable: {e}");
+            }
+        }
+    }
+
+    // Spawn the cockpit worker. If this fails the supervisor publishes
+    // an AgentStartupError that the UI surfaces as the red banner; we
+    // still return 200 because the substrate swap itself succeeded.
+    let cwd = std::path::PathBuf::from(&instance.project_path);
+    let supervisor = state.cockpit_supervisor.clone();
+    let session_id = id.clone();
+    let model = instance.cockpit_model.clone();
+    tokio::spawn(async move {
+        if let Err(e) = supervisor
+            .spawn(session_id.clone(), &agent_name, cwd, vec![], vec![], model)
+            .await
+        {
+            let message = format!("Failed to start cockpit agent {agent_name:?}: {e}");
+            tracing::warn!(target: "cockpit.switch", session = %session_id, "spawn after enable: {message}");
+            supervisor.publish_startup_error(&session_id, message);
+        }
+    });
+
+    Json(SubstrateSwitchResponse {
+        session_id: id,
+        cockpit_mode: true,
+    })
+    .into_response()
+}
+
+/// Switch a cockpit session back to tmux. Idempotent: a session that
+/// is already tmux-mode returns 200 with no work done.
+///
+/// History is destroyed in the swap: the cockpit conversation log
+/// (still in the broadcast replay buffer) is dropped, and tmux comes
+/// back with an empty pane that the agent fills as it runs.
+pub async fn cockpit_disable(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let (mut instance, profile) = {
+        let instances = state.instances.read().await;
+        let Some(inst) = instances.iter().find(|i| i.id == id).cloned() else {
+            return (StatusCode::NOT_FOUND, "session not found").into_response();
+        };
+        let profile = inst.source_profile.clone();
+        (inst, profile)
+    };
+
+    if !instance.cockpit_mode {
+        return Json(SubstrateSwitchResponse {
+            session_id: id,
+            cockpit_mode: false,
+        })
+        .into_response();
+    }
+
+    // Tear down the cockpit worker. UnknownSession is fine — the
+    // supervisor may not have a worker if startup never completed.
+    match state.cockpit_supervisor.shutdown(&id).await {
+        Ok(()) | Err(SupervisorError::UnknownSession(_)) => {}
+        Err(e) => {
+            tracing::warn!(target: "cockpit.switch", session = %id, "shutdown cockpit failed: {e}");
+        }
+    }
+    instance.cockpit_mode = false;
+
+    // Persist + start tmux. start() now no longer short-circuits for
+    // cockpit_mode, so it will create a fresh tmux session and run
+    // the agent CLI in the pane.
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
+            *slot = instance.clone();
+        }
+        if let Ok(storage) = crate::session::Storage::new(&profile) {
+            let scoped: Vec<_> = instances
+                .iter()
+                .filter(|i| i.source_profile == profile)
+                .cloned()
+                .collect();
+            if let Err(e) = storage.save(&scoped) {
+                tracing::error!(target: "cockpit.switch", "save after disable: {e}");
+            }
+        }
+    }
+
+    let start_result = tokio::task::spawn_blocking(move || instance.start()).await;
+    match start_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(target: "cockpit.switch", session = %id, "tmux start after disable: {e}");
+        }
+        Err(e) => {
+            tracing::error!(target: "cockpit.switch", session = %id, "spawn_blocking failed: {e}");
+        }
+    }
+
+    Json(SubstrateSwitchResponse {
+        session_id: id,
+        cockpit_mode: false,
+    })
+    .into_response()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SetModeRequest {
     pub mode_id: String,
