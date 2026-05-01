@@ -31,7 +31,11 @@ import type { SessionResponse } from "./lib/types";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
 import { TokenEntryPage } from "./components/TokenEntryPage";
-import { TOKEN_EXPIRED_EVENT } from "./lib/fetchInterceptor";
+import {
+  LOGIN_REQUIRED_EVENT,
+  TOKEN_EXPIRED_EVENT,
+  resetTokenExpired,
+} from "./lib/fetchInterceptor";
 import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
@@ -45,6 +49,22 @@ export default function App() {
     const onTokenExpired = () => setTokenExpired(true);
     window.addEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
     return () => window.removeEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
+  }, []);
+
+  // The token is fine but the passphrase login session is missing or expired.
+  // Hide TokenEntryPage (if open) and let LoginPage take over by flipping
+  // loginAuthenticated. Without clearing tokenExpired here, App's render
+  // order would keep showing TokenEntryPage on top of LoginPage and the
+  // user would loop on "Invalid token" while pasting a token that's fine.
+  useEffect(() => {
+    const onLoginRequired = () => {
+      setTokenExpired(false);
+      setLoginRequired(true);
+      setLoginAuthenticated(false);
+    };
+    window.addEventListener(LOGIN_REQUIRED_EVENT, onLoginRequired);
+    return () =>
+      window.removeEventListener(LOGIN_REQUIRED_EVENT, onLoginRequired);
   }, []);
 
   useEffect(() => {
@@ -65,6 +85,8 @@ export default function App() {
 
   const handleLoginSuccess = () => {
     setLoginAuthenticated(true);
+    // Reset dedup flags so a future session expiry can re-fire the event.
+    resetTokenExpired();
   };
 
   const handleLogout = async () => {

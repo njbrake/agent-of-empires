@@ -6,6 +6,32 @@ import { clearToken, getToken, saveToken } from "./token";
  *  listens for this to show the token entry page instead of just a toast. */
 export const TOKEN_EXPIRED_EVENT = "aoe:token-expired";
 
+/** Dispatched on `window` when the token is valid but the second-factor
+ *  passphrase login session is missing or expired. App.tsx listens for this
+ *  to show the login (passphrase) page. Distinct from token-expired so the
+ *  client doesn't bounce the user to the token-entry page when the real
+ *  problem is a missing login session; without this distinction, a user
+ *  pastes a valid token, the server returns 401 `login_required`, the
+ *  client treats it as token rejection, and the loop never escapes. */
+export const LOGIN_REQUIRED_EVENT = "aoe:login-required";
+
+/** Inspect a 401 response body to decide whether the auth failure is a token
+ *  problem (`unauthorized`) or a missing passphrase login session
+ *  (`login_required`). Cloning the response keeps the original body
+ *  consumable by downstream readers. Returns null for non-401 inputs. */
+export async function classifyAuthError(
+  res: Response,
+): Promise<"login_required" | "unauthorized" | null> {
+  if (res.status !== 401) return null;
+  try {
+    const data = (await res.clone().json()) as { error?: unknown };
+    if (data && data.error === "login_required") return "login_required";
+  } catch {
+    // Body wasn't JSON or already consumed; fall through to unauthorized.
+  }
+  return "unauthorized";
+}
+
 /**
  * Install a global fetch wrapper that:
  * 1. Injects `Authorization: Bearer <token>` when we have a stored token.
@@ -52,7 +78,10 @@ export function installFetchErrorToasts(): void {
         if (rotated) saveToken(rotated);
       }
       if (res.status === 401 && isApi) {
-        if (getToken()) {
+        const authError = await classifyAuthError(res);
+        if (authError === "login_required") {
+          handleLoginRequired();
+        } else if (getToken()) {
           handleTokenRejected();
         } else {
           handleNoToken();
@@ -102,11 +131,24 @@ function handleNoToken(): void {
   window.dispatchEvent(new CustomEvent(TOKEN_EXPIRED_EVENT));
 }
 
+// On 401 with `error: "login_required"` the token is fine; only the
+// passphrase login session is missing. Do NOT clear the token; the user
+// just needs to authenticate the second factor. Dedup so a burst of
+// concurrent 401s produces one event.
+let loginRequiredDispatched = false;
+function handleLoginRequired(): void {
+  if (loginRequiredDispatched) return;
+  loginRequiredDispatched = true;
+  window.dispatchEvent(new CustomEvent(LOGIN_REQUIRED_EVENT));
+}
+
 /** Reset the dedup flags so a new 401 after re-authentication will be
- *  caught again. Called when the user submits a new token. */
+ *  caught again. Called when the user submits a new token or completes
+ *  the passphrase login. */
 export function resetTokenExpired(): void {
   tokenExpiredDispatched = false;
   noTokenDispatched = false;
+  loginRequiredDispatched = false;
 }
 
 // Inject Authorization header without clobbering anything the caller set.
