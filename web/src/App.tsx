@@ -51,11 +51,9 @@ export default function App() {
     return () => window.removeEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
   }, []);
 
-  // The token is fine but the passphrase login session is missing or expired.
-  // Hide TokenEntryPage (if open) and let LoginPage take over by flipping
-  // loginAuthenticated. Without clearing tokenExpired here, App's render
-  // order would keep showing TokenEntryPage on top of LoginPage and the
-  // user would loop on "Invalid token" while pasting a token that's fine.
+  // Clearing tokenExpired here matters: the render order below shows
+  // TokenEntryPage above LoginPage, so without the reset a token that's
+  // actually fine would keep getting shown the wrong screen.
   useEffect(() => {
     const onLoginRequired = () => {
       setTokenExpired(false);
