@@ -690,6 +690,23 @@ pub async fn create_session(
 
 // --- Ensure agent session ---
 
+/// Copy fields the start path mutated on the working `Instance` clone back
+/// onto the in-memory `state.instances` entry after a successful restart.
+///
+/// `agent_session_id` is the load-bearing one: Claude's `acquire_session_id`
+/// generates a fresh UUID at launch time and `persist_session_id` writes it
+/// to disk, but the in-memory state lives in a separate Vec that the 2s
+/// status poller refreshes from disk on its own cadence. Without this sync,
+/// a rapid second restart inside that window would see a stale
+/// `agent_session_id = None` and generate (and persist) a new UUID,
+/// silently orphaning the previous Claude conversation.
+fn apply_post_restart_sync(live: &mut Instance, started: &Instance) {
+    live.status = started.status;
+    live.last_error = None;
+    live.agent_session_id = started.agent_session_id.clone();
+    live.last_start_time = started.last_start_time;
+}
+
 /// Ensure the main agent tmux session is alive, restarting it if dead.
 ///
 /// Mirrors the TUI's `attach_session` restart logic: checks the actual tmux
@@ -817,8 +834,7 @@ pub async fn ensure_session(
         Ok(Ok(started)) => {
             let mut instances = state.instances.write().await;
             if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
-                inst.status = started.status;
-                inst.last_error = None;
+                apply_post_restart_sync(inst, &started);
             }
             (
                 StatusCode::OK,
@@ -1422,6 +1438,53 @@ mod tests {
     fn claude_fullscreen_unset_when_setting_disabled() {
         let resp = SessionResponse::from_instance(&make_test_instance(), false);
         assert!(!resp.claude_fullscreen);
+    }
+
+    #[test]
+    fn apply_post_restart_sync_propagates_agent_session_id() {
+        // Models the rapid double-restart case: in-memory state is stale
+        // (agent_session_id = None) because the 2s status poller hasn't
+        // refreshed yet, while the just-finished restart produced a Claude
+        // UUID via acquire_session_id. The sync must propagate that ID so a
+        // second ensure_session within the poller window doesn't generate a
+        // fresh UUID and orphan the persisted Claude conversation.
+        let mut live = make_test_instance();
+        live.status = Status::Stopped;
+        live.last_error = Some("prior failure".to_string());
+        live.agent_session_id = None;
+        live.last_start_time = None;
+
+        let mut started = make_test_instance();
+        started.status = Status::Starting;
+        started.agent_session_id = Some("claude-uuid-restart".to_string());
+        started.last_start_time = Some(std::time::Instant::now());
+
+        apply_post_restart_sync(&mut live, &started);
+
+        assert_eq!(live.status, Status::Starting);
+        assert!(live.last_error.is_none());
+        assert_eq!(
+            live.agent_session_id.as_deref(),
+            Some("claude-uuid-restart")
+        );
+        assert_eq!(live.last_start_time, started.last_start_time);
+    }
+
+    #[test]
+    fn apply_post_restart_sync_overwrites_stale_session_id() {
+        // If somehow the in-memory ID was non-None and the start path
+        // produced a different (newer) ID, the sync must use the newer one.
+        // Belt-and-suspenders: in practice acquire_session_id reuses an
+        // existing ID, but the contract here is "started wins."
+        let mut live = make_test_instance();
+        live.agent_session_id = Some("stale-id".to_string());
+
+        let mut started = make_test_instance();
+        started.agent_session_id = Some("fresh-id".to_string());
+
+        apply_post_restart_sync(&mut live, &started);
+
+        assert_eq!(live.agent_session_id.as_deref(), Some("fresh-id"));
     }
     // ── validate_diff_path: security regression tests ──────────────────────────
     //
