@@ -158,6 +158,30 @@ pub fn is_pane_running_shell(session_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns the tmux prefix key formatted for display (e.g. "Ctrl+a", "Ctrl+b").
+/// Reads `tmux show-option -gv prefix`; falls back to "Ctrl+b" if tmux is
+/// unavailable or the option can't be parsed.
+pub fn tmux_prefix_display() -> String {
+    let raw = Command::new("tmux")
+        .args(["show-option", "-gv", "prefix"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // tmux reports prefix as e.g. "C-b", "C-a", "M-b". Convert to display form.
+    if let Some(key) = raw.strip_prefix("C-") {
+        format!("Ctrl+{}", key.to_uppercase())
+    } else if let Some(key) = raw.strip_prefix("M-") {
+        format!("Alt+{}", key.to_uppercase())
+    } else if !raw.is_empty() {
+        raw
+    } else {
+        "Ctrl+b".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
