@@ -79,7 +79,7 @@ nix = { version = "0.31", features = ["signal", "process", "net"] }
 unicode-width = "0.2"
 
 # Terminal spinners
-rattles = "0.2"
+rattles = "0.3"
 
 # Regex
 regex = "1.10"

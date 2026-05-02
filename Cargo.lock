@@ -2678,9 +2678,9 @@ dependencies = [
 
 [[package]]
 name = "rattles"
-version = "0.2.2"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4409b45886b11584adff17187acaa2373ed2bf26c68c4ebbe414b3d394a66900"
+checksum = "a0704e453f2514c76367349b878f07a9c969365dab09d8a97e96a89cd4c3e26e"
 
 [[package]]
 name = "redox_syscall"
