@@ -262,6 +262,15 @@ impl CommandPaletteDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<PaletteAction> {
+        // Ctrl+K toggles the palette: if the user re-presses the activation
+        // key, close it (matches VS Code / cmdk behavior). Without this branch
+        // the wildcard arm would forward Ctrl+K to tui_input, which silently
+        // discards it, leaving the palette stuck open until Esc.
+        if matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            return DialogResult::Cancel;
+        }
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
             KeyCode::Up => {
@@ -471,7 +480,12 @@ impl CommandPaletteDialog {
 /// 2 cells), and only ever cuts on char boundaries so this can't panic on
 /// session titles with multi-byte characters.
 fn truncate_with_ellipsis(s: &str, max_cols: usize) -> String {
-    if max_cols <= 1 {
+    if max_cols == 0 {
+        return String::new();
+    }
+    if max_cols == 1 {
+        // Not enough room for ellipsis + content; return original and let the
+        // surrounding layout truncate at the column boundary.
         return s.to_string();
     }
     if s.width() <= max_cols {
@@ -573,6 +587,19 @@ mod tests {
         let mut dialog = make_dialog();
         let result = dialog.handle_key(ke(KeyCode::Esc));
         assert!(matches!(result, DialogResult::Cancel));
+    }
+
+    #[test]
+    fn ctrl_k_toggles_closed() {
+        let mut dialog = make_dialog();
+        let ctrl_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert!(matches!(dialog.handle_key(ctrl_k), DialogResult::Cancel));
+        // Same with uppercase K (some terminals send Ctrl+Shift+K as `K`).
+        let ctrl_shift_k = KeyEvent::new(KeyCode::Char('K'), KeyModifiers::CONTROL);
+        assert!(matches!(
+            dialog.handle_key(ctrl_shift_k),
+            DialogResult::Cancel
+        ));
     }
 
     #[test]
@@ -690,5 +717,10 @@ mod tests {
         let cut = truncate_with_ellipsis("中文测试abc", 5);
         assert_eq!(cut, "中文…");
         assert!(cut.width() <= 5);
+
+        // Zero-budget returns empty (the surrounding layout will allocate no
+        // visible cells). Previously this returned the full string and
+        // overflowed the row.
+        assert_eq!(truncate_with_ellipsis("anything", 0), "");
     }
 }

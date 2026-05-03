@@ -1196,6 +1196,7 @@ impl HomeView {
                     let status_tag = match inst.status {
                         Status::Creating => " [creating]",
                         Status::Deleting => " [deleting]",
+                        Status::Stopped => " [stopped]",
                         _ => "",
                     };
                     let title = if inst.group_path.is_empty() {
@@ -1245,7 +1246,19 @@ impl HomeView {
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
         match action {
-            PaletteAction::Key(synth) => self.dispatch_action_key(synth, update_info),
+            PaletteAction::Key(synth) => {
+                // Clear leftover search-cycle state before dispatching. Some
+                // action keys (`n`, `N`) are dual-purpose: they cycle search
+                // matches when matches are active, otherwise open new-session
+                // dialogs. The palette's mental model is "run the named
+                // action," so we drop search state here to make sure a pick
+                // of "New session" never silently turns into a search-cycle.
+                if !self.search_matches.is_empty() {
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
+                }
+                self.dispatch_action_key(synth, update_info)
+            }
             PaletteAction::JumpToCursor(idx) => {
                 if !self.flat_items.is_empty() {
                     self.cursor = idx.min(self.flat_items.len() - 1);
