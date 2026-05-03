@@ -295,6 +295,7 @@ impl HomeView {
             changelog_dialog,
             info_dialog,
             profile_picker_dialog,
+            command_palette,
             send_message_dialog,
             update_confirm_dialog,
         );
@@ -1184,6 +1185,7 @@ impl HomeView {
 
         groups.push((4, mk("/", "Search")));
         groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
+        groups.push((1, mk("^K", "Cmds")));
         groups.push((0, mk("?", "Help")));
         groups.push((0, mk(if strict { "Q" } else { "q" }, "Quit")));
 

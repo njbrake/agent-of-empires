@@ -12,8 +12,9 @@ use crate::tui::app::Action;
 #[cfg(feature = "serve")]
 use crate::tui::dialogs::ServeAction;
 use crate::tui::dialogs::{
-    ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, NoAgentsAction,
+    builtin_commands, CommandPaletteDialog, ConfirmDialog, DeleteDialogConfig, DialogResult,
+    GroupDeleteOptionsDialog, HookTrustAction, HooksInstallDialog, InfoDialog, NewSessionData,
+    NewSessionDialog, NoAgentsAction, PaletteAction, PaletteCommand, PaletteGroup,
     ProfilePickerAction, RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
@@ -188,6 +189,22 @@ impl HomeView {
                 }
             }
             return None;
+        }
+
+        // Command palette captures input ahead of the help overlay so its own
+        // Esc/Enter/text keys reach it without going through the action match.
+        if let Some(palette) = &mut self.command_palette {
+            match palette.handle_key(key) {
+                DialogResult::Continue => return None,
+                DialogResult::Cancel => {
+                    self.command_palette = None;
+                    return None;
+                }
+                DialogResult::Submit(action) => {
+                    self.command_palette = None;
+                    return self.dispatch_palette_action(action, update_info);
+                }
+            }
         }
 
         // Handle other dialog input
@@ -554,6 +571,16 @@ impl HomeView {
             return None;
         }
 
+        // Ctrl+K opens the command palette regardless of strict-hotkey mode.
+        // Activated here (before strict normalization) so the binding stays
+        // discoverable on every keymap.
+        if matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.open_command_palette();
+            return None;
+        }
+
         // In strict_hotkeys mode, normalize shifted/ctrl keys to their standard
         // equivalents so the match block below doesn't need duplication.
         //
@@ -569,6 +596,18 @@ impl HomeView {
         };
         let key = key?;
 
+        self.dispatch_action_key(key, update_info)
+    }
+
+    /// Run the main action dispatch (the giant match block) on a key.
+    /// Extracted from `handle_key` so the command palette can synthesize
+    /// keys and run them through the same code path without re-entering
+    /// dialog routing or strict-mode normalization.
+    fn dispatch_action_key(
+        &mut self,
+        key: KeyEvent,
+        update_info: Option<&crate::update::UpdateInfo>,
+    ) -> Option<Action> {
         // Normal mode keybindings
         match key.code {
             KeyCode::Esc if !self.search_matches.is_empty() => {
@@ -1118,6 +1157,88 @@ impl HomeView {
         }
 
         None
+    }
+
+    /// Build and show the command palette. Combines the static `builtin_commands`
+    /// with dynamic jump-to-session and jump-to-group entries built from the
+    /// current `flat_items`.
+    fn open_command_palette(&mut self) {
+        let serve_enabled = cfg!(feature = "serve");
+        let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled);
+
+        // Quit command (separate so the lifetime mapping is clear and we
+        // can keep it out of `builtin_commands` to avoid pulling KeyCode
+        // imports into the palette module).
+        entries.push(PaletteCommand {
+            id: "quit",
+            title: "Quit Agent of Empires".to_string(),
+            group: PaletteGroup::Settings,
+            keywords: vec!["exit", "close"],
+            hotkey: "q",
+            payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+        });
+
+        // Dynamic session/group entries: one per flat_items row, so the user
+        // can fuzzy-search and jump straight to it.
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            match item {
+                Item::Session { id, .. } => {
+                    let Some(inst) = self.get_instance(id) else {
+                        continue;
+                    };
+                    let title = if inst.group_path.is_empty() {
+                        format!("Jump to session: {}", inst.title)
+                    } else {
+                        format!("Jump to session: {} ({})", inst.title, inst.group_path)
+                    };
+                    entries.push(PaletteCommand {
+                        id: "jump-session",
+                        title,
+                        group: PaletteGroup::Sessions,
+                        keywords: vec!["session", "jump", "select"],
+                        hotkey: "",
+                        payload: PaletteAction::JumpToCursor(idx),
+                    });
+                }
+                Item::Group { name, path, .. } => {
+                    let label = if name == path {
+                        format!("Jump to group: {}", name)
+                    } else {
+                        format!("Jump to group: {} ({})", name, path)
+                    };
+                    entries.push(PaletteCommand {
+                        id: "jump-group",
+                        title: label,
+                        group: PaletteGroup::Groups,
+                        keywords: vec!["group", "jump"],
+                        hotkey: "",
+                        payload: PaletteAction::JumpToCursor(idx),
+                    });
+                }
+            }
+        }
+
+        self.command_palette = Some(CommandPaletteDialog::new(entries));
+    }
+
+    /// Apply a palette pick. `Key` re-enters the action dispatch with the
+    /// synthesized event (bypassing strict normalization, which the palette
+    /// already accounts for); `JumpToCursor` moves the selection.
+    fn dispatch_palette_action(
+        &mut self,
+        action: PaletteAction,
+        update_info: Option<&crate::update::UpdateInfo>,
+    ) -> Option<Action> {
+        match action {
+            PaletteAction::Key(synth) => self.dispatch_action_key(synth, update_info),
+            PaletteAction::JumpToCursor(idx) => {
+                if !self.flat_items.is_empty() {
+                    self.cursor = idx.min(self.flat_items.len() - 1);
+                    self.update_selected();
+                }
+                None
+            }
+        }
     }
 
     fn jump_to_next_waiting(&mut self) {
