@@ -10,6 +10,7 @@ use super::add::AddArgs;
 use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
+use super::clone::CloneArgs;
 use super::profile::ProfileCommands;
 use super::template::TemplateCommands;
 use super::remove::RemoveArgs;
@@ -93,6 +94,9 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<TemplateCommands>,
     },
+
+    /// Clone an existing session with modifications
+    Clone(CloneArgs),
 
     /// Manage git worktrees for parallel development
     Worktree {

@@ -15,6 +15,7 @@ pub mod repo_config;
 pub(crate) mod serde_helpers;
 mod storage;
 pub mod templates;
+pub mod notifications;
 
 pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub(crate) use capture::is_valid_session_id;
@@ -44,6 +45,7 @@ pub use repo_config::{
 };
 pub use storage::Storage;
 pub use templates::{load_templates, save_templates, find_template, upsert_template, remove_template, SessionTemplate, DEFAULT_TEMPLATES};
+pub use notifications::send_status_notification;
 
 use anyhow::Result;
 use std::fs;

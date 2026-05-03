@@ -16,7 +16,7 @@ use tui_input::Input;
 use crate::session::{
     config::{load_config, save_config, GroupByMode, SortOrder},
     flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode, Group,
-    GroupTree, Instance, Item, Storage,
+    GroupTree, Instance, Item, Status, Storage, send_status_notification,
 };
 use crate::tmux::AvailableTools;
 
@@ -140,6 +140,7 @@ pub struct HomeView {
     instance_map: HashMap<String, Instance>,
     pub(super) group_trees: HashMap<String, GroupTree>,
     pub(super) flat_items: Vec<Item>,
+    pub(super) last_statuses: HashMap<String, Status>,
 
     // UI state
     pub(super) cursor: usize,
@@ -326,6 +327,7 @@ impl HomeView {
             instance_map,
             group_trees,
             flat_items: Vec::new(),
+            last_statuses: HashMap::new(),
             cursor: 0,
             selected_session: None,
             selected_group: None,
@@ -553,6 +555,15 @@ impl HomeView {
             .iter()
             .map(|i| (i.id.clone(), i.clone()))
             .collect();
+
+        // Send notifications for status changes
+        for inst in &self.instances {
+            if let Some(&old_status) = self.last_statuses.get(&inst.id) {
+                send_status_notification(inst, old_status, inst.status);
+            }
+            self.last_statuses.insert(inst.id.clone(), inst.status);
+        }
+
         // Remember what the cursor was pointing at so we can follow it
         let prev_selected_session = self.selected_session.clone();
         let prev_selected_group = self.selected_group.clone();

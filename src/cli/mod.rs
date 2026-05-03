@@ -2,6 +2,7 @@
 
 pub mod add;
 pub mod agents;
+pub mod clone;
 pub mod definition;
 pub mod group;
 pub mod init;
