@@ -17,6 +17,8 @@ const {
   ogImage = `${siteUrl}/assets/social-preview.png`
 } = Astro.props;
 
+import '../styles/global.css';
+
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 
 const structuredData = {
