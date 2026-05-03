@@ -418,14 +418,11 @@ impl CommandPaletteDialog {
                 let title_max = row_width
                     .saturating_sub(prefix.len())
                     .saturating_sub(hotkey_width);
-                let truncated_title = if cmd.title.len() > title_max && title_max > 1 {
-                    format!("{}…", &cmd.title[..title_max.saturating_sub(1)])
-                } else {
-                    cmd.title.clone()
-                };
+                let truncated_title = truncate_with_ellipsis(&cmd.title, title_max);
+                let title_chars = truncated_title.chars().count();
                 let pad_len = row_width
                     .saturating_sub(prefix.len())
-                    .saturating_sub(truncated_title.len())
+                    .saturating_sub(title_chars)
                     .saturating_sub(hotkey_width);
                 let padding = " ".repeat(pad_len);
                 let mut spans = vec![
@@ -452,6 +449,26 @@ impl CommandPaletteDialog {
         ]);
         frame.render_widget(Paragraph::new(footer_left), chunks[3]);
     }
+}
+
+/// Truncate a string to fit within `max_chars` columns, appending "…" if cut.
+/// Operates on Unicode characters (not bytes) so session titles with emoji
+/// or accented chars don't panic on a non-char-boundary slice.
+fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
+    if max_chars <= 1 {
+        return s.to_string();
+    }
+    let total_chars = s.chars().count();
+    if total_chars <= max_chars {
+        return s.to_string();
+    }
+    let keep = max_chars - 1;
+    let cut_byte = s
+        .char_indices()
+        .nth(keep)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    format!("{}…", &s[..cut_byte])
 }
 
 /// Stable sort: primary by group order, secondary by original insertion order.
@@ -588,5 +605,22 @@ mod tests {
             DialogResult::Submit(PaletteAction::JumpToCursor(idx)) => assert_eq!(idx, 7),
             _ => panic!("expected JumpToCursor"),
         }
+    }
+
+    #[test]
+    fn truncate_handles_multibyte_chars() {
+        // Naive byte slicing would panic mid-emoji; this exercises the
+        // dynamic "Jump to session: 😀 my-session" rendering path.
+        let s = "😀 my-session-with-a-long-title";
+        // No-op when string already fits.
+        assert_eq!(truncate_with_ellipsis(s, 100), s);
+        // Truncation lands on a char boundary and appends ellipsis.
+        let out = truncate_with_ellipsis(s, 5);
+        assert!(out.ends_with('…'), "got {out:?}");
+        assert!(out.chars().count() <= 5);
+        // Tiny budget returns the original to avoid producing useless "…".
+        assert_eq!(truncate_with_ellipsis(s, 1), s);
+        // Pure ASCII still works.
+        assert_eq!(truncate_with_ellipsis("hello world", 7), "hello …");
     }
 }
