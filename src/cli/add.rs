@@ -48,8 +48,12 @@ pub struct AddArgs {
     extra_repos: Vec<PathBuf>,
 
     /// Run session in Docker sandbox
-    #[arg(short = 's', long)]
+    #[arg(long)]
     sandbox: bool,
+
+    /// Template to use for pre-configured settings
+    #[arg(long)]
+    template: Option<String>,
 
     /// Custom Docker image for sandbox (implies --sandbox)
     #[arg(long = "sandbox-image")]
@@ -88,6 +92,23 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     let config = repo_config::resolve_config_with_repo_or_warn(profile, &path);
+
+    let template_opt = if let Some(ref template_name) = args.template {
+        let templates = crate::session::load_templates()?;
+        crate::session::find_template(&templates, template_name).cloned()
+    } else {
+        None
+    };
+
+    let tool_override = template_opt.as_ref().and_then(|t| t.cmd.clone());
+    let mut env_override = Vec::new();
+    if let Some(template) = &template_opt {
+        if let Some(env_vars) = &template.env_vars {
+            for (k, v) in env_vars {
+                env_override.push(format!("{}={}", k, v));
+            }
+        }
+    }
 
     // Preserve the original project path for hook trust checking.
     // `path` gets reassigned to the worktree/workspace directory below,
@@ -222,7 +243,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         instance.parent_session_id = Some(parent);
     }
 
-    if let Some(cmd) = &args.command {
+    let effective_cmd = args.command.as_ref().or(tool_override.as_ref());
+    if let Some(cmd) = effective_cmd {
         let tool_name = detect_tool(cmd)?;
         // Verify the agent binary is actually on PATH before creating the session
         if let Some(agent_def) = crate::agents::get_agent(&tool_name) {
@@ -241,7 +263,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         // (e.g. "claude --resume xyz"). A bare tool name/alias should resolve
         // through the agent definition so the correct binary is used.
         if cmd.trim().contains(' ') {
-            instance.command = cmd.clone();
+            instance.command = cmd.to_string();
         }
     } else {
         // Use default_tool from resolved config, then first available tool, then "claude".
@@ -290,6 +312,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     instance.yolo_mode = args.yolo || config.session.yolo_mode_default;
+
+    instance.env_vars.extend(env_override);
 
     // Apply extra_args and command override: CLI flags take priority, then config defaults
     if let Some(ref extra) = args.extra_args {

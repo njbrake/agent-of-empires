@@ -11,6 +11,7 @@ use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
+use super::template::TemplateCommands;
 use super::remove::RemoveArgs;
 use super::send::SendArgs;
 #[cfg(feature = "serve")]
@@ -85,6 +86,12 @@ pub enum Commands {
     Profile {
         #[command(subcommand)]
         command: Option<ProfileCommands>,
+    },
+
+    /// Manage session templates
+    Template {
+        #[command(subcommand)]
+        command: Option<TemplateCommands>,
     },
 
     /// Manage git worktrees for parallel development

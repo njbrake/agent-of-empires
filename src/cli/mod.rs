@@ -10,6 +10,7 @@ pub mod output;
 pub mod profile;
 pub mod remove;
 pub mod send;
+pub mod template;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod session;

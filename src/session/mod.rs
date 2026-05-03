@@ -14,6 +14,7 @@ pub mod profile_config;
 pub mod repo_config;
 pub(crate) mod serde_helpers;
 mod storage;
+pub mod templates;
 
 pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub(crate) use capture::is_valid_session_id;
@@ -42,6 +43,7 @@ pub use repo_config::{
     RepoConfig,
 };
 pub use storage::Storage;
+pub use templates::{load_templates, save_templates, find_template, upsert_template, remove_template, SessionTemplate, DEFAULT_TEMPLATES};
 
 use anyhow::Result;
 use std::fs;
