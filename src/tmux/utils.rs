@@ -1,6 +1,7 @@
 //! tmux utility functions
 
 use std::process::Command;
+use std::sync::OnceLock;
 
 pub fn strip_ansi(content: &str) -> String {
     let mut result = content.to_string();
@@ -159,24 +160,34 @@ pub fn is_pane_running_shell(session_name: &str) -> bool {
 }
 
 /// Returns the tmux prefix key formatted for display (e.g. "Ctrl+a", "Ctrl+b").
-/// Reads `tmux show-option -gv prefix`; falls back to "Ctrl+b" if tmux is
-/// unavailable or the option can't be parsed.
-pub fn tmux_prefix_display() -> String {
-    let raw = Command::new("tmux")
-        .args(["show-option", "-gv", "prefix"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+/// Reads `tmux show-option -gv prefix` once on first call and caches the
+/// result; falls back to "Ctrl+b" if tmux is unavailable or the option can't
+/// be parsed. The prefix can't change while AOE is running, so caching avoids
+/// per-render-frame subprocess calls from the welcome dialog.
+pub fn tmux_prefix_display() -> &'static str {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let raw = Command::new("tmux")
+            .args(["show-option", "-gv", "prefix"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        format_tmux_prefix(&raw)
+    })
+}
 
-    // tmux reports prefix as e.g. "C-b", "C-a", "M-b". Convert to display form.
+/// Convert tmux's raw prefix notation (e.g. "C-a", "M-b", "F12") to the
+/// display form shown in UI hints. Preserves case from tmux so users see the
+/// same letter they typed in `~/.tmux.conf`.
+fn format_tmux_prefix(raw: &str) -> String {
     if let Some(key) = raw.strip_prefix("C-") {
-        format!("Ctrl+{}", key.to_uppercase())
+        format!("Ctrl+{key}")
     } else if let Some(key) = raw.strip_prefix("M-") {
-        format!("Alt+{}", key.to_uppercase())
+        format!("Alt+{key}")
     } else if !raw.is_empty() {
-        raw
+        raw.to_string()
     } else {
         "Ctrl+b".to_string()
     }
@@ -287,5 +298,36 @@ mod tests {
                 "{cmd} should not be recognized as a shell"
             );
         }
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_ctrl() {
+        assert_eq!(format_tmux_prefix("C-a"), "Ctrl+a");
+        assert_eq!(format_tmux_prefix("C-b"), "Ctrl+b");
+        assert_eq!(format_tmux_prefix("C-Space"), "Ctrl+Space");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_alt() {
+        assert_eq!(format_tmux_prefix("M-x"), "Alt+x");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_preserves_case() {
+        // tmux returns the prefix in whatever case the user wrote it; preserve
+        // it so the displayed hint matches their muscle memory.
+        assert_eq!(format_tmux_prefix("C-A"), "Ctrl+A");
+        assert_eq!(format_tmux_prefix("C-b"), "Ctrl+b");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_special_keys() {
+        assert_eq!(format_tmux_prefix("F12"), "F12");
+        assert_eq!(format_tmux_prefix("Space"), "Space");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_empty_falls_back() {
+        assert_eq!(format_tmux_prefix(""), "Ctrl+b");
     }
 }

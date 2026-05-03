@@ -67,10 +67,7 @@ impl WelcomeDialog {
                 ),
             ]),
             Line::from(""),
-            Line::from(Span::styled(
-                note,
-                Style::default().fg(theme.hint).italic(),
-            )),
+            Line::from(Span::styled(note, Style::default().fg(theme.hint).italic())),
             Line::from(""),
             Line::from(Span::styled(
                 "Press ? anytime for full keyboard shortcuts.",
