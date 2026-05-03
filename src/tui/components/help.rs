@@ -243,6 +243,25 @@ mod tests {
     }
 
     #[test]
+    fn help_lists_command_palette() {
+        // Asserts both keymaps surface the Ctrl+K command palette entry in
+        // their "Other" section so users can discover the palette from `?`.
+        for strict in [false, true] {
+            let all = shortcuts(strict);
+            let other = all
+                .iter()
+                .find(|(name, _)| *name == "Other")
+                .expect("Other section should exist");
+            let (_, keys) = other;
+            assert!(
+                keys.iter()
+                    .any(|(k, desc)| *k == "Ctrl+K" && desc.contains("Command palette")),
+                "Other section should contain Ctrl+K Command palette (strict={strict})"
+            );
+        }
+    }
+
+    #[test]
     fn help_content_fits_in_dialog() {
         let available_height = (DIALOG_HEIGHT - BORDER_HEIGHT) as usize;
         let available_width = (DIALOG_WIDTH - BORDER_WIDTH) as usize;
