@@ -27,11 +27,111 @@ pub fn detect_status_from_content(content: &str, tool: &str) -> Status {
     status
 }
 
-/// Claude Code status is detected via hooks (file-based), not tmux pane parsing.
-/// This stub exists so the agent registry has a valid function pointer; it only
-/// runs when hooks haven't written a status file yet (e.g. first few seconds).
-pub fn detect_claude_status(_content: &str) -> Status {
+/// Spinner frame characters Claude Code rotates through next to its active
+/// verb. macOS uses `· ✢ ✳ ✶ ✻ ✽`, other platforms swap `✽` for `*`, and
+/// reduced-motion mode renders a static `●`.
+const CLAUDE_SPINNER_CHARS: &[char] = &['·', '✢', '✳', '✶', '✻', '✽', '*', '●'];
+
+/// Past-tense verbs Claude Code prints after a turn finishes, e.g.
+/// `✻ Worked for 1m 52s`. Same frame chars as the active spinner, so we
+/// have to exclude these explicitly to avoid reporting Running on a
+/// completion line.
+const CLAUDE_PAST_TENSE_VERBS: &[&str] = &[
+    "Baked",
+    "Brewed",
+    "Churned",
+    "Cogitated",
+    "Cooked",
+    "Crunched",
+    "Sautéed",
+    "Worked",
+];
+
+/// Claude Code status is primarily detected via hooks (file-based) installed
+/// in `~/.claude/settings.json`. When hooks aren't reachable (first few
+/// seconds before a hook fires, custom `--cmd` wrappers, `docker exec` into
+/// a user-managed container that aoe didn't provision), the dispatcher falls
+/// back to this pane-based detector.
+///
+/// The dispatcher strips ANSI before calling us, so we only match on
+/// human-readable text shapes:
+///   1. The interrupt hint ("esc to interrupt" / "ctrl+c to interrupt").
+///   2. The live token counter ("(4s · ↓ 88 tokens)") that only renders
+///      while a turn is generating.
+///   3. The spinner+verb shape ("✶ Working…") on a recent line, excluding
+///      past-tense completion lines that share the same frame char.
+pub fn detect_claude_status(content: &str) -> Status {
+    let recent: Vec<&str> = content.lines().rev().take(20).collect();
+    let recent_joined = recent.join("\n");
+    let recent_lower = recent_joined.to_lowercase();
+
+    if recent_lower.contains("esc to interrupt") || recent_lower.contains("ctrl+c to interrupt") {
+        return Status::Running;
+    }
+
+    if has_claude_live_token_counter(&recent_joined) {
+        return Status::Running;
+    }
+
+    for line in &recent {
+        if claude_line_is_active_spinner(line) {
+            return Status::Running;
+        }
+    }
+
     Status::Idle
+}
+
+/// Detect the live token counter Claude Code prints during generation,
+/// e.g. `(4s · ↓ 88 tokens)`. The `s · ↓ N tokens` substring is unique to
+/// the active counter; an idle pane never contains it.
+fn has_claude_live_token_counter(content: &str) -> bool {
+    let mut search = content;
+    while let Some(pos) = search.find("s · ↓") {
+        let after = search[pos + "s · ↓".len()..].trim_start();
+        let mut digits_end = 0;
+        for (i, c) in after.char_indices() {
+            if c.is_ascii_digit() {
+                digits_end = i + c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if digits_end > 0 && after[digits_end..].trim_start().starts_with("tokens") {
+            return true;
+        }
+        // Advance past this match so we don't loop on the same position.
+        search = &search[pos + "s · ↓".len()..];
+    }
+    false
+}
+
+/// Match the `<frame> <Verb…>` shape on a single pane line. Returns `false`
+/// for past-tense completion lines that reuse the same spinner frame char.
+fn claude_line_is_active_spinner(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !CLAUDE_SPINNER_CHARS.contains(&first) {
+        return false;
+    }
+    let rest = chars.as_str().trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+
+    for verb in CLAUDE_PAST_TENSE_VERBS {
+        if let Some(after) = rest.strip_prefix(verb) {
+            if after.starts_with(" for ") {
+                return false;
+            }
+        }
+    }
+
+    let starts_uppercase = rest.chars().next().is_some_and(|c| c.is_uppercase());
+    starts_uppercase && rest.contains('…')
 }
 
 pub fn detect_opencode_status(raw_content: &str) -> Status {
@@ -644,10 +744,87 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_claude_status_is_stub() {
-        // Claude/Cursor use hook-based detection; the stub always returns Idle
-        assert_eq!(detect_claude_status("anything"), Status::Idle);
+    fn test_detect_cursor_status_is_stub() {
+        // Cursor uses hook-based detection; the stub always returns Idle
         assert_eq!(detect_cursor_status("anything"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_claude_status_idle_on_plain_text() {
+        // No spinner, no interrupt hint, no token counter: Idle.
+        assert_eq!(detect_claude_status(""), Status::Idle);
+        assert_eq!(detect_claude_status("Some output\n> "), Status::Idle);
+        assert_eq!(
+            detect_claude_status("file saved successfully"),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_detect_claude_status_running_on_interrupt_hint() {
+        // The most reliable signal: Claude prints an interrupt hint while
+        // a turn is generating.
+        assert_eq!(
+            detect_claude_status("✶ Working…\n  esc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_claude_status("Generating...\nctrl+c to interrupt"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_claude_status_running_on_live_token_counter() {
+        // The (Xs · ↓ N tokens) counter only renders during generation.
+        assert_eq!(
+            detect_claude_status("✶ Working… (4s · ↓ 88 tokens)"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_claude_status("● Cooking… (12s · ↓ 1234 tokens)"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_claude_status_running_on_spinner_verb_shape() {
+        // <frame> <Verb…> is the live spinner line.
+        assert_eq!(detect_claude_status("✶ Working…"), Status::Running);
+        assert_eq!(detect_claude_status("✻ Herding…"), Status::Running);
+        assert_eq!(detect_claude_status("● Pondering…"), Status::Running);
+        assert_eq!(detect_claude_status("· Sautéing…"), Status::Running);
+        // Reduced-motion mode renders a static ●.
+        assert_eq!(detect_claude_status("● Working…"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_claude_status_idle_on_past_tense_completion() {
+        // Same frame char, but "Worked for 1m 52s" means the turn is done.
+        assert_eq!(detect_claude_status("✻ Worked for 1m 52s"), Status::Idle);
+        assert_eq!(detect_claude_status("● Cooked for 30s"), Status::Idle);
+        assert_eq!(detect_claude_status("· Brewed for 2m 10s"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_claude_status_ignores_lowercase_after_frame() {
+        // "* foo…" (e.g. a markdown bullet that happens to end with an
+        // ellipsis) should not be mistaken for an active spinner. Active
+        // verbs are always capitalized.
+        assert_eq!(detect_claude_status("* foo…"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_claude_status_handles_v2_1_118_per_word_ansi() {
+        // Regression for #890: Claude Code v2.1.118 wraps each word in ANSI
+        // color escapes. After the dispatcher strips ANSI we should still
+        // see the spinner+verb shape and the interrupt hint.
+        let ansi_running = "\x1b[38;5;174m✶\x1b[39m \x1b[38;5;180mWorking…\x1b[38;5;174m \x1b[38;5;246m(4s · ↓\x1b[39m \x1b[38;5;246m88 tokens)\x1b[39m\n\x1b[39m  \x1b[38;5;246mesc\x1b[39m \x1b[38;5;246mto\x1b[39m \x1b[38;5;246minterrupt\x1b[39m";
+        assert_eq!(
+            detect_status_from_content(ansi_running, "claude"),
+            Status::Running,
+            "Per-word ANSI coloring must not prevent Running detection for Claude Code"
+        );
     }
 
     #[test]
