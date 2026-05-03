@@ -91,7 +91,7 @@ git2 = { version = "0.20", features = ["vendored-openssl"] }
 similar = "3.0"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 
 # File locking
 fs2 = "0.4"
@@ -113,7 +113,7 @@ argon2 = { version = "0.5", optional = true }
 # Web Push (VAPID + payload encryption), optional behind "serve".
 p256 = { version = "0.13", features = ["pem", "pkcs8", "ecdsa", "ecdh"], optional = true }
 base64 = { version = "0.22", optional = true }
-hkdf = { version = "0.12", optional = true }
+hkdf = { version = "0.13", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 jsonwebtoken = { version = "10.3", optional = true }
 getrandom = { version = "0.3", optional = true }
