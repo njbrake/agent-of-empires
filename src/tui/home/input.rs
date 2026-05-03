@@ -547,7 +547,11 @@ impl HomeView {
             return None;
         }
 
-        // Search mode
+        // Search mode. Intentionally takes priority over the Ctrl+K palette
+        // binding below: while the search input is focused, every key (including
+        // Ctrl+K) feeds the search box. Users can press Esc to exit search and
+        // then open the palette. Don't move this block past the Ctrl+K check
+        // unless you want palette activation to clobber search input.
         if self.search_active {
             match key.code {
                 KeyCode::Esc => {
@@ -1164,32 +1168,43 @@ impl HomeView {
     /// current `flat_items`.
     fn open_command_palette(&mut self) {
         let serve_enabled = cfg!(feature = "serve");
-        let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled);
+        let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled, self.strict_hotkeys);
 
         // Quit command (separate so the lifetime mapping is clear and we
         // can keep it out of `builtin_commands` to avoid pulling KeyCode
         // imports into the palette module).
+        let quit_hotkey = if self.strict_hotkeys { "Q" } else { "q" };
         entries.push(PaletteCommand {
             id: "quit",
             title: "Quit Agent of Empires".to_string(),
             group: PaletteGroup::Settings,
             keywords: vec!["exit", "close"],
-            hotkey: "q",
+            hotkey: quit_hotkey,
             payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
         });
 
         // Dynamic session/group entries: one per flat_items row, so the user
-        // can fuzzy-search and jump straight to it.
+        // can fuzzy-search and jump straight to it. We tag in-flight sessions
+        // (Creating / Deleting) in the title so the user knows that picking
+        // Stop/Delete from the palette will be a no-op for those rows.
         for (idx, item) in self.flat_items.iter().enumerate() {
             match item {
                 Item::Session { id, .. } => {
                     let Some(inst) = self.get_instance(id) else {
                         continue;
                     };
+                    let status_tag = match inst.status {
+                        Status::Creating => " [creating]",
+                        Status::Deleting => " [deleting]",
+                        _ => "",
+                    };
                     let title = if inst.group_path.is_empty() {
-                        format!("Jump to session: {}", inst.title)
+                        format!("Jump to session: {}{}", inst.title, status_tag)
                     } else {
-                        format!("Jump to session: {} ({})", inst.title, inst.group_path)
+                        format!(
+                            "Jump to session: {} ({}){}",
+                            inst.title, inst.group_path, status_tag
+                        )
                     };
                     entries.push(PaletteCommand {
                         id: "jump-session",

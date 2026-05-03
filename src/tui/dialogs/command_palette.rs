@@ -11,6 +11,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
+use unicode_width::UnicodeWidthStr;
 
 use super::DialogResult;
 use crate::tui::styles::Theme;
@@ -68,16 +69,30 @@ pub struct PaletteCommand {
     pub payload: PaletteAction,
 }
 
+/// Pick the right hotkey label for a binding given the strict-hotkeys setting.
+/// In strict mode, plain action letters require Shift; relocated bindings use
+/// Ctrl. The mapping mirrors `normalize_strict_key` in `home/input.rs` and the
+/// labels in `components/help.rs`.
+fn hotkey_label(non_strict: &'static str, strict: &'static str, strict_mode: bool) -> &'static str {
+    if strict_mode {
+        strict
+    } else {
+        non_strict
+    }
+}
+
 /// Built-in named commands. Excludes pure-navigation keys (j/k, arrows,
 /// PageUp/PageDown, h/l for collapse) since those don't belong in a palette.
-pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
+/// `strict_hotkeys` controls only the displayed hotkey label; the synthesized
+/// payload bypasses strict-mode normalization either way.
+pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<PaletteCommand> {
     let mut cmds = vec![
         PaletteCommand {
             id: "new-session",
             title: "New session".to_string(),
             group: PaletteGroup::Actions,
             keywords: vec!["create", "add", "spawn"],
-            hotkey: "n",
+            hotkey: hotkey_label("n", "N", strict_hotkeys),
             payload: PaletteAction::Key(key('n')),
         },
         PaletteCommand {
@@ -85,7 +100,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "New session from selection".to_string(),
             group: PaletteGroup::Actions,
             keywords: vec!["create", "duplicate", "clone"],
-            hotkey: "N",
+            hotkey: hotkey_label("N", "Ctrl+N", strict_hotkeys),
             payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT)),
         },
         PaletteCommand {
@@ -101,7 +116,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Attach to paired terminal".to_string(),
             group: PaletteGroup::Actions,
             keywords: vec!["shell", "host"],
-            hotkey: "T",
+            hotkey: hotkey_label("T", "Ctrl+T", strict_hotkeys),
             payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT)),
         },
         PaletteCommand {
@@ -109,7 +124,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Send message to agent".to_string(),
             group: PaletteGroup::Actions,
             keywords: vec!["prompt", "tell", "say"],
-            hotkey: "m",
+            hotkey: hotkey_label("m", "M", strict_hotkeys),
             payload: PaletteAction::Key(key('m')),
         },
         PaletteCommand {
@@ -117,7 +132,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Stop session".to_string(),
             group: PaletteGroup::Actions,
             keywords: vec!["kill", "end", "halt"],
-            hotkey: "x",
+            hotkey: hotkey_label("x", "X", strict_hotkeys),
             payload: PaletteAction::Key(key('x')),
         },
         PaletteCommand {
@@ -125,7 +140,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Delete session or group".to_string(),
             group: PaletteGroup::Actions,
             keywords: vec!["remove", "trash"],
-            hotkey: "d",
+            hotkey: hotkey_label("d", "D", strict_hotkeys),
             payload: PaletteAction::Key(key('d')),
         },
         PaletteCommand {
@@ -133,7 +148,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Rename or move to group".to_string(),
             group: PaletteGroup::Actions,
             keywords: vec!["title", "label", "move", "regroup"],
-            hotkey: "r",
+            hotkey: hotkey_label("r", "R", strict_hotkeys),
             payload: PaletteAction::Key(key('r')),
         },
         PaletteCommand {
@@ -141,7 +156,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Open diff view".to_string(),
             group: PaletteGroup::Views,
             keywords: vec!["git", "changes"],
-            hotkey: "D",
+            hotkey: hotkey_label("D", "Ctrl+D", strict_hotkeys),
             payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
         },
         PaletteCommand {
@@ -149,7 +164,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Toggle Agent / Terminal view".to_string(),
             group: PaletteGroup::Views,
             keywords: vec!["switch", "shell"],
-            hotkey: "t",
+            hotkey: hotkey_label("t", "T", strict_hotkeys),
             payload: PaletteAction::Key(key('t')),
         },
         PaletteCommand {
@@ -157,15 +172,15 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Cycle sort order".to_string(),
             group: PaletteGroup::Views,
             keywords: vec!["order", "sort"],
-            hotkey: "o",
+            hotkey: hotkey_label("o", "O", strict_hotkeys),
             payload: PaletteAction::Key(key('o')),
         },
         PaletteCommand {
             id: "cycle-group-by",
-            title: "Toggle group by project".to_string(),
+            title: "Cycle group by".to_string(),
             group: PaletteGroup::Views,
             keywords: vec!["group", "project"],
-            hotkey: "g",
+            hotkey: hotkey_label("g", "Ctrl+G", strict_hotkeys),
             payload: PaletteAction::Key(key('g')),
         },
         PaletteCommand {
@@ -181,7 +196,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Open settings".to_string(),
             group: PaletteGroup::Settings,
             keywords: vec!["preferences", "config"],
-            hotkey: "s",
+            hotkey: hotkey_label("s", "S", strict_hotkeys),
             payload: PaletteAction::Key(key('s')),
         },
         PaletteCommand {
@@ -208,7 +223,7 @@ pub fn builtin_commands(serve_enabled: bool) -> Vec<PaletteCommand> {
             title: "Open serve (LAN / Tunnel)".to_string(),
             group: PaletteGroup::Settings,
             keywords: vec!["web", "remote", "phone", "tunnel"],
-            hotkey: "R",
+            hotkey: hotkey_label("R", "Ctrl+R", strict_hotkeys),
             payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT)),
         });
     }
@@ -413,16 +428,16 @@ impl CommandPaletteDialog {
                 let hotkey_width = if cmd.hotkey.is_empty() {
                     0
                 } else {
-                    cmd.hotkey.len() + 2
+                    cmd.hotkey.width() + 2
                 };
                 let title_max = row_width
-                    .saturating_sub(prefix.len())
+                    .saturating_sub(prefix.width())
                     .saturating_sub(hotkey_width);
                 let truncated_title = truncate_with_ellipsis(&cmd.title, title_max);
-                let title_chars = truncated_title.chars().count();
+                let title_width = truncated_title.width();
                 let pad_len = row_width
-                    .saturating_sub(prefix.len())
-                    .saturating_sub(title_chars)
+                    .saturating_sub(prefix.width())
+                    .saturating_sub(title_width)
                     .saturating_sub(hotkey_width);
                 let padding = " ".repeat(pad_len);
                 let mut spans = vec![
@@ -451,23 +466,31 @@ impl CommandPaletteDialog {
     }
 }
 
-/// Truncate a string to fit within `max_chars` columns, appending "…" if cut.
-/// Operates on Unicode characters (not bytes) so session titles with emoji
-/// or accented chars don't panic on a non-char-boundary slice.
-fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
-    if max_chars <= 1 {
+/// Truncate a string to fit within `max_cols` terminal columns, appending "…"
+/// if cut. Uses Unicode display width (so a wide char like an emoji counts as
+/// 2 cells), and only ever cuts on char boundaries so this can't panic on
+/// session titles with multi-byte characters.
+fn truncate_with_ellipsis(s: &str, max_cols: usize) -> String {
+    if max_cols <= 1 {
         return s.to_string();
     }
-    let total_chars = s.chars().count();
-    if total_chars <= max_chars {
+    if s.width() <= max_cols {
         return s.to_string();
     }
-    let keep = max_chars - 1;
-    let cut_byte = s
-        .char_indices()
-        .nth(keep)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
+    // Reserve 1 cell for the ellipsis, then walk char-by-char until adding
+    // the next char would exceed the budget. Tracking width per char avoids
+    // mid-grapheme byte-slicing.
+    let budget = max_cols - 1;
+    let mut used = 0usize;
+    let mut cut_byte = 0usize;
+    for (i, ch) in s.char_indices() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        cut_byte = i + ch.len_utf8();
+    }
     format!("{}…", &s[..cut_byte])
 }
 
@@ -489,7 +512,7 @@ mod tests {
     }
 
     fn make_dialog() -> CommandPaletteDialog {
-        CommandPaletteDialog::new(builtin_commands(false))
+        CommandPaletteDialog::new(builtin_commands(false, false))
     }
 
     #[test]
@@ -581,10 +604,35 @@ mod tests {
 
     #[test]
     fn serve_command_only_with_feature() {
-        let with = builtin_commands(true);
-        let without = builtin_commands(false);
+        let with = builtin_commands(true, false);
+        let without = builtin_commands(false, false);
         assert!(with.iter().any(|c| c.id == "serve"));
         assert!(!without.iter().any(|c| c.id == "serve"));
+    }
+
+    #[test]
+    fn hotkey_labels_follow_strict_mode() {
+        // Picks one entry whose label moves under strict mode and one whose
+        // binding gets relocated to Ctrl. Catches regressions where strict
+        // mode was forgotten when adding a new entry.
+        let normal = builtin_commands(false, false);
+        let strict = builtin_commands(false, true);
+
+        let new_normal = normal.iter().find(|c| c.id == "new-session").unwrap();
+        let new_strict = strict.iter().find(|c| c.id == "new-session").unwrap();
+        assert_eq!(new_normal.hotkey, "n");
+        assert_eq!(new_strict.hotkey, "N");
+
+        let diff_normal = normal.iter().find(|c| c.id == "diff").unwrap();
+        let diff_strict = strict.iter().find(|c| c.id == "diff").unwrap();
+        assert_eq!(diff_normal.hotkey, "D");
+        assert_eq!(diff_strict.hotkey, "Ctrl+D");
+
+        // Bindings without a strict variant (Enter, w, ?, P) stay the same.
+        let attach_normal = normal.iter().find(|c| c.id == "attach").unwrap();
+        let attach_strict = strict.iter().find(|c| c.id == "attach").unwrap();
+        assert_eq!(attach_normal.hotkey, "Enter");
+        assert_eq!(attach_strict.hotkey, "Enter");
     }
 
     #[test]
@@ -617,10 +665,30 @@ mod tests {
         // Truncation lands on a char boundary and appends ellipsis.
         let out = truncate_with_ellipsis(s, 5);
         assert!(out.ends_with('…'), "got {out:?}");
-        assert!(out.chars().count() <= 5);
+        assert!(out.width() <= 5);
         // Tiny budget returns the original to avoid producing useless "…".
         assert_eq!(truncate_with_ellipsis(s, 1), s);
         // Pure ASCII still works.
         assert_eq!(truncate_with_ellipsis("hello world", 7), "hello …");
+
+        // Cut budget that lands mid-emoji under any naive char/byte impl:
+        // "ab😀cd" is bytes [a, b, 0xF0,0x9F,0x98,0x80, c, d] and the emoji
+        // takes 2 display cols. With max_cols=3, budget=2 cells, the function
+        // must keep "ab" + ellipsis (the emoji would push to 4 cells).
+        let cut = truncate_with_ellipsis("ab😀cd", 3);
+        assert_eq!(cut, "ab…");
+        assert!(cut.width() <= 3);
+
+        // Max_cols=4 leaves no room for the emoji either (a=1 + b=1 + 😀=2
+        // = 4, but we need 1 cell reserved for ellipsis -> budget=3, and
+        // a+b+😀 = 4 overflows it). Should still keep "ab".
+        let cut = truncate_with_ellipsis("ab😀cd", 4);
+        assert_eq!(cut, "ab…");
+
+        // CJK width: each char is 2 cells. With max_cols=5 (budget=4) we
+        // keep two CJK chars + ellipsis.
+        let cut = truncate_with_ellipsis("中文测试abc", 5);
+        assert_eq!(cut, "中文…");
+        assert!(cut.width() <= 5);
     }
 }
