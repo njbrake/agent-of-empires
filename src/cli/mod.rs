@@ -63,9 +63,11 @@ pub fn truncate(s: &str, max: usize) -> String {
 }
 
 pub fn truncate_id(id: &str, max_len: usize) -> &str {
-    if id.len() > max_len {
-        &id[..max_len]
-    } else {
+    let char_count = id.chars().count();
+    if char_count <= max_len {
         id
+    } else {
+        let byte_pos = id.char_indices().nth(max_len).map(|(i, _)| i).unwrap_or(id.len());
+        &id[..byte_pos]
     }
 }
