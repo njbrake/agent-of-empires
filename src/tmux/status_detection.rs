@@ -50,7 +50,12 @@ const CLAUDE_SPINNER_CHARS: &[char] = &['·', '✢', '✳', '✶', '✻', '✽',
 /// and past-tense completions without one (`Worked for 1m 52s`), so we
 /// don't need a separate past-tense verb list.
 pub fn detect_claude_status(content: &str) -> Status {
-    let recent: Vec<&str> = content.lines().rev().take(20).collect();
+    // Claude often leaves the bottom of the pane blank (cursor parked below
+    // the spinner line, or a small response in a tall pane), so we filter
+    // empty lines first and look at the last 30 non-empty lines. Matches
+    // the pattern used by detect_opencode_status and friends.
+    let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let recent: Vec<&str> = non_empty.iter().rev().take(30).rev().copied().collect();
     let recent_joined = recent.join("\n");
     let recent_lower = recent_joined.to_lowercase();
 
@@ -815,6 +820,19 @@ mod tests {
             detect_claude_status("· Some random response text ending with…"),
             Status::Idle
         );
+    }
+
+    #[test]
+    fn test_detect_claude_status_finds_signal_above_blank_padding() {
+        // Real `tmux capture-pane -S -50` typically returns 50 lines even
+        // when the agent has only painted 2-3 lines at the top, with the
+        // rest blank. The detector must skip blank lines, not just look at
+        // the literal last N lines, or it'll miss every signal.
+        let mut content = String::from("✶ Working… (4s · ↓ 88 tokens)\n  esc to interrupt\n");
+        for _ in 0..40 {
+            content.push('\n');
+        }
+        assert_eq!(detect_claude_status(&content), Status::Running);
     }
 
     #[test]
