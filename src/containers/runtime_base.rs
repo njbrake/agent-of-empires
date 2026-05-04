@@ -46,6 +46,19 @@ impl RuntimeBase {
         supports_remove_volumes: false,
     };
 
+    pub const PODMAN: Self = Self {
+        binary: "podman",
+        name: "Podman",
+        // Podman is daemonless, but `podman info` succeeds when the local
+        // engine (and its rootless/rootful storage) is healthy, mirroring
+        // the Docker daemon-running probe.
+        daemon_check_args: &["info"],
+        pull_prefix: &["pull"],
+        remove_subcommand: "rm",
+        supports_read_only_volumes: true,
+        supports_remove_volumes: true,
+    };
+
     pub fn command(&self) -> Command {
         Command::new(self.binary)
     }

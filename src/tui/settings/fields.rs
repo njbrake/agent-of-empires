@@ -644,7 +644,8 @@ fn build_sandbox_fields(
 
     let container_runtime_selected = match container_runtime {
         ContainerRuntimeName::Docker => 0,
-        ContainerRuntimeName::AppleContainer => 1,
+        ContainerRuntimeName::Podman => 1,
+        ContainerRuntimeName::AppleContainer => 2,
     };
 
     let global_terminal_mode_selected = match global.sandbox.default_terminal_mode {
@@ -655,9 +656,11 @@ fn build_sandbox_fields(
 
     let global_container_runtime_selected = match global.sandbox.container_runtime {
         ContainerRuntimeName::Docker => 0,
-        ContainerRuntimeName::AppleContainer => 1,
+        ContainerRuntimeName::Podman => 1,
+        ContainerRuntimeName::AppleContainer => 2,
     };
-    let container_runtime_options = vec!["Docker".into(), "Apple Container".into()];
+    let container_runtime_options =
+        vec!["Docker".into(), "Podman".into(), "Apple Container".into()];
 
     vec![
         SettingField {
@@ -1503,6 +1506,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
             config.sandbox.container_runtime = match selected {
                 0 => ContainerRuntimeName::Docker,
+                1 => ContainerRuntimeName::Podman,
                 _ => ContainerRuntimeName::AppleContainer,
             };
         }
@@ -1726,6 +1730,7 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
             let runtime = match selected {
                 0 => ContainerRuntimeName::Docker,
+                1 => ContainerRuntimeName::Podman,
                 _ => ContainerRuntimeName::AppleContainer,
             };
             set_profile_override(runtime, &mut config.sandbox, |s, val| {

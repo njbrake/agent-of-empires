@@ -510,7 +510,7 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instruction: Option<String>,
 
-    /// Container runtime to use for sandboxing (docker or apple_container)
+    /// Container runtime to use for sandboxing (docker, podman, or apple_container)
     #[serde(default)]
     pub container_runtime: ContainerRuntimeName,
 }
@@ -522,6 +522,7 @@ pub enum ContainerRuntimeName {
     AppleContainer,
     #[default]
     Docker,
+    Podman,
 }
 
 impl Default for SandboxConfig {
@@ -1435,5 +1436,18 @@ mod tests {
             deserialized.session.agent_detect_as.get("lenovo-claude"),
             Some(&"claude".to_string()),
         );
+    }
+
+    #[test]
+    fn test_container_runtime_podman_round_trip() {
+        // Users on Linux configure podman via `container_runtime = "podman"`
+        // in config.toml; if the snake_case rename ever drifts, their config
+        // would silently fall back to the docker default.
+        let toml_str = r#"container_runtime = "podman""#;
+        let parsed: SandboxConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(parsed.container_runtime, ContainerRuntimeName::Podman);
+
+        let serialized = toml::to_string(&parsed).unwrap();
+        assert!(serialized.contains(r#"container_runtime = "podman""#));
     }
 }
