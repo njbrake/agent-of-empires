@@ -1112,14 +1112,19 @@ impl HomeView {
         // where the full label set used to truncate Help/Quit). Essentials
         // (Nav / Enter / Help / Quit / Serve indicator) survive first;
         // Diff / Search / Mode / Group drop first. Groups render in the
-        // declared order; a │ separator is inserted between kept groups
+        // declared order; a · separator is inserted between kept groups
         // at render time.
         let mk = |key: &str, desc: &str| -> Vec<Span<'static>> {
             vec![
-                Span::styled(format!(" {}", key), key_style),
-                Span::styled(format!(" {} ", desc), desc_style),
+                Span::styled(format!("{} ", key), key_style),
+                Span::styled(desc.to_string(), desc_style),
             ]
         };
+        // Key-only entry for keys universal enough that a description would be
+        // noise (j/k for nav, ? for help, q for quit, / for search). Saves
+        // ~20 columns of footer width — meaningful at iPhone-Mosh sizes.
+        let mk_key =
+            |key: &str| -> Vec<Span<'static>> { vec![Span::styled(key.to_string(), key_style)] };
 
         let mut groups: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
 
@@ -1145,7 +1150,7 @@ impl HomeView {
             }
         }
 
-        groups.push((0, mk("j/k", "Nav")));
+        groups.push((0, mk_key("j/k")));
 
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
             Some(Item::Group {
@@ -1183,19 +1188,20 @@ impl HomeView {
             groups.push((3, mk(if strict { "D" } else { "d" }, "Del")));
         }
 
-        groups.push((4, mk("/", "Search")));
+        groups.push((4, mk_key("/")));
         groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
         groups.push((1, mk("^K", "Cmds")));
-        groups.push((0, mk("?", "Help")));
-        groups.push((0, mk(if strict { "Q" } else { "q" }, "Quit")));
+        groups.push((0, mk_key("?")));
+        groups.push((0, mk_key(if strict { "Q" } else { "q" })));
 
         // Greedy pack by priority. Width of a group = sum of span char counts;
-        // separator between kept groups adds 1 col each.
+        // separator between kept groups adds 3 cols each (" · "). Reserve 1
+        // col for the leading space margin.
         let widths: Vec<usize> = groups
             .iter()
             .map(|(_, g)| g.iter().map(|s| s.content.chars().count()).sum::<usize>())
             .collect();
-        let avail = area.width as usize;
+        let avail = (area.width as usize).saturating_sub(1);
 
         let mut order: Vec<usize> = (0..groups.len()).collect();
         order.sort_by_key(|&i| groups[i].0);
@@ -1204,7 +1210,7 @@ impl HomeView {
         let mut used = 0usize;
         let mut count = 0usize;
         for i in order {
-            let sep = if count == 0 { 0 } else { 1 };
+            let sep = if count == 0 { 0 } else { 3 };
             if used + widths[i] + sep <= avail {
                 keep[i] = true;
                 used += widths[i] + sep;
@@ -1212,14 +1218,14 @@ impl HomeView {
             }
         }
 
-        let mut spans: Vec<Span> = Vec::new();
+        let mut spans: Vec<Span> = vec![Span::raw(" ")];
         let mut first = true;
         for (i, (_, group)) in groups.into_iter().enumerate() {
             if !keep[i] {
                 continue;
             }
             if !first {
-                spans.push(Span::styled("│", sep_style));
+                spans.push(Span::styled(" · ", sep_style));
             }
             spans.extend(group);
             first = false;

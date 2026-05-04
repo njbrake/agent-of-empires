@@ -13,8 +13,9 @@ fn test_tui_launches_and_shows_home_screen() {
 
     h.wait_for(" aoe [");
     h.assert_screen_contains("No sessions yet");
-    // Status bar navigation hints should be visible.
-    h.assert_screen_contains("Nav");
+    // Status bar should be visible. Use the j/k key hint (which has no
+    // accompanying description in the compact footer).
+    h.assert_screen_contains("j/k");
 }
 
 #[test]
