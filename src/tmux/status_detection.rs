@@ -32,21 +32,6 @@ pub fn detect_status_from_content(content: &str, tool: &str) -> Status {
 /// reduced-motion mode renders a static `●`.
 const CLAUDE_SPINNER_CHARS: &[char] = &['·', '✢', '✳', '✶', '✻', '✽', '*', '●'];
 
-/// Past-tense verbs Claude Code prints after a turn finishes, e.g.
-/// `✻ Worked for 1m 52s`. Same frame chars as the active spinner, so we
-/// have to exclude these explicitly to avoid reporting Running on a
-/// completion line.
-const CLAUDE_PAST_TENSE_VERBS: &[&str] = &[
-    "Baked",
-    "Brewed",
-    "Churned",
-    "Cogitated",
-    "Cooked",
-    "Crunched",
-    "Sautéed",
-    "Worked",
-];
-
 /// Claude Code status is primarily detected via hooks (file-based) installed
 /// in `~/.claude/settings.json`. When hooks aren't reachable (first few
 /// seconds before a hook fires, custom `--cmd` wrappers, `docker exec` into
@@ -58,8 +43,12 @@ const CLAUDE_PAST_TENSE_VERBS: &[&str] = &[
 ///   1. The interrupt hint ("esc to interrupt" / "ctrl+c to interrupt").
 ///   2. The live token counter ("(4s · ↓ 88 tokens)") that only renders
 ///      while a turn is generating.
-///   3. The spinner+verb shape ("✶ Working…") on a recent line, excluding
-///      past-tense completion lines that share the same frame char.
+///   3. The spinner+verb shape ("✶ Working…") on a recent line.
+///
+/// The `…` in shape (3) is what distinguishes active from completed lines.
+/// Claude renders active verbs as gerunds with a trailing `…` (`Working…`)
+/// and past-tense completions without one (`Worked for 1m 52s`), so we
+/// don't need a separate past-tense verb list.
 pub fn detect_claude_status(content: &str) -> Status {
     let recent: Vec<&str> = content.lines().rev().take(20).collect();
     let recent_joined = recent.join("\n");
@@ -106,8 +95,11 @@ fn has_claude_live_token_counter(content: &str) -> bool {
     false
 }
 
-/// Match the `<frame> <Verb…>` shape on a single pane line. Returns `false`
-/// for past-tense completion lines that reuse the same spinner frame char.
+/// Match the `<frame> <Verb…>` shape on a single pane line. The ellipsis must
+/// be inside the first word after the frame char so we match `Working…` but
+/// not past-tense completions (`Worked for 1m 52s`, no `…`) or rendered
+/// markdown bullets (`* Cooked an amazing dish today…`, `…` is several words
+/// in).
 fn claude_line_is_active_spinner(line: &str) -> bool {
     let trimmed = line.trim_start();
     let mut chars = trimmed.chars();
@@ -122,18 +114,6 @@ fn claude_line_is_active_spinner(line: &str) -> bool {
         return false;
     }
 
-    for verb in CLAUDE_PAST_TENSE_VERBS {
-        if let Some(after) = rest.strip_prefix(verb) {
-            if after.starts_with(" for ") {
-                return false;
-            }
-        }
-    }
-
-    // Require the ellipsis to be inside the first word after the frame, which
-    // is the live-spinner shape (`Working…`, `Herding…`). This rejects
-    // rendered markdown bullets like `* Cooked an amazing dish today…` that
-    // would otherwise look like an active spinner line.
     let first_word_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
     let first_word = &rest[..first_word_end];
     let starts_uppercase = first_word.chars().next().is_some_and(|c| c.is_uppercase());
