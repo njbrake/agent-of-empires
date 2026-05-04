@@ -1164,8 +1164,11 @@ impl HomeView {
         } {
             // U+21B5 (↵) renders Enter/Return in one cell across most fonts;
             // saves 4 cols vs the literal word and matches k9s/lazygit/fzf
-            // conventions.
-            groups.push((0, mk("↵", enter_action_text)));
+            // conventions. Trailing space inside the key string adds a second
+            // visual gap before the description — at most fonts the arrow
+            // glyph fills its cell tightly and a single mk-internal space
+            // looks too close to the desc.
+            groups.push((0, mk("↵ ", enter_action_text)));
         }
 
         groups.push((2, mk(if strict { "T" } else { "t" }, "View")));
