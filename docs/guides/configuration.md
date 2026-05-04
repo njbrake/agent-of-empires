@@ -165,12 +165,14 @@ Each entry in the `environment` list can be:
 [tmux]
 status_bar = "auto"
 mouse = "auto"
+clipboard = "auto"
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `status_bar` | `"auto"` | `"auto"`: apply if no `~/.tmux.conf`; `"enabled"`: always apply; `"disabled"`: never apply |
 | `mouse` | `"auto"` | Same modes as `status_bar`. Controls mouse support in aoe tmux sessions. |
+| `clipboard` | `"auto"` | Same modes. Forwards OSC 52 clipboard escape sequences from the wrapped agent (Claude Code, OpenCode, Codex, etc.) through tmux to your terminal. Without this, "select to copy" inside the agent silently fails. Sets `set-clipboard on` and `allow-passthrough on` on the aoe tmux session. |
 
 ## Diff
 

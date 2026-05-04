@@ -615,6 +615,11 @@ impl SettingsView {
                     t.mouse = None;
                 }
             }
+            FieldKey::Clipboard => {
+                if let Some(ref mut t) = config.tmux {
+                    t.clipboard = None;
+                }
+            }
             // Session
             FieldKey::DefaultTool => {
                 if let Some(ref mut s) = config.session {

@@ -2,7 +2,7 @@
 
 use crate::session::{
     validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
-    TmuxMouseMode, TmuxStatusBarMode,
+    TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
 };
 use crate::sound::{
     validate_sound_exists, volume_from_option, volume_options, volume_to_index, SoundMode,
@@ -76,6 +76,7 @@ pub enum FieldKey {
     // Tmux
     StatusBar,
     Mouse,
+    Clipboard,
     // Session
     DefaultTool,
     StrictHotkeys,
@@ -840,6 +841,9 @@ fn build_tmux_fields(
     let (mouse, mouse_override) =
         resolve_value(scope, global.tmux.mouse, tmux.and_then(|t| t.mouse));
 
+    let (clipboard, clipboard_override) =
+        resolve_value(scope, global.tmux.clipboard, tmux.and_then(|t| t.clipboard));
+
     let status_bar_selected = match status_bar {
         TmuxStatusBarMode::Auto => 0,
         TmuxStatusBarMode::Enabled => 1,
@@ -852,6 +856,12 @@ fn build_tmux_fields(
         TmuxMouseMode::Disabled => 2,
     };
 
+    let clipboard_selected = match clipboard {
+        TmuxClipboardMode::Auto => 0,
+        TmuxClipboardMode::Enabled => 1,
+        TmuxClipboardMode::Disabled => 2,
+    };
+
     let global_status_bar_selected = match global.tmux.status_bar {
         TmuxStatusBarMode::Auto => 0,
         TmuxStatusBarMode::Enabled => 1,
@@ -861,6 +871,11 @@ fn build_tmux_fields(
         TmuxMouseMode::Auto => 0,
         TmuxMouseMode::Enabled => 1,
         TmuxMouseMode::Disabled => 2,
+    };
+    let global_clipboard_selected = match global.tmux.clipboard {
+        TmuxClipboardMode::Auto => 0,
+        TmuxClipboardMode::Enabled => 1,
+        TmuxClipboardMode::Disabled => 2,
     };
     let tmux_options = vec!["Auto".into(), "Enabled".into(), "Disabled".into()];
 
@@ -897,6 +912,24 @@ fn build_tmux_fields(
                 mouse_override,
                 FieldValue::Select {
                     selected: global_mouse_selected,
+                    options: tmux_options.clone(),
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::Clipboard,
+            label: "Clipboard Pass-through",
+            description: "Forward OSC 52 clipboard from agents to your terminal (Auto respects your tmux config)",
+            value: FieldValue::Select {
+                selected: clipboard_selected,
+                options: tmux_options.clone(),
+            },
+            category: SettingsCategory::Tmux,
+            has_override: clipboard_override,
+            inherited_display: inherited_if(
+                clipboard_override,
+                FieldValue::Select {
+                    selected: global_clipboard_selected,
                     options: tmux_options,
                 },
             ),
@@ -1488,6 +1521,13 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => TmuxMouseMode::Disabled,
             };
         }
+        (FieldKey::Clipboard, FieldValue::Select { selected, .. }) => {
+            config.tmux.clipboard = match selected {
+                0 => TmuxClipboardMode::Auto,
+                1 => TmuxClipboardMode::Enabled,
+                _ => TmuxClipboardMode::Disabled,
+            };
+        }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool =
@@ -1708,6 +1748,14 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 _ => TmuxMouseMode::Disabled,
             };
             set_profile_override(mode, &mut config.tmux, |s, val| s.mouse = val);
+        }
+        (FieldKey::Clipboard, FieldValue::Select { selected, .. }) => {
+            let mode = match selected {
+                0 => TmuxClipboardMode::Auto,
+                1 => TmuxClipboardMode::Enabled,
+                _ => TmuxClipboardMode::Disabled,
+            };
+            set_profile_override(mode, &mut config.tmux, |s, val| s.clipboard = val);
         }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {

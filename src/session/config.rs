@@ -587,6 +587,22 @@ pub enum TmuxMouseMode {
     Disabled,
 }
 
+/// Controls whether aoe configures tmux to forward OSC 52 clipboard escape
+/// sequences from inner TUIs (Claude Code, OpenCode, Codex, etc.) to the
+/// outer terminal. Without this, "select to copy" inside the wrapped agent
+/// silently fails because tmux swallows the escape sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TmuxClipboardMode {
+    /// Apply clipboard pass-through only if the user has no tmux config
+    #[default]
+    Auto,
+    /// Always apply clipboard pass-through to aoe sessions
+    Enabled,
+    /// Never apply clipboard pass-through (use plain tmux defaults)
+    Disabled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TmuxConfig {
     #[serde(default)]
@@ -595,6 +611,12 @@ pub struct TmuxConfig {
     /// Mouse support mode (auto, enabled, disabled)
     #[serde(default)]
     pub mouse: TmuxMouseMode,
+
+    /// Clipboard pass-through mode (auto, enabled, disabled). Controls
+    /// `set-clipboard on` and `allow-passthrough on` so OSC 52 from the
+    /// wrapped agent reaches the terminal.
+    #[serde(default)]
+    pub clipboard: TmuxClipboardMode,
 }
 
 impl Default for TmuxConfig {
@@ -602,6 +624,7 @@ impl Default for TmuxConfig {
         Self {
             status_bar: TmuxStatusBarMode::Auto,
             mouse: TmuxMouseMode::Auto,
+            clipboard: TmuxClipboardMode::Auto,
         }
     }
 }
@@ -642,6 +665,19 @@ pub fn should_apply_tmux_mouse() -> Option<bool> {
                 Some(true) // Enable mouse for users without custom config
             }
         }
+    }
+}
+
+/// Determine if clipboard pass-through (`set-clipboard on` +
+/// `allow-passthrough on`) should be applied. Auto enables it when the user
+/// has no tmux config of their own; users with custom tmux configs are
+/// expected to manage these options themselves.
+pub fn should_apply_tmux_clipboard() -> bool {
+    let config = Config::load_or_warn();
+    match config.tmux.clipboard {
+        TmuxClipboardMode::Enabled => true,
+        TmuxClipboardMode::Disabled => false,
+        TmuxClipboardMode::Auto => !user_has_tmux_config(),
     }
 }
 
@@ -1146,6 +1182,7 @@ mod tests {
         let tmux = TmuxConfig::default();
         assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
         assert_eq!(tmux.mouse, TmuxMouseMode::Auto);
+        assert_eq!(tmux.clipboard, TmuxClipboardMode::Auto);
     }
 
     #[test]
@@ -1209,6 +1246,28 @@ mod tests {
         let toml = r#""#;
         let tmux: TmuxConfig = toml::from_str(toml).unwrap();
         assert_eq!(tmux.mouse, TmuxMouseMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_clipboard_deserialize() {
+        let toml = r#"clipboard = "enabled""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.clipboard, TmuxClipboardMode::Enabled);
+        assert_eq!(tmux.mouse, TmuxMouseMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_clipboard_default_auto() {
+        let toml = r#""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.clipboard, TmuxClipboardMode::Auto);
+    }
+
+    #[test]
+    fn test_tmux_config_clipboard_disabled() {
+        let toml = r#"clipboard = "disabled""#;
+        let tmux: TmuxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(tmux.clipboard, TmuxClipboardMode::Disabled);
     }
 
     #[test]

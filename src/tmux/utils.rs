@@ -108,6 +108,28 @@ pub fn append_window_size_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
+/// Append `; set-option -t <target> set-clipboard on ; set-option -t <target>
+/// allow-passthrough on` so OSC 52 clipboard escape sequences emitted by the
+/// wrapped agent (Claude Code, OpenCode, Codex, etc.) survive tmux and reach
+/// the outer terminal emulator. Without this, "select to copy" inside the
+/// agent silently fails because tmux swallows the sequence (see #897).
+pub fn append_clipboard_passthrough_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "set-clipboard".to_string(),
+        "on".to_string(),
+        ";".to_string(),
+        "set-option".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "allow-passthrough".to_string(),
+        "on".to_string(),
+    ]);
+}
+
 pub fn is_pane_dead(session_name: &str) -> bool {
     // Use `^.0` to target the first window's first pane regardless of
     // base-index or which pane is active, so the check always hits the
@@ -329,5 +351,29 @@ mod tests {
     #[test]
     fn test_format_tmux_prefix_empty_falls_back() {
         assert_eq!(format_tmux_prefix(""), "Ctrl+b");
+    }
+
+    #[test]
+    fn test_append_clipboard_passthrough_args() {
+        let mut args: Vec<String> = vec!["new-session".into()];
+        append_clipboard_passthrough_args(&mut args, "aoe_test");
+        assert_eq!(
+            args,
+            vec![
+                "new-session",
+                ";",
+                "set-option",
+                "-t",
+                "aoe_test",
+                "set-clipboard",
+                "on",
+                ";",
+                "set-option",
+                "-t",
+                "aoe_test",
+                "allow-passthrough",
+                "on",
+            ]
+        );
     }
 }
