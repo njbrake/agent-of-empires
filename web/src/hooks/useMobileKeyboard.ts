@@ -1,10 +1,46 @@
 import { useEffect, useRef, useState } from "react";
 
+const RESERVATION_STORAGE_KEY = "aoe-mobile-keyboard-reservation";
+
+// Initial value for reservedKeyboardHeight on mobile. Returning visitors
+// see exactly the size they latched last time (no first-open resize); new
+// visitors get a sensible default (~40% of innerHeight, clamped to 200) so
+// the layout still starts at a keyboard-reserved size and the first real
+// measurement either matches or causes one small adjustment.
+function readReservationSeed(): number {
+  if (typeof window === "undefined") return 0;
+  if (!window.matchMedia?.("(pointer: coarse)").matches) return 0;
+  try {
+    const saved = localStorage.getItem(RESERVATION_STORAGE_KEY);
+    if (saved) {
+      const n = parseInt(saved, 10);
+      if (Number.isFinite(n) && n > 0 && n < window.innerHeight) return n;
+    }
+  } catch {
+    // ignore
+  }
+  return Math.max(200, Math.floor(window.innerHeight * 0.4));
+}
+
 // Detects touch-primary devices and tracks soft-keyboard state via visualViewport.
 // isMobile is used to decide whether the mobile toolbar renders at all.
-// keyboardHeight is the extra padding needed to keep content above the keyboard;
-// it accounts for what the layout viewport already handled and subtracts the
-// bottom safe-area inset (the App root pads for it).
+// keyboardHeight is the extra padding needed to keep content above the keyboard
+// for iOS regular Safari (where the layout viewport doesn't shrink); it stays
+// 0 on iOS PWA and iOS 26 Safari, where innerHeight shrinks with the keyboard
+// and the flex layout would already account for it (if we let it).
+//
+// reservedKeyboardHeight latches the largest visualViewport occlusion seen
+// since the last orientation change. It's positive on every platform that has
+// a soft keyboard (regular Safari, PWA, Android Chrome), and is the value
+// consumers should use to size the layout. Once a keyboard has opened once,
+// the reservation persists when it dismisses, so the layout stays "keyboard
+// reserved" and we stop SIGWINCH-ing claude on every show/hide.
+//
+// stableViewportHeight is the largest window.innerHeight seen since the last
+// orientation change. On iOS PWA / iOS 26 Safari / Android Chrome, innerHeight
+// shrinks when the keyboard opens and the App root's `100dvh` would shrink
+// with it; the App root applies this as an explicit pixel height instead so
+// the layout stays at the no-keyboard size. Reset on orientation change.
 export function useMobileKeyboard() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" &&
@@ -12,6 +48,9 @@ export function useMobileKeyboard() {
   );
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [reservedKeyboardHeight, setReservedKeyboardHeight] =
+    useState(readReservationSeed);
+  const [stableViewportHeight, setStableViewportHeight] = useState(0);
   const rafRef = useRef(0);
   const stableCountRef = useRef(0);
   const lastOcclusionRef = useRef(0);
@@ -26,6 +65,20 @@ export function useMobileKeyboard() {
     mql.addEventListener?.("change", onChange);
     return () => mql.removeEventListener?.("change", onChange);
   }, []);
+
+  // Persist the latched reservation so the next page load lands on the
+  // same value without any first-open resize.
+  useEffect(() => {
+    if (!isMobile || reservedKeyboardHeight <= 0) return;
+    try {
+      localStorage.setItem(
+        RESERVATION_STORAGE_KEY,
+        String(reservedKeyboardHeight),
+      );
+    } catch {
+      // ignore (private mode, storage quota, etc.)
+    }
+  }, [isMobile, reservedKeyboardHeight]);
 
   useEffect(() => {
     if (!isMobile) return;
@@ -73,6 +126,28 @@ export function useMobileKeyboard() {
         setKeyboardOpen(open);
         setKeyboardHeight(padding);
       }
+      // Latch reservation upward based on totalOcclusion (not padding):
+      // padding stays 0 on iOS PWA and iOS 26 Safari because innerHeight
+      // shrinks with the keyboard, so latching off padding there leaves
+      // reservedKeyboardHeight at 0 and the fix becomes a no-op.
+      // totalOcclusion is the true keyboard size on every platform.
+      if (open && totalOcclusion > 0) {
+        setReservedKeyboardHeight((prev) =>
+          totalOcclusion > prev ? totalOcclusion : prev,
+        );
+      }
+      // Latch the max layout-viewport height. On iOS PWA the keyboard
+      // shrinks innerHeight, so without this 100dvh would also shrink and
+      // resize the terminal container. App.tsx pins the root to this value.
+      // Take the larger of innerHeight and vv.height so a mount that
+      // happens to find the keyboard already open (innerHeight reduced)
+      // can still latch to vv.height if that's somehow larger; in
+      // practice both match in the no-keyboard state and that's what we
+      // capture on first measure.
+      const heightCandidate = Math.max(window.innerHeight, currentVvH);
+      setStableViewportHeight((prev) =>
+        heightCandidate > prev ? heightCandidate : prev,
+      );
       return totalOcclusion;
     };
 
@@ -116,10 +191,15 @@ export function useMobileKeyboard() {
       }
     };
 
-    // Orientation changes reset the full height baseline.
+    // Orientation changes reset the full height baseline AND the
+    // reservation: the keyboard physically swaps shape between portrait
+    // and landscape, so a stale reservation would either crowd the
+    // terminal or leave dead space below it.
     let orientTimer: ReturnType<typeof setTimeout> | null = null;
     const handleOrientationChange = () => {
       fullHeightRef.current = 0;
+      setReservedKeyboardHeight(0);
+      setStableViewportHeight(0);
       if (orientTimer) clearTimeout(orientTimer);
       orientTimer = setTimeout(() => {
         fullHeightRef.current = Math.max(window.innerHeight, vv.height);
@@ -142,5 +222,11 @@ export function useMobileKeyboard() {
     };
   }, [isMobile]);
 
-  return { isMobile, keyboardOpen, keyboardHeight };
+  return {
+    isMobile,
+    keyboardOpen,
+    keyboardHeight,
+    reservedKeyboardHeight,
+    stableViewportHeight,
+  };
 }

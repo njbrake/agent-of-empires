@@ -11,6 +11,7 @@ pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
 pub use status_detection::detect_status_from_content;
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
+pub use utils::tmux_prefix_display;
 
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

@@ -139,6 +139,13 @@ const PAGES = [
     description:
       "Mobile-first native rendering of AI agent state via the Agent Client Protocol (ACP). Plan panels, tool-call cards, swipe-to-approve, multi-provider support.",
   },
+  {
+    source: "docs/api.md",
+    dest: "docs/api.md",
+    title: "HTTP API Reference",
+    description:
+      "REST endpoints for driving Agent of Empires sessions from external orchestrators.",
+  },
 ];
 
 // Every known docs path → website URL, used for link rewriting.
@@ -152,6 +159,7 @@ const URL_MAP = {
   "docs/guides/configuration.md": "/docs/guides/configuration/",
   "docs/cli/reference.md": "/docs/cli/reference/",
   "docs/cockpit.md": "/docs/cockpit/",
+  "docs/api.md": "/docs/api/",
   // Guides
   "docs/guides/diff-view.md": "/guides/diff-view/",
   "docs/guides/repo-config.md": "/guides/repo-config/",

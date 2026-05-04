@@ -37,6 +37,7 @@ export const docsNav: NavSection[] = [
     title: "Reference",
     items: [
       { title: "CLI Reference", href: "/docs/cli/reference/" },
+      { title: "HTTP API Reference", href: "/docs/api/" },
       { title: "Configuration", href: "/docs/guides/configuration/" },
     ],
   },

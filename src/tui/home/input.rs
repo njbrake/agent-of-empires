@@ -12,8 +12,9 @@ use crate::tui::app::Action;
 #[cfg(feature = "serve")]
 use crate::tui::dialogs::ServeAction;
 use crate::tui::dialogs::{
-    ConfirmDialog, DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
-    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, NoAgentsAction,
+    builtin_commands, CommandPaletteDialog, ConfirmDialog, DeleteDialogConfig, DialogResult,
+    GroupDeleteOptionsDialog, HookTrustAction, HooksInstallDialog, InfoDialog, NewSessionData,
+    NewSessionDialog, NoAgentsAction, PaletteAction, PaletteCommand, PaletteGroup,
     ProfilePickerAction, RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
@@ -188,6 +189,22 @@ impl HomeView {
                 }
             }
             return None;
+        }
+
+        // Command palette captures input ahead of the help overlay so its own
+        // Esc/Enter/text keys reach it without going through the action match.
+        if let Some(palette) = &mut self.command_palette {
+            match palette.handle_key(key) {
+                DialogResult::Continue => return None,
+                DialogResult::Cancel => {
+                    self.command_palette = None;
+                    return None;
+                }
+                DialogResult::Submit(action) => {
+                    self.command_palette = None;
+                    return self.dispatch_palette_action(action, update_info);
+                }
+            }
         }
 
         // Handle other dialog input
@@ -530,7 +547,11 @@ impl HomeView {
             return None;
         }
 
-        // Search mode
+        // Search mode. Intentionally takes priority over the Ctrl+K palette
+        // binding below: while the search input is focused, every key (including
+        // Ctrl+K) feeds the search box. Users can press Esc to exit search and
+        // then open the palette. Don't move this block past the Ctrl+K check
+        // unless you want palette activation to clobber search input.
         if self.search_active {
             match key.code {
                 KeyCode::Esc => {
@@ -554,6 +575,16 @@ impl HomeView {
             return None;
         }
 
+        // Ctrl+K opens the command palette regardless of strict-hotkey mode.
+        // Activated here (before strict normalization) so the binding stays
+        // discoverable on every keymap.
+        if matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.open_command_palette();
+            return None;
+        }
+
         // In strict_hotkeys mode, normalize shifted/ctrl keys to their standard
         // equivalents so the match block below doesn't need duplication.
         //
@@ -569,6 +600,18 @@ impl HomeView {
         };
         let key = key?;
 
+        self.dispatch_action_key(key, update_info)
+    }
+
+    /// Run the main action dispatch (the giant match block) on a key.
+    /// Extracted from `handle_key` so the command palette can synthesize
+    /// keys and run them through the same code path without re-entering
+    /// dialog routing or strict-mode normalization.
+    fn dispatch_action_key(
+        &mut self,
+        key: KeyEvent,
+        update_info: Option<&crate::update::UpdateInfo>,
+    ) -> Option<Action> {
         // Normal mode keybindings
         match key.code {
             KeyCode::Esc if !self.search_matches.is_empty() => {
@@ -1014,6 +1057,25 @@ impl HomeView {
             KeyCode::Char('o') => {
                 self.apply_sort_order(self.sort_order.cycle());
             }
+            // iPad-friendly ±10 aliases for PageUp/PageDown. iPads have no
+            // PageUp/PageDown keys, and Cmd combos are typically stripped by
+            // SSH/Mosh before reaching the TTY. Shift+Up/Down arrives intact
+            // on every terminal we test, and `{` / `}` (Shift+`[` / Shift+`]`)
+            // pass through as plain chars so Cmd+Shift+`[` / `]` works whether
+            // or not the terminal forwards Cmd. Both bind to the same step
+            // size as PageUp/PageDown to keep the mental model simple.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_cursor(-10);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_cursor(10);
+            }
+            KeyCode::Char('{') => {
+                self.move_cursor(-10);
+            }
+            KeyCode::Char('}') => {
+                self.move_cursor(10);
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_cursor(-1);
             }
@@ -1101,13 +1163,124 @@ impl HomeView {
         None
     }
 
+    /// Build and show the command palette. Combines the static `builtin_commands`
+    /// with dynamic jump-to-session and jump-to-group entries built from the
+    /// current `flat_items`.
+    fn open_command_palette(&mut self) {
+        let serve_enabled = cfg!(feature = "serve");
+        let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled, self.strict_hotkeys);
+
+        // Quit command (separate so the lifetime mapping is clear and we
+        // can keep it out of `builtin_commands` to avoid pulling KeyCode
+        // imports into the palette module).
+        let quit_hotkey = if self.strict_hotkeys { "Q" } else { "q" };
+        entries.push(PaletteCommand {
+            id: "quit",
+            title: "Quit Agent of Empires".to_string(),
+            group: PaletteGroup::Settings,
+            keywords: vec!["exit", "close"],
+            hotkey: quit_hotkey,
+            payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+        });
+
+        // Dynamic session/group entries: one per flat_items row, so the user
+        // can fuzzy-search and jump straight to it. We tag in-flight sessions
+        // (Creating / Deleting) in the title so the user knows that picking
+        // Stop/Delete from the palette will be a no-op for those rows.
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            match item {
+                Item::Session { id, .. } => {
+                    let Some(inst) = self.get_instance(id) else {
+                        continue;
+                    };
+                    let status_tag = match inst.status {
+                        Status::Creating => " [creating]",
+                        Status::Deleting => " [deleting]",
+                        Status::Stopped => " [stopped]",
+                        _ => "",
+                    };
+                    let title = if inst.group_path.is_empty() {
+                        format!("Jump to session: {}{}", inst.title, status_tag)
+                    } else {
+                        format!(
+                            "Jump to session: {} ({}){}",
+                            inst.title, inst.group_path, status_tag
+                        )
+                    };
+                    entries.push(PaletteCommand {
+                        id: "jump-session",
+                        title,
+                        group: PaletteGroup::Sessions,
+                        keywords: vec!["session", "jump", "select"],
+                        hotkey: "",
+                        payload: PaletteAction::JumpToCursor(idx),
+                    });
+                }
+                Item::Group { name, path, .. } => {
+                    let label = if name == path {
+                        format!("Jump to group: {}", name)
+                    } else {
+                        format!("Jump to group: {} ({})", name, path)
+                    };
+                    entries.push(PaletteCommand {
+                        id: "jump-group",
+                        title: label,
+                        group: PaletteGroup::Groups,
+                        keywords: vec!["group", "jump"],
+                        hotkey: "",
+                        payload: PaletteAction::JumpToCursor(idx),
+                    });
+                }
+            }
+        }
+
+        self.command_palette = Some(CommandPaletteDialog::new(entries));
+    }
+
+    /// Apply a palette pick. `Key` re-enters the action dispatch with the
+    /// synthesized event (bypassing strict normalization, which the palette
+    /// already accounts for); `JumpToCursor` moves the selection.
+    fn dispatch_palette_action(
+        &mut self,
+        action: PaletteAction,
+        update_info: Option<&crate::update::UpdateInfo>,
+    ) -> Option<Action> {
+        match action {
+            PaletteAction::Key(synth) => {
+                // Clear leftover search-cycle state before dispatching. Some
+                // action keys (`n`, `N`) are dual-purpose: they cycle search
+                // matches when matches are active, otherwise open new-session
+                // dialogs. The palette's mental model is "run the named
+                // action," so we drop search state here to make sure a pick
+                // of "New session" never silently turns into a search-cycle.
+                if !self.search_matches.is_empty() {
+                    self.search_matches.clear();
+                    self.search_match_index = 0;
+                }
+                self.dispatch_action_key(synth, update_info)
+            }
+            PaletteAction::JumpToCursor(idx) => {
+                if !self.flat_items.is_empty() {
+                    self.cursor = idx.min(self.flat_items.len() - 1);
+                    self.update_selected();
+                }
+                None
+            }
+        }
+    }
+
     fn jump_to_next_waiting(&mut self) {
         let len = self.flat_items.len();
         if len == 0 {
             return;
         }
 
-        // Pass 1: forward-walk from cursor+1, wrapping, for the next Waiting session.
+        // Pass 1: forward-walk from cursor+1, wrapping, for the next Waiting
+        // session OR a freshly-stopped Idle session (within
+        // `idle_decay_window`). Both states are "needs your attention" and
+        // cycle together so repeated `w` taps move through the actionable
+        // backlog regardless of which hook fired.
+        let window = self.idle_decay_window;
         let start = (self.cursor + 1) % len;
         for i in 0..len - 1 {
             let idx = (start + i) % len;
@@ -1116,7 +1289,9 @@ impl HomeView {
                 _ => continue,
             };
             if let Some(inst) = self.get_instance(&id) {
-                if inst.status == Status::Waiting {
+                let is_actionable = inst.status == Status::Waiting
+                    || matches!(inst.idle_age(), Some(age) if age < window);
+                if is_actionable {
                     self.cursor = idx;
                     self.update_selected();
                     return;

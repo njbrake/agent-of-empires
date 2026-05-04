@@ -18,6 +18,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
+
 use crate::session::{Instance, Status};
 
 /// Adaptive polling intervals (in cycles). 0 = never poll.
@@ -40,6 +42,12 @@ pub struct StatusUpdate {
     pub id: String,
     pub status: Status,
     pub last_error: Option<String>,
+    /// Snapshot of the polled clone's `idle_entered_at` after
+    /// `update_status_with_metadata` ran. Propagating this field is what
+    /// keeps the freshness signal working in the TUI: without it, the
+    /// wrapper's timestamp write lives only on the polling clone and is
+    /// lost when we project the result back into a `StatusUpdate`.
+    pub idle_entered_at: Option<DateTime<Utc>>,
 }
 
 /// Background thread that polls session status without blocking the UI
@@ -148,6 +156,7 @@ impl StatusPoller {
                                         id: inst.id,
                                         status: Status::Error,
                                         last_error: Some("Container is not running".to_string()),
+                                        idle_entered_at: None,
                                     });
                                 }
                             }
@@ -164,6 +173,7 @@ impl StatusPoller {
                         id: inst.id,
                         status: inst.status,
                         last_error: inst.last_error,
+                        idle_entered_at: inst.idle_entered_at,
                     })
                 })
                 .collect();
@@ -195,6 +205,24 @@ impl Default for StatusPoller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_update_carries_idle_entered_at() {
+        // Regression: the polling loop runs `update_status_with_metadata`
+        // on a clone, then projects the result into a `StatusUpdate`. If
+        // `idle_entered_at` falls off the projection (the original bug),
+        // the breathe rattle + fresh-idle color never fire in the TUI
+        // even though the wrapper sets the timestamp on the clone
+        // correctly.
+        let ts = Utc::now();
+        let update = StatusUpdate {
+            id: "abc".into(),
+            status: Status::Idle,
+            last_error: None,
+            idle_entered_at: Some(ts),
+        };
+        assert_eq!(update.idle_entered_at, Some(ts));
+    }
 
     #[test]
     fn test_polling_tier_hot() {

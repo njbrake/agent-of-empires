@@ -1,6 +1,7 @@
 //! tmux utility functions
 
 use std::process::Command;
+use std::sync::OnceLock;
 
 pub fn strip_ansi(content: &str) -> String {
     let mut result = content.to_string();
@@ -107,6 +108,45 @@ pub fn append_window_size_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
+/// Append the two tmux options required for OSC 52 clipboard escapes from
+/// the wrapped agent (Claude Code, OpenCode, Codex, etc.) to reach the outer
+/// terminal. Without these, "select to copy" inside the agent silently fails
+/// because tmux drops the sequence (see #897).
+///
+/// Two distinct mechanisms are covered:
+///   * `set-clipboard on` (server option): captures and forwards raw OSC 52
+///     sequences to attached terminal clients.
+///   * `allow-passthrough on` (window option, added in tmux 3.3): allows
+///     `\ePtmux;...\e\\`-wrapped escapes (the form OpenCode uses) to be
+///     unwrapped and forwarded.
+///
+/// Programs vary in which form they emit, so both are set defensively. Scope
+/// flags are explicit (`-s`, `-w`) so the call site is unambiguous and
+/// resilient to future tmux scope-inference changes; matches the convention
+/// used by `append_remain_on_exit_args` for `remain-on-exit`.
+///
+/// `-q` (silently ignore errors) keeps aoe compatible with tmux < 3.3, where
+/// `allow-passthrough` does not exist. On those versions the set-option call
+/// quietly no-ops instead of failing the whole `new-session` invocation.
+pub fn append_clipboard_passthrough_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-q".to_string(),
+        "-s".to_string(),
+        "set-clipboard".to_string(),
+        "on".to_string(),
+        ";".to_string(),
+        "set-option".to_string(),
+        "-q".to_string(),
+        "-w".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "allow-passthrough".to_string(),
+        "on".to_string(),
+    ]);
+}
+
 pub fn is_pane_dead(session_name: &str) -> bool {
     // Use `^.0` to target the first window's first pane regardless of
     // base-index or which pane is active, so the check always hits the
@@ -156,6 +196,40 @@ pub fn is_pane_running_shell(session_name: &str) -> bool {
     pane_current_command(session_name)
         .map(|cmd| is_shell_command(&cmd))
         .unwrap_or(false)
+}
+
+/// Returns the tmux prefix key formatted for display (e.g. "Ctrl+a", "Ctrl+b").
+/// Reads `tmux show-option -gv prefix` once on first call and caches the
+/// result; falls back to "Ctrl+b" if tmux is unavailable or the option can't
+/// be parsed. The prefix can't change while AOE is running, so caching avoids
+/// per-render-frame subprocess calls from the welcome dialog.
+pub fn tmux_prefix_display() -> &'static str {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let raw = Command::new("tmux")
+            .args(["show-option", "-gv", "prefix"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        format_tmux_prefix(&raw)
+    })
+}
+
+/// Convert tmux's raw prefix notation (e.g. "C-a", "M-b", "F12") to the
+/// display form shown in UI hints. Preserves case from tmux so users see the
+/// same letter they typed in `~/.tmux.conf`.
+fn format_tmux_prefix(raw: &str) -> String {
+    if let Some(key) = raw.strip_prefix("C-") {
+        format!("Ctrl+{key}")
+    } else if let Some(key) = raw.strip_prefix("M-") {
+        format!("Alt+{key}")
+    } else if !raw.is_empty() {
+        raw.to_string()
+    } else {
+        "Ctrl+b".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -263,5 +337,62 @@ mod tests {
                 "{cmd} should not be recognized as a shell"
             );
         }
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_ctrl() {
+        assert_eq!(format_tmux_prefix("C-a"), "Ctrl+a");
+        assert_eq!(format_tmux_prefix("C-b"), "Ctrl+b");
+        assert_eq!(format_tmux_prefix("C-Space"), "Ctrl+Space");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_alt() {
+        assert_eq!(format_tmux_prefix("M-x"), "Alt+x");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_preserves_case() {
+        // tmux returns the prefix in whatever case the user wrote it; preserve
+        // it so the displayed hint matches their muscle memory.
+        assert_eq!(format_tmux_prefix("C-A"), "Ctrl+A");
+        assert_eq!(format_tmux_prefix("C-b"), "Ctrl+b");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_special_keys() {
+        assert_eq!(format_tmux_prefix("F12"), "F12");
+        assert_eq!(format_tmux_prefix("Space"), "Space");
+    }
+
+    #[test]
+    fn test_format_tmux_prefix_empty_falls_back() {
+        assert_eq!(format_tmux_prefix(""), "Ctrl+b");
+    }
+
+    #[test]
+    fn test_append_clipboard_passthrough_args() {
+        let mut args: Vec<String> = vec!["new-session".into()];
+        append_clipboard_passthrough_args(&mut args, "aoe_test");
+        assert_eq!(
+            args,
+            vec![
+                "new-session",
+                ";",
+                "set-option",
+                "-q",
+                "-s",
+                "set-clipboard",
+                "on",
+                ";",
+                "set-option",
+                "-q",
+                "-w",
+                "-t",
+                "aoe_test",
+                "allow-passthrough",
+                "on",
+            ]
+        );
     }
 }

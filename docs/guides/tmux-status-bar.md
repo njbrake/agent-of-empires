@@ -36,7 +36,8 @@ Configure the status bar behavior in `~/.agent-of-empires/config.toml`:
 # "enabled"        - Always apply aoe status bar styling
 # "disabled"       - Never apply, use your own tmux config
 status_bar = "auto"
-mouse = "auto"    # Same modes: auto, enabled, disabled
+mouse = "auto"     # Same modes: auto, enabled, disabled
+clipboard = "auto" # Same modes: auto, enabled, disabled
 ```
 
 ### Values
@@ -46,6 +47,32 @@ mouse = "auto"    # Same modes: auto, enabled, disabled
 | `auto` | Apply status bar if user has no tmux config (default) |
 | `enabled` | Always apply aoe status bar to aoe sessions |
 | `disabled` | Never modify tmux status bar |
+
+## Clipboard Pass-through
+
+Modern TUI agents (Claude Code, OpenCode, Codex, Gemini CLI, etc.) write to the system clipboard by emitting OSC 52 escape sequences. tmux intercepts those by default, so "select to copy" inside the wrapped agent silently fails: the notification appears, but nothing reaches your terminal's clipboard.
+
+When clipboard pass-through is enabled (the default in `auto` mode if you have no `~/.tmux.conf`), aoe sets two options on every aoe-managed tmux session:
+
+```tmux
+set-option -t <session> set-clipboard on
+set-option -t <session> allow-passthrough on
+```
+
+These let the agent's OSC 52 sequence reach your terminal emulator (Windows Terminal, iTerm2, Ghostty, etc.) instead of being swallowed by tmux.
+
+### When to disable
+
+If you're running aoe in an environment where you don't trust the wrapped agent's terminal output, set `clipboard = "disabled"`. `allow-passthrough on` lets the inner program write arbitrary escape sequences to your outer terminal; for most aoe users this is fine (you're already letting the agent run code), but it's worth knowing.
+
+If you have your own `~/.tmux.conf` and want to manage these options yourself, you'll need:
+
+```tmux
+set -g set-clipboard on
+set -g allow-passthrough on
+```
+
+Some terminal emulators also need clipboard write permission enabled on their side (Ghostty's `clipboard-write = allow`, etc.).
 
 ## Custom Integration
 

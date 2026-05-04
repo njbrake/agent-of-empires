@@ -110,7 +110,7 @@ Inverted surfaces (#f8fafc to #ffffff), dark text (#0f172a to #334155), brand sh
 - **Full mark:** Two stacked terminal windows (back window darker, front window in brand amber with title bar dots and `$` prompt + cursor). Used for all contexts.
 - **Circular mark:** Same stacked windows centered on a surface-900 (#0f172a) circle. Used for YouTube, social avatars.
 - **Colors:** Front window uses brand amber gradient (#fbbf24 to #d97706). Back window uses brand-700/800 (#92400e to #78350f). Title bar dots use brand-700 (#b45309). Prompt and cursor use brand-50 (#fef3c7).
-- **Social preview:** Dark navy gradient background with subtle grid, icon + "aoe" text + "AGENT OF EMPIRES" subtitle, tagline "Command your agents. Conquer your codebase.", decorative scattered terminal shapes in corners.
+- **Social preview:** Dark navy gradient background with subtle grid, icon + "aoe" text + "AGENT OF EMPIRES" subtitle, tagline "Conquer your codebase.", decorative scattered terminal shapes in corners.
 
 ## TUI (ratatui)
 

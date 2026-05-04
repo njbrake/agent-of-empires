@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use super::config::{
-    ColorMode, Config, ContainerRuntimeName, DefaultTerminalMode, TmuxMouseMode, TmuxStatusBarMode,
+    ColorMode, Config, ContainerRuntimeName, DefaultTerminalMode, TmuxClipboardMode, TmuxMouseMode,
+    TmuxStatusBarMode,
 };
 use super::get_profile_dir;
 
@@ -78,6 +79,8 @@ pub struct ThemeConfigOverride {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_mode: Option<ColorMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_decay_minutes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -187,6 +190,9 @@ pub struct TmuxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mouse: Option<TmuxMouseMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<TmuxClipboardMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -431,6 +437,9 @@ pub fn apply_tmux_overrides(target: &mut super::config::TmuxConfig, source: &Tmu
     if let Some(mouse) = source.mouse {
         target.mouse = mouse;
     }
+    if let Some(clipboard) = source.clipboard {
+        target.clipboard = clipboard;
+    }
 }
 
 /// Merge profile overrides into global config
@@ -441,6 +450,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(ref color_mode) = theme_override.color_mode {
             global.theme.color_mode = color_mode.clone();
+        }
+        if let Some(idle_decay_minutes) = theme_override.idle_decay_minutes {
+            global.theme.idle_decay_minutes = idle_decay_minutes;
         }
     }
 
@@ -746,6 +758,7 @@ mod tests {
             tmux: Some(TmuxConfigOverride {
                 status_bar: Some(TmuxStatusBarMode::Enabled),
                 mouse: None,
+                clipboard: None,
             }),
             ..Default::default()
         };
@@ -770,6 +783,40 @@ mod tests {
 
         let merged = merge_configs(global, &profile);
         assert_eq!(merged.tmux.mouse, TmuxMouseMode::Disabled);
+    }
+
+    #[test]
+    fn test_merge_configs_with_tmux_clipboard_override() {
+        let global = Config::default();
+        assert_eq!(global.tmux.clipboard, TmuxClipboardMode::Auto);
+
+        let profile = ProfileConfig {
+            tmux: Some(TmuxConfigOverride {
+                clipboard: Some(TmuxClipboardMode::Disabled),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(merged.tmux.clipboard, TmuxClipboardMode::Disabled);
+    }
+
+    #[test]
+    fn test_merge_configs_tmux_clipboard_inherits_when_not_overridden() {
+        let mut global = Config::default();
+        global.tmux.clipboard = TmuxClipboardMode::Enabled;
+
+        let profile = ProfileConfig {
+            tmux: Some(TmuxConfigOverride {
+                mouse: Some(TmuxMouseMode::Enabled),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(merged.tmux.clipboard, TmuxClipboardMode::Enabled);
     }
 
     #[test]
@@ -837,6 +884,7 @@ mod tests {
             tmux: Some(TmuxConfigOverride {
                 status_bar: Some(TmuxStatusBarMode::Enabled),
                 mouse: Some(TmuxMouseMode::Enabled),
+                clipboard: Some(TmuxClipboardMode::Enabled),
             }),
             ..Default::default()
         };

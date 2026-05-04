@@ -1,6 +1,7 @@
 //! TUI dialog components
 
 mod changelog;
+mod command_palette;
 mod confirm;
 mod custom_instruction;
 mod delete_options;
@@ -19,6 +20,9 @@ mod update_confirm;
 mod welcome;
 
 pub use changelog::ChangelogDialog;
+pub use command_palette::{
+    builtin_commands, CommandPaletteDialog, PaletteAction, PaletteCommand, PaletteGroup,
+};
 pub use confirm::ConfirmDialog;
 pub use custom_instruction::CustomInstructionDialog;
 pub use delete_options::{DeleteDialogConfig, DeleteOptions, UnifiedDeleteDialog};

@@ -19,7 +19,6 @@ For sandboxed (Docker) sessions, the poller runs the same scan inside the contai
 ## What's not covered (yet)
 
 - Other agents (OpenCode, Codex, Gemini, Vibe, Pi). They're tracked behind separate follow-up PRs; their sessions still launch fresh until then.
-- Web dashboard. The web "restart session" path doesn't yet apply resume flags; use the TUI for resume-aware restarts.
 
 ## Manual override
 

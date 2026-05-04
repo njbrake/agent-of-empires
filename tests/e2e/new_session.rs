@@ -11,7 +11,7 @@ fn test_new_session_dialog_opens() {
     let mut h = TuiTestHarness::new("new_dialog");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
     h.send_keys("n");
     h.wait_for("Title");
     h.assert_screen_contains("Path");
@@ -25,7 +25,7 @@ fn test_new_session_dialog_escape_cancels() {
     let mut h = TuiTestHarness::new("new_esc");
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
     h.send_keys("n");
     h.wait_for("Title");
 
@@ -82,7 +82,7 @@ fn test_creating_stub_appears_during_hook_execution() {
     let project = h.project_path();
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
 
     // Open new session dialog and fill in the path.
     h.send_keys("n");
@@ -108,7 +108,7 @@ fn test_creating_stub_cancelled_with_ctrl_c() {
     let project = h.project_path();
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
 
     // Create a session with a slow hook.
     h.send_keys("n");
@@ -137,7 +137,7 @@ fn test_creating_blocks_second_session_creation() {
     let project = h.project_path();
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
 
     // Start creating a session.
     h.send_keys("n");
@@ -171,7 +171,7 @@ fn test_quit_during_creation_shows_confirm() {
     let project = h.project_path();
     h.spawn_tui();
 
-    h.wait_for("Agent of Empires");
+    h.wait_for(" aoe [");
 
     // Start creating a session.
     h.send_keys("n");

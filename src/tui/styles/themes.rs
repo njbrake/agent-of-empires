@@ -1,9 +1,19 @@
 //! Built-in themes and the `Theme` palette struct.
 
+use std::time::Duration;
+
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
 use super::palette::color_to_palette;
+
+/// Convert the user-configured decay duration (minutes) into a `Duration`.
+/// `0` returns `Duration::ZERO`, which the freshness logic treats as
+/// "fully decayed immediately" — a documented opt-out: every Idle row
+/// renders with the static idle look the moment its Stop hook fires.
+pub fn idle_decay_window(minutes: u64) -> Duration {
+    Duration::from_secs(minutes.saturating_mul(60))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -35,6 +45,14 @@ pub struct Theme {
     pub running: Color,
     #[serde(with = "hex_color")]
     pub waiting: Color,
+    /// Color for a session within the idle decay window (just transitioned
+    /// to Idle, hasn't aged out yet). Held constant for the full window so
+    /// the breathe rattle's pulse stays visually consistent, then snaps to
+    /// `idle` once the window expires. Should sit between `waiting`
+    /// (brightest, "needs you NOW") and `idle` (dimmest, "no rush") on the
+    /// theme's perceived-attention scale.
+    #[serde(with = "hex_color")]
+    pub fresh_idle: Color,
     #[serde(with = "hex_color")]
     pub idle: Color,
     #[serde(with = "hex_color")]
@@ -75,6 +93,26 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Color for an Idle session, given the elapsed time since it
+    /// transitioned to Idle and the user-configured decay window.
+    ///
+    /// Two-state binary: `fresh_idle` while age is inside the window,
+    /// `idle` once past it (or when age/window aren't usable: `None` age,
+    /// zero window). The pulse phase deliberately holds a constant color
+    /// — a continuous lerp under the breathe rattle reads as noisy. If we
+    /// ever want a gradient back, add an interpolator and call it here.
+    pub fn idle_color_at_age(&self, age: Option<Duration>, window: Duration) -> Color {
+        let Some(age) = age else {
+            return self.idle;
+        };
+        if window.is_zero() || age >= window {
+            return self.idle;
+        }
+        self.fresh_idle
+    }
+}
+
+impl Theme {
     /// Convert every `Color::Rgb` field to the nearest xterm-256 palette index
     /// (`Color::Indexed`). In-place. Idempotent: already-Indexed / named /
     /// Reset colors are untouched. Use when the downstream transport mangles
@@ -91,6 +129,7 @@ impl Theme {
         self.hint = color_to_palette(self.hint);
         self.running = color_to_palette(self.running);
         self.waiting = color_to_palette(self.waiting);
+        self.fresh_idle = color_to_palette(self.fresh_idle);
         self.idle = color_to_palette(self.idle);
         self.error = color_to_palette(self.error);
         self.terminal_active = color_to_palette(self.terminal_active);
@@ -123,7 +162,14 @@ impl Theme {
             hint: Color::Rgb(148, 163, 184),
 
             running: Color::Rgb(34, 197, 94),
+            // Waiting sits at the brightest point in the brand ramp
+            // (amber-400) so it wins on luminance against the fresh-idle
+            // color. Saturation alone wasn't enough on dark backgrounds —
+            // the deeper copper read as dimmer, not more urgent.
+            // Fresh-idle drops one rung to amber-500 so the hierarchy is
+            // bright-amber > copper-amber > slate.
             waiting: Color::Rgb(251, 191, 36),
+            fresh_idle: Color::Rgb(245, 158, 11),
             idle: Color::Rgb(100, 116, 139),
             error: Color::Rgb(239, 68, 68),
             terminal_active: Color::Rgb(13, 148, 136),
@@ -159,6 +205,7 @@ impl Theme {
 
             running: Color::Rgb(0, 255, 180),
             waiting: Color::Rgb(255, 180, 60),
+            fresh_idle: Color::Rgb(255, 123, 28),
             idle: Color::Rgb(60, 100, 70),
             error: Color::Rgb(255, 100, 80),
             terminal_active: Color::Rgb(130, 170, 255),
@@ -194,6 +241,7 @@ impl Theme {
 
             running: Color::Rgb(158, 206, 106),
             waiting: Color::Rgb(224, 175, 104),
+            fresh_idle: Color::Rgb(255, 158, 100),
             idle: Color::Rgb(86, 95, 137),
             error: Color::Rgb(247, 118, 142),
             terminal_active: Color::Rgb(122, 162, 247),
@@ -228,7 +276,11 @@ impl Theme {
             hint: Color::Rgb(32, 159, 181),
 
             running: Color::Rgb(64, 160, 43),
-            waiting: Color::Rgb(223, 142, 29),
+            // Light theme: darker = more attention. Waiting takes the
+            // deepest peach, fresh_idle the mid amber, idle the lightest
+            // slate so the row visibly fades into the page over time.
+            waiting: Color::Rgb(254, 100, 11),
+            fresh_idle: Color::Rgb(223, 142, 29),
             idle: Color::Rgb(156, 160, 176),
             error: Color::Rgb(210, 15, 57),
             terminal_active: Color::Rgb(30, 102, 245),
@@ -266,6 +318,7 @@ impl Theme {
 
             running: Color::Rgb(80, 250, 123),
             waiting: Color::Rgb(255, 184, 108),
+            fresh_idle: Color::Rgb(255, 121, 80),
             idle: Color::Rgb(98, 114, 164),
             error: Color::Rgb(255, 85, 85),
             terminal_active: Color::Rgb(139, 233, 253),
@@ -357,6 +410,7 @@ mod tests {
             theme.hint,
             theme.running,
             theme.waiting,
+            theme.fresh_idle,
             theme.idle,
             theme.error,
             theme.terminal_active,
@@ -419,5 +473,101 @@ mod tests {
         // Multi-byte UTF-8 that happens to be 6 bytes must not panic
         assert!(hex_color::parse_hex_color("\u{00e9}\u{00e9}\u{00e9}").is_err());
         assert!(hex_color::parse_hex_color("#\u{00e9}\u{00e9}\u{00e9}").is_err());
+    }
+
+    #[test]
+    fn idle_color_at_age_boundaries() {
+        let theme = Theme::empire();
+        let window = idle_decay_window(20);
+        // No timestamp = decayed.
+        assert_eq!(theme.idle_color_at_age(None, window), theme.idle);
+        // Zero age = fresh.
+        assert_eq!(
+            theme.idle_color_at_age(Some(Duration::ZERO), window),
+            theme.fresh_idle
+        );
+        // Inside the window = fresh.
+        assert_eq!(
+            theme.idle_color_at_age(Some(window / 2), window),
+            theme.fresh_idle
+        );
+        // At the boundary clamps to decayed (age >= window).
+        assert_eq!(theme.idle_color_at_age(Some(window), window), theme.idle);
+        // Past the window = decayed.
+        assert_eq!(
+            theme.idle_color_at_age(Some(window + Duration::from_secs(60)), window),
+            theme.idle
+        );
+    }
+
+    #[test]
+    fn idle_color_at_age_zero_window_disables_freshness() {
+        // window = 0 is the documented opt-out: every Idle row renders
+        // as fully decayed regardless of age. No pulse, no fresh tint.
+        let theme = Theme::empire();
+        assert_eq!(
+            theme.idle_color_at_age(Some(Duration::from_secs(1)), Duration::ZERO),
+            theme.idle
+        );
+        assert_eq!(
+            theme.idle_color_at_age(Some(Duration::from_secs(1_000_000)), Duration::ZERO),
+            theme.idle
+        );
+    }
+
+    #[test]
+    fn theme_attention_hierarchy_holds() {
+        // Visual hierarchy: Waiting is the most attention-grabbing state;
+        // fresh-idle sits one rung dimmer; decayed idle blends in. On dark
+        // backgrounds "more attention" means HIGHER perceived luminance;
+        // on light backgrounds it means LOWER (the warm hues read against
+        // the bright surface). The check picks the comparison direction
+        // off the theme's own background. Rec. 601 is good enough for a
+        // pairwise sanity check, not a formal contrast metric.
+        //
+        // Heuristic limit: a custom user theme with a mid-tone background
+        // (luminance near the 128 cutoff) could fall on the wrong side of
+        // the dark/light split and fail this assertion in surprising
+        // ways. That's intentional — the test guards the 5 built-ins, not
+        // arbitrary user themes loaded from `~/.config/agent-of-empires/
+        // themes/*.toml`. If a custom-theme contributor needs to bypass
+        // this, they should pick `fresh_idle` themselves rather than rely
+        // on the test to validate it.
+        fn luminance(c: Color) -> f32 {
+            match c {
+                Color::Rgb(r, g, b) => 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32,
+                _ => 0.0,
+            }
+        }
+        for (name, theme) in [
+            ("empire", Theme::empire()),
+            ("phosphor", Theme::phosphor()),
+            ("tokyo_night_storm", Theme::tokyo_night_storm()),
+            ("catppuccin_latte", Theme::catppuccin_latte()),
+            ("dracula", Theme::dracula()),
+        ] {
+            let bg = luminance(theme.background);
+            let dark_bg = bg < 128.0;
+            let cmp = |label_a, a, label_b, b| {
+                if dark_bg {
+                    assert!(
+                        a > b,
+                        "{name} (dark bg): {label_a} luminance {a:.1} should exceed {label_b} {b:.1}"
+                    );
+                } else {
+                    assert!(
+                        a < b,
+                        "{name} (light bg): {label_a} luminance {a:.1} should be below {label_b} {b:.1}"
+                    );
+                }
+            };
+            let w = luminance(theme.waiting);
+            let f = luminance(theme.fresh_idle);
+            let i = luminance(theme.idle);
+            // Waiting beats fresh-idle.
+            cmp("waiting", w, "fresh_idle", f);
+            // Fresh-idle beats fully-decayed idle.
+            cmp("fresh_idle", f, "idle", i);
+        }
     }
 }

@@ -1,0 +1,48 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+const STORE_URL = 'https://brake.printful.me/';
+---
+
+<Base
+  title="Merch — Agent of Empires"
+  description="Agent of Empires merch store. Fulfilled by Printful, ships worldwide."
+  ogTitle="Agent of Empires Merch"
+  ogDescription="Agent of Empires merch store. Fulfilled by Printful, ships worldwide."
+>
+  <Nav />
+
+  <main>
+    <section class="relative pt-32 pb-20 px-6 hero-glow hero-gradient-animated">
+      <div class="max-w-3xl mx-auto text-center">
+        <img src="/assets/logo.svg" alt="Agent of Empires" class="w-20 h-20 mx-auto mb-8 drop-shadow-2xl" width="80" height="80">
+        <h1 class="text-5xl md:text-6xl lg:text-7xl font-semibold mb-6 tracking-hero font-display">
+          <span class="text-gradient">Merch</span>
+        </h1>
+        <p class="text-lg md:text-xl text-gray-100 leading-relaxed mb-10">
+          Wear the project. Browse the store and pick something up.
+        </p>
+
+        <a
+          href={STORE_URL}
+          target="_blank"
+          rel="noopener"
+          class="btn-primary text-base px-8 py-3.5 inline-flex items-center justify-center gap-2"
+        >
+          Visit the Store
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+          </svg>
+        </a>
+
+        <p class="text-sm text-gray-400 mt-10">
+          Fulfilled by <a href="https://www.printful.com/" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline">Printful</a>. Ships worldwide.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <Footer />
+</Base>

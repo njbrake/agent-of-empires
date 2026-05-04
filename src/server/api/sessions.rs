@@ -26,6 +26,11 @@ pub struct SessionResponse {
     pub yolo_mode: bool,
     pub created_at: String,
     pub last_accessed_at: Option<String>,
+    /// Wall-clock time of the most recent transition into Idle. Used by the
+    /// web dashboard to fade a freshly-stopped session's color toward neutral.
+    /// Distinct from `last_accessed_at`: viewing or messaging a session bumps
+    /// `last_accessed_at` but leaves `idle_entered_at` alone.
+    pub idle_entered_at: Option<String>,
     pub last_error: Option<String>,
     pub branch: Option<String>,
     pub main_repo_path: Option<String>,
@@ -78,6 +83,7 @@ impl SessionResponse {
             yolo_mode: inst.yolo_mode,
             created_at: inst.created_at.to_rfc3339(),
             last_accessed_at: inst.last_accessed_at.map(|t| t.to_rfc3339()),
+            idle_entered_at: inst.idle_entered_at.map(|t| t.to_rfc3339()),
             last_error: inst.last_error.clone(),
             branch: inst.worktree_info.as_ref().map(|w| w.branch.clone()),
             main_repo_path: inst
@@ -768,6 +774,23 @@ pub async fn create_session(
 
 // --- Ensure agent session ---
 
+/// Copy fields the start path mutated on the working `Instance` clone back
+/// onto the in-memory `state.instances` entry after a successful restart.
+///
+/// `agent_session_id` is the load-bearing one: Claude's `acquire_session_id`
+/// generates a fresh UUID at launch time and `persist_session_id` writes it
+/// to disk, but the in-memory state lives in a separate Vec that the 2s
+/// status poller refreshes from disk on its own cadence. Without this sync,
+/// a rapid second restart inside that window would see a stale
+/// `agent_session_id = None` and generate (and persist) a new UUID,
+/// silently orphaning the previous Claude conversation.
+fn apply_post_restart_sync(live: &mut Instance, started: &Instance) {
+    live.status = started.status;
+    live.last_error = None;
+    live.agent_session_id = started.agent_session_id.clone();
+    live.last_start_time = started.last_start_time;
+}
+
 /// Ensure the main agent tmux session is alive, restarting it if dead.
 ///
 /// Mirrors the TUI's `attach_session` restart logic: checks the actual tmux
@@ -895,8 +918,7 @@ pub async fn ensure_session(
         Ok(Ok(started)) => {
             let mut instances = state.instances.write().await;
             if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
-                inst.status = started.status;
-                inst.last_error = None;
+                apply_post_restart_sync(inst, &started);
             }
             (
                 StatusCode::OK,
@@ -1501,6 +1523,53 @@ mod tests {
         let resp = SessionResponse::from_instance(&make_test_instance(), false);
         assert!(!resp.claude_fullscreen);
     }
+
+    #[test]
+    fn apply_post_restart_sync_propagates_agent_session_id() {
+        // Models the rapid double-restart case: in-memory state is stale
+        // (agent_session_id = None) because the 2s status poller hasn't
+        // refreshed yet, while the just-finished restart produced a Claude
+        // UUID via acquire_session_id. The sync must propagate that ID so a
+        // second ensure_session within the poller window doesn't generate a
+        // fresh UUID and orphan the persisted Claude conversation.
+        let mut live = make_test_instance();
+        live.status = Status::Stopped;
+        live.last_error = Some("prior failure".to_string());
+        live.agent_session_id = None;
+        live.last_start_time = None;
+
+        let mut started = make_test_instance();
+        started.status = Status::Starting;
+        started.agent_session_id = Some("claude-uuid-restart".to_string());
+        started.last_start_time = Some(std::time::Instant::now());
+
+        apply_post_restart_sync(&mut live, &started);
+
+        assert_eq!(live.status, Status::Starting);
+        assert!(live.last_error.is_none());
+        assert_eq!(
+            live.agent_session_id.as_deref(),
+            Some("claude-uuid-restart")
+        );
+        assert_eq!(live.last_start_time, started.last_start_time);
+    }
+
+    #[test]
+    fn apply_post_restart_sync_overwrites_stale_session_id() {
+        // If somehow the in-memory ID was non-None and the start path
+        // produced a different (newer) ID, the sync must use the newer one.
+        // Belt-and-suspenders: in practice acquire_session_id reuses an
+        // existing ID, but the contract here is "started wins."
+        let mut live = make_test_instance();
+        live.agent_session_id = Some("stale-id".to_string());
+
+        let mut started = make_test_instance();
+        started.agent_session_id = Some("fresh-id".to_string());
+
+        apply_post_restart_sync(&mut live, &started);
+
+        assert_eq!(live.agent_session_id.as_deref(), Some("fresh-id"));
+    }
     // ── validate_diff_path: security regression tests ──────────────────────────
     //
     // Regression for a path-traversal vulnerability in the first cut of the
@@ -1609,5 +1678,258 @@ mod tests {
             &changed(&["deleted.txt"]),
         );
         assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
+    }
+}
+
+// ============================================================================
+// Send + read-output endpoints
+//
+// Together these are the minimum primitive an external orchestrator needs to
+// run an aoe session as a controlled subagent: push a prompt in, read the
+// pane back. Mirrors what the TUI's send-message dialog and pane preview do,
+// without requiring keyboard or websocket attach.
+// ============================================================================
+
+#[derive(Deserialize)]
+pub struct SendMessageRequest {
+    pub message: String,
+}
+
+enum SendKeysError {
+    NotRunning,
+    Tmux(anyhow::Error),
+}
+
+pub async fn send_message(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SendMessageRequest>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "read_only"})),
+        )
+            .into_response();
+    }
+
+    if req.message.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "message_empty"})),
+        )
+            .into_response();
+    }
+
+    let instances = state.instances.read().await;
+    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response();
+    };
+    drop(instances);
+
+    // Serialize concurrent sends (and other tmux mutations) for this id.
+    // Without this, two POSTs racing against the same session would issue
+    // overlapping `tmux send-keys -l` invocations and the bytes can interleave
+    // inside the pane.
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
+
+    let tool = instance.tool.clone();
+    let message = req.message;
+    let send_result = tokio::task::spawn_blocking(move || -> Result<(), SendKeysError> {
+        let tmux_session = instance.tmux_session().map_err(SendKeysError::Tmux)?;
+        if !tmux_session.exists() {
+            return Err(SendKeysError::NotRunning);
+        }
+        let delay = crate::agents::send_keys_enter_delay(&tool);
+        tmux_session
+            .send_keys_with_delay(&message, delay)
+            .map_err(SendKeysError::Tmux)?;
+        Ok(())
+    })
+    .await;
+
+    match send_result {
+        Ok(Ok(())) => {
+            // Stamp last_accessed_at so the activity column reflects API-driven
+            // interaction the same way TUI/web interaction does.
+            let mut instances = state.instances.write().await;
+            let profile = if let Some(i) = instances.iter_mut().find(|i| i.id == id) {
+                i.touch_last_accessed();
+                i.source_profile.clone()
+            } else {
+                // Session was deleted between the send and the stamp; nothing
+                // left to persist.
+                return (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response();
+            };
+            // Persist only the target session's profile, mirroring the pattern
+            // used by rename/delete. Saving `state.instances` wholesale would
+            // write every profile's sessions into one profile's storage file.
+            let profile_instances: Vec<Instance> = instances
+                .iter()
+                .filter(|i| i.source_profile == profile)
+                .cloned()
+                .collect();
+            drop(instances);
+            tokio::task::spawn_blocking(move || {
+                if let Ok(storage) = Storage::new(&profile) {
+                    if let Err(e) = storage.save(&profile_instances) {
+                        tracing::warn!("send_message: persist failed: {e}");
+                    }
+                }
+            });
+            (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response()
+        }
+        Ok(Err(SendKeysError::NotRunning)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session_not_running"})),
+        )
+            .into_response(),
+        Ok(Err(SendKeysError::Tmux(e))) => {
+            tracing::error!("send_message: tmux error for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "tmux_error"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("send_message: blocking task panicked for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct OutputQuery {
+    #[serde(default = "default_output_lines")]
+    pub lines: u32,
+    #[serde(default = "default_output_format")]
+    pub format: String,
+}
+
+fn default_output_lines() -> u32 {
+    200
+}
+
+fn default_output_format() -> String {
+    "text".to_string()
+}
+
+enum CaptureError {
+    NotRunning,
+    Tmux(anyhow::Error),
+}
+
+pub async fn read_output(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<OutputQuery>,
+) -> impl IntoResponse {
+    let lines = (q.lines as usize).clamp(1, 2000);
+    let want_ansi = match q.format.as_str() {
+        "ansi" => true,
+        "text" => false,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "format_invalid",
+                    "allowed": ["text", "ansi"]
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let instances = state.instances.read().await;
+    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response();
+    };
+    drop(instances);
+
+    let capture_result = tokio::task::spawn_blocking(move || -> Result<String, CaptureError> {
+        let tmux_session = instance.tmux_session().map_err(CaptureError::Tmux)?;
+        if !tmux_session.exists() {
+            return Err(CaptureError::NotRunning);
+        }
+        let raw = tmux_session
+            .capture_pane(lines)
+            .map_err(CaptureError::Tmux)?;
+        if want_ansi {
+            Ok(raw)
+        } else {
+            Ok(crate::tmux::utils::strip_ansi(&raw))
+        }
+    })
+    .await;
+
+    match capture_result {
+        Ok(Ok(content)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": id,
+                "lines": lines,
+                "format": q.format,
+                "content": content,
+            })),
+        )
+            .into_response(),
+        Ok(Err(CaptureError::NotRunning)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "session_not_running"})),
+        )
+            .into_response(),
+        Ok(Err(CaptureError::Tmux(e))) => {
+            tracing::error!("read_output: tmux error for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "tmux_error"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("read_output: blocking task panicked for {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod send_output_tests {
+    use super::*;
+
+    #[test]
+    fn output_query_default_constants() {
+        assert_eq!(default_output_lines(), 200);
+        assert_eq!(default_output_format(), "text");
+    }
+
+    #[test]
+    fn send_message_request_requires_message_field() {
+        let r: Result<SendMessageRequest, _> = serde_json::from_str("{}");
+        assert!(r.is_err(), "missing message must reject");
+    }
+
+    #[test]
+    fn send_message_request_accepts_message() {
+        let r: SendMessageRequest = serde_json::from_str("{\"message\":\"hello\"}").unwrap();
+        assert_eq!(r.message, "hello");
     }
 }

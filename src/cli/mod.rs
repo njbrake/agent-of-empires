@@ -65,9 +65,43 @@ pub fn truncate(s: &str, max: usize) -> String {
 }
 
 pub fn truncate_id(id: &str, max_len: usize) -> &str {
-    if id.len() > max_len {
-        &id[..max_len]
-    } else {
-        id
+    match id.char_indices().nth(max_len) {
+        Some((byte_pos, _)) => &id[..byte_pos],
+        None => id,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_id_shorter_than_max_returns_input() {
+        assert_eq!(truncate_id("abc", 8), "abc");
+    }
+
+    #[test]
+    fn truncate_id_equal_to_max_returns_input() {
+        assert_eq!(truncate_id("abcdefgh", 8), "abcdefgh");
+    }
+
+    #[test]
+    fn truncate_id_ascii_truncates_to_max_chars() {
+        assert_eq!(truncate_id("abcdefghij", 8), "abcdefgh");
+    }
+
+    #[test]
+    fn truncate_id_multibyte_does_not_panic_and_respects_char_boundary() {
+        // "café" is 4 chars / 5 bytes. The naive byte-slice version would have
+        // panicked on max_len=4 mid-codepoint.
+        assert_eq!(truncate_id("café", 3), "caf");
+        assert_eq!(truncate_id("café", 4), "café");
+        assert_eq!(truncate_id("café", 10), "café");
+    }
+
+    #[test]
+    fn truncate_id_zero_max_returns_empty() {
+        assert_eq!(truncate_id("abc", 0), "");
+        assert_eq!(truncate_id("café", 0), "");
     }
 }

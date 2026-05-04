@@ -8,6 +8,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
+import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
 import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
@@ -32,7 +33,11 @@ import type { SessionResponse } from "./lib/types";
 import { Dashboard } from "./components/Dashboard";
 import { LoginPage } from "./components/LoginPage";
 import { TokenEntryPage } from "./components/TokenEntryPage";
-import { TOKEN_EXPIRED_EVENT } from "./lib/fetchInterceptor";
+import {
+  LOGIN_REQUIRED_EVENT,
+  TOKEN_EXPIRED_EVENT,
+  resetTokenExpired,
+} from "./lib/fetchInterceptor";
 import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
@@ -46,6 +51,20 @@ export default function App() {
     const onTokenExpired = () => setTokenExpired(true);
     window.addEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
     return () => window.removeEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
+  }, []);
+
+  // Clearing tokenExpired here matters: the render order below shows
+  // TokenEntryPage above LoginPage, so without the reset a token that's
+  // actually fine would keep getting shown the wrong screen.
+  useEffect(() => {
+    const onLoginRequired = () => {
+      setTokenExpired(false);
+      setLoginRequired(true);
+      setLoginAuthenticated(false);
+    };
+    window.addEventListener(LOGIN_REQUIRED_EVENT, onLoginRequired);
+    return () =>
+      window.removeEventListener(LOGIN_REQUIRED_EVENT, onLoginRequired);
   }, []);
 
   useEffect(() => {
@@ -66,6 +85,8 @@ export default function App() {
 
   const handleLoginSuccess = () => {
     setLoginAuthenticated(true);
+    // Reset dedup flags so a future session expiry can re-fire the event.
+    resetTokenExpired();
   };
 
   const handleLogout = async () => {
@@ -164,7 +185,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
-      const running = ws.sessions.find((s) => isSessionActive(s.status));
+      const running = ws.sessions.find((s) => isSessionActive(s));
       const picked = running?.id ?? ws.sessions[0]?.id ?? null;
       if (picked) {
         navigate(`/session/${encodeURIComponent(picked)}`);
@@ -481,8 +502,24 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     );
   };
 
+  // Lock the root height to the latched max innerHeight on mobile. Without
+  // this, iOS PWA / iOS 26 Safari / Android Chrome shrink innerHeight
+  // (and therefore 100dvh) when the soft keyboard opens, which propagates
+  // to the terminal pane and SIGWINCHes claude on every show/hide.
+  // Pinning to the no-keyboard height combined with the keyboard
+  // reservation in TerminalView keeps the layout stable across the
+  // keyboard cycle.
+  const { isMobile, stableViewportHeight } = useMobileKeyboard();
+  const rootStyle =
+    isMobile && stableViewportHeight > 0
+      ? { height: `${stableViewportHeight}px` }
+      : undefined;
+
   return (
-    <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset">
+    <div
+      className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset"
+      style={rootStyle}
+    >
       <TopBar
         activeWorkspace={activeWorkspace}
         activeSession={activeSession ?? null}

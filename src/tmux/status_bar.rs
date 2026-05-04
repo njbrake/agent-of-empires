@@ -63,11 +63,12 @@ pub fn apply_status_bar(
     set_session_option(session_name, "status-right-length", "80")?;
 
     set_session_option(session_name, "status-style", &format!("bg={bg},fg={fg}"))?;
+    let prefix = crate::tmux::utils::tmux_prefix_display();
     set_session_option(
         session_name,
         "status-left",
         &format!(
-            " #[fg={accent},bold]#S#[fg={fg},nobold] \u{2502} #[fg={hint}]Ctrl+b d#[fg={hint}] to detach ",
+            " #[fg={accent},bold]#S#[fg={fg},nobold] \u{2502} #[fg={hint}]{prefix} d#[fg={hint}] to detach ",
         ),
     )?;
     set_session_option(session_name, "status-left-length", "50")?;

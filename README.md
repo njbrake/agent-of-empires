@@ -22,6 +22,8 @@ Run multiple AI agents in parallel across different branches of your codebase, e
 Running one AI agent is easy. Running five of them across different branches, keeping track of which is stuck, which is waiting on input, and which just made a mess of your working tree, becomes a part-time job. AoE makes it a glance: one dashboard, one status column, git worktrees and Docker sandboxes set up for you, and sessions that outlive your terminal.
 
 > If you find this project useful, please consider giving it a star on GitHub: it helps others discover the project!
+>
+> Want merch? Visit the [store](https://brake.printful.me/).
 
 <p align="center">
   <img src="docs/assets/demo.gif" alt="Agent of Empires Demo" width="800">

@@ -42,36 +42,32 @@ impl WelcomeDialog {
             .constraints([Constraint::Min(1), Constraint::Length(2)])
             .split(inner);
 
+        let prefix = crate::tmux::tmux_prefix_display();
+        let detach_key = format!("  {} then d   ", prefix);
+        let scroll_key = format!("  {} then [   ", prefix);
+        let note = format!("Note: Press {}, release, THEN press the next key.", prefix);
+
         let content = vec![
             Line::from("When you attach or start an AOE session, "),
             Line::from("you're working directly in tmux."),
             Line::from("Essential tmux commands:"),
             Line::from(""),
             Line::from(vec![
-                Span::styled(
-                    "  Ctrl+b then d   ",
-                    Style::default().fg(theme.title).bold(),
-                ),
+                Span::styled(detach_key, Style::default().fg(theme.title).bold()),
                 Span::styled(
                     "Detach (exit without stopping)",
                     Style::default().fg(theme.text),
                 ),
             ]),
             Line::from(vec![
-                Span::styled(
-                    "  Ctrl+b then [   ",
-                    Style::default().fg(theme.title).bold(),
-                ),
+                Span::styled(scroll_key, Style::default().fg(theme.title).bold()),
                 Span::styled(
                     "Scroll mode (arrows to scroll, q to exit)",
                     Style::default().fg(theme.text),
                 ),
             ]),
             Line::from(""),
-            Line::from(Span::styled(
-                "Note: Press Ctrl+b, release, THEN press the next key.",
-                Style::default().fg(theme.hint).italic(),
-            )),
+            Line::from(Span::styled(note, Style::default().fg(theme.hint).italic())),
             Line::from(""),
             Line::from(Span::styled(
                 "Press ? anytime for full keyboard shortcuts.",

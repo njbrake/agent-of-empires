@@ -174,7 +174,7 @@ aoe serve --daemon
 
 The server embeds an axum web server that serves a React frontend and provides:
 
-- REST API for session listing and control (`/api/sessions`)
+- REST API for session listing and control (`/api/sessions`); see the [HTTP API Reference](../api.md) for the orchestration endpoints (`send`, `output`)
 - WebSocket PTY relay for terminal streaming (`/sessions/:id/ws`)
 - Token-based authentication via cookie, query parameter, or WebSocket protocol header
 - Rate limiting, token rotation, and device tracking

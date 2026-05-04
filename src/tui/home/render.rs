@@ -80,6 +80,23 @@ fn spinner_starting(created_at: &DateTime<Utc>) -> &'static str {
         .current_frame()
 }
 
+/// Slow `breathe` rattle for a freshly-stopped Idle session. Reuses the
+/// same animation as Starting on purpose; differentiation is by color
+/// (Starting uses `theme.dimmed`, fresh-idle uses `theme.fresh_idle`).
+/// The longer interval reads as "gentle reminder" rather than "actively
+/// transitioning". Phase offset uses `idle_entered_at` when available so
+/// sessions that just stopped don't all sync to the same frame.
+fn spinner_idle_fresh(
+    created_at: &DateTime<Utc>,
+    idle_entered_at: Option<DateTime<Utc>>,
+) -> &'static str {
+    let offset_ts = idle_entered_at.unwrap_or(*created_at);
+    spinners::breathe()
+        .set_interval(Duration::from_millis(280))
+        .offset(session_offset(&offset_ts))
+        .current_frame()
+}
+
 /// Format a timestamp as a compact relative age (e.g. `3m`, `2h`, `4d`, `2mo`).
 /// Returns an empty string for `None` so callers can unconditionally substitute
 /// the result without guarding for absence.
@@ -111,18 +128,41 @@ fn format_relative_age(ts: Option<DateTime<Utc>>) -> String {
     format!("{}mo", months)
 }
 
-/// Minimum column width required to render the last-activity column.
-/// When the session list is narrower than this, the column is hidden entirely.
-/// Compared against `inner.width` (list pane minus 2-char border), so this is
-/// effectively `home_list_width - 2`. Keeping it at 30 lets the column appear
-/// for users who set `home_list_width` in the 35–45 range (the common narrow-
-/// pane setting) and for mobile clients with tight pane widths; the 6-char
-/// age slot plus ~24 chars for title/branch still fits comfortably.
-const LAST_ACTIVITY_MIN_WIDTH: u16 = 30;
-
-/// Width reserved for the right-aligned last-activity column:
-/// 5 chars for the label (e.g. `"<1m"`, `"30mo"`) + 1 char left padding.
+/// Width of the last-activity label slot itself: 5 chars for the value
+/// (e.g. `"<1m"`, `"30mo"`) + 1 char of left padding inside the slot.
 const LAST_ACTIVITY_SLOT: usize = 6;
+
+/// Trailing gap between the activity slot (or terminal-mode badge) and the
+/// pane's right border. One cell looks consistent with the breathing room
+/// other ratatui widgets leave around the rounded border without burning
+/// horizontal budget on narrow panes.
+const LAST_ACTIVITY_RIGHT_MARGIN: usize = 1;
+
+/// Decide where the right-aligned activity column lives on a session row.
+///
+/// `prefix_width` is the display width of the spans already pushed (indent,
+/// icon, title, optional branch info). `list_width` is the inner width of
+/// the list pane. `badge_width` is 0 when no terminal-mode badge follows
+/// the column, otherwise the badge string's length.
+///
+/// Returns `Some(pad_len)` if the column fits with `LAST_ACTIVITY_SLOT` for
+/// the value, the badge after, and `LAST_ACTIVITY_RIGHT_MARGIN` of trailing
+/// space. The padding is what the row should push between the prefix and
+/// the column to right-align it. `None` means the row is too wide and the
+/// column should be skipped entirely (the title takes priority).
+fn activity_column_padding(
+    prefix_width: usize,
+    list_width: u16,
+    badge_width: usize,
+) -> Option<usize> {
+    let trailing = LAST_ACTIVITY_SLOT + badge_width + LAST_ACTIVITY_RIGHT_MARGIN;
+    let total = prefix_width.checked_add(trailing)?;
+    if total <= list_width as usize {
+        Some(list_width as usize - total)
+    } else {
+        None
+    }
+}
 
 impl HomeView {
     pub fn render(
@@ -255,6 +295,7 @@ impl HomeView {
             changelog_dialog,
             info_dialog,
             profile_picker_dialog,
+            command_palette,
             send_message_dialog,
             update_confirm_dialog,
         );
@@ -295,11 +336,7 @@ impl HomeView {
             ""
         };
         let title = match self.view_mode {
-            ViewMode::Agent => format!(
-                " Agent of Empires [{}]{} ",
-                self.active_profile_display(),
-                group_suffix
-            ),
+            ViewMode::Agent => format!(" aoe [{}]{} ", self.active_profile_display(), group_suffix),
             ViewMode::Terminal => format!(
                 " Terminals [{}]{} ",
                 self.active_profile_display(),
@@ -466,9 +503,23 @@ impl HomeView {
                 if let Some(inst) = self.get_instance(id) {
                     match self.view_mode {
                         ViewMode::Agent => {
+                            // For Idle sessions, decay color from `fresh_idle`
+                            // toward `idle` over `idle_decay_window`. A slow
+                            // `breathe` rattle replaces the static braille
+                            // glyph while we're inside the window, matching
+                            // the animated visual language of the other
+                            // attention-worthy states (Running, Waiting,
+                            // Starting). Also serves as a redundant cue for
+                            // colorblind users / monochrome terminals.
+                            let idle_age = inst.idle_age();
+                            let is_fresh_idle =
+                                matches!(idle_age, Some(age) if age < self.idle_decay_window);
                             let icon = match inst.status {
                                 Status::Running => spinner_running(&inst.created_at),
                                 Status::Waiting => spinner_waiting(&inst.created_at),
+                                Status::Idle if is_fresh_idle => {
+                                    spinner_idle_fresh(&inst.created_at, inst.idle_entered_at)
+                                }
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
@@ -480,7 +531,9 @@ impl HomeView {
                             let color = match inst.status {
                                 Status::Running => theme.running,
                                 Status::Waiting => theme.waiting,
-                                Status::Idle => theme.idle,
+                                Status::Idle => {
+                                    theme.idle_color_at_age(idle_age, self.idle_decay_window)
+                                }
                                 Status::Unknown => theme.waiting,
                                 Status::Stopped => theme.dimmed,
                                 Status::Error => theme.error,
@@ -556,27 +609,71 @@ impl HomeView {
                     }
                 }
 
-                // Last-activity column: right-aligned, fixed-width slot just
-                // before the terminal-mode/status badge. Hidden when the list
-                // pane is too narrow to justify spending the horizontal budget.
-                if list_width >= LAST_ACTIVITY_MIN_WIDTH {
-                    let age = format_relative_age(inst.last_accessed_at);
-                    // Reserve LAST_ACTIVITY_SLOT cells; right-align inside the
-                    // slot so columns line up across rows of varying title
-                    // length. Empty `age` still reserves space — keeping the
-                    // column aligned is why we don't conditionally skip per
-                    // row.
+                // Right edge of the row: optional terminal-mode badge, and
+                // an activity column (last-accessed for non-Idle rows,
+                // time-since-stop for Idle rows). Both pin to the pane's
+                // right edge so the column lines up vertically across the
+                // session list — without right-alignment each row would
+                // place its column at a different x depending on title
+                // length, which reads as visually noisy.
+                //
+                // Decision is per-row: show the column only if the prefix
+                // (indent + icon + title + branch info) plus the column
+                // slot and any badge fits inside `list_width`. On narrow
+                // panes a long title would otherwise clip the column or
+                // push it off-screen, so we hide the column for that row
+                // rather than mangle the title. The badge follows existing
+                // behavior (always pushed in Terminal+sandboxed mode).
+                //
+                // Idle-row note: column drives off `idle_entered_at`, not
+                // `last_accessed_at`. The latter is bumped by user
+                // interaction (attach, send-keys), which would lie about
+                // how long it's actually been since the agent stopped.
+                // Color tracks the fresh/decayed binary used by the icon so
+                // the readout fades in step.
+                let badge_text: Option<&'static str> =
+                    if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
+                        Some(match self.get_terminal_mode(id) {
+                            TerminalMode::Container => " [container]",
+                            TerminalMode::Host => " [host]",
+                        })
+                    } else {
+                        None
+                    };
+                let badge_width = badge_text.map_or(0, |s| s.len());
+
+                let used_width: usize = line_spans.iter().map(|s| s.width()).sum();
+                let column_pad = activity_column_padding(used_width, list_width, badge_width);
+                let column_fits = column_pad.is_some();
+                if let Some(pad_len) = column_pad {
+                    if pad_len > 0 {
+                        line_spans.push(Span::raw(" ".repeat(pad_len)));
+                    }
+                    // Idle rows show time-since-stop (`idle_entered_at`)
+                    // since `last_accessed_at` would lie after attach/send.
+                    // Fall back to `last_accessed_at` when `idle_entered_at`
+                    // is missing — sessions that were Idle before this
+                    // field existed (or that haven't transitioned since
+                    // upgrade) shouldn't render a blank column. The
+                    // fallback timestamp is approximate but better than no
+                    // signal at all. Color stays `theme.dimmed` for every
+                    // status — the icon already carries the urgency
+                    // signal, so a colored timestamp would just add noise.
+                    let age_ts = if inst.status == Status::Idle {
+                        inst.idle_entered_at.or(inst.last_accessed_at)
+                    } else {
+                        inst.last_accessed_at
+                    };
+                    let age = format_relative_age(age_ts);
                     let padded = format!("{:>width$}", age, width = LAST_ACTIVITY_SLOT);
                     line_spans.push(Span::styled(padded, Style::default().fg(theme.dimmed)));
                 }
 
-                if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
-                    let mode = self.get_terminal_mode(id);
-                    let mode_text = match mode {
-                        TerminalMode::Container => " [container]",
-                        TerminalMode::Host => " [host]",
-                    };
-                    line_spans.push(Span::styled(mode_text, Style::default().fg(theme.sandbox)));
+                if let Some(badge) = badge_text {
+                    line_spans.push(Span::styled(badge, Style::default().fg(theme.sandbox)));
+                }
+                if column_fits {
+                    line_spans.push(Span::raw(" ".repeat(LAST_ACTIVITY_RIGHT_MARGIN)));
                 }
             }
         }
@@ -741,10 +838,20 @@ impl HomeView {
                 .as_ref()
                 .and_then(|id| self.get_instance(id))
                 .map(|inst| {
+                    let idle_age = inst.idle_age();
+                    let is_fresh_idle =
+                        matches!(idle_age, Some(age) if age < self.idle_decay_window);
                     let (icon, icon_color) = match inst.status {
                         Status::Running => (spinner_running(&inst.created_at), theme.running),
                         Status::Waiting => (spinner_waiting(&inst.created_at), theme.waiting),
-                        Status::Idle => (ICON_IDLE, theme.idle),
+                        Status::Idle if is_fresh_idle => (
+                            spinner_idle_fresh(&inst.created_at, inst.idle_entered_at),
+                            theme.idle_color_at_age(idle_age, self.idle_decay_window),
+                        ),
+                        Status::Idle => (
+                            ICON_IDLE,
+                            theme.idle_color_at_age(idle_age, self.idle_decay_window),
+                        ),
                         Status::Unknown => (ICON_UNKNOWN, theme.waiting),
                         Status::Stopped => (ICON_STOPPED, theme.dimmed),
                         Status::Error => (ICON_ERROR, theme.error),
@@ -805,6 +912,7 @@ impl HomeView {
                                 &self.preview_cache.content,
                                 self.preview_scroll_offset,
                                 theme,
+                                self.idle_decay_window,
                                 compact,
                             );
                         }
@@ -1004,14 +1112,19 @@ impl HomeView {
         // where the full label set used to truncate Help/Quit). Essentials
         // (Nav / Enter / Help / Quit / Serve indicator) survive first;
         // Diff / Search / Mode / Group drop first. Groups render in the
-        // declared order; a │ separator is inserted between kept groups
+        // declared order; a · separator is inserted between kept groups
         // at render time.
         let mk = |key: &str, desc: &str| -> Vec<Span<'static>> {
             vec![
-                Span::styled(format!(" {}", key), key_style),
-                Span::styled(format!(" {} ", desc), desc_style),
+                Span::styled(format!("{} ", key), key_style),
+                Span::styled(desc.to_string(), desc_style),
             ]
         };
+        // Key-only entry for keys universal enough that a description would be
+        // noise (j/k for nav, ? for help, q for quit, / for search). Saves
+        // ~20 columns of footer width — meaningful at iPhone-Mosh sizes.
+        let mk_key =
+            |key: &str| -> Vec<Span<'static>> { vec![Span::styled(key.to_string(), key_style)] };
 
         let mut groups: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
 
@@ -1037,7 +1150,7 @@ impl HomeView {
             }
         }
 
-        groups.push((0, mk("j/k", "Nav")));
+        groups.push((0, mk_key("j/k")));
 
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
             Some(Item::Group {
@@ -1049,7 +1162,13 @@ impl HomeView {
             Some(Item::Session { .. }) => Some("Attach"),
             None => None,
         } {
-            groups.push((0, mk("Enter", enter_action_text)));
+            // U+21B5 (↵) renders Enter/Return in one cell across most fonts;
+            // saves 4 cols vs the literal word and matches k9s/lazygit/fzf
+            // conventions. Trailing space inside the key string adds a second
+            // visual gap before the description — at most fonts the arrow
+            // glyph fills its cell tightly and a single mk-internal space
+            // looks too close to the desc.
+            groups.push((0, mk("↵ ", enter_action_text)));
         }
 
         groups.push((2, mk(if strict { "T" } else { "t" }, "View")));
@@ -1075,18 +1194,20 @@ impl HomeView {
             groups.push((3, mk(if strict { "D" } else { "d" }, "Del")));
         }
 
-        groups.push((4, mk("/", "Search")));
+        groups.push((4, mk_key("/")));
         groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
-        groups.push((0, mk("?", "Help")));
-        groups.push((0, mk(if strict { "Q" } else { "q" }, "Quit")));
+        groups.push((1, mk("^K", "Cmds")));
+        groups.push((0, mk_key("?")));
+        groups.push((0, mk_key(if strict { "Q" } else { "q" })));
 
         // Greedy pack by priority. Width of a group = sum of span char counts;
-        // separator between kept groups adds 1 col each.
+        // separator between kept groups adds 3 cols each (" · "). Reserve 1
+        // col for the leading space margin.
         let widths: Vec<usize> = groups
             .iter()
             .map(|(_, g)| g.iter().map(|s| s.content.chars().count()).sum::<usize>())
             .collect();
-        let avail = area.width as usize;
+        let avail = (area.width as usize).saturating_sub(1);
 
         let mut order: Vec<usize> = (0..groups.len()).collect();
         order.sort_by_key(|&i| groups[i].0);
@@ -1095,7 +1216,7 @@ impl HomeView {
         let mut used = 0usize;
         let mut count = 0usize;
         for i in order {
-            let sep = if count == 0 { 0 } else { 1 };
+            let sep = if count == 0 { 0 } else { 3 };
             if used + widths[i] + sep <= avail {
                 keep[i] = true;
                 used += widths[i] + sep;
@@ -1103,14 +1224,14 @@ impl HomeView {
             }
         }
 
-        let mut spans: Vec<Span> = Vec::new();
+        let mut spans: Vec<Span> = vec![Span::raw(" ")];
         let mut first = true;
         for (i, (_, group)) in groups.into_iter().enumerate() {
             if !keep[i] {
                 continue;
             }
             if !first {
-                spans.push(Span::styled("│", sep_style));
+                spans.push(Span::styled(" · ", sep_style));
             }
             spans.extend(group);
             first = false;
@@ -1234,5 +1355,66 @@ mod tests {
     fn scroll_exceeds_cache_true_for_empty_cache() {
         // First render: nothing captured yet, so any request forces capture.
         assert!(scroll_exceeds_cache(0, 30, 0));
+    }
+
+    // -- activity_column_padding -------------------------------------------
+    //
+    // The column lives at `list_width - badge_width - SLOT - MARGIN`; the
+    // returned pad_len is what goes between the row prefix and the column
+    // to right-align it. None means the row is too wide and the column
+    // should be hidden so the title doesn't get clipped.
+
+    #[test]
+    fn activity_column_padding_short_title_with_room_to_spare() {
+        // 35-col pane, 12-col prefix, no badge: trailing reserves 6 (slot)
+        // + 0 (badge) + 1 (margin) = 7, total = 19, pad_len = 35 - 19 = 16.
+        assert_eq!(activity_column_padding(12, 35, 0), Some(16));
+    }
+
+    #[test]
+    fn activity_column_padding_exact_fit_yields_zero_pad() {
+        // Prefix ends right where the trailing block begins.
+        // list_width(20) - prefix(13) - trailing(7) = 0.
+        assert_eq!(activity_column_padding(13, 20, 0), Some(0));
+    }
+
+    #[test]
+    fn activity_column_padding_one_short_hides_column() {
+        // One column over budget: prefix(14) + trailing(7) = 21 > 20.
+        assert_eq!(activity_column_padding(14, 20, 0), None);
+    }
+
+    #[test]
+    fn activity_column_padding_accounts_for_terminal_mode_badge() {
+        // " [host]" is 7 chars. trailing = SLOT(6) + 7 + MARGIN(1) = 14.
+        // 35 - 14 - prefix(10) = 11.
+        assert_eq!(activity_column_padding(10, 35, 7), Some(11));
+        // " [container]" is 12 chars. trailing = 6 + 12 + 1 = 19.
+        // 35 - 19 - 10 = 6.
+        assert_eq!(activity_column_padding(10, 35, 12), Some(6));
+    }
+
+    #[test]
+    fn activity_column_padding_long_title_with_badge_hides_column() {
+        // The badge by itself fits but the column doesn't. The decision
+        // is per-row "show the column or not" — the badge gets its own
+        // unconditional render path.
+        // prefix(20) + slot(6) + badge(12) + margin(1) = 39 > 35.
+        assert_eq!(activity_column_padding(20, 35, 12), None);
+    }
+
+    #[test]
+    fn activity_column_padding_narrow_pane_short_title() {
+        // Was the regression: a 25-col pane was previously hidden by the
+        // old fixed-30 floor, even when there was easily room.
+        // prefix(8) + 7 trailing = 15 ≤ 25. Now shows.
+        assert_eq!(activity_column_padding(8, 25, 0), Some(10));
+    }
+
+    #[test]
+    fn activity_column_padding_saturates_on_overflow() {
+        // Defensive: prefix near usize::MAX must not wrap. The checked_add
+        // returns None which we map to "doesn't fit".
+        assert_eq!(activity_column_padding(usize::MAX, 1000, 0), None);
     }
 }

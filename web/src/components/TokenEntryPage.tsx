@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { saveToken } from "../lib/token";
 import { resetTokenExpired } from "../lib/fetchInterceptor";
-import { fetchAbout } from "../lib/api";
+import { verifyToken } from "../lib/api";
 
 interface Props {
   onSuccess: () => void;
@@ -43,10 +43,13 @@ export function TokenEntryPage({ onSuccess }: Props) {
     saveToken(token);
     resetTokenExpired();
 
-    // Verify by calling a lightweight endpoint
-    const about = await fetchAbout();
+    // /api/login/status is exempt from the passphrase session check, so a
+    // token-good-but-passphrase-missing paste verifies as success here and
+    // App.tsx routes to LoginPage. A session-gated endpoint would 401 and
+    // look like a token rejection.
+    const verified = await verifyToken();
 
-    if (about) {
+    if (verified) {
       onSuccess();
     } else {
       // The interceptor already cleared localStorage on 401. Reset the

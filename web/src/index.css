@@ -67,7 +67,15 @@
 
   /* Semantic Status */
   --color-status-running: #22c55e;
+  /* Waiting (blocked on user input) is the brightest amber in the brand
+     ramp so it wins on luminance against fresh-idle. Saturation alone
+     reads as DIMMER on dark backgrounds, so we lean on luminance. */
   --color-status-waiting: #fbbf24;
+  /* Color of an Idle session whose Stop fired within the decay window.
+     Held constant for the full window (then snaps to `--color-status-idle`)
+     so the breathe rattle's pulse stays visually consistent. One rung
+     dimmer than waiting so the hierarchy reads bright > amber > slate. */
+  --color-status-fresh-idle: #f59e0b;
   --color-status-idle: #71717a;
   --color-status-error: #ef4444;
   --color-status-starting: #f59e0b;

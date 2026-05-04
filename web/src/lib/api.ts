@@ -362,6 +362,20 @@ export async function loginStatus(): Promise<{
   );
 }
 
+/** Verify the auth token via a session-exempt endpoint (`/api/login/status`).
+ *  Returning `true` means the token authenticated; the caller still has to
+ *  consult `loginStatus()` to decide between the main app and LoginPage.
+ *  Used by the token entry page so a valid-token-but-needs-passphrase paste
+ *  is accepted instead of being misread as a token rejection. */
+export async function verifyToken(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/login/status");
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function login(
   passphrase: string,
 ): Promise<{ ok: boolean; error?: string }> {

@@ -121,16 +121,23 @@ test.describe("Mobile keyboard detection and layout", () => {
   }) => {
     await setupAndOpen(page);
 
+    // Pre-seed reservation: TerminalView pads the viewport by ~40% of
+    // innerHeight on mobile so the layout starts at a keyboard-reserved
+    // size. Earlier this test asserted "0" here; that asserted the OLD
+    // behavior where paddingBottom was the live keyboardHeight.
     const before = await getKeyboardState(page);
-    expect(before.rootPaddingBottom).toBe("0");
+    expect(parseInt(before.rootPaddingBottom)).toBeGreaterThan(0);
 
     await simulateKeyboardOpen(page, 300);
     await page.waitForTimeout(500);
 
     const after = await getKeyboardState(page);
-    expect(parseInt(after.rootPaddingBottom)).toBeGreaterThan(250);
-    // paddingBottom doesn't shrink the outer box; check the terminal container
-    expect(after.termHeight).toBeLessThan(before.termHeight - 200);
+    // Reservation latches to max(seed, 300). Either it stays at seed (if
+    // seed was already >= 300) or grows to ~300.
+    expect(parseInt(after.rootPaddingBottom)).toBeGreaterThanOrEqual(
+      parseInt(before.rootPaddingBottom),
+    );
+    expect(parseInt(after.rootPaddingBottom)).toBeGreaterThanOrEqual(250);
   });
 
   test("detects keyboard open in PWA mode (innerHeight shrinks with keyboard)", async ({
@@ -154,20 +161,24 @@ test.describe("Mobile keyboard detection and layout", () => {
     expect(parseInt(after.rootPaddingBottom) || 0).toBeLessThan(50);
   });
 
-  test("keyboard close restores full layout", async ({ page }) => {
+  test("keyboard close keeps reservation (sticky, no PTY resize on cycle)", async ({
+    page,
+  }) => {
     await setupAndOpen(page);
-
-    const before = await getKeyboardState(page);
 
     await simulateKeyboardOpen(page, 300);
     await page.waitForTimeout(200);
+    const open = await getKeyboardState(page);
 
     await simulateKeyboardClose(page);
     await page.waitForTimeout(200);
 
     const after = await getKeyboardState(page);
-    expect(after.rootPaddingBottom).toBe("0");
-    expect(Math.abs(after.rootHeight - before.rootHeight)).toBeLessThan(5);
+    // Sticky reservation: paddingBottom stays at the latched value when
+    // the keyboard dismisses. This is the lever that stops SIGWINCH-ing
+    // claude on every soft-keyboard show/hide; the side-effect is the
+    // pane stays the same size whether the kb is up or not.
+    expect(after.rootPaddingBottom).toBe(open.rootPaddingBottom);
   });
 
   test("toolbar renders on mobile with active session", async ({ page }) => {
@@ -235,17 +246,21 @@ test.describe("Mobile keyboard detection and layout", () => {
     // The test is primarily that no crash occurs; scroll observation is best-effort
   });
 
-  test("small viewport delta below threshold does NOT trigger keyboard mode", async ({
+  test("small viewport delta below threshold does NOT grow the reservation", async ({
     page,
   }) => {
     await setupAndOpen(page);
+    const before = await getKeyboardState(page);
 
     // Simulate URL bar collapse: ~80px change, below 100px threshold
     await simulateKeyboardOpen(page, 80);
     await page.waitForTimeout(200);
 
     const state = await getKeyboardState(page);
-    expect(state.rootPaddingBottom).toBe("0");
+    // The reservation latches upward only on >100px occlusion; an 80px
+    // delta should leave paddingBottom unchanged from the pre-seeded
+    // value (used to be "0" when paddingBottom tracked live keyboardHeight).
+    expect(state.rootPaddingBottom).toBe(before.rootPaddingBottom);
   });
 
   test("orientation change resets fullHeight baseline", async ({ page }) => {

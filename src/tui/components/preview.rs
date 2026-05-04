@@ -1,5 +1,7 @@
 //! Preview panel component
 
+use std::time::Duration;
+
 use ansi_to_tui::IntoText;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -136,6 +138,7 @@ impl Preview {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render_with_cache(
         frame: &mut Frame,
         area: Rect,
@@ -143,6 +146,7 @@ impl Preview {
         cached_output: &str,
         scroll_offset: u16,
         theme: &Theme,
+        idle_decay_window: Duration,
         compact: bool,
     ) {
         if compact {
@@ -175,7 +179,7 @@ impl Preview {
             ])
             .split(area);
 
-        Self::render_info(frame, chunks[0], instance, theme);
+        Self::render_info(frame, chunks[0], instance, theme, idle_decay_window);
         Self::render_output_cached(
             frame,
             chunks[1],
@@ -187,7 +191,13 @@ impl Preview {
         );
     }
 
-    fn render_info(frame: &mut Frame, area: Rect, instance: &Instance, theme: &Theme) {
+    fn render_info(
+        frame: &mut Frame,
+        area: Rect,
+        instance: &Instance,
+        theme: &Theme,
+        idle_decay_window: Duration,
+    ) {
         let mut info_lines = Vec::new();
 
         // Profile and Tool on the same row to save vertical space
@@ -222,7 +232,9 @@ impl Preview {
                     Style::default().fg(match instance.status {
                         crate::session::Status::Running => theme.running,
                         crate::session::Status::Waiting => theme.waiting,
-                        crate::session::Status::Idle => theme.idle,
+                        crate::session::Status::Idle => {
+                            theme.idle_color_at_age(instance.idle_age(), idle_decay_window)
+                        }
                         crate::session::Status::Unknown => theme.waiting,
                         crate::session::Status::Stopped => theme.dimmed,
                         crate::session::Status::Error => theme.error,

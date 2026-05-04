@@ -25,13 +25,14 @@ use super::deletion_poller::DeletionPoller;
 #[cfg(feature = "serve")]
 use super::dialogs::ServeView;
 use super::dialogs::{
-    ChangelogDialog, ConfirmDialog, GroupDeleteOptionsDialog, HookTrustDialog, HooksInstallDialog,
-    InfoDialog, NewSessionData, NewSessionDialog, NoAgentsDialog, ProfilePickerDialog,
-    RenameDialog, UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
+    ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
+    HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
+    NoAgentsDialog, ProfilePickerDialog, RenameDialog, UnifiedDeleteDialog, UpdateConfirmDialog,
+    WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
-use super::status_poller::StatusPoller;
+use super::status_poller::{StatusPoller, StatusUpdate};
 
 /// Extract a project group name from a session instance.
 /// Uses `worktree_info.main_repo_path` for worktree sessions (so all branches of the
@@ -172,6 +173,7 @@ pub struct HomeView {
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
+    pub(super) command_palette: Option<CommandPaletteDialog>,
     #[cfg(feature = "serve")]
     pub(super) serve_view: Option<ServeView>,
     pub(super) update_confirm_dialog: Option<UpdateConfirmDialog>,
@@ -231,6 +233,12 @@ pub struct HomeView {
     // Sound config for state transition sounds
     pub(super) sound_config: crate::sound::SoundConfig,
 
+    /// Resolved decay window from `Config.theme.idle_decay_minutes`. Read
+    /// at startup and re-resolved on settings reload. Used by render to
+    /// drive the breathe rattle and fresh-idle color, and by the `w`
+    /// keybind to gate which Idle sessions are still "actionable".
+    pub(super) idle_decay_window: std::time::Duration,
+
     // When true, letter-based action hotkeys require SHIFT (guard against
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
@@ -289,6 +297,8 @@ impl HomeView {
         };
         let sound_config = resolved.sound.clone();
         let strict_hotkeys = resolved.session.strict_hotkeys;
+        let idle_decay_window =
+            crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         let user_config = load_config().ok().flatten();
         let sort_order = user_config
             .as_ref()
@@ -342,6 +352,7 @@ impl HomeView {
             changelog_dialog: None,
             info_dialog: None,
             profile_picker_dialog: None,
+            command_palette: None,
             #[cfg(feature = "serve")]
             serve_view: None,
             update_confirm_dialog: None,
@@ -373,6 +384,7 @@ impl HomeView {
             default_terminal_mode,
             sound_config,
             strict_hotkeys,
+            idle_decay_window,
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -496,6 +508,11 @@ impl HomeView {
                     inst.last_error_check = prev.last_error_check;
                     inst.last_start_time = prev.last_start_time;
                     inst.session_id_poller = prev.session_id_poller.clone();
+                    // Carry the in-memory idle_entered_at across reloads
+                    // so a freshly-stopped session doesn't lose its
+                    // freshness state when the user toggles a setting
+                    // that triggers a reload mid-window.
+                    inst.idle_entered_at = prev.idle_entered_at;
                     // Use in-memory session_id if present; fallback to disk.
                     // In-memory state takes priority over disk: the poller
                     // may have updated the ID since last save.
@@ -596,38 +613,51 @@ impl HomeView {
     /// Apply any pending status updates from the background poller.
     /// Returns true if updates were applied.
     pub fn apply_status_updates(&mut self) -> bool {
-        use crate::session::Status;
-
         if let Some(updates) = self.status_poller.try_recv_updates() {
             for update in updates {
-                let old_status = self.get_instance(&update.id).map(|i| i.status);
-
-                let should_update = old_status.is_some_and(|s| {
-                    s != Status::Deleting
-                        && s != Status::Creating
-                        && s != Status::Stopped
-                        && update.status != Status::Stopped
-                });
-
-                if should_update {
-                    let new_status = update.status;
-                    let new_error = update.last_error;
-                    self.mutate_instance(&update.id, |inst| {
-                        inst.status = new_status;
-                        inst.last_error = new_error;
-                    });
-
-                    if let Some(old) = old_status {
-                        if old != new_status {
-                            crate::sound::play_for_transition(old, new_status, &self.sound_config);
-                        }
-                    }
-                }
+                self.apply_one_status_update(update);
             }
             self.pending_status_refresh = false;
             return true;
         }
         false
+    }
+
+    /// Apply a single status update from the poller. Extracted from the
+    /// channel-pulling loop in `apply_status_updates` so tests can drive
+    /// the apply path directly without having to push through the
+    /// background polling thread.
+    pub(super) fn apply_one_status_update(&mut self, update: StatusUpdate) {
+        use crate::session::Status;
+
+        let old_status = self.get_instance(&update.id).map(|i| i.status);
+        let should_update = old_status.is_some_and(|s| {
+            s != Status::Deleting
+                && s != Status::Creating
+                && s != Status::Stopped
+                && update.status != Status::Stopped
+        });
+        if !should_update {
+            return;
+        }
+
+        let new_status = update.status;
+        let new_error = update.last_error;
+        let new_idle_entered_at = update.idle_entered_at;
+        self.mutate_instance(&update.id, |inst| {
+            inst.status = new_status;
+            inst.last_error = new_error;
+            // Propagate the timestamp the polling clone wrote;
+            // see StatusPoller for why this isn't a simple
+            // `inst.idle_entered_at = …` from inside the poll.
+            inst.idle_entered_at = new_idle_entered_at;
+        });
+
+        if let Some(old) = old_status {
+            if old != new_status {
+                crate::sound::play_for_transition(old, new_status, &self.sound_config);
+            }
+        }
     }
 
     pub fn apply_deletion_results(&mut self) -> bool {
@@ -1085,6 +1115,7 @@ impl HomeView {
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
+            || self.command_palette.is_some()
             || self.send_message_dialog.is_some()
             || self.update_confirm_dialog.is_some()
             || serve_open
@@ -1456,6 +1487,8 @@ impl HomeView {
         };
         self.sound_config = config.sound.clone();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.idle_decay_window =
+            crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
     }
 
     /// Toggle terminal mode between Container and Host for a session

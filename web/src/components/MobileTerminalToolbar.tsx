@@ -45,6 +45,16 @@ interface Props {
   sendData: (data: string) => void;
   termRef: RefObject<WTerm | null>;
   keyboardHeight: number;
+  /**
+   * Latched keyboard reservation from useMobileKeyboard. When > 0 the
+   * parent (TerminalView) is permanently padding the layout for the
+   * keyboard, so the strip should not add its own env() fallback (which
+   * would oscillate with live keyboardHeight and resize the wterm
+   * container by py-1.5's 6px on every show/hide). Optional: PairedTerminal
+   * doesn't apply the sticky reservation, so it omits this and the strip
+   * falls back to the env() behavior.
+   */
+  reservedKeyboardHeight?: number;
   ctrlActive: boolean;
   onCtrlToggle: () => void;
 }
@@ -58,6 +68,7 @@ export function MobileTerminalToolbar({
   sendData,
   termRef,
   keyboardHeight,
+  reservedKeyboardHeight = 0,
   ctrlActive,
   onCtrlToggle,
 }: Props) {
@@ -98,11 +109,20 @@ export function MobileTerminalToolbar({
   const strip =
     "shrink-0 flex items-center gap-1 px-2 py-1.5 bg-surface-850 border-t border-surface-700/20";
 
-  // Parent (TerminalView) reserves paddingBottom for the keyboard, so the
-  // strip naturally sits above it. env(keyboard-inset-height) covers iPadOS
-  // floating keyboards where visualViewport doesn't shrink.
+  // Parent (TerminalView) reserves paddingBottom for the keyboard
+  // (sticky once any keyboard has opened), so once that has happened the
+  // strip naturally sits above it and we want padding-bottom: 0. When no
+  // reservation has ever latched (iPadOS floating keyboards don't shrink
+  // visualViewport), fall back to env(keyboard-inset-height) so the strip
+  // still lifts above the keyboard.
+  //
+  // We DON'T toggle on live keyboardHeight: that would flip the strip's
+  // padding by py-1.5's 6px on every soft-keyboard show/hide, which
+  // propagates into the wterm container and SIGWINCHes claude on every
+  // cycle. The reservation, by contrast, only changes once per session.
   const stripStyle = {
-    paddingBottom: keyboardHeight > 0 ? undefined : "env(keyboard-inset-height, 0px)",
+    paddingBottom:
+      reservedKeyboardHeight > 0 ? "0" : "env(keyboard-inset-height, 0px)",
   };
 
   const arrowHint = (axis: DragAxis) =>

@@ -7,7 +7,7 @@ use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 42;
+const DIALOG_HEIGHT: u16 = 43;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -66,6 +66,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("u", "Update aoe (when available)"),
                     ("Ctrl+x", "Dismiss update bar (this session)"),
                     ("Shift+drag", "Select text in preview"),
+                    ("Ctrl+K", "Command palette"),
                     ("?", "Toggle help"),
                     ("Q", "Quit"),
                 ],
@@ -121,6 +122,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("u", "Update aoe (when available)"),
                     ("Ctrl+x", "Dismiss update bar (this session)"),
                     ("Shift+drag", "Select text in preview"),
+                    ("Ctrl+K", "Command palette"),
                     ("?", "Toggle help"),
                     ("q", "Quit"),
                 ],
@@ -172,7 +174,7 @@ impl HelpOverlay {
 
         frame.render_widget(Clear, dialog_area);
 
-        let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
+        let version = format!(" Agent of Empires v{} ", env!("CARGO_PKG_VERSION"));
         let block = Block::default()
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
@@ -236,6 +238,25 @@ mod tests {
             assert!(
                 keys.iter().any(|(k, _)| *k == "H/L"),
                 "Views section should contain H/L resize shortcut"
+            );
+        }
+    }
+
+    #[test]
+    fn help_lists_command_palette() {
+        // Asserts both keymaps surface the Ctrl+K command palette entry in
+        // their "Other" section so users can discover the palette from `?`.
+        for strict in [false, true] {
+            let all = shortcuts(strict);
+            let other = all
+                .iter()
+                .find(|(name, _)| *name == "Other")
+                .expect("Other section should exist");
+            let (_, keys) = other;
+            assert!(
+                keys.iter()
+                    .any(|(k, desc)| *k == "Ctrl+K" && desc.contains("Command palette")),
+                "Other section should contain Ctrl+K Command palette (strict={strict})"
             );
         }
     }

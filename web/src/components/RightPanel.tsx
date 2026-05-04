@@ -67,6 +67,11 @@ function PairedTerminal({
     ctrlActiveRef,
     clearCtrlRef,
   } = useTerminal(ready ? sessionId : null, wsPath, false);
+  // PairedTerminal intentionally uses the live keyboardHeight, not the
+  // sticky reservation that TerminalView uses. The slide-in only gives
+  // this pane ~half a viewport tall, and applying a ~340px reservation
+  // there collapses data-term="paired" to 0 height. Side-shell use is
+  // sporadic so the original kb-cycle behavior is acceptable here.
   const { isMobile, keyboardOpen, keyboardHeight } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
   const [termFocused, setTermFocused] = useState(false);
