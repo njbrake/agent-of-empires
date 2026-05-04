@@ -1162,7 +1162,10 @@ impl HomeView {
             Some(Item::Session { .. }) => Some("Attach"),
             None => None,
         } {
-            groups.push((0, mk("Enter", enter_action_text)));
+            // U+21B5 (↵) renders Enter/Return in one cell across most fonts;
+            // saves 4 cols vs the literal word and matches k9s/lazygit/fzf
+            // conventions.
+            groups.push((0, mk("↵", enter_action_text)));
         }
 
         groups.push((2, mk(if strict { "T" } else { "t" }, "View")));
