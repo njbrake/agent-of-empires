@@ -108,21 +108,32 @@ pub fn append_window_size_args(args: &mut Vec<String>, target: &str) {
     ]);
 }
 
-/// Append `; set-option -t <target> set-clipboard on ; set-option -t <target>
-/// allow-passthrough on` so OSC 52 clipboard escape sequences emitted by the
-/// wrapped agent (Claude Code, OpenCode, Codex, etc.) survive tmux and reach
-/// the outer terminal emulator. Without this, "select to copy" inside the
-/// agent silently fails because tmux swallows the sequence (see #897).
+/// Append the two tmux options required for OSC 52 clipboard escapes from
+/// the wrapped agent (Claude Code, OpenCode, Codex, etc.) to reach the outer
+/// terminal. Without these, "select to copy" inside the agent silently fails
+/// because tmux drops the sequence (see #897).
+///
+/// Two distinct mechanisms are covered:
+///   * `set-clipboard on` (server option): captures and forwards raw OSC 52
+///     sequences to attached terminal clients.
+///   * `allow-passthrough on` (window option since tmux 3.4): allows
+///     `\ePtmux;...\e\\`-wrapped escapes (the form OpenCode uses) to be
+///     unwrapped and forwarded.
+///
+/// Programs vary in which form they emit, so both are set defensively. Scope
+/// flags are explicit (`-s`, `-w`) so the call site is unambiguous and
+/// resilient to future tmux scope-inference changes; matches the convention
+/// used by `append_remain_on_exit_args` for `remain-on-exit`.
 pub fn append_clipboard_passthrough_args(args: &mut Vec<String>, target: &str) {
     args.extend([
         ";".to_string(),
         "set-option".to_string(),
-        "-t".to_string(),
-        target.to_string(),
+        "-s".to_string(),
         "set-clipboard".to_string(),
         "on".to_string(),
         ";".to_string(),
         "set-option".to_string(),
+        "-w".to_string(),
         "-t".to_string(),
         target.to_string(),
         "allow-passthrough".to_string(),
@@ -363,12 +374,12 @@ mod tests {
                 "new-session",
                 ";",
                 "set-option",
-                "-t",
-                "aoe_test",
+                "-s",
                 "set-clipboard",
                 "on",
                 ";",
                 "set-option",
+                "-w",
                 "-t",
                 "aoe_test",
                 "allow-passthrough",
