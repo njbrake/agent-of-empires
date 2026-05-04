@@ -130,8 +130,14 @@ fn claude_line_is_active_spinner(line: &str) -> bool {
         }
     }
 
-    let starts_uppercase = rest.chars().next().is_some_and(|c| c.is_uppercase());
-    starts_uppercase && rest.contains('…')
+    // Require the ellipsis to be inside the first word after the frame, which
+    // is the live-spinner shape (`Working…`, `Herding…`). This rejects
+    // rendered markdown bullets like `* Cooked an amazing dish today…` that
+    // would otherwise look like an active spinner line.
+    let first_word_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+    let first_word = &rest[..first_word_end];
+    let starts_uppercase = first_word.chars().next().is_some_and(|c| c.is_uppercase());
+    starts_uppercase && first_word.contains('…')
 }
 
 pub fn detect_opencode_status(raw_content: &str) -> Status {
@@ -812,6 +818,23 @@ mod tests {
         // ellipsis) should not be mistaken for an active spinner. Active
         // verbs are always capitalized.
         assert_eq!(detect_claude_status("* foo…"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_claude_status_ignores_markdown_bullet_with_trailing_ellipsis() {
+        // Rendered markdown bullets can start with a frame char and a
+        // capitalized word and end with a trailing `…`. The live spinner
+        // line always has the ellipsis inside the first word
+        // (`Cooking…`), not several words later, so we don't flag this
+        // as Running.
+        assert_eq!(
+            detect_claude_status("* Cooked an amazing dish today…"),
+            Status::Idle
+        );
+        assert_eq!(
+            detect_claude_status("· Some random response text ending with…"),
+            Status::Idle
+        );
     }
 
     #[test]
