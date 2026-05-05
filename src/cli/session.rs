@@ -234,7 +234,7 @@ async fn restart_session_dispatch(profile: &str, args: RestartArgs) -> Result<()
     restart_session(profile, SessionIdArgs { identifier }).await
 }
 
-async fn restart_all_sessions(profile: &str, _parallel: usize) -> Result<()> {
+async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (mut instances, groups) = storage.load_with_groups()?;
 
@@ -246,15 +246,60 @@ async fn restart_all_sessions(profile: &str, _parallel: usize) -> Result<()> {
 
     let total = target_ids.len();
     let size = crate::terminal::get_size();
+    let parallel = parallel.max(1);
+
+    // Clone each target into its worker; we'll write the (mutated) copy back
+    // by index after the worker returns. Workers never touch the shared Vec.
+    let mut targets: Vec<(usize, crate::session::Instance)> = Vec::with_capacity(total);
+    for id in &target_ids {
+        if let Some(idx) = instances.iter().position(|i| &i.id == id) {
+            targets.push((idx, instances[idx].clone()));
+        }
+    }
+
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel));
+    let mut join_set: tokio::task::JoinSet<(
+        usize,
+        String,
+        Option<crate::session::Instance>,
+        Result<()>,
+    )> = tokio::task::JoinSet::new();
+
+    for (idx, mut inst) in targets {
+        let permit_sem = semaphore.clone();
+        join_set.spawn(async move {
+            let _permit = permit_sem
+                .acquire_owned()
+                .await
+                .expect("semaphore not closed");
+            let title = inst.title.clone();
+            let res = tokio::task::spawn_blocking(move || {
+                let result = inst.restart_with_size(size);
+                (inst, result)
+            })
+            .await;
+            match res {
+                Ok((inst, result)) => (idx, title, Some(inst), result),
+                Err(join_err) => (
+                    idx,
+                    title,
+                    None,
+                    Err(anyhow::anyhow!("worker panicked: {}", join_err)),
+                ),
+            }
+        });
+    }
+
     let mut succeeded: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
 
-    for id in target_ids {
-        let Some(idx) = instances.iter().position(|i| i.id == id) else {
-            continue;
-        };
-        let title = instances[idx].title.clone();
-        match instances[idx].restart_with_size(size) {
+    while let Some(joined) = join_set.join_next().await {
+        let (idx, title, inst_opt, result) =
+            joined.expect("JoinSet shouldn't panic on join itself");
+        if let Some(inst) = inst_opt {
+            instances[idx] = inst;
+        }
+        match result {
             Ok(()) => succeeded.push(title),
             Err(e) => failed.push((title, e.to_string())),
         }
