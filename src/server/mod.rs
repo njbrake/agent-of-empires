@@ -1075,13 +1075,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
 
         // Run blocking tmux subprocess calls in a dedicated thread
         let updated = tokio::task::spawn_blocking(move || {
-            let mut instances = match load_all_instances() {
-                Ok(i) => i,
-                Err(e) => {
-                    tracing::debug!("Failed to load instances: {e}");
-                    Vec::new()
-                }
-            };
+            let mut instances = load_all_instances().unwrap_or_default();
 
             crate::tmux::refresh_session_cache();
             let pane_metadata = crate::tmux::batch_pane_metadata();
