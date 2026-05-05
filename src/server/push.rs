@@ -95,13 +95,17 @@ impl VapidKeypair {
         // Re-check: another process may have generated while we were
         // waiting for the lock.
         if path.exists() {
-            let _ = FileExt::unlock(&lock_file);
+            if let Err(e) = FileExt::unlock(&lock_file) {
+                tracing::debug!("Failed to release lock file: {e}");
+            }
             return Self::load(path);
         }
 
         let kp = Self::generate()?;
         kp.persist(path)?;
-        let _ = FileExt::unlock(&lock_file);
+        if let Err(e) = FileExt::unlock(&lock_file) {
+            tracing::debug!("Failed to release lock file: {e}");
+        }
         Ok(kp)
     }
 
@@ -620,7 +624,9 @@ async fn fire_due_pushes(
                 let outcome =
                     super::push_send::send_one(&client, push.as_ref(), &sub, &payload_clone).await;
                 if outcome == super::push_send::SendOutcome::Gone {
-                    let _ = push.store.gc_stale(&sub.endpoint, sub.generation).await;
+                    if let Err(e) = push.store.gc_stale(&sub.endpoint, sub.generation).await {
+                        tracing::warn!("Failed to GC stale push subscription: {e}");
+                    }
                 }
             });
         }
@@ -819,10 +825,13 @@ pub async fn test(
             // Best-effort GC; the result still reports gone=1 even if GC
             // races with a re-subscribe (that's what the generation
             // counter in gc_stale prevents).
-            let _ = push
+            if let Err(e) = push
                 .store
                 .gc_stale(&body.endpoint, subscription.generation)
-                .await;
+                .await
+            {
+                tracing::warn!("Failed to GC stale push subscription: {e}");
+            }
         }
     }
     Ok(Json(result))

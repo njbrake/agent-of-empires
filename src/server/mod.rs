@@ -495,7 +495,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             // render the right transport label: "tunnel" for Cloudflare,
             // "tailscale" for Tailscale Funnel, "local" for local-only.
             let mode = format!("{}\n", handle.mode_label());
-            let _ = tokio::fs::write(app_dir.join("serve.mode"), mode).await;
+            if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), mode).await {
+                tracing::debug!("Failed to write serve.mode: {e}");
+            }
         }
 
         // Start health monitor (uses CancellationToken internally)
@@ -554,7 +556,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 contents.push('\n');
             }
             write_secret_file(&app_dir.join("serve.url"), &contents).await;
-            let _ = tokio::fs::write(app_dir.join("serve.mode"), "local\n").await;
+            if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), "local\n").await {
+                tracing::debug!("Failed to write serve.mode: {e}");
+            }
         }
 
         None

@@ -232,7 +232,9 @@ impl HomeView {
                         crate::session::config::load_config().map(|c| c.unwrap_or_default())
                     {
                         config.app_state.has_acknowledged_agent_hooks = true;
-                        let _ = crate::session::config::save_config(&config);
+                        if let Err(e) = crate::session::config::save_config(&config) {
+                            tracing::warn!("Failed to save config: {e}");
+                        }
                     }
                     // Resume session creation
                     if let Some(data) = self.pending_hooks_install_data.take() {
