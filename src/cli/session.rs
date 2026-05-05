@@ -14,8 +14,8 @@ pub enum SessionCommands {
     /// Stop session process
     Stop(SessionIdArgs),
 
-    /// Restart session
-    Restart(SessionIdArgs),
+    /// Restart session (or all sessions with `--all`)
+    Restart(RestartArgs),
 
     /// Attach to session interactively
     Attach(SessionIdArgs),
@@ -40,6 +40,25 @@ pub enum SessionCommands {
 pub struct SessionIdArgs {
     /// Session ID or title
     identifier: String,
+}
+
+#[derive(Args)]
+pub struct RestartArgs {
+    /// Session ID or title (required unless `--all` is passed)
+    pub identifier: Option<String>,
+
+    /// Restart every session in the active profile. Useful after
+    /// `aoe update`, after editing `sandbox.environment`, after a
+    /// Docker hiccup, or after changing a hook. Mutually exclusive
+    /// with `identifier`.
+    #[arg(long, conflicts_with = "identifier")]
+    pub all: bool,
+
+    /// Concurrency cap for `--all`. Restarting many sandboxed
+    /// sessions in parallel pressures dockerd, so the default is
+    /// intentionally modest. Ignored when `--all` is not set.
+    #[arg(long, default_value_t = 3)]
+    pub parallel: usize,
 }
 
 #[derive(Args)]
@@ -131,7 +150,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
     match command {
         SessionCommands::Start(args) => start_session(profile, args).await,
         SessionCommands::Stop(args) => stop_session(profile, args).await,
-        SessionCommands::Restart(args) => restart_session(profile, args).await,
+        SessionCommands::Restart(args) => restart_session_dispatch(profile, args).await,
         SessionCommands::Attach(args) => attach_session(profile, args).await,
         SessionCommands::Show(args) => show_session(profile, args).await,
         SessionCommands::Capture(args) => capture_session(profile, args).await,
@@ -203,6 +222,20 @@ async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn restart_session_dispatch(profile: &str, args: RestartArgs) -> Result<()> {
+    if args.all {
+        return restart_all_sessions(profile, args.parallel).await;
+    }
+    let identifier = args
+        .identifier
+        .ok_or_else(|| anyhow::anyhow!("session identifier required (or pass --all)"))?;
+    restart_session(profile, SessionIdArgs { identifier }).await
+}
+
+async fn restart_all_sessions(_profile: &str, _parallel: usize) -> Result<()> {
+    bail!("--all not yet implemented")
 }
 
 async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
@@ -539,4 +572,65 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
         None => println!("✓ Cleared session ID for '{}'", title),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod restart_args_tests {
+    use super::SessionCommands;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: SessionCommands,
+    }
+
+    #[test]
+    fn restart_with_identifier_still_parses() {
+        let cli = Cli::try_parse_from(["aoe", "restart", "claude-3"])
+            .expect("identifier-only must parse");
+        match cli.cmd {
+            SessionCommands::Restart(args) => {
+                assert!(!args.all);
+                assert_eq!(args.identifier.as_deref(), Some("claude-3"));
+                assert_eq!(args.parallel, 3);
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn restart_all_alone_parses() {
+        let cli = Cli::try_parse_from(["aoe", "restart", "--all"]).expect("--all alone must parse");
+        match cli.cmd {
+            SessionCommands::Restart(args) => {
+                assert!(args.all);
+                assert!(args.identifier.is_none());
+                assert_eq!(args.parallel, 3);
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn restart_all_with_parallel_parses() {
+        let cli = Cli::try_parse_from(["aoe", "restart", "--all", "--parallel", "5"])
+            .expect("--all --parallel must parse");
+        match cli.cmd {
+            SessionCommands::Restart(args) => {
+                assert!(args.all);
+                assert_eq!(args.parallel, 5);
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn restart_identifier_and_all_conflicts() {
+        let result = Cli::try_parse_from(["aoe", "restart", "claude-3", "--all"]);
+        assert!(
+            result.is_err(),
+            "passing both identifier and --all should error"
+        );
+    }
 }
