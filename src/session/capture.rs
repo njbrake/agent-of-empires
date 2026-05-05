@@ -980,22 +980,74 @@ fn select_opencode_session_from_values(
 
 /// Resolve the path to opencode's local SQLite session store.
 ///
-/// Honors `XDG_DATA_HOME` first, then falls back to `$HOME/.local/share`.
-/// Mirrors opencode's own data-dir resolution so the file we read is the
-/// one opencode is writing.
+/// Mirrors opencode's own resolution order (see `packages/opencode/src/storage/db.ts`):
+///   1. `OPENCODE_DB` env var: absolute path used verbatim, relative path
+///      joined to data dir, `:memory:` is unsupported (bail).
+///   2. Most recently modified `opencode*.db` in the data dir (covers both
+///      the standard `opencode.db` and channel variants like `opencode-dev.db`).
 fn opencode_db_path() -> Result<PathBuf> {
+    let data_dir = opencode_data_dir()?;
+
+    // 1. Explicit override via OPENCODE_DB (same env var opencode reads).
+    if let Ok(db_env) = std::env::var("OPENCODE_DB") {
+        if !db_env.is_empty() {
+            if db_env == ":memory:" {
+                anyhow::bail!("opencode is using an in-memory DB; cannot read sessions via SQLite");
+            }
+            let p = PathBuf::from(&db_env);
+            if p.is_absolute() {
+                return Ok(p);
+            }
+            return Ok(data_dir.join(p));
+        }
+    }
+
+    // 2. Find the most recently modified opencode DB in data_dir.
+    //    Covers both the standard filename (latest/beta/prod) and channel
+    //    variants (opencode-{channel}.db). Picking by mtime ensures we read
+    //    the DB the running opencode instance is actively writing to.
+    if let Ok(entries) = std::fs::read_dir(&data_dir) {
+        let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let is_candidate = name_str == "opencode.db"
+                || (name_str.starts_with("opencode-") && name_str.ends_with(".db"));
+            if is_candidate {
+                if let Ok(meta) = entry.metadata() {
+                    let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                    if best.as_ref().is_none_or(|(_, t)| mtime > *t) {
+                        best = Some((entry.path(), mtime));
+                    }
+                }
+            }
+        }
+        if let Some((path, _)) = best {
+            return Ok(path);
+        }
+    }
+
+    // Nothing found; return standard path so the caller gets a clear
+    // "not found" error and falls back to the subprocess path.
+    Ok(data_dir.join("opencode.db"))
+}
+
+/// Resolve opencode's data directory.
+///
+/// Uses `XDG_DATA_HOME` if set (same `xdg-basedir` npm package opencode uses),
+/// otherwise `$HOME/.local/share`. Both Linux and macOS use this path.
+fn opencode_data_dir() -> Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         if !xdg.is_empty() {
-            return Ok(PathBuf::from(xdg).join("opencode").join("opencode.db"));
+            return Ok(PathBuf::from(xdg).join("opencode"));
         }
     }
     let home =
-        std::env::var("HOME").context("HOME is not set; cannot resolve opencode SQLite path")?;
+        std::env::var("HOME").context("HOME is not set; cannot resolve opencode data dir")?;
     Ok(PathBuf::from(home)
         .join(".local")
         .join("share")
-        .join("opencode")
-        .join("opencode.db"))
+        .join("opencode"))
 }
 
 /// Load opencode's session rows from its SQLite store at `db_path`.
@@ -3536,5 +3588,128 @@ mod tests {
         let result =
             select_opencode_session_from_values(&entries, "/different", &HashSet::new(), None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_respects_opencode_db_env_absolute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_path = tmp.path().join("custom.db");
+        std::fs::write(&custom_path, "").unwrap();
+
+        let old = std::env::var("OPENCODE_DB").ok();
+        std::env::set_var("OPENCODE_DB", custom_path.to_str().unwrap());
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, custom_path);
+
+        match old {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => std::env::remove_var("OPENCODE_DB"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_respects_opencode_db_env_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join(".local").join("share").join("opencode");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let old_db = std::env::var("OPENCODE_DB").ok();
+        let old_home = std::env::var("HOME").ok();
+        let old_xdg = std::env::var("XDG_DATA_HOME").ok();
+        std::env::set_var("OPENCODE_DB", "custom.db");
+        std::env::set_var("HOME", tmp.path().to_str().unwrap());
+        std::env::remove_var("XDG_DATA_HOME");
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, data_dir.join("custom.db"));
+
+        match old_db {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => std::env::remove_var("OPENCODE_DB"),
+        }
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_xdg {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => {}
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_memory_returns_error() {
+        let old = std::env::var("OPENCODE_DB").ok();
+        std::env::set_var("OPENCODE_DB", ":memory:");
+
+        let result = opencode_db_path();
+        assert!(result.is_err());
+
+        match old {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => std::env::remove_var("OPENCODE_DB"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_finds_channel_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("opencode");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let channel_db = data_dir.join("opencode-dev.db");
+        std::fs::write(&channel_db, "").unwrap();
+
+        let old_db = std::env::var("OPENCODE_DB").ok();
+        let old_xdg = std::env::var("XDG_DATA_HOME").ok();
+        std::env::remove_var("OPENCODE_DB");
+        std::env::set_var("XDG_DATA_HOME", tmp.path().to_str().unwrap());
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, channel_db);
+
+        match old_db {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => {}
+        }
+        match old_xdg {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_picks_most_recent_when_both_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("opencode");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let standard = data_dir.join("opencode.db");
+        let channel = data_dir.join("opencode-dev.db");
+        std::fs::write(&standard, "").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&channel, "").unwrap();
+
+        let old_db = std::env::var("OPENCODE_DB").ok();
+        let old_xdg = std::env::var("XDG_DATA_HOME").ok();
+        std::env::remove_var("OPENCODE_DB");
+        std::env::set_var("XDG_DATA_HOME", tmp.path().to_str().unwrap());
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, channel, "should pick the most recently modified DB");
+
+        match old_db {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => {}
+        }
+        match old_xdg {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
     }
 }
