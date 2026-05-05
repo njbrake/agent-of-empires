@@ -1,12 +1,15 @@
 //! Self-update: detect install method, perform update.
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
+
+use crate::update::is_newer_version;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallMethod {
@@ -359,7 +362,90 @@ pub async fn update_via_tarball(
     Ok(())
 }
 
-fn update_via_brew() -> Result<()> {
+/// How long we wait for `brew info aoe --json=v2` before giving up on
+/// learning what version Homebrew has. Same rationale as
+/// `BREW_PROBE_TIMEOUT`: don't let a hung `brew` block the update flow.
+const BREW_INFO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Deserialize)]
+struct BrewInfoEntry {
+    versions: BrewVersions,
+}
+
+#[derive(Deserialize)]
+struct BrewVersions {
+    stable: Option<String>,
+}
+
+/// Return the `versions.stable` Homebrew currently advertises for the
+/// `aoe` formula, or `None` if brew isn't installed, the formula isn't
+/// known, the probe times out, or the JSON can't be parsed.
+fn brew_available_version() -> Option<String> {
+    brew_available_version_with_timeout(BREW_INFO_TIMEOUT)
+}
+
+fn brew_available_version_with_timeout(timeout: std::time::Duration) -> Option<String> {
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    let mut child = Command::new("brew")
+        .args(["info", "aoe", "--json=v2"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+
+    let output = child.wait_with_output().ok()?;
+    parse_brew_stable_version(&output.stdout)
+}
+
+/// `brew info --json=v2` wraps the formula list under a top-level
+/// `formulae` array; older `--json=v1` (and some shims) return the bare
+/// array. Accept either so this keeps working if Homebrew reshuffles the
+/// envelope, and so the unit tests can use the simpler shape.
+fn parse_brew_stable_version(stdout: &[u8]) -> Option<String> {
+    if let Ok(entries) = serde_json::from_slice::<Vec<BrewInfoEntry>>(stdout) {
+        return entries.into_iter().next()?.versions.stable;
+    }
+    #[derive(Deserialize)]
+    struct V2Envelope {
+        formulae: Vec<BrewInfoEntry>,
+    }
+    let env: V2Envelope = serde_json::from_slice(stdout).ok()?;
+    env.formulae.into_iter().next()?.versions.stable
+}
+
+fn brew_formula_lag_message(target_version: &str, brew_version: &str) -> String {
+    format!(
+        "Homebrew formula hasn't caught up to v{target_version} yet (brew currently has v{brew_version}).\n\
+         The Homebrew formula usually updates within a few hours of a release. Try again later, \
+         or grab the tarball directly:\n\
+         \n    https://github.com/njbrake/agent-of-empires/releases/tag/v{target_version}"
+    )
+}
+
+fn update_via_brew(target_version: &str) -> Result<()> {
     let status = Command::new("brew")
         .args(["update"])
         .status()
@@ -367,6 +453,18 @@ fn update_via_brew() -> Result<()> {
     if !status.success() {
         anyhow::bail!("`brew update` failed (exit {})", status);
     }
+
+    // Homebrew formulae lag behind GitHub releases by minutes to hours.
+    // If brew's formula is still on an older version, `brew upgrade aoe`
+    // exits 0 silently and leaves the user on the old binary, with the TUI
+    // still nagging about an available update. Detect the lag up front
+    // and bail with a clear explanation instead.
+    if let Some(brew_version) = brew_available_version() {
+        if is_newer_version(target_version, &brew_version) {
+            anyhow::bail!(brew_formula_lag_message(target_version, &brew_version));
+        }
+    }
+
     let status = Command::new("brew")
         .args(["upgrade", "aoe"])
         .status()
@@ -449,7 +547,7 @@ pub async fn perform_update(
     on_progress: Option<&mut dyn FnMut(u64, Option<u64>)>,
 ) -> Result<()> {
     match method {
-        InstallMethod::Homebrew => update_via_brew(),
+        InstallMethod::Homebrew => update_via_brew(version),
         InstallMethod::Tarball { binary_path } => {
             update_via_tarball(binary_path, version, on_progress).await
         }
@@ -851,6 +949,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parse_brew_stable_version_handles_v1_array() {
+        let stdout = br#"[{"versions":{"stable":"1.5.2"}}]"#;
+        assert_eq!(parse_brew_stable_version(stdout), Some("1.5.2".to_string()));
+    }
+
+    #[test]
+    fn parse_brew_stable_version_handles_v2_envelope() {
+        let stdout = br#"{"formulae":[{"versions":{"stable":"1.5.2"}}],"casks":[]}"#;
+        assert_eq!(parse_brew_stable_version(stdout), Some("1.5.2".to_string()));
+    }
+
+    #[test]
+    fn parse_brew_stable_version_returns_none_for_garbage() {
+        assert_eq!(parse_brew_stable_version(b"not json"), None);
+        assert_eq!(parse_brew_stable_version(b""), None);
+        assert_eq!(parse_brew_stable_version(b"[]"), None);
+        // v2 envelope with no formulae
+        assert_eq!(
+            parse_brew_stable_version(br#"{"formulae":[],"casks":[]}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn brew_formula_lag_message_includes_versions_and_link() {
+        let msg = brew_formula_lag_message("1.5.2", "1.5.1");
+        assert!(msg.contains("v1.5.2"));
+        assert!(msg.contains("v1.5.1"));
+        assert!(msg.contains("releases/tag/v1.5.2"));
+    }
+
     /// Hermetic tests for `update_via_brew`: PATH-shim a brew script that
     /// records its argv so we can assert the right commands ran in the
     /// right order, and that failures are surfaced.
@@ -861,20 +991,32 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use tempfile::TempDir;
 
-        fn write_recording_brew_shim(dir: &Path, fail_on: Option<&str>) -> PathBuf {
+        /// Brew shim that handles `info aoe --json=v2` (emits the supplied
+        /// stable version as a v1-style top-level array) and records every
+        /// invocation. `fail_on` lets a test simulate a brew subcommand
+        /// failing (matched on the first arg).
+        fn write_recording_brew_shim(
+            dir: &Path,
+            stable_version: &str,
+            fail_on: Option<&str>,
+        ) -> PathBuf {
             let log = dir.join("brew.log");
             let shim = dir.join("brew");
-            let body = if let Some(failing_cmd) = fail_on {
-                format!(
-                    "#!/bin/sh\necho \"$@\" >> {log}\nif [ \"$1\" = \"{failing_cmd}\" ]; then exit 2; fi\nexit 0\n",
-                    log = log.display()
-                )
-            } else {
-                format!(
-                    "#!/bin/sh\necho \"$@\" >> {log}\nexit 0\n",
-                    log = log.display()
-                )
+            let fail_branch = match fail_on {
+                Some(cmd) => format!("if [ \"$1\" = \"{cmd}\" ]; then exit 2; fi\n"),
+                None => String::new(),
             };
+            let body = format!(
+                "#!/bin/sh\n\
+                 echo \"$@\" >> {log}\n\
+                 {fail_branch}\
+                 if [ \"$1\" = \"info\" ]; then\n\
+                 printf '[{{\"versions\":{{\"stable\":\"{stable}\"}}}}]'\n\
+                 fi\n\
+                 exit 0\n",
+                log = log.display(),
+                stable = stable_version,
+            );
             std::fs::write(&shim, body).unwrap();
             #[cfg(unix)]
             std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -894,28 +1036,29 @@ mod tests {
 
         #[test]
         #[serial]
-        fn runs_update_then_upgrade_aoe() {
+        fn runs_update_info_then_upgrade_aoe() {
             let dir = TempDir::new().unwrap();
-            let log = write_recording_brew_shim(dir.path(), None);
+            let log = write_recording_brew_shim(dir.path(), "1.5.2", None);
 
             with_path_prepended(dir.path(), || {
-                update_via_brew().expect("brew upgrade should succeed");
+                update_via_brew("1.5.2").expect("brew upgrade should succeed");
             });
 
             let invocations = std::fs::read_to_string(&log).unwrap();
             let lines: Vec<_> = invocations.lines().collect();
-            assert_eq!(lines.len(), 2, "expected 2 brew calls; got {invocations:?}");
+            assert_eq!(lines.len(), 3, "expected 3 brew calls; got {invocations:?}");
             assert_eq!(lines[0], "update");
-            assert_eq!(lines[1], "upgrade aoe");
+            assert_eq!(lines[1], "info aoe --json=v2");
+            assert_eq!(lines[2], "upgrade aoe");
         }
 
         #[test]
         #[serial]
         fn brew_update_failure_aborts_before_upgrade() {
             let dir = TempDir::new().unwrap();
-            let log = write_recording_brew_shim(dir.path(), Some("update"));
+            let log = write_recording_brew_shim(dir.path(), "1.5.2", Some("update"));
 
-            let err = with_path_prepended_returning(dir.path(), update_via_brew);
+            let err = with_path_prepended_returning(dir.path(), || update_via_brew("1.5.2"));
             let err = err.expect_err("brew update failure should propagate");
             assert!(
                 err.to_string().contains("brew update"),
@@ -927,7 +1070,7 @@ mod tests {
             assert_eq!(
                 lines,
                 vec!["update"],
-                "upgrade should not run after update failure"
+                "info/upgrade should not run after update failure"
             );
         }
 
@@ -935,9 +1078,9 @@ mod tests {
         #[serial]
         fn brew_upgrade_failure_is_reported() {
             let dir = TempDir::new().unwrap();
-            let log = write_recording_brew_shim(dir.path(), Some("upgrade"));
+            let log = write_recording_brew_shim(dir.path(), "1.5.2", Some("upgrade"));
 
-            let err = with_path_prepended_returning(dir.path(), update_via_brew);
+            let err = with_path_prepended_returning(dir.path(), || update_via_brew("1.5.2"));
             let err = err.expect_err("brew upgrade failure should propagate");
             assert!(
                 err.to_string().contains("brew upgrade aoe"),
@@ -946,7 +1089,68 @@ mod tests {
 
             let invocations = std::fs::read_to_string(&log).unwrap();
             let lines: Vec<_> = invocations.lines().collect();
-            assert_eq!(lines.len(), 2, "expected both calls before failure");
+            assert_eq!(lines.len(), 3, "expected update, info, upgrade calls");
+        }
+
+        /// Regression for #913: when the GitHub release is newer than the
+        /// version Homebrew's formula advertises, `update_via_brew` must
+        /// bail loudly. Without the pre-check, `brew upgrade aoe` exits 0
+        /// and leaves the user on the old binary while the TUI keeps
+        /// nagging about an available update.
+        #[test]
+        #[serial]
+        fn bails_when_brew_formula_lags_target() {
+            let dir = TempDir::new().unwrap();
+            // brew has 1.5.1 but we're trying to install 1.5.2
+            let log = write_recording_brew_shim(dir.path(), "1.5.1", None);
+
+            let err = with_path_prepended_returning(dir.path(), || update_via_brew("1.5.2"));
+            let err = err.expect_err("formula lag should fail loudly");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Homebrew formula")
+                    && msg.contains("v1.5.2")
+                    && msg.contains("v1.5.1"),
+                "expected formula-lag explanation; got: {msg}"
+            );
+            assert!(
+                msg.contains("releases/tag/v1.5.2"),
+                "expected tarball link; got: {msg}"
+            );
+
+            let invocations = std::fs::read_to_string(&log).unwrap();
+            let lines: Vec<_> = invocations.lines().collect();
+            assert_eq!(
+                lines,
+                vec!["update", "info aoe --json=v2"],
+                "upgrade should not run when brew is behind"
+            );
+        }
+
+        /// If `brew info` returns no parseable data (older brew, network
+        /// blip, formula not tapped yet), fall back to the legacy
+        /// behavior of just running `brew upgrade aoe`. Better to attempt
+        /// the upgrade than to block users on a parsing edge case.
+        #[test]
+        #[serial]
+        fn proceeds_when_brew_info_returns_no_data() {
+            let dir = TempDir::new().unwrap();
+            // No JSON branch in this shim; `info` emits nothing.
+            let log = dir.path().join("brew.log");
+            let shim = dir.path().join("brew");
+            let body = format!("#!/bin/sh\necho \"$@\" >> {}\nexit 0\n", log.display());
+            std::fs::write(&shim, body).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            with_path_prepended(dir.path(), || {
+                update_via_brew("1.5.2").expect("missing JSON should not block upgrade");
+            });
+
+            let invocations = std::fs::read_to_string(&log).unwrap();
+            let lines: Vec<_> = invocations.lines().collect();
+            assert_eq!(lines.len(), 3, "upgrade should still run; got {lines:?}");
+            assert_eq!(lines[2], "upgrade aoe");
         }
 
         // PATH-prepended runner that returns a value (Result, in this case).

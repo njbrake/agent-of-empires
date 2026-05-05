@@ -208,7 +208,7 @@ fn filter_releases(releases: Vec<ReleaseInfo>, from_version: Option<&str>) -> Ve
     }
 }
 
-fn is_newer_version(latest: &str, current: &str) -> bool {
+pub(crate) fn is_newer_version(latest: &str, current: &str) -> bool {
     let parse_version =
         |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
 
