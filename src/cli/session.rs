@@ -234,8 +234,60 @@ async fn restart_session_dispatch(profile: &str, args: RestartArgs) -> Result<()
     restart_session(profile, SessionIdArgs { identifier }).await
 }
 
-async fn restart_all_sessions(_profile: &str, _parallel: usize) -> Result<()> {
-    bail!("--all not yet implemented")
+async fn restart_all_sessions(profile: &str, _parallel: usize) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let target_ids = pick_targets_for_restart_all(&instances);
+    if target_ids.is_empty() {
+        println!("No sessions to restart in profile '{}'.", profile);
+        return Ok(());
+    }
+
+    let total = target_ids.len();
+    let size = crate::terminal::get_size();
+    let mut succeeded: Vec<String> = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
+
+    for id in target_ids {
+        let Some(idx) = instances.iter().position(|i| i.id == id) else {
+            continue;
+        };
+        let title = instances[idx].title.clone();
+        match instances[idx].restart_with_size(size) {
+            Ok(()) => succeeded.push(title),
+            Err(e) => failed.push((title, e.to_string())),
+        }
+    }
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    println!("✓ Restarted {}/{} sessions:", succeeded.len(), total);
+    for title in &succeeded {
+        println!("  · {}", title);
+    }
+    if !failed.is_empty() {
+        println!("✗ {} failed:", failed.len());
+        for (title, err) in &failed {
+            println!("  · {}: {}", title, err);
+        }
+        bail!("{} session(s) failed to restart", failed.len());
+    }
+
+    Ok(())
+}
+
+/// Sessions in `Deleting` or `Creating` are mid-transition; restarting them
+/// would race the deletion/boot path. Everything else is fair game; agents
+/// have their own resume-or-restart logic on the next start.
+fn pick_targets_for_restart_all(instances: &[crate::session::Instance]) -> Vec<String> {
+    use crate::session::Status;
+    instances
+        .iter()
+        .filter(|i| !matches!(i.status, Status::Deleting | Status::Creating))
+        .map(|i| i.id.clone())
+        .collect()
 }
 
 async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
@@ -632,5 +684,51 @@ mod restart_args_tests {
             result.is_err(),
             "passing both identifier and --all should error"
         );
+    }
+}
+
+#[cfg(test)]
+mod target_filter_tests {
+    use super::pick_targets_for_restart_all;
+    use crate::session::{Instance, Status};
+
+    fn instance_with_status(id: &str, status: Status) -> Instance {
+        let mut inst = Instance::new(id, "/tmp");
+        inst.id = id.to_string();
+        inst.status = status;
+        inst
+    }
+
+    #[test]
+    fn skips_deleting_and_creating() {
+        let instances = vec![
+            instance_with_status("running", Status::Running),
+            instance_with_status("idle", Status::Idle),
+            instance_with_status("stopped", Status::Stopped),
+            instance_with_status("error", Status::Error),
+            instance_with_status("waiting", Status::Waiting),
+            instance_with_status("starting", Status::Starting),
+            instance_with_status("unknown", Status::Unknown),
+            instance_with_status("deleting", Status::Deleting),
+            instance_with_status("creating", Status::Creating),
+        ];
+        let mut picked = pick_targets_for_restart_all(&instances);
+        picked.sort();
+        let mut expected = vec![
+            "error".to_string(),
+            "idle".to_string(),
+            "running".to_string(),
+            "starting".to_string(),
+            "stopped".to_string(),
+            "unknown".to_string(),
+            "waiting".to_string(),
+        ];
+        expected.sort();
+        assert_eq!(picked, expected);
+    }
+
+    #[test]
+    fn empty_input_yields_empty_targets() {
+        assert!(pick_targets_for_restart_all(&[]).is_empty());
     }
 }
