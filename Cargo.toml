@@ -102,6 +102,12 @@ futures-util = "0.3"
 # Temporary files and directories
 tempfile = "3.14"
 
+# Local SQLite reader for opencode's session store. Bundled to avoid a
+# system libsqlite3 dependency. Used to read session state without spawning
+# `opencode session list`, which leaks a 4.5MB /tmp/.<hash>.so per invocation
+# via opencode's bun:ffi OpenTUI extract path (see anomalyco/opencode#6523).
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # Web server (optional, behind "serve" feature)
 axum = { version = "0.8", features = ["ws"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
