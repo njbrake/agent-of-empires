@@ -495,7 +495,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             // render the right transport label: "tunnel" for Cloudflare,
             // "tailscale" for Tailscale Funnel, "local" for local-only.
             let mode = format!("{}\n", handle.mode_label());
-            let _ = std::fs::write(app_dir.join("serve.mode"), mode);
+            if let Err(e) = std::fs::write(app_dir.join("serve.mode"), mode) {
+                tracing::debug!("Failed to write serve.mode: {e}");
+            }
         }
 
         // Start health monitor (uses CancellationToken internally)
@@ -554,7 +556,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 contents.push('\n');
             }
             write_secret_file(&app_dir.join("serve.url"), &contents);
-            let _ = std::fs::write(app_dir.join("serve.mode"), "local\n");
+            if let Err(e) = std::fs::write(app_dir.join("serve.mode"), "local\n") {
+                tracing::debug!("Failed to write serve.mode: {e}");
+            }
         }
 
         None
@@ -1071,7 +1075,13 @@ async fn status_poll_loop(state: Arc<AppState>) {
 
         // Run blocking tmux subprocess calls in a dedicated thread
         let updated = tokio::task::spawn_blocking(move || {
-            let mut instances = load_all_instances().unwrap_or_default();
+            let mut instances = match load_all_instances() {
+                Ok(i) => i,
+                Err(e) => {
+                    tracing::debug!("Failed to load instances: {e}");
+                    Vec::new()
+                }
+            };
 
             crate::tmux::refresh_session_cache();
             let pane_metadata = crate::tmux::batch_pane_metadata();

@@ -110,7 +110,13 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         .build()?;
 
     // Fetch all releases (includes body/release notes)
-    let releases = fetch_releases(&client).await.unwrap_or_default();
+    let releases = match fetch_releases(&client).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Failed to fetch releases: {e}");
+            Vec::new()
+        }
+    };
 
     let latest_version = releases
         .first()
