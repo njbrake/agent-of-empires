@@ -436,13 +436,35 @@ fn parse_brew_stable_version(stdout: &[u8]) -> Option<String> {
     env.formulae.into_iter().next()?.versions.stable
 }
 
-fn brew_formula_lag_message(target_version: &str, brew_version: &str) -> String {
+fn brew_formula_lag_message(target_version: &str) -> String {
     format!(
-        "Homebrew formula hasn't caught up to v{target_version} yet (brew currently has v{brew_version}).\n\
-         The Homebrew formula usually updates within a few hours of a release. Try again later, \
-         or grab the tarball directly:\n\
-         \n    https://github.com/njbrake/agent-of-empires/releases/tag/v{target_version}"
+        "v{target_version} isn't available on Homebrew yet. Please try again in a little while; the formula usually catches up within a few hours of a release."
     )
+}
+
+/// True if the running install can pull `target_version` right now.
+///
+/// Returns `false` only for the specific Homebrew-formula-lag case
+/// (release is on GitHub but the formula hasn't caught up yet). All
+/// other install methods return `true`, as do Homebrew installs where
+/// the formula already has the version, where brew probing fails, or
+/// where install detection fails. Callers use this to suppress the
+/// TUI's "update available" ribbon during the lag window so users
+/// aren't nagged about an update they can't apply yet.
+///
+/// Synchronous (runs `brew info` with a timeout); call from a
+/// `spawn_blocking` task if you're on the tokio runtime.
+pub fn install_method_supports_target(target_version: &str) -> bool {
+    let Ok(method) = detect_install_method() else {
+        return true;
+    };
+    if !matches!(method, InstallMethod::Homebrew) {
+        return true;
+    }
+    match brew_available_version() {
+        Some(v) => !is_newer_version(target_version, &v),
+        None => true,
+    }
 }
 
 fn update_via_brew(target_version: &str) -> Result<()> {
@@ -461,7 +483,7 @@ fn update_via_brew(target_version: &str) -> Result<()> {
     // and bail with a clear explanation instead.
     if let Some(brew_version) = brew_available_version() {
         if is_newer_version(target_version, &brew_version) {
-            anyhow::bail!(brew_formula_lag_message(target_version, &brew_version));
+            anyhow::bail!(brew_formula_lag_message(target_version));
         }
     }
 
@@ -974,11 +996,11 @@ mod tests {
     }
 
     #[test]
-    fn brew_formula_lag_message_includes_versions_and_link() {
-        let msg = brew_formula_lag_message("1.5.2", "1.5.1");
+    fn brew_formula_lag_message_is_friendly() {
+        let msg = brew_formula_lag_message("1.5.2");
         assert!(msg.contains("v1.5.2"));
-        assert!(msg.contains("v1.5.1"));
-        assert!(msg.contains("releases/tag/v1.5.2"));
+        assert!(msg.to_lowercase().contains("homebrew"));
+        assert!(msg.to_lowercase().contains("try again"));
     }
 
     /// Hermetic tests for `update_via_brew`: PATH-shim a brew script that
@@ -1108,14 +1130,8 @@ mod tests {
             let err = err.expect_err("formula lag should fail loudly");
             let msg = err.to_string();
             assert!(
-                msg.contains("Homebrew formula")
-                    && msg.contains("v1.5.2")
-                    && msg.contains("v1.5.1"),
+                msg.contains("v1.5.2") && msg.to_lowercase().contains("homebrew"),
                 "expected formula-lag explanation; got: {msg}"
-            );
-            assert!(
-                msg.contains("releases/tag/v1.5.2"),
-                "expected tarball link; got: {msg}"
             );
 
             let invocations = std::fs::read_to_string(&log).unwrap();

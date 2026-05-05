@@ -286,7 +286,26 @@ impl App {
             self.update_rx = Some(rx);
             tokio::spawn(async move {
                 let version = env!("CARGO_PKG_VERSION");
-                let _ = tx.send(check_for_update(version, false).await);
+                let mut result = check_for_update(version, false).await;
+                // For Homebrew installs, suppress the "update available"
+                // ribbon until the formula has caught up to the GitHub
+                // release. Otherwise users see the prompt, press 'u', and
+                // hit a no-op `brew upgrade` while the formula lags. The
+                // brew probes are sync; offload to keep the runtime free.
+                if let Ok(info) = &mut result {
+                    if info.available {
+                        let target = info.latest_version.clone();
+                        let actionable = tokio::task::spawn_blocking(move || {
+                            crate::update::install::install_method_supports_target(&target)
+                        })
+                        .await
+                        .unwrap_or(true);
+                        if !actionable {
+                            info.available = false;
+                        }
+                    }
+                }
+                let _ = tx.send(result);
             });
         }
 
