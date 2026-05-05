@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
