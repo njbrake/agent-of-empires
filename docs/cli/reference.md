@@ -209,7 +209,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 
 * `start` — Start a session's tmux process
 * `stop` — Stop session process
-* `restart` — Restart session
+* `restart` — Restart session (or all sessions with `--all`)
 * `attach` — Attach to session interactively
 * `show` — Show session details
 * `rename` — Rename a session
@@ -245,13 +245,20 @@ Stop session process
 
 ## `aoe session restart`
 
-Restart session
+Restart session (or all sessions with `--all`)
 
-**Usage:** `aoe session restart <IDENTIFIER>`
+**Usage:** `aoe session restart [OPTIONS] [IDENTIFIER]`
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>` — Session ID or title (required unless `--all` is passed)
+
+###### **Options:**
+
+* `--all` — Restart every session in the active profile. Useful after `aoe update`, after editing `sandbox.environment`, after a Docker hiccup, or after changing a hook. Mutually exclusive with `identifier`
+* `--parallel <PARALLEL>` — Concurrency cap for `--all`. Restarting many sandboxed sessions in parallel pressures dockerd, so the default is intentionally modest. Ignored when `--all` is not set
+
+  Default value: `3`
 
 
 
