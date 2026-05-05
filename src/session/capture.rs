@@ -986,8 +986,6 @@ fn select_opencode_session_from_values(
 ///   2. Most recently modified `opencode*.db` in the data dir (covers both
 ///      the standard `opencode.db` and channel variants like `opencode-dev.db`).
 fn opencode_db_path() -> Result<PathBuf> {
-    let data_dir = opencode_data_dir()?;
-
     // 1. Explicit override via OPENCODE_DB (same env var opencode reads).
     if let Ok(db_env) = std::env::var("OPENCODE_DB") {
         if !db_env.is_empty() {
@@ -998,9 +996,11 @@ fn opencode_db_path() -> Result<PathBuf> {
             if p.is_absolute() {
                 return Ok(p);
             }
-            return Ok(data_dir.join(p));
+            return Ok(opencode_data_dir()?.join(p));
         }
     }
+
+    let data_dir = opencode_data_dir()?;
 
     // 2. Find the most recently modified opencode DB in data_dir.
     //    Covers both the standard filename (latest/beta/prod) and channel
