@@ -250,10 +250,16 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
 
     // Clone each target into its worker; we'll write the (mutated) copy back
     // by index after the worker returns. Workers never touch the shared Vec.
+    // `source_profile` is runtime-only (skip_serializing) so storage-loaded
+    // instances always come back blank; rehydrate it from the storage profile
+    // so start-time config resolution honors the right profile's overrides
+    // (sandbox.environment, on_launch hooks, etc.).
     let mut targets: Vec<(usize, crate::session::Instance)> = Vec::with_capacity(total);
     for id in &target_ids {
         if let Some(idx) = instances.iter().position(|i| &i.id == id) {
-            targets.push((idx, instances[idx].clone()));
+            let mut clone = instances[idx].clone();
+            clone.source_profile = profile.to_string();
+            targets.push((idx, clone));
         }
     }
 
@@ -348,6 +354,10 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
+    // `source_profile` is runtime-only (skip_serializing) so storage-loaded
+    // instances always come back blank; rehydrate it from the storage profile
+    // so restart-time config resolution honors the right profile's overrides.
+    instances[idx].source_profile = profile.to_string();
     instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
 
