@@ -522,7 +522,6 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onOpenPalette={() => setShowPalette(true)}
         onToggleDiff={toggleDiff}
         diffCollapsed={diffCollapsed}
-        onOpenSettings={handleOpenSettings}
         onOpenHelp={handleOpenHelp}
         onOpenAbout={handleOpenAbout}
         onLogout={onLogout}
