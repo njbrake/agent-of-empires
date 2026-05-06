@@ -371,12 +371,7 @@ impl GitWorktree {
             return Ok(());
         }
 
-        let allow_file_transport = Self::gitmodules_has_local_urls(&gitmodules_path);
-        let mut command = std::process::Command::new("git");
-        if allow_file_transport {
-            command.args(["-c", "protocol.file.allow=always"]);
-        }
-        let output = command
+        let output = std::process::Command::new("git")
             .args(["submodule", "update", "--init", "--recursive"])
             .current_dir(worktree_path)
             .output()?;
@@ -385,6 +380,14 @@ impl GitWorktree {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let message = if stderr.is_empty() { stdout } else { stderr };
+            if Self::is_file_transport_blocked(&message) {
+                tracing::warn!(
+                    "skipping submodule initialization in {} because git blocked local file transport: {}",
+                    worktree_path.display(),
+                    message
+                );
+                return Ok(());
+            }
             return Err(GitError::WorktreeCommandFailed(if message.is_empty() {
                 "git submodule update --init --recursive failed".to_string()
             } else {
@@ -395,39 +398,11 @@ impl GitWorktree {
         Ok(())
     }
 
-    fn gitmodules_has_local_urls(gitmodules_path: &Path) -> bool {
-        let Ok(content) = std::fs::read_to_string(gitmodules_path) else {
-            return false;
-        };
-
-        content
-            .lines()
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                let (key, value) = trimmed.split_once('=')?;
-                if key.trim() != "url" {
-                    return None;
-                }
-                Some(value.trim())
-            })
-            .any(Self::is_local_submodule_url)
-    }
-
-    fn is_local_submodule_url(url: &str) -> bool {
-        if url.starts_with("file://")
-            || url.starts_with('/')
-            || url.starts_with("./")
-            || url.starts_with("../")
-            || url.starts_with("~/")
-        {
-            return true;
-        }
-
-        if url.contains("://") || url.starts_with("git@") {
-            return false;
-        }
-
-        !url.contains(':')
+    fn is_file_transport_blocked(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        message.contains("transport 'file' not allowed")
+            || message.contains("transport \"file\" not allowed")
+            || message.contains("disallowed by protocol.file.allow")
     }
 
     /// Calculate a relative path from `base` to `target`.
@@ -580,6 +555,9 @@ impl GitWorktree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
     fn run_git(path: &Path, args: &[&str]) {
@@ -595,6 +573,64 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    struct GitDaemonGuard {
+        child: std::process::Child,
+    }
+
+    impl Drop for GitDaemonGuard {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    fn pick_free_port() -> u16 {
+        TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn spawn_git_daemon(base_path: &Path, repo_name: &str) -> (GitDaemonGuard, String) {
+        let port = pick_free_port();
+        let child = std::process::Command::new("git")
+            .args([
+                "daemon",
+                "--reuseaddr",
+                "--export-all",
+                &format!("--base-path={}", base_path.display()),
+                "--listen=127.0.0.1",
+                &format!("--port={port}"),
+                base_path.to_str().unwrap(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let guard = GitDaemonGuard { child };
+        let url = format!("git://127.0.0.1:{port}/{repo_name}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = std::process::Command::new("git")
+                .args(["ls-remote", &url])
+                .output()
+                .unwrap();
+            if output.status.success() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "git daemon did not become ready for {url}:\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        (guard, url)
     }
 
     fn setup_test_repo() -> (TempDir, git2::Repository) {
@@ -1706,13 +1742,101 @@ mod tests {
 
     #[test]
     fn test_create_worktree_initializes_submodules() {
+        let submodule_src_dir = TempDir::new().unwrap();
+        let submodule_repo = git2::Repository::init(submodule_src_dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+
+        std::fs::write(
+            submodule_src_dir.path().join("skill.md"),
+            "hello from submodule\n",
+        )
+        .unwrap();
+        let submodule_tree_id = {
+            let mut index = submodule_repo.index().unwrap();
+            index.add_path(Path::new("skill.md")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let submodule_tree = submodule_repo.find_tree(submodule_tree_id).unwrap();
+        submodule_repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "Initial submodule commit",
+                &submodule_tree,
+                &[],
+            )
+            .unwrap();
+
+        let daemon_root = TempDir::new().unwrap();
+        run_git(
+            daemon_root.path(),
+            &[
+                "clone",
+                "--bare",
+                submodule_src_dir.path().to_str().unwrap(),
+                "submodule.git",
+            ],
+        );
+        let (_daemon, submodule_url) = spawn_git_daemon(daemon_root.path(), "submodule.git");
+
+        let repo_dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(repo_dir.path()).unwrap();
+        std::fs::write(repo_dir.path().join("README.md"), "main repo\n").unwrap();
+        let initial_tree_id = {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README.md")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let initial_tree = repo.find_tree(initial_tree_id).unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "Initial commit",
+            &initial_tree,
+            &[],
+        )
+        .unwrap();
+
+        run_git(repo_dir.path(), &["config", "user.name", "Test"]);
+        run_git(
+            repo_dir.path(),
+            &["config", "user.email", "test@example.com"],
+        );
+        run_git(
+            repo_dir.path(),
+            &["submodule", "add", &submodule_url, ".claude"],
+        );
+
+        run_git(repo_dir.path(), &["commit", "-am", "Add submodule"]);
+
+        let repo = git2::Repository::open(repo_dir.path()).unwrap();
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("test-feature", &head_commit, false).unwrap();
+
+        let git_wt = GitWorktree::new(repo_dir.path().to_path_buf()).unwrap();
+        let worktree_parent = TempDir::new().unwrap();
+        let wt_path = worktree_parent.path().join("submodule-worktree");
+        git_wt
+            .create_worktree("test-feature", &wt_path, false)
+            .unwrap();
+
+        assert!(
+            wt_path.join(".claude").join("skill.md").is_file(),
+            "submodule contents should be initialized in the new worktree"
+        );
+    }
+
+    #[test]
+    fn test_create_worktree_skips_blocked_local_submodules() {
         let submodule_dir = TempDir::new().unwrap();
         let submodule_repo = git2::Repository::init(submodule_dir.path()).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
 
         std::fs::write(
             submodule_dir.path().join("skill.md"),
-            "hello from submodule\n",
+            "hello from local submodule\n",
         )
         .unwrap();
         let submodule_tree_id = {
@@ -1751,9 +1875,10 @@ mod tests {
         )
         .unwrap();
 
+        run_git(repo_dir.path(), &["config", "user.name", "Test"]);
         run_git(
             repo_dir.path(),
-            &["config", "protocol.file.allow", "always"],
+            &["config", "user.email", "test@example.com"],
         );
         run_git(
             repo_dir.path(),
@@ -1765,12 +1890,6 @@ mod tests {
                 submodule_dir.path().to_str().unwrap(),
                 ".claude",
             ],
-        );
-
-        run_git(repo_dir.path(), &["config", "user.name", "Test"]);
-        run_git(
-            repo_dir.path(),
-            &["config", "user.email", "test@example.com"],
         );
         run_git(repo_dir.path(), &["commit", "-am", "Add submodule"]);
 
@@ -1786,8 +1905,12 @@ mod tests {
             .unwrap();
 
         assert!(
-            wt_path.join(".claude").join("skill.md").is_file(),
-            "submodule contents should be initialized in the new worktree"
+            wt_path.join(".git").exists(),
+            "worktree creation should succeed even when git blocks local-path submodules"
+        );
+        assert!(
+            !wt_path.join(".claude").join("skill.md").is_file(),
+            "blocked local submodules should be left uninitialized rather than forcing file transport"
         );
     }
 }
