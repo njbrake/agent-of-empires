@@ -192,7 +192,7 @@ pub fn daemon_pid() -> Option<u32> {
 
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     if args.stop {
-        return stop_daemon();
+        return stop_daemon().await;
     }
 
     // Refuse to start a second instance (daemon or foreground) while another
@@ -257,12 +257,14 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     // it's available, so requiring cloudflared up front would falsely reject
     // Tailscale-only setups (issue #813).
     let host = if args.remote {
-        if cloudflared_required(
-            args.no_tailscale,
-            args.tunnel_name.is_some(),
-            crate::server::tunnel::tailscale_available_sync(),
-        ) {
-            crate::server::tunnel::check_cloudflared()?;
+        let tailscale_ok =
+            tokio::task::spawn_blocking(crate::server::tunnel::tailscale_available_sync)
+                .await
+                .unwrap_or(false);
+        if cloudflared_required(args.no_tailscale, args.tunnel_name.is_some(), tailscale_ok) {
+            tokio::task::spawn_blocking(crate::server::tunnel::check_cloudflared)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))??;
         }
         // Force localhost since the tunnel connects to localhost
         "127.0.0.1".to_string()
@@ -320,7 +322,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
 
     // Write PID file for non-daemon mode too (so --stop works either way)
     if let Ok(path) = pid_file_path() {
-        let _ = std::fs::write(&path, std::process::id().to_string());
+        let _ = tokio::fs::write(&path, std::process::id().to_string()).await;
     }
 
     let result = crate::server::start_server(crate::server::ServerConfig {
@@ -342,17 +344,18 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     // still belongs to this process. A newer daemon spawn may have
     // overwritten it; removing their file would orphan them.
     if let Ok(path) = pid_file_path() {
-        let is_ours = std::fs::read_to_string(&path)
+        let is_ours = tokio::fs::read_to_string(&path)
+            .await
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok())
             .is_some_and(|pid| pid == std::process::id());
         if is_ours {
-            let _ = std::fs::remove_file(&path);
+            let _ = tokio::fs::remove_file(&path).await;
             if let Ok(dir) = crate::session::get_app_dir() {
-                let _ = std::fs::remove_file(dir.join("serve.url"));
-                let _ = std::fs::remove_file(dir.join("serve.log"));
-                let _ = std::fs::remove_file(dir.join("serve.mode"));
-                let _ = std::fs::remove_file(dir.join("serve.passphrase"));
+                let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.log")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
             }
         }
     }
@@ -455,7 +458,7 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     Ok(())
 }
 
-fn stop_daemon() -> Result<()> {
+async fn stop_daemon() -> Result<()> {
     let path = pid_file_path()?;
 
     if !path.exists() {
@@ -465,7 +468,7 @@ fn stop_daemon() -> Result<()> {
         );
     }
 
-    let pid_str = std::fs::read_to_string(&path)?;
+    let pid_str = tokio::fs::read_to_string(&path).await?;
     let pid: i32 = pid_str
         .trim()
         .parse()
@@ -473,7 +476,7 @@ fn stop_daemon() -> Result<()> {
 
     // Verify PID belongs to an aoe process on all platforms
     if !verify_pid_is_aoe(pid) {
-        std::fs::remove_file(&path)?;
+        tokio::fs::remove_file(&path).await?;
         bail!(
             "PID {} belongs to a different process (stale PID file). Cleaned up.",
             pid
@@ -492,7 +495,7 @@ fn stop_daemon() -> Result<()> {
             // races with the dying daemon and can orphan it.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
                     Err(nix::errno::Errno::ESRCH) => break,
                     _ if std::time::Instant::now() >= deadline => {
@@ -501,7 +504,7 @@ fn stop_daemon() -> Result<()> {
                             nix::unistd::Pid::from_raw(pid),
                             nix::sys::signal::Signal::SIGKILL,
                         );
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         break;
                     }
                     _ => {}
@@ -509,23 +512,23 @@ fn stop_daemon() -> Result<()> {
             }
             // The daemon's own cleanup may have already removed some
             // of these; that's fine.
-            let _ = std::fs::remove_file(&path);
+            let _ = tokio::fs::remove_file(&path).await;
             if let Ok(dir) = crate::session::get_app_dir() {
-                let _ = std::fs::remove_file(dir.join("serve.url"));
-                let _ = std::fs::remove_file(dir.join("serve.log"));
-                let _ = std::fs::remove_file(dir.join("serve.mode"));
-                let _ = std::fs::remove_file(dir.join("serve.passphrase"));
+                let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.log")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
             }
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
         Err(nix::errno::Errno::ESRCH) => {
             // Process doesn't exist; clean up stale PID file
-            std::fs::remove_file(&path)?;
+            tokio::fs::remove_file(&path).await?;
             if let Ok(dir) = crate::session::get_app_dir() {
-                let _ = std::fs::remove_file(dir.join("serve.url"));
-                let _ = std::fs::remove_file(dir.join("serve.log"));
-                let _ = std::fs::remove_file(dir.join("serve.mode"));
-                let _ = std::fs::remove_file(dir.join("serve.passphrase"));
+                let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.log")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
+                let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
             }
             println!("Daemon was not running (stale PID file cleaned up)");
         }

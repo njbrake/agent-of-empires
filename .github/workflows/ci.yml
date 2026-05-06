@@ -19,12 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install tmux and sqlite3
+      - name: Install tmux
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y tmux sqlite3
+            sudo apt-get update && sudo apt-get install -y tmux
           else
-            brew install tmux sqlite
+            brew install tmux
           fi
       - run: cargo test
 

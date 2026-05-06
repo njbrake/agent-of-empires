@@ -405,7 +405,9 @@ impl HomeView {
         }
         if !orphan_ids.is_empty() {
             tracing::info!("Cleaned up {} orphaned creating sessions", orphan_ids.len());
-            let _ = view.save();
+            if let Err(e) = view.save() {
+                tracing::warn!("Failed to save view state: {e}");
+            }
         }
 
         // Batch-sync instance IDs and captured session IDs to tmux hidden env
@@ -671,7 +673,9 @@ impl HomeView {
                 if let Err(e) = self.save() {
                     tracing::error!("Failed to save after deletion: {}", e);
                 }
-                let _ = self.reload();
+                if let Err(e) = self.reload() {
+                    tracing::warn!("Failed to reload session state: {e}");
+                }
             } else {
                 let error = result.error;
                 self.mutate_instance(&result.session_id, |inst| {
@@ -933,7 +937,9 @@ impl HomeView {
                     self.on_launch_hooks_ran.insert(session_id.clone());
                 }
 
-                let _ = self.reload();
+                if let Err(e) = self.reload() {
+                    tracing::warn!("Failed to reload session state: {e}");
+                }
                 self.new_dialog = None;
 
                 Some(session_id)
@@ -1136,7 +1142,9 @@ impl HomeView {
     fn save_list_width(&self) {
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.home_list_width = Some(self.list_width);
-            let _ = save_config(&config);
+            if let Err(e) = save_config(&config) {
+                tracing::warn!("Failed to save config: {e}");
+            }
         }
     }
 

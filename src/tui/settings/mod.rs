@@ -128,7 +128,13 @@ impl SettingsView {
             .map(repo_config_to_profile)
             .unwrap_or_default();
 
-        let mut available_profiles = list_profiles().unwrap_or_default();
+        let mut available_profiles = match list_profiles() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("Failed to list profiles: {e}");
+                Vec::new()
+            }
+        };
         if !available_profiles.contains(&profile.to_string()) {
             available_profiles.push(profile.to_string());
             available_profiles.sort();

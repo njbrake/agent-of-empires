@@ -110,7 +110,13 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         .build()?;
 
     // Fetch all releases (includes body/release notes)
-    let releases = fetch_releases(&client).await.unwrap_or_default();
+    let releases = match fetch_releases(&client).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Failed to fetch releases: {e}");
+            Vec::new()
+        }
+    };
 
     let latest_version = releases
         .first()
@@ -208,7 +214,7 @@ fn filter_releases(releases: Vec<ReleaseInfo>, from_version: Option<&str>) -> Ve
     }
 }
 
-fn is_newer_version(latest: &str, current: &str) -> bool {
+pub(crate) fn is_newer_version(latest: &str, current: &str) -> bool {
     let parse_version =
         |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
 

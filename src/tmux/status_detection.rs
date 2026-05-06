@@ -6,6 +6,35 @@ use super::utils::strip_ansi;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+fn has_any_spinner(lines: &[&str]) -> bool {
+    lines
+        .iter()
+        .any(|line| SPINNER_CHARS.iter().any(|s| line.contains(s)))
+}
+
+fn contains_approval_prompt(text_lower: &str, extra: &[&str]) -> bool {
+    const BASE: &[&str] = &["(y/n)", "[y/n]", "approve", "allow"];
+    BASE.iter()
+        .chain(extra.iter())
+        .any(|p| text_lower.contains(p))
+}
+
+fn matches_input_prompt(non_empty_lines: &[&str], take_n: usize, tool_prompts: &[&str]) -> bool {
+    for line in non_empty_lines.iter().rev().take(take_n) {
+        let clean_line = strip_ansi(line).trim().to_string();
+        if clean_line == ">" {
+            return true;
+        }
+        if tool_prompts.iter().any(|p| clean_line == *p) {
+            return true;
+        }
+        if clean_line.starts_with("> ") && !clean_line.contains("esc") && clean_line.len() < 100 {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn detect_status_from_content(content: &str, tool: &str) -> Status {
     // Strip ANSI escape codes before passing to detectors. capture-pane is
     // called with -e (to preserve colors for the TUI preview), but color codes
@@ -144,40 +173,19 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: OpenCode shows "esc to interrupt" when busy (same as Claude Code)
-    // Only check in last lines to avoid matching comments/code in terminal output
     if last_lines_lower.contains("esc to interrupt") || last_lines_lower.contains("esc interrupt") {
         return Status::Running;
     }
 
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
+    if has_any_spinner(&lines) {
+        return Status::Running;
     }
 
-    // WAITING: Selection menus (shows "Enter to select" or "Esc to cancel")
-    // Only check in last lines to avoid matching comments/code
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &["continue?", "proceed?", "enter to select", "esc to cancel"],
+    ) {
         return Status::Waiting;
-    }
-
-    // WAITING: Permission/confirmation prompts
-    // Only check in last lines
-    let permission_prompts = [
-        "(y/n)",
-        "[y/n]",
-        "continue?",
-        "proceed?",
-        "approve",
-        "allow",
-    ];
-    for prompt in &permission_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
     }
 
     for line in &lines {
@@ -198,22 +206,11 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-
-        if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
+    if matches_input_prompt(&non_empty_lines, 10, &[">>"]) {
+        return Status::Waiting;
     }
 
-    // WAITING - Completion indicators + input prompt nearby
-    // Only check in last lines
+    // Completion indicators + input prompt nearby
     let completion_indicators = [
         "complete",
         "done",
@@ -231,7 +228,7 @@ pub fn detect_opencode_status(raw_content: &str) -> Status {
     if has_completion {
         for line in non_empty_lines.iter().rev().take(10) {
             let clean = strip_ansi(line).trim().to_string();
-            if clean == ">" || clean == "> " || clean == ">>" {
+            if clean == ">" || clean == ">>" {
                 return Status::Waiting;
             }
         }
@@ -271,10 +268,6 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
         .join("");
     let recent_text_lower = recent_text.to_lowercase();
 
-    // WAITING checks come first - they're more specific than Running indicators
-
-    // WAITING: Vibe's approval prompts show navigation hints
-    // Pattern: "↑↓ navigate  Enter select  ESC reject"
     if last_lines_lower.contains("↑↓ navigate")
         || last_lines_lower.contains("enter select")
         || last_lines_lower.contains("esc reject")
@@ -282,16 +275,14 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    // WAITING: Tool approval warning (shows "⚠ {tool_name} command")
     if last_lines.contains("⚠") && last_lines_lower.contains("command") {
         return Status::Waiting;
     }
 
-    // WAITING: Approval options shown by Vibe
     let approval_options = [
         "yes and always allow",
         "no and tell the agent",
-        "› 1.", // Selected numbered option
+        "› 1.",
         "› 2.",
         "› 3.",
     ];
@@ -301,7 +292,6 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
         }
     }
 
-    // WAITING: Generic selection cursor (› followed by text)
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("›") && trimmed.len() > 2 {
@@ -309,15 +299,12 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
         }
     }
 
-    // RUNNING: Check for braille spinners anywhere in recent content
-    // Vibe renders vertically so spinner may be on its own line
     for spinner in SPINNER_CHARS {
         if recent_text.contains(spinner) {
             return Status::Running;
         }
     }
 
-    // RUNNING: Activity indicators (may be rendered vertically)
     let activity_indicators = [
         "running",
         "reading",
@@ -333,7 +320,6 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
         }
     }
 
-    // RUNNING: Ellipsis at end often indicates ongoing activity
     if recent_text.ends_with("…") || recent_text.ends_with("...") {
         return Status::Running;
     }
@@ -360,7 +346,6 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: Codex shows "esc to interrupt" or similar when processing
     if last_lines_lower.contains("esc to interrupt")
         || last_lines_lower.contains("ctrl+c to interrupt")
         || last_lines_lower.contains("working")
@@ -369,37 +354,24 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
+    if has_any_spinner(&lines) {
+        return Status::Running;
     }
 
-    // WAITING: Approval prompts (Codex uses ask-for-approval modes)
-    let approval_prompts = [
-        "approve",
-        "allow",
-        "(y/n)",
-        "[y/n]",
-        "continue?",
-        "proceed?",
-        "execute?",
-        "run command?",
-    ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Selection menus
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &[
+            "continue?",
+            "proceed?",
+            "execute?",
+            "run command?",
+            "enter to select",
+            "esc to cancel",
+        ],
+    ) {
         return Status::Waiting;
     }
 
-    // WAITING: Numbered selection
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("❯") && trimmed.len() > 2 {
@@ -413,18 +385,8 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         }
     }
 
-    // WAITING: Input prompt ready
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "codex>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
+    if matches_input_prompt(&non_empty_lines, 10, &["codex>"]) {
+        return Status::Waiting;
     }
 
     Status::Idle
@@ -457,13 +419,8 @@ pub fn detect_copilot_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: Copilot shows spinners and "Thinking" while the model is processing
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
+    if has_any_spinner(&lines) {
+        return Status::Running;
     }
 
     if last_lines_lower.contains("thinking")
@@ -474,40 +431,22 @@ pub fn detect_copilot_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // WAITING: Tool approval prompts
-    let approval_prompts = [
-        "approve",
-        "allow",
-        "(y/n)",
-        "[y/n]",
-        "continue?",
-        "run command?",
-        "allow this tool",
-        "approve for the rest",
-    ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Selection menus
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &[
+            "continue?",
+            "run command?",
+            "allow this tool",
+            "approve for the rest",
+            "enter to select",
+            "esc to cancel",
+        ],
+    ) {
         return Status::Waiting;
     }
 
-    // WAITING: Input prompt ready
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "copilot>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
+    if matches_input_prompt(&non_empty_lines, 10, &["copilot>"]) {
+        return Status::Waiting;
     }
 
     Status::Idle
@@ -535,13 +474,8 @@ pub fn detect_pi_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: Pi shows spinners and activity indicators
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
+    if has_any_spinner(&lines) {
+        return Status::Running;
     }
 
     if last_lines_lower.contains("esc to interrupt")
@@ -550,23 +484,12 @@ pub fn detect_pi_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // WAITING: Check for input prompt before activity indicators, since words
-    // like "reading" or "writing" can linger in scrollback after the agent
-    // finishes and shows a prompt.
-    for line in non_empty_lines.iter().rev().take(5) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "pi>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
+    // Check for input prompt before activity indicators: words like
+    // "reading" or "writing" linger in scrollback after the agent finishes.
+    if matches_input_prompt(&non_empty_lines, 5, &["pi>"]) {
+        return Status::Waiting;
     }
 
-    // RUNNING: Activity indicators in the last few lines
     let activity_indicators = ["thinking", "working", "reading", "writing", "executing"];
     for indicator in &activity_indicators {
         if last_lines_lower.contains(indicator) {
@@ -599,13 +522,8 @@ pub fn detect_droid_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: Spinners indicate active processing
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
+    if has_any_spinner(&lines) {
+        return Status::Running;
     }
 
     if last_lines_lower.contains("esc to interrupt")
@@ -617,39 +535,21 @@ pub fn detect_droid_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // WAITING: Approval prompts
-    let approval_prompts = [
-        "approve",
-        "allow",
-        "(y/n)",
-        "[y/n]",
-        "continue?",
-        "proceed?",
-        "execute?",
-    ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Selection menus
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &[
+            "continue?",
+            "proceed?",
+            "execute?",
+            "enter to select",
+            "esc to cancel",
+        ],
+    ) {
         return Status::Waiting;
     }
 
-    // WAITING: Input prompt ready
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "droid>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
+    if matches_input_prompt(&non_empty_lines, 10, &["droid>"]) {
+        return Status::Waiting;
     }
 
     Status::Idle
@@ -688,41 +588,28 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: Gemini shows activity indicators
     if last_lines_lower.contains("esc to interrupt")
         || last_lines_lower.contains("ctrl+c to interrupt")
     {
         return Status::Running;
     }
 
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
+    if has_any_spinner(&lines) {
+        return Status::Running;
     }
 
-    // WAITING: Approval prompts
-    let approval_prompts = [
-        "(y/n)",
-        "[y/n]",
-        "allow",
-        "approve",
-        "execute?",
-        "enter to select",
-        "esc to cancel",
-    ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &["execute?", "enter to select", "esc to cancel"],
+    ) {
+        return Status::Waiting;
     }
 
-    // WAITING: Input prompt
+    // Gemini's input prompt is a bare `>` with nothing after it, so we don't
+    // share matches_input_prompt (which also fires on `> something` lines).
     for line in non_empty_lines.iter().rev().take(10) {
         let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " {
+        if clean_line == ">" {
             return Status::Waiting;
         }
     }
