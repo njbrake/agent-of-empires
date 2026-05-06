@@ -223,10 +223,10 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
               type="text"
               value={data.worktreeBranch}
               onChange={(e) => onChange("worktreeBranch", e.target.value)}
-              placeholder="Auto-generated if empty"
+              placeholder="Uses session title if empty"
               className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
-            <p className="text-xs text-text-dim mt-1">Git branch and worktree name. Defaults to the session title until you edit it.</p>
+            <p className="text-xs text-text-dim mt-1">Git branch and worktree name. Clearing it switches back to the session title. Leave both title and branch empty to auto-generate.</p>
           </div>
 
           {/* Container config (if sandbox enabled) */}

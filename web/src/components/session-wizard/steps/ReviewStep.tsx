@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { StepDef, StepId } from "../StepIndicator";
+import { getReviewSummary } from "../sessionNames";
 
 interface WizardData { path: string; title: string; worktreeBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
 interface Props { data: WizardData; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
@@ -26,6 +27,7 @@ function Row({ label, value, stepId, onJumpTo, accent }: { label: string; value:
 export function ReviewStep({ data, isSubmitting, error, onSubmit, onJumpTo, steps }: Props) {
   const hasStep = (id: StepId) => steps.some((s) => s.id === id);
   const canSubmit = !isSubmitting && !!data.path && !!data.tool;
+  const summary = getReviewSummary(data.title, data.worktreeBranch);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -44,8 +46,8 @@ export function ReviewStep({ data, isSubmitting, error, onSubmit, onJumpTo, step
       <p className="text-sm text-text-muted mb-5">Here's what will be created. Make sure everything looks right.</p>
       <div className="bg-surface-900 border border-surface-700 rounded-lg p-4 mb-5">
         <Row label="Project" value={data.path || "(not set)"} stepId="project" onJumpTo={onJumpTo} />
-        <Row label="Title" value={data.title || "Auto-generated"} stepId="agent" onJumpTo={onJumpTo} />
-        <Row label="Branch" value={data.worktreeBranch || "Auto-generated"} stepId="agent" onJumpTo={onJumpTo} accent />
+        <Row label="Title" value={summary.title} stepId="agent" onJumpTo={onJumpTo} />
+        <Row label="Branch" value={summary.branch} stepId="agent" onJumpTo={onJumpTo} accent />
         <Row label="Agent" value={data.tool || "(not set)"} stepId="agent" onJumpTo={onJumpTo} />
         {data.profile && (
           <Row label="Profile" value={data.profileDirty ? `${data.profile} (Custom)` : data.profile} stepId="agent" onJumpTo={onJumpTo} accent />

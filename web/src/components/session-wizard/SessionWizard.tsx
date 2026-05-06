@@ -6,6 +6,7 @@ import type { StepDef, StepId } from "./StepIndicator";
 import { ProjectStep } from "./steps/ProjectStep";
 import { AgentStep } from "./steps/AgentStep";
 import { ReviewStep } from "./steps/ReviewStep";
+import { applyBranchOverride, getSubmittedBranch } from "./sessionNames";
 
 export interface WizardData {
   path: string;
@@ -67,7 +68,12 @@ function reducer(state: WizardState, action: Action): WizardState {
         newData.worktreeBranch = String(action.value);
       }
       if (action.field === "worktreeBranch") {
-        newData.worktreeBranchDirty = true;
+        const override = applyBranchOverride(
+          String(newData.title),
+          String(action.value),
+        );
+        newData.worktreeBranch = override.worktreeBranch;
+        newData.worktreeBranchDirty = override.worktreeBranchDirty;
       }
       // Mark as dirty when user manually edits agent-step fields after a profile was chosen
       if (state.data.profile && ["yoloMode", "sandboxEnabled", "tool", "extraEnv"].includes(action.field)) {
@@ -195,7 +201,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
       path: d.path, tool: d.tool,
       title: d.title || undefined, group: d.group || undefined,
       yolo_mode: d.yoloMode,
-      worktree_branch: d.worktreeBranch || "",
+      worktree_branch: getSubmittedBranch(d.title, d.worktreeBranch),
       create_new_branch: true,
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
