@@ -134,7 +134,10 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
       {/* Profile selector */}
       {showProfilePicker && (
         <div className="mb-5">
-          <label className="block text-sm text-text-dim mb-1.5">Profile</label>
+          <label className="block text-sm text-text-dim mb-1.5">Workflow preset</label>
+          <p className="text-xs text-text-dim mb-2">
+            Profiles preload tool, sandbox, auto-approve, and env defaults for common workflows.
+          </p>
           <select
             value={data.profile}
             onChange={(e) => handleProfileChange(e.target.value)}
@@ -148,7 +151,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
             ))}
           </select>
           {data.profile && data.profileDirty && (
-            <p className="text-xs text-brand-500 mt-1">(Custom) Settings differ from profile defaults</p>
+            <p className="text-xs text-brand-500 mt-1">(Custom) Settings differ from preset defaults</p>
           )}
         </div>
       )}
