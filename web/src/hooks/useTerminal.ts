@@ -337,6 +337,31 @@ export function useTerminal(
     // iOS can't show a paste popup on it. Use the toolbar Paste button.
     const BACKSPACE_SEED = "\u200B";
     let wtermTextarea: HTMLTextAreaElement | null = null;
+    const setupPrintableInputGuard = () => {
+      const textarea = termEl.querySelector("textarea");
+      if (!textarea) return;
+
+      textarea.addEventListener(
+        "keydown",
+        (e: KeyboardEvent) => {
+          if (
+            e.key.length !== 1 ||
+            e.altKey ||
+            e.ctrlKey ||
+            e.metaKey
+          ) {
+            return;
+          }
+
+          // Let the browser's input/composition events produce printable
+          // text. macOS IMEs can emit the first pinyin keydown before
+          // compositionstart, and wterm would otherwise send that Latin
+          // pre-edit character to the PTY.
+          e.stopImmediatePropagation();
+        },
+        true,
+      );
+    };
     const setupMobileTextarea = () => {
       if (!isMobileViewport()) return;
       wtermTextarea = termEl.querySelector("textarea");
@@ -392,6 +417,7 @@ export function useTerminal(
       .init()
       .then(() => {
         if (!connectOnReady) return;
+        setupPrintableInputGuard();
         setupMobileTextarea();
         connect();
       })
