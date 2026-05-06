@@ -38,6 +38,24 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@72016aa8156cf95d2cc22f88e29a51a31e958dfc # v2.7.12
+      - name: Check (default features)
+        run: cargo check
+      - name: Check (serve feature)
+        run: |
+          # The serve feature build.rs needs npm to build the web frontend.
+          # Supply a stub via AOE_WEB_DIST so we don't need Node.js just for
+          # a compile check.
+          stub=$(mktemp -d)
+          printf '<!doctype html>' > "$stub/index.html"
+          AOE_WEB_DIST="$stub" cargo check --features serve
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -46,6 +64,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@72016aa8156cf95d2cc22f88e29a51a31e958dfc # v2.7.12
       - run: cargo clippy -- -D warnings
 
   deny:
