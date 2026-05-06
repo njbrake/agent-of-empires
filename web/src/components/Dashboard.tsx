@@ -146,8 +146,8 @@ export function Dashboard({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-2xl w-full">
           <ActionPane
-            title="Open project"
-            subtitle="Browse, pick recent, or start a new session"
+            title="New session"
+            subtitle="Pick a project, then launch a new session"
             onClick={onNewSession}
             icon="folder"
             featured

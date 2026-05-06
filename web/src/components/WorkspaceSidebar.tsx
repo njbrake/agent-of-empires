@@ -548,11 +548,11 @@ export function WorkspaceSidebar({
               </svg>
             </button>
           </Tooltip>
-          <Tooltip text="Add project">
+          <Tooltip text="New session">
             <button
               onClick={onNew}
               className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
-              aria-label="Add project"
+              aria-label="New session"
             >
               <svg
                 width="16"
