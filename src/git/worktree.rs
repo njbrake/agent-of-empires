@@ -178,11 +178,23 @@ impl GitWorktree {
         }
     }
 
-    /// Detect the default branch name by checking local branches and remote
-    /// tracking refs for "main" or "master". Falls back to the first local
-    /// branch if neither exists.
+    /// Detect the default branch name by checking the remote HEAD first, then
+    /// local and remote refs for "main" or "master". Falls back to the first
+    /// local branch if neither exists.
     pub fn detect_default_branch(&self) -> Result<String> {
         let repo = open_repo_at(&self.repo_path)?;
+        let remote_prefix = format!("refs/remotes/{FETCH_REMOTE}/");
+        let remote_head_ref = format!("{remote_prefix}HEAD");
+
+        if let Ok(reference) = repo.find_reference(&remote_head_ref) {
+            if let Some(target) = reference.symbolic_target() {
+                if let Some(branch_name) = target.strip_prefix(&remote_prefix) {
+                    if branch_name != "HEAD" {
+                        return Ok(branch_name.to_string());
+                    }
+                }
+            }
+        }
 
         for name in &["main", "master"] {
             if repo.find_branch(name, git2::BranchType::Local).is_ok() {
@@ -1522,6 +1534,51 @@ mod tests {
         let git_wt = GitWorktree::new(dir.path().to_path_buf()).unwrap();
         let result = git_wt.detect_default_branch().unwrap();
         assert_eq!(result, "develop");
+    }
+
+    #[test]
+    fn test_detect_default_branch_prefers_remote_head_over_local_main() {
+        let remote_dir = TempDir::new().unwrap();
+        let remote = git2::Repository::init_bare(remote_dir.path()).unwrap();
+
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = {
+            let blob_oid = remote.blob(b"hello").unwrap();
+            let mut tb = remote.treebuilder(None).unwrap();
+            tb.insert("file.txt", blob_oid, 0o100644).unwrap();
+            tb.write().unwrap()
+        };
+        let tree = remote.find_tree(tree_id).unwrap();
+        let develop_oid = remote
+            .commit(
+                Some("refs/heads/develop"),
+                &sig,
+                &sig,
+                "initial",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        let develop_commit = remote.find_commit(develop_oid).unwrap();
+        remote.branch("main", &develop_commit, true).unwrap();
+        remote.set_head("refs/heads/develop").unwrap();
+
+        let local_dir = TempDir::new().unwrap();
+        git2::Repository::clone(remote_dir.path().to_str().unwrap(), local_dir.path()).unwrap();
+
+        let local_repo = git2::Repository::open(local_dir.path()).unwrap();
+        let remote_main_commit = local_repo
+            .find_branch("origin/main", git2::BranchType::Remote)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap();
+        local_repo
+            .branch("main", &remote_main_commit, true)
+            .unwrap();
+
+        let git_wt = GitWorktree::new(local_dir.path().to_path_buf()).unwrap();
+        assert_eq!(git_wt.detect_default_branch().unwrap(), "develop");
     }
 
     // --- fetch_branch tests ---
