@@ -118,9 +118,16 @@ const SessionRow = memo(function SessionRow({
     status: sessionStatus,
     idle_entered_at: idleEnteredAt,
   });
-  const label =
-    workspace.branch ?? workspace.sessions[0]?.title ?? "default";
   const firstSession = workspace.sessions[0];
+  const singleSession = workspace.sessions.length === 1;
+  const sessionTitle = firstSession?.title.trim() ?? "";
+  const branchLabel = workspace.branch ?? null;
+  const label = singleSession
+    ? sessionTitle || branchLabel || "default"
+    : branchLabel || sessionTitle || "default";
+  const subtitle = singleSession && sessionTitle && branchLabel && sessionTitle !== branchLabel
+    ? branchLabel
+    : null;
   const sessionId = firstSession?.id;
   const isDeleting = sessionStatus === "Deleting";
   const notifyPreset = detectNotifyPreset(
@@ -223,7 +230,7 @@ const SessionRow = memo(function SessionRow({
   const startRename = () => {
     if (renaming) return;
     setContextMenu(null);
-    setRenameValue(label);
+    setRenameValue(sessionTitle || label);
     setRenaming(true);
   };
 
@@ -285,9 +292,16 @@ const SessionRow = memo(function SessionRow({
               idleEnteredAt={idleEnteredAt}
             />
           </span>
-          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
-            {label}
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className={`block text-[13px] md:text-[14px] truncate ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+              {label}
+            </span>
+            {subtitle && (
+              <span className="block text-[11px] font-mono text-text-dim truncate" title={subtitle}>
+                {subtitle}
+              </span>
+            )}
+          </div>
         </div>
       </button>
       {contextMenu && createPortal(

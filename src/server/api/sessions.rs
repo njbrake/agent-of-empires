@@ -207,6 +207,10 @@ pub struct RenameSessionBody {
     pub title: String,
 }
 
+fn apply_session_title_rename(inst: &mut Instance, title: String) {
+    inst.title = title;
+}
+
 pub async fn rename_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -234,12 +238,7 @@ pub async fn rename_session(
         );
     };
 
-    inst.title = title.clone();
-    // Also update the worktree branch name in metadata (cosmetic only;
-    // the actual git branch is not renamed on disk).
-    if let Some(ref mut wt) = inst.worktree_info {
-        wt.branch = title;
-    }
+    apply_session_title_rename(inst, title.clone());
 
     let response =
         SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
@@ -1438,6 +1437,25 @@ mod tests {
     fn claude_fullscreen_unset_when_setting_disabled() {
         let resp = SessionResponse::from_instance(&make_test_instance(), false);
         assert!(!resp.claude_fullscreen);
+    }
+
+    #[test]
+    fn rename_updates_title_without_changing_worktree_branch() {
+        let mut inst = make_test_instance();
+        inst.worktree_info = Some(crate::session::WorktreeInfo {
+            branch: "feature/test".to_string(),
+            main_repo_path: "/tmp/repo".to_string(),
+            managed_by_aoe: true,
+            created_at: chrono::Utc::now(),
+        });
+
+        apply_session_title_rename(&mut inst, "Renamed Session".to_string());
+
+        assert_eq!(inst.title, "Renamed Session");
+        assert_eq!(
+            inst.worktree_info.as_ref().map(|wt| wt.branch.as_str()),
+            Some("feature/test")
+        );
     }
 
     #[test]
