@@ -563,13 +563,13 @@ pub fn detect_hermes_status(_content: &str) -> Status {
     Status::Idle
 }
 
-/// settl status is detected via hooks (TOML-based), not tmux pane parsing.
+/// settl status is detected via hooks (JSON-based), not tmux pane parsing.
 /// This stub exists so the agent registry has a valid function pointer.
 pub fn detect_settl_status(_content: &str) -> Status {
     Status::Idle
 }
 
-/// crush status is detected via hooks (TOML-based) or by parsing the spinner.
+/// crush status is detected via hooks (JSON-based) or by parsing the spinner.
 pub fn detect_crush_status(raw_content: &str) -> Status {
     let lines: Vec<&str> = raw_content.lines().collect();
     let last_lines = if lines.len() > 10 {

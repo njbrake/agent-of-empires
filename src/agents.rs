@@ -132,6 +132,14 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
     },
 ];
 
+/// Hook events for crush. crush supports only PreToolUse (as of crush v0.2.0);
+/// idle status is instead detected via spinner parsing in detect_crush_status.
+const CRUSH_HOOK_EVENTS: &[HookEvent] = &[HookEvent {
+    name: "PreToolUse",
+    matcher: None,
+    status: Some("running"),
+}];
+
 pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
@@ -370,9 +378,12 @@ pub const AGENTS: &[AgentDef] = &[
         container_env: &[],
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".local/share/crush/crush.json",
-            events: CLAUDE_CURSOR_HOOK_EVENTS,
+            events: CRUSH_HOOK_EVENTS,
         }),
+        resume_strategy: ResumeStrategy::Unsupported,
         host_only: false,
+        send_keys_enter_delay_ms: 0,
+        install_hint: "go install github.com/charmbracelet/crush@latest",
     },
 ];
 
@@ -475,7 +486,6 @@ mod tests {
             hermes.install_hint,
             "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
         );
-    }
     }
 
     #[test]
