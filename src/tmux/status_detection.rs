@@ -571,18 +571,16 @@ pub fn detect_settl_status(_content: &str) -> Status {
 
 /// crush status is detected via hooks (TOML-based) or by parsing the spinner.
 pub fn detect_crush_status(raw_content: &str) -> Status {
-    let content = raw_content.to_lowercase();
-    let lines: Vec<&str> = content.lines().collect();
+    let lines: Vec<&str> = raw_content.lines().collect();
     let last_lines = if lines.len() > 10 {
         &lines[lines.len() - 10..]
     } else {
         &lines[..]
     };
-    let last_lines_lower = last_lines.join("\n").to_lowercase();
+    let last_lines_joined = last_lines.join("\n");
 
-    // Check for running indicators
     for spinner in SPINNER_CHARS {
-        if last_lines_lower.contains(spinner) {
+        if last_lines_joined.contains(spinner) {
             return Status::Running;
         }
     }
@@ -641,6 +639,25 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_detect_crush_status_running_on_spinner() {
+        for spinner in SPINNER_CHARS {
+            assert_eq!(
+                detect_crush_status(spinner),
+                Status::Running,
+                "spinner char '{spinner}' should be detected as Running"
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_crush_status_idle_on_plain_text() {
+        assert_eq!(detect_crush_status(""), Status::Idle);
+        assert_eq!(detect_crush_status("Some output"), Status::Idle);
+        assert_eq!(detect_crush_status("file saved successfully"), Status::Idle);
+        assert_eq!(detect_crush_status("ready\n> "), Status::Idle);
+    }
 
     #[test]
     fn test_detect_cursor_status_is_stub() {
