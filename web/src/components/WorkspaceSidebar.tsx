@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import {
   STATUS_DOT_CLASS,
@@ -98,6 +99,17 @@ function loadSavedWidth(): number {
   return DEFAULT_WIDTH;
 }
 
+function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>): boolean {
+  return (
+    event.button === 0 &&
+    !event.defaultPrevented &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.shiftKey
+  );
+}
+
 const SessionRow = memo(function SessionRow({
   workspace,
   isActive,
@@ -120,8 +132,13 @@ const SessionRow = memo(function SessionRow({
   });
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
+  const runningSession = workspace.sessions.find((s) => isSessionActive(s));
   const firstSession = workspace.sessions[0];
   const sessionId = firstSession?.id;
+  const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
+  const sessionPath = navigationSessionId
+    ? `/session/${encodeURIComponent(navigationSessionId)}`
+    : "/";
   const isDeleting = sessionStatus === "Deleting";
   const notifyPreset = detectNotifyPreset(
     firstSession?.notify_on_waiting,
@@ -260,8 +277,18 @@ const SessionRow = memo(function SessionRow({
 
   return (
     <>
-      <button
-        onClick={() => { if (!longPressFired.current) onClick(); }}
+      <Link
+        to={sessionPath}
+        onClick={(e) => {
+          if (longPressFired.current) {
+            e.preventDefault();
+            return;
+          }
+          if (isPlainLeftClick(e)) {
+            e.preventDefault();
+            onClick();
+          }
+        }}
         onContextMenu={handleContextMenu}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
@@ -289,7 +316,7 @@ const SessionRow = memo(function SessionRow({
             {label}
           </span>
         </div>
-      </button>
+      </Link>
       {contextMenu && createPortal(
         <div
           ref={menuRef}
