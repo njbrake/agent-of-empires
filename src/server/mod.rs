@@ -5,7 +5,7 @@
 
 pub mod api;
 pub mod auth;
-#[cfg(feature = "cockpit")]
+#[cfg(feature = "serve")]
 pub mod cockpit_ws;
 pub mod login;
 pub mod push;
@@ -26,13 +26,13 @@ use tracing::info;
 
 use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 
-#[cfg(feature = "cockpit")]
+#[cfg(feature = "serve")]
 const COCKPIT_CHANNEL_CAPACITY: usize = 256;
 
 /// One frame on the per-AppState cockpit broadcast channel: the cockpit
 /// session id plus the serialised cockpit Event JSON. Subscribed
 /// WebSocket clients filter on the session id.
-#[cfg(feature = "cockpit")]
+#[cfg(feature = "serve")]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CockpitBroadcastFrame {
     pub session_id: String,
@@ -231,10 +231,10 @@ pub struct AppState {
     /// channel carries `(session_id, serialized event JSON)` frames so
     /// clients can filter by session. Empty when no clients are
     /// connected; senders never need to check before emitting.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     pub cockpit_events_tx: broadcast::Sender<CockpitBroadcastFrame>,
     /// Owns the per-session ACP agent subprocesses.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     pub cockpit_supervisor:
         Arc<crate::cockpit::supervisor::Supervisor<crate::cockpit::supervisor::ChannelSink>>,
     /// Per-tmux-session primary WebSocket client. Maps tmux session name
@@ -392,9 +392,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         None
     };
 
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     let cockpit_events_tx = broadcast::channel(COCKPIT_CHANNEL_CAPACITY).0;
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     let cockpit_supervisor = {
         let push_for_sink = push_state.clone();
         let push_enabled_for_sink = push_enabled;
@@ -450,9 +450,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         session_primaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
         session_pause_counts: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
-        #[cfg(feature = "cockpit")]
+        #[cfg(feature = "serve")]
         cockpit_events_tx: cockpit_events_tx.clone(),
-        #[cfg(feature = "cockpit")]
+        #[cfg(feature = "serve")]
         cockpit_supervisor: cockpit_supervisor.clone(),
         push: push_state,
         push_enabled,
@@ -468,7 +468,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // without a running worker until the user retries via REST or
     // restarts serve. Each spawn runs on its own task so a slow agent
     // doesn't delay startup.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     {
         let cockpit_targets: Vec<_> = {
             let instances = state.instances.read().await;
@@ -909,7 +909,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(ws::container_terminal_ws),
         );
 
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     let app = app
         .route("/sessions/{id}/cockpit/ws", get(cockpit_ws::cockpit_ws))
         .route("/api/sessions/{id}/cockpit/spawn", post(api::spawn_cockpit))

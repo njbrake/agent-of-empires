@@ -50,6 +50,7 @@ mod tests {
         let tc = ToolCall {
             id: "tc".into(),
             name: "Bash".into(),
+            kind: "execute".into(),
             args_preview: r#"{"command":"rm -rf /tmp/x"}"#.into(),
             started_at: Utc::now(),
         };
@@ -64,6 +65,7 @@ mod tests {
         let tc = ToolCall {
             id: "tc".into(),
             name: "Read".into(),
+            kind: "read".into(),
             args_preview: "{}".into(),
             started_at: Utc::now(),
         };

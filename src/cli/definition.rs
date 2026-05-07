@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
 use super::add::AddArgs;
-#[cfg(feature = "cockpit")]
+#[cfg(feature = "serve")]
 use super::cockpit::CockpitCommands;
 use super::group::GroupCommands;
 use super::init::InitArgs;
@@ -118,7 +118,7 @@ pub enum Commands {
     Serve(ServeArgs),
 
     /// Cockpit (ACP-based native agent rendering) management.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     Cockpit {
         #[command(subcommand)]
         command: CockpitCommands,

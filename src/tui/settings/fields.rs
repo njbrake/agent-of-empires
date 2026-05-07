@@ -105,7 +105,7 @@ pub enum FieldKey {
     WebNotifyOnWaiting,
     WebNotifyOnIdle,
     WebNotifyOnError,
-    // Cockpit (gated on the cockpit feature; the variants are always
+    // Cockpit (gated on the `serve` feature; the variants are always
     // present in the enum so external callers don't have to cfg-gate
     // their match arms)
     CockpitEnabled,

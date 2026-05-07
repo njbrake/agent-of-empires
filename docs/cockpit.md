@@ -60,7 +60,8 @@ agent emits its first plan event.
 
 ## Requirements
 
-- aoe 1.5.0 or newer, built with `--features cockpit`.
+- aoe 1.5.0 or newer, built with `--features serve` (cockpit ships
+  alongside the web dashboard).
 - Node.js 20 or newer on `PATH`. Cockpit spawns an ACP agent
   subprocess; for the bundled `aoe-agent` runtime it uses Vercel AI
   SDK 6, which requires Node 20+.

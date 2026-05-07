@@ -178,7 +178,7 @@ pub async fn trigger_approval_push(
     }
 }
 
-#[cfg(all(test, feature = "cockpit"))]
+#[cfg(all(test, feature = "serve"))]
 mod tests {
     use super::*;
 

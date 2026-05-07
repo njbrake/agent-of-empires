@@ -207,18 +207,18 @@ pub struct Instance {
     /// Whether this session uses the ACP cockpit instead of a tmux pane.
     /// When true, aoe spawns an ACP agent subprocess and renders structured
     /// events natively; tmux integration is bypassed for this session.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cockpit_mode: bool,
     /// Optional cockpit agent name (e.g., "claude-code", "aoe-agent",
     /// "gemini"). When None, the cockpit picks the default for the
     /// session's tool.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cockpit_agent: Option<String>,
     /// Optional model id forwarded to aoe-agent (e.g., "claude-opus-4-7",
     /// "gpt-5", "llama3.3:ollama").
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cockpit_model: Option<String>,
 
@@ -403,11 +403,11 @@ impl Instance {
             notify_on_waiting: None,
             notify_on_idle: None,
             notify_on_error: None,
-            #[cfg(feature = "cockpit")]
+            #[cfg(feature = "serve")]
             cockpit_mode: false,
-            #[cfg(feature = "cockpit")]
+            #[cfg(feature = "serve")]
             cockpit_agent: None,
-            #[cfg(feature = "cockpit")]
+            #[cfg(feature = "serve")]
             cockpit_model: None,
             last_error_check: None,
             last_start_time: None,
@@ -798,7 +798,7 @@ impl Instance {
         // worker supervisor spawns the ACP agent process directly;
         // calling start() on a cockpit session is a no-op (status
         // updates flow through the ACP event channel, not tmux).
-        #[cfg(feature = "cockpit")]
+        #[cfg(feature = "serve")]
         if self.cockpit_mode {
             return Ok(());
         }
@@ -1391,7 +1391,7 @@ impl Instance {
         // worker supervisor owns their lifecycle and emits typed health
         // events over the broadcast. Probing tmux here only ever produces
         // a spurious "tmux session is gone" Error transition.
-        #[cfg(feature = "cockpit")]
+        #[cfg(feature = "serve")]
         if self.cockpit_mode {
             // Clear any stale tmux-derived error so the UI doesn't show
             // a misleading message after a session is converted or

@@ -73,25 +73,25 @@ pub struct AddArgs {
 
     /// Use cockpit mode (ACP-based native rendering) for this session.
     /// Overrides the default-for-claude setting in cockpit config.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[arg(long, conflicts_with = "no_cockpit")]
     cockpit: bool,
 
     /// Force terminal/PTY mode for this session, overriding the
     /// default-for-claude cockpit setting.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[arg(long = "no-cockpit", conflicts_with = "cockpit")]
     no_cockpit: bool,
 
     /// Pick a specific cockpit agent (e.g., aoe-agent, claude-code).
     /// Implies --cockpit.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[arg(long = "agent")]
     agent: Option<String>,
 
     /// Override the model used by aoe-agent (e.g., claude-opus-4-7,
     /// gpt-5, gemini-2.5-pro). Forwarded to the agent at session start.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[arg(long = "model")]
     model: Option<String>,
 }
@@ -336,7 +336,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     // Cockpit mode: explicit --cockpit overrides config; --no-cockpit
     // forces terminal mode; otherwise honor the config default for
     // claude on supported platforms.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     {
         let user_picked_cockpit = args.cockpit || args.agent.is_some();
         let user_forced_terminal = args.no_cockpit;

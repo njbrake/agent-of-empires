@@ -124,14 +124,15 @@ aes-gcm = { version = "0.10", optional = true }
 jsonwebtoken = { version = "10.3", optional = true }
 getrandom = { version = "0.4", optional = true }
 
-# Agent Client Protocol (cockpit feature)
+# Agent Client Protocol — drives the cockpit surface bundled with `serve`.
 agent-client-protocol = { version = "0.11", optional = true }
 agent-client-protocol-tokio = { version = "0.11", optional = true }
 
-# Node tarball download + extraction (cockpit feature). xz2 needs the
-# system liblzma; we use it for tar.xz extraction. The `tar` crate
-# handles the tarball stream. Hex used for nonce display lives in the
-# cockpit/approvals module's local hex helper, no crate needed.
+# Node tarball download + extraction for the cockpit's bundled-Node
+# fallback. xz2 needs the system liblzma; we use it for tar.xz
+# extraction. The `tar` crate handles the tarball stream. Hex used
+# for nonce display lives in the cockpit/approvals module's local
+# hex helper, no crate needed.
 tar = { version = "0.4", optional = true }
 xz2 = { version = "0.1", optional = true }
 
@@ -154,9 +155,12 @@ serve = [
     "aes-gcm",
     "jsonwebtoken",
     "getrandom",
-]
-cockpit = [
-    "serve",
+    # Cockpit (ACP-based structured rendering of agent state) ships
+    # alongside the web dashboard — the two share state, REST routes,
+    # and the WebSocket fanout. Folded into `serve` so building the
+    # dashboard always includes the cockpit surface; pulling them
+    # apart later is straightforward (cockpit code lives entirely
+    # under src/cockpit/).
     "agent-client-protocol",
     "agent-client-protocol-tokio",
     "tar",

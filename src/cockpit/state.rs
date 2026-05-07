@@ -355,6 +355,7 @@ mod tests {
         let tc = ToolCall {
             id: "tc-1".into(),
             name: "Read".into(),
+            kind: "read".into(),
             args_preview: "{\"path\":\"x\"}".into(),
             started_at: Utc::now(),
         };

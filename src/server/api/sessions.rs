@@ -49,7 +49,7 @@ pub struct SessionResponse {
     /// True when this session uses ACP cockpit rendering instead of a
     /// tmux-backed PTY. The web dashboard branches on this to pick
     /// between the cockpit panels and the terminal view.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     pub cockpit_mode: bool,
     /// True when the session is a Claude Code session AND the user has
     /// enabled Claude's fullscreen renderer (`tui: "fullscreen"` in
@@ -106,7 +106,7 @@ impl SessionResponse {
             notify_on_waiting: inst.notify_on_waiting,
             notify_on_idle: inst.notify_on_idle,
             notify_on_error: inst.notify_on_error,
-            #[cfg(feature = "cockpit")]
+            #[cfg(feature = "serve")]
             cockpit_mode: inst.cockpit_mode,
             claude_fullscreen: claude_fullscreen && inst.tool == "claude",
         }
@@ -512,18 +512,18 @@ pub struct CreateSessionBody {
     /// and the server defaults to true so the browser experience is
     /// the structured cockpit UI by default. CLI/TUI callers control
     /// this explicitly.
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[serde(default = "default_cockpit_for_web")]
     pub cockpit_mode: bool,
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[serde(default)]
     pub cockpit_agent: Option<String>,
-    #[cfg(feature = "cockpit")]
+    #[cfg(feature = "serve")]
     #[serde(default)]
     pub cockpit_model: Option<String>,
 }
 
-#[cfg(feature = "cockpit")]
+#[cfg(feature = "serve")]
 fn default_cockpit_for_web() -> bool {
     true
 }
@@ -672,7 +672,7 @@ pub async fn create_session(
         // defaults `cockpit_mode = true` (see default_cockpit_for_web)
         // so browser-created sessions land in the cockpit; CLI/TUI
         // callers control this explicitly.
-        #[cfg(feature = "cockpit")]
+        #[cfg(feature = "serve")]
         {
             instance.cockpit_mode = body.cockpit_mode;
             instance.cockpit_agent = body.cockpit_agent;
@@ -689,9 +689,9 @@ pub async fn create_session(
         // supervisor spawns the ACP agent on demand. Skip the tmux
         // `start()` to avoid creating an empty pane that no one will
         // attach to.
-        #[cfg(feature = "cockpit")]
+        #[cfg(feature = "serve")]
         let skip_tmux_start = instance.cockpit_mode;
-        #[cfg(not(feature = "cockpit"))]
+        #[cfg(not(feature = "serve"))]
         let skip_tmux_start = false;
         if !skip_tmux_start {
             instance.start()?;
@@ -707,7 +707,7 @@ pub async fn create_session(
                 &instance,
                 crate::claude_settings::read_tui_fullscreen(),
             );
-            #[cfg(feature = "cockpit")]
+            #[cfg(feature = "serve")]
             let cockpit_spawn_target = if instance.cockpit_mode {
                 Some((
                     instance.id.clone(),
@@ -723,7 +723,7 @@ pub async fn create_session(
             instances.push(instance);
             drop(instances);
 
-            #[cfg(feature = "cockpit")]
+            #[cfg(feature = "serve")]
             if let Some((id, tool, agent_override, model, project_path)) = cockpit_spawn_target {
                 let agent = state
                     .cockpit_supervisor
