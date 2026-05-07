@@ -1,4 +1,5 @@
 import { test, expect, devices, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
 
 // Regression for the SIGWINCH-on-every-soft-keyboard-cycle bug.
@@ -91,7 +92,7 @@ async function openSession(page: Page, handle: MockHandle) {
     await sidebarToggle.click();
     await page.waitForTimeout(200);
   }
-  await page.locator('button:has-text("pinch-test")').nth(1).click();
+  await clickSidebarSession(page, "pinch-test");
   await page
     .locator('[data-term="agent"] .wterm')
     .waitFor({ state: "visible", timeout: 10_000 });
