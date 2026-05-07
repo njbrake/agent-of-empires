@@ -177,6 +177,7 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     // instances always come back blank; rehydrate it from the storage profile
     // so start-time config resolution honors the right profile's overrides.
     instances[idx].source_profile = profile.to_string();
+    bail_if_cockpit(&instances[idx], "start")?;
     instances[idx].start_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
 
@@ -187,11 +188,40 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     Ok(())
 }
 
+/// Cockpit-mode sessions are not backed by tmux; their ACP worker is owned
+/// by `aoe serve`'s supervisor (auto-spawned by the reconciler within ~2s
+/// of the session appearing on disk). Calling `start`/`stop`/`restart`
+/// from the CLI silently no-ops, which previously misled users into
+/// thinking the session was up. Bail loudly with the actual remediation.
+///
+/// `cockpit_mode` is gated behind the `serve` feature; without it the
+/// field doesn't exist on `Instance` and no session can be in cockpit
+/// mode, so this is a no-op shim.
+#[cfg(feature = "serve")]
+fn bail_if_cockpit(inst: &crate::session::Instance, verb: &str) -> Result<()> {
+    if inst.cockpit_mode {
+        bail!(
+            "cockpit sessions are managed by `aoe serve`; \
+             cannot `aoe session {verb}` from the CLI.\n\
+             The ACP worker is auto-spawned within ~2s of `aoe add --cockpit` \
+             while serve is running, or on next `aoe serve` startup.\n\
+             To control a cockpit session, use the web dashboard or the REST API."
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "serve"))]
+fn bail_if_cockpit(_inst: &crate::session::Instance, _verb: &str) -> Result<()> {
+    Ok(())
+}
+
 async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (mut instances, groups) = storage.load_with_groups()?;
 
     let inst = super::resolve_session(&args.identifier, &instances)?;
+    bail_if_cockpit(inst, "stop")?;
     let session_id = inst.id.clone();
     let title = inst.title.clone();
     let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
@@ -330,13 +360,27 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
 }
 
 /// Sessions in `Deleting` or `Creating` are mid-transition; restarting them
-/// would race the deletion/boot path. Everything else is fair game; agents
-/// have their own resume-or-restart logic on the next start.
+/// would race the deletion/boot path. Cockpit-mode sessions are skipped
+/// because their lifecycle is owned by `aoe serve`'s supervisor, not
+/// tmux: a CLI-side restart would no-op silently and (with the explicit
+/// bail in `restart_session`) flood `--all` with per-session errors.
+/// Everything else is fair game; agents have their own resume-or-restart
+/// logic on the next start.
 fn pick_targets_for_restart_all(instances: &[crate::session::Instance]) -> Vec<String> {
     use crate::session::Status;
     instances
         .iter()
         .filter(|i| !matches!(i.status, Status::Deleting | Status::Creating))
+        .filter(|_i| {
+            #[cfg(feature = "serve")]
+            {
+                !_i.cockpit_mode
+            }
+            #[cfg(not(feature = "serve"))]
+            {
+                true
+            }
+        })
         .map(|i| i.id.clone())
         .collect()
 }
@@ -358,6 +402,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     // instances always come back blank; rehydrate it from the storage profile
     // so restart-time config resolution honors the right profile's overrides.
     instances[idx].source_profile = profile.to_string();
+    bail_if_cockpit(&instances[idx], "restart")?;
     instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
 
@@ -373,6 +418,7 @@ async fn attach_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let (instances, _) = storage.load_with_groups()?;
 
     let inst = super::resolve_session(&args.identifier, &instances)?;
+    bail_if_cockpit(inst, "attach")?;
     let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
 
     if !tmux_session.exists() {
