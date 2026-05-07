@@ -411,6 +411,25 @@ pub async fn delete_session(
         }
     }
 
+    // Tear down the cockpit worker FIRST so the ACP subprocess + its
+    // claude-agent-acp child don't leak past the session delete. The
+    // supervisor's shutdown is best-effort: sessions without a worker
+    // (tmux-mode, or cockpit sessions whose worker never spawned)
+    // return UnknownSession, which we ignore.
+    #[cfg(feature = "serve")]
+    if instance.cockpit_mode {
+        match state.cockpit_supervisor.shutdown(&id).await {
+            Ok(()) | Err(crate::cockpit::supervisor::SupervisorError::UnknownSession(_)) => {}
+            Err(e) => {
+                tracing::warn!(
+                    target: "cockpit.supervisor",
+                    session = %id,
+                    "shutdown during delete failed: {e}"
+                );
+            }
+        }
+    }
+
     // Run deletion on a blocking thread (may do git/docker/tmux operations)
     let deletion_id = id.clone();
     let deletion_result = tokio::task::spawn_blocking(move || {

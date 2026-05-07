@@ -815,6 +815,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal)
     .await?;
 
+    // Tear down every cockpit ACP worker so the spawned `claude-agent-acp`
+    // wrappers (and their SDK children) don't outlive the daemon.
+    cockpit_supervisor.shutdown_all().await;
+
     // Clean up tunnel (cancels health monitor, then sends SIGTERM to cloudflared)
     if let Some(handle) = tunnel_handle {
         handle.shutdown().await;
