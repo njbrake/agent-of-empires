@@ -506,7 +506,30 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         }
     }
 
-    if args.launch {
+    #[cfg(feature = "serve")]
+    let is_cockpit = instance.cockpit_mode;
+    #[cfg(not(feature = "serve"))]
+    let is_cockpit = false;
+
+    if is_cockpit {
+        // Cockpit sessions aren't backed by tmux: their ACP worker is
+        // owned by `aoe serve`'s supervisor, which the
+        // status_poll_loop reconciler auto-spawns within ~2s of the
+        // session appearing on disk. `--launch` and the
+        // `aoe session start` next-step would both no-op (or now
+        // bail), so route the user to the dashboard instead.
+        println!();
+        println!("Next steps:");
+        println!("  aoe serve                   # Start the dashboard (worker auto-spawns)");
+        println!("  Open the printed URL and select '{}'.", final_title);
+        if args.launch {
+            println!();
+            println!(
+                "(--launch is a no-op for cockpit sessions; \
+                 lifecycle is managed by `aoe serve`.)"
+            );
+        }
+    } else if args.launch {
         let idx = instances
             .iter()
             .position(|i| i.id == instance.id)
