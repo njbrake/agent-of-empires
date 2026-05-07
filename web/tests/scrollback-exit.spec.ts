@@ -1,4 +1,5 @@
 import { test, expect, devices, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import {
   mockTerminalApis,
   installTerminalSpies,
@@ -36,7 +37,7 @@ async function openSession(page: Page) {
     await sidebarToggle.click();
     await page.waitForTimeout(300);
   }
-  await page.locator('button:has-text("pinch-test")').nth(1).click();
+  await clickSidebarSession(page, "pinch-test");
   await page.locator(".wterm").waitFor({ state: "visible", timeout: 10_000 });
 }
 

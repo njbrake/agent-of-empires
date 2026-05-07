@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis } from "./helpers/terminal-mocks";
 import type { Page } from "@playwright/test";
 
@@ -89,7 +90,7 @@ async function setupDiffMocks(page: Page) {
 /** Open a session and wait for the diff file list to load. */
 async function openSessionAndWaitForDiffList(page: Page) {
   await expect(page.locator("header")).toBeVisible();
-  await page.locator('button:has-text("pinch-test")').nth(1).click();
+  await clickSidebarSession(page, "pinch-test");
   // Wait for the file entry to appear in the diff panel (API fetch + render).
   await expect(page.getByText("example.ts").first()).toBeVisible({
     timeout: 10000,
@@ -204,7 +205,7 @@ test.describe("Diff syntax highlighting", () => {
 
     await page.goto("/");
     await expect(page.locator("header")).toBeVisible();
-    await page.locator('button:has-text("pinch-test")').nth(1).click();
+    await clickSidebarSession(page, "pinch-test");
     await expect(page.getByText("data.xyz").first()).toBeVisible({
       timeout: 10000,
     });

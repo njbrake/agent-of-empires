@@ -10,29 +10,21 @@ test.describe("Top bar", () => {
     await expect(page.getByRole("button", { name: "More options" })).toBeVisible();
   });
 
-  test("overflow menu opens on click and exposes Settings", async ({ page }) => {
+  test("overflow menu opens on click and exposes help actions", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.getByRole("button", { name: "More options" }).click();
-    await expect(page.getByRole("menuitem", { name: "Settings" })).toBeVisible();
     await expect(page.getByRole("menuitem", { name: "Help" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "About" })).toBeVisible();
   });
 
   test("overflow menu closes on outside click", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.getByRole("button", { name: "More options" }).click();
-    await expect(page.getByRole("menuitem", { name: "Settings" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Help" })).toBeVisible();
     await page.mouse.click(300, 300);
-    await expect(page.getByRole("menuitem", { name: "Settings" })).not.toBeVisible();
-  });
-
-  test("overflow Settings triggers settings view", async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 720 });
-    await page.goto("/");
-    await page.getByRole("button", { name: "More options" }).click();
-    await page.getByRole("menuitem", { name: "Settings" }).click();
-    await expect(page.getByRole("button", { name: /Back/i })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Help" })).not.toBeVisible();
   });
 
   test("overflow Help opens help overlay", async ({ page }) => {
