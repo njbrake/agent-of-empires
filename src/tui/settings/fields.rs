@@ -678,7 +678,7 @@ fn build_sandbox_fields(
         SettingField {
             key: FieldKey::DefaultImage,
             label: "Default Image",
-            description: "Docker image to use for sandboxes",
+            description: "Container image to use for sandboxes",
             value: FieldValue::Text(default_image),
             category: SettingsCategory::Sandbox,
             has_override: o3,
@@ -810,7 +810,7 @@ fn build_sandbox_fields(
         SettingField {
             key: FieldKey::ContainerRuntime,
             label: "Container Runtime",
-            description: "Container runtime for sandboxing (Docker or Apple Container on macOS)",
+            description: "Container runtime for sandboxing",
             value: FieldValue::Select {
                 selected: container_runtime_selected,
                 options: container_runtime_options.clone(),

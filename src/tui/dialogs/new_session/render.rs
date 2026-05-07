@@ -346,7 +346,7 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Sandbox checkbox with summary (only when Docker available)
+        // Sandbox checkbox with summary (only when a container runtime is available)
         if has_sandbox {
             let is_sandbox_focused = self.focused_field == sandbox_field;
             let sandbox_label_style = if is_sandbox_focused {
@@ -367,7 +367,7 @@ impl NewSessionDialog {
                 Span::raw(" "),
                 Span::styled(checkbox, checkbox_style),
                 Span::styled(
-                    " Run in Docker",
+                    " Run in container",
                     if self.sandbox_enabled {
                         Style::default().fg(theme.accent)
                     } else {

@@ -201,10 +201,10 @@ pub fn build_instance(
     if params.sandbox {
         let runtime = containers::get_container_runtime();
         if !runtime.is_available() {
-            bail!("Container runtime is not installed. Please install Docker or Apple Container to use sandbox mode.");
+            bail!("Container runtime is not installed. Please install a supported runtime to use sandbox mode.");
         }
         if !runtime.is_daemon_running() {
-            bail!("Container runtime daemon is not running. Please start Docker or Apple Container to use sandbox mode.");
+            bail!("Container runtime daemon is not running. Please start a supported runtime to use sandbox mode.");
         }
     }
 

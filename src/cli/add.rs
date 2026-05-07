@@ -47,11 +47,11 @@ pub struct AddArgs {
     #[arg(long = "repo", short = 'r')]
     extra_repos: Vec<PathBuf>,
 
-    /// Run session in Docker sandbox
+    /// Run session in a container sandbox
     #[arg(short = 's', long)]
     sandbox: bool,
 
-    /// Custom Docker image for sandbox (implies --sandbox)
+    /// Custom container image for sandbox (implies --sandbox)
     #[arg(long = "sandbox-image")]
     sandbox_image: Option<String>,
 
@@ -318,8 +318,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             if use_sandbox {
                 bail!(
                     "Container runtime is not installed or not accessible.\n\
-                     Install Docker: https://docs.docker.com/get-docker/\n\
-                     Or on macOS: Apple Container\n\
+                     Install a supported runtime to use sandbox mode.\n\
                      Tip: Use 'aoe add' without --sandbox to run directly on host"
                 );
             }

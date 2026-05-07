@@ -61,11 +61,11 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     },
     FieldHelp {
         name: "Sandbox",
-        description: "Run session in Docker container for isolation (Ctrl+P to configure)",
+        description: "Run session in a container for isolation (Ctrl+P to configure)",
     },
     FieldHelp {
         name: "Image",
-        description: "Docker image. Edit config.toml [sandbox] default_image to change default",
+        description: "Container image. Edit config.toml [sandbox] default_image to change default",
     },
     FieldHelp {
         name: "Environment",
