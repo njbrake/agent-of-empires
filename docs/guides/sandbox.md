@@ -167,6 +167,15 @@ If the referenced host env var is not set, the entry is silently skipped.
 
 To use a literal value starting with `$`, double it: `$$LITERAL` is injected as `$LITERAL`.
 
+### Claude on Vertex AI
+
+If `CLAUDE_CODE_USE_VERTEX` is set on the host (and non-empty), AOE wires up Claude+Vertex sessions automatically:
+
+- The Vertex env vars `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `ANTHROPIC_VERTEX_REGION`, and `CLOUD_ML_REGION` are forwarded into the container when set.
+- GCP Application Default Credentials are bind-mounted read-only at the well-known container path `/root/.config/gcloud/application_default_credentials.json`. AOE uses `$GOOGLE_APPLICATION_CREDENTIALS` if set, otherwise falls back to `~/.config/gcloud/application_default_credentials.json`. `GOOGLE_APPLICATION_CREDENTIALS` itself is not forwarded; client libraries discover the well-known path automatically.
+
+This only triggers when the active agent is `claude`; other agents (opencode, codex, etc.) get neither the vars nor the cred mount even if the host flag is set. `ANTHROPIC_API_KEY` is not auto-forwarded; if you also want it inside the container, list it in `sandbox.environment` explicitly.
+
 ### GitHub authentication with `GH_TOKEN`
 
 Forwarding `GH_TOKEN` (e.g. `"GH_TOKEN=$GH_TOKEN"` in `sandbox.environment`) enables both `gh` and plain `git push` to authenticate against `github.com` inside the container. AOE seeds a scoped credential helper in the sandbox gitconfig that reads the token at push time; no credential is ever written to disk.

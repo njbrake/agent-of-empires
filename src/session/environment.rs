@@ -113,14 +113,30 @@ fn redact_export_statements(cmd: &str) -> String {
 pub(crate) const DEFAULT_TERMINAL_ENV_VARS: &[&str] =
     &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
-/// API/provider env vars forwarded into sandbox containers when set on the host.
-pub(crate) const AUTO_FORWARD_API_ENV_VARS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
+/// Vertex provider env vars auto-forwarded into sandbox containers when
+/// `CLAUDE_CODE_USE_VERTEX` is set on the host. The flag itself is included
+/// so the container sees a consistent state.
+///
+/// `ANTHROPIC_API_KEY` is intentionally not in this list: Vertex auth uses
+/// GCP credentials, and force-forwarding the Anthropic API key would change
+/// behavior for users who happen to have it on their shell for unrelated
+/// reasons. Users who want it forwarded can add it to `sandbox.environment`
+/// explicitly.
+pub(crate) const AUTO_FORWARD_VERTEX_ENV_VARS: &[&str] = &[
     "ANTHROPIC_VERTEX_PROJECT_ID",
     "ANTHROPIC_VERTEX_REGION",
     "CLAUDE_CODE_USE_VERTEX",
     "CLOUD_ML_REGION",
 ];
+
+/// Returns true when `CLAUDE_CODE_USE_VERTEX` is set on the host to a
+/// non-empty value. An empty string is treated as unset to match how the
+/// flag is conventionally interpreted.
+pub(crate) fn host_vertex_enabled() -> bool {
+    std::env::var("CLAUDE_CODE_USE_VERTEX")
+        .ok()
+        .is_some_and(|v| !v.is_empty())
+}
 
 /// Returns the user's preferred shell from `$SHELL`, falling back to `bash`.
 ///
@@ -272,14 +288,17 @@ pub(crate) fn collect_environment(
         }
     }
 
-    // Auto-forward API provider credentials when set on the host.
-    for &key in AUTO_FORWARD_API_ENV_VARS {
-        if seen_keys.insert(key.to_string()) {
-            if let Ok(val) = std::env::var(key) {
-                result.push(EnvEntry::Inherit {
-                    key: key.to_string(),
-                    value: val,
-                });
+    // Auto-forward Vertex provider env vars when Vertex is enabled on the host.
+    // Gating on the host flag keeps non-Vertex users' sandboxes unchanged.
+    if host_vertex_enabled() {
+        for &key in AUTO_FORWARD_VERTEX_ENV_VARS {
+            if seen_keys.insert(key.to_string()) {
+                if let Ok(val) = std::env::var(key) {
+                    result.push(EnvEntry::Inherit {
+                        key: key.to_string(),
+                        value: val,
+                    });
+                }
             }
         }
     }
@@ -1059,9 +1078,9 @@ environment = ["GH_TOKEN=write_token"]
 
     #[test]
     #[serial_test::serial]
-    fn test_collect_environment_auto_forwards_api_vars() {
-        std::env::set_var("ANTHROPIC_API_KEY", "sk-test-key");
+    fn test_collect_environment_auto_forwards_vertex_vars_when_enabled() {
         std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
+        std::env::set_var("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj");
         std::env::set_var("CLOUD_ML_REGION", "us-east5");
         let config = SandboxConfig::default();
         let info = SandboxInfo {
@@ -1074,29 +1093,30 @@ environment = ["GH_TOKEN=write_token"]
         };
 
         let result = collect_environment(&config, &info);
-        let api_key =
-            find_entry(&result, "ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY not found");
-        assert_eq!(api_key.value(), "sk-test-key");
-        assert!(matches!(api_key, EnvEntry::Inherit { .. }));
 
         let vertex_flag = find_entry(&result, "CLAUDE_CODE_USE_VERTEX")
             .expect("CLAUDE_CODE_USE_VERTEX not found");
         assert_eq!(vertex_flag.value(), "1");
         assert!(matches!(vertex_flag, EnvEntry::Inherit { .. }));
 
+        let project = find_entry(&result, "ANTHROPIC_VERTEX_PROJECT_ID")
+            .expect("ANTHROPIC_VERTEX_PROJECT_ID not found");
+        assert_eq!(project.value(), "my-proj");
+
         let region = find_entry(&result, "CLOUD_ML_REGION").expect("CLOUD_ML_REGION not found");
         assert_eq!(region.value(), "us-east5");
-        assert!(matches!(region, EnvEntry::Inherit { .. }));
 
-        std::env::remove_var("ANTHROPIC_API_KEY");
         std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::remove_var("ANTHROPIC_VERTEX_PROJECT_ID");
         std::env::remove_var("CLOUD_ML_REGION");
     }
 
     #[test]
     #[serial_test::serial]
-    fn test_collect_environment_skips_unset_api_vars() {
-        std::env::remove_var("CLOUD_ML_REGION");
+    fn test_collect_environment_skips_vertex_vars_when_flag_unset() {
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::set_var("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj");
+        std::env::set_var("CLOUD_ML_REGION", "us-east5");
         let config = SandboxConfig::default();
         let info = SandboxInfo {
             enabled: true,
@@ -1109,17 +1129,72 @@ environment = ["GH_TOKEN=write_token"]
 
         let result = collect_environment(&config, &info);
         assert!(
-            find_entry(&result, "CLOUD_ML_REGION").is_none(),
-            "CLOUD_ML_REGION should not appear when unset on host",
+            find_entry(&result, "ANTHROPIC_VERTEX_PROJECT_ID").is_none(),
+            "Vertex vars should not auto-forward when CLAUDE_CODE_USE_VERTEX is unset",
         );
+        assert!(find_entry(&result, "CLOUD_ML_REGION").is_none());
+
+        std::env::remove_var("ANTHROPIC_VERTEX_PROJECT_ID");
+        std::env::remove_var("CLOUD_ML_REGION");
     }
 
     #[test]
     #[serial_test::serial]
-    fn test_collect_environment_api_vars_not_duplicated() {
+    fn test_collect_environment_skips_vertex_vars_when_flag_empty() {
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "");
+        std::env::set_var("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj");
+        let config = SandboxConfig::default();
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let result = collect_environment(&config, &info);
+        assert!(
+            find_entry(&result, "ANTHROPIC_VERTEX_PROJECT_ID").is_none(),
+            "Empty CLAUDE_CODE_USE_VERTEX must be treated as unset",
+        );
+
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::remove_var("ANTHROPIC_VERTEX_PROJECT_ID");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_environment_does_not_auto_forward_anthropic_api_key() {
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
         std::env::set_var("ANTHROPIC_API_KEY", "sk-host-key");
+        let config = SandboxConfig::default();
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let result = collect_environment(&config, &info);
+        assert!(
+            find_entry(&result, "ANTHROPIC_API_KEY").is_none(),
+            "ANTHROPIC_API_KEY must not be auto-forwarded; users opt in via sandbox.environment",
+        );
+
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_environment_vertex_vars_not_duplicated() {
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
+        std::env::set_var("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj");
         let config = SandboxConfig {
-            environment: vec!["ANTHROPIC_API_KEY".to_string()],
+            environment: vec!["ANTHROPIC_VERTEX_PROJECT_ID".to_string()],
             ..Default::default()
         };
         let info = SandboxInfo {
@@ -1134,16 +1209,12 @@ environment = ["GH_TOKEN=write_token"]
         let result = collect_environment(&config, &info);
         let matches: Vec<_> = result
             .iter()
-            .filter(|e| e.key() == "ANTHROPIC_API_KEY")
+            .filter(|e| e.key() == "ANTHROPIC_VERTEX_PROJECT_ID")
             .collect();
-        assert_eq!(
-            matches.len(),
-            1,
-            "ANTHROPIC_API_KEY should appear exactly once, got {}",
-            matches.len(),
-        );
-        assert_eq!(matches[0].value(), "sk-host-key");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].value(), "my-proj");
 
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::remove_var("ANTHROPIC_VERTEX_PROJECT_ID");
     }
 }
