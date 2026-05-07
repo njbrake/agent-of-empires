@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import {
   mockTerminalApis,
   installTerminalSpies,
@@ -31,7 +32,7 @@ function countSeq(handle: MockHandle, seq: string): number {
 
 test.describe("Terminal mouse-wheel scroll (desktop)", () => {
   async function openSession(page: Page, handle: MockHandle) {
-    await page.locator('button:has-text("pinch-test")').nth(1).click();
+    await clickSidebarSession(page, "pinch-test");
     await page
       .locator(".wterm")
       .first()

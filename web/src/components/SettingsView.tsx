@@ -313,6 +313,7 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
             />
             <TextField
               label="Path template"
+              description="Template for worktree directories in regular repos ({repo-name}, {branch})"
               value={(worktree.path_template as string) ?? ""}
               onChange={(v) => saveField("worktree", worktree, "path_template", v)}
               placeholder="../{repo-name}-worktrees/{branch}"
@@ -320,6 +321,7 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
             />
             <TextField
               label="Bare repo path template"
+              description="Template for worktree directories in bare repos ({branch})"
               value={(worktree.bare_repo_path_template as string) ?? ""}
               onChange={(v) => saveField("worktree", worktree, "bare_repo_path_template", v)}
               placeholder="./{branch}"
@@ -327,6 +329,7 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
             />
             <TextField
               label="Workspace path template"
+              description="Template for multi-repo workspace directories ({branch}, {session-id})"
               value={(worktree.workspace_path_template as string) ?? ""}
               onChange={(v) => saveField("worktree", worktree, "workspace_path_template", v)}
               placeholder="../{branch}-workspace-{session-id}"

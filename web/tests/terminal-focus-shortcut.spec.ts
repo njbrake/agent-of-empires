@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis } from "./helpers/terminal-mocks";
 import { mkdirSync } from "node:fs";
 
@@ -9,7 +10,7 @@ async function shot(page: Page, name: string) {
 }
 
 async function openSession(page: Page) {
-  await page.locator('button:has-text("pinch-test")').nth(1).click();
+  await clickSidebarSession(page, "pinch-test");
   await expect(page.locator('[data-term="agent"]')).toHaveCount(1);
   await expect(page.locator('[data-term="agent"] .wterm')).toBeVisible();
 }
@@ -128,7 +129,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
     });
 
     await page.goto("/");
-    await page.locator('button:has-text("pinch-test")').nth(1).click();
+    await clickSidebarSession(page, "pinch-test");
     await expect(page.locator('[data-term="agent"]')).toHaveCount(1);
 
     // Press Cmd+` immediately while paired is still in its "Starting…"
@@ -152,7 +153,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
     });
 
     await page.goto("/");
-    await page.locator('button:has-text("pinch-test")').nth(1).click();
+    await clickSidebarSession(page, "pinch-test");
 
     // Wait for paired to be ready (its ensureTerminal isn't delayed); use
     // it as the focus source so target=agent.
