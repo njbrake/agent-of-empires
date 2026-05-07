@@ -1,10 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
+import { clickSidebarSession } from "./helpers/sidebar";
 
 test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false });
 
 async function openSession(page: Page, handle: MockHandle) {
-  await page.locator('button:has-text("pinch-test")').nth(1).click();
+  await clickSidebarSession(page, "pinch-test");
   await page
     .locator(".wterm")
     .first()
