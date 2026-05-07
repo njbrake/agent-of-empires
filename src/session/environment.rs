@@ -113,6 +113,15 @@ fn redact_export_statements(cmd: &str) -> String {
 pub(crate) const DEFAULT_TERMINAL_ENV_VARS: &[&str] =
     &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
+/// API/provider env vars forwarded into sandbox containers when set on the host.
+pub(crate) const AUTO_FORWARD_API_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "ANTHROPIC_VERTEX_REGION",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLOUD_ML_REGION",
+];
+
 /// Returns the user's preferred shell from `$SHELL`, falling back to `bash`.
 ///
 /// Used for host-side command wrappers (agent launch, local hook execution)
@@ -253,6 +262,18 @@ pub(crate) fn collect_environment(
 
     // Always ensure the terminal defaults are present (pass-through from host)
     for &key in DEFAULT_TERMINAL_ENV_VARS {
+        if seen_keys.insert(key.to_string()) {
+            if let Ok(val) = std::env::var(key) {
+                result.push(EnvEntry::Inherit {
+                    key: key.to_string(),
+                    value: val,
+                });
+            }
+        }
+    }
+
+    // Auto-forward API provider credentials when set on the host.
+    for &key in AUTO_FORWARD_API_ENV_VARS {
         if seen_keys.insert(key.to_string()) {
             if let Ok(val) = std::env::var(key) {
                 result.push(EnvEntry::Inherit {
@@ -1034,5 +1055,95 @@ environment = ["GH_TOKEN=write_token"]
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_environment_auto_forwards_api_vars() {
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-test-key");
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
+        std::env::set_var("CLOUD_ML_REGION", "us-east5");
+        let config = SandboxConfig::default();
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let result = collect_environment(&config, &info);
+        let api_key =
+            find_entry(&result, "ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY not found");
+        assert_eq!(api_key.value(), "sk-test-key");
+        assert!(matches!(api_key, EnvEntry::Inherit { .. }));
+
+        let vertex_flag = find_entry(&result, "CLAUDE_CODE_USE_VERTEX")
+            .expect("CLAUDE_CODE_USE_VERTEX not found");
+        assert_eq!(vertex_flag.value(), "1");
+        assert!(matches!(vertex_flag, EnvEntry::Inherit { .. }));
+
+        let region = find_entry(&result, "CLOUD_ML_REGION").expect("CLOUD_ML_REGION not found");
+        assert_eq!(region.value(), "us-east5");
+        assert!(matches!(region, EnvEntry::Inherit { .. }));
+
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::remove_var("CLOUD_ML_REGION");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_environment_skips_unset_api_vars() {
+        std::env::remove_var("CLOUD_ML_REGION");
+        let config = SandboxConfig::default();
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let result = collect_environment(&config, &info);
+        assert!(
+            find_entry(&result, "CLOUD_ML_REGION").is_none(),
+            "CLOUD_ML_REGION should not appear when unset on host",
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_collect_environment_api_vars_not_duplicated() {
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-host-key");
+        let config = SandboxConfig {
+            environment: vec!["ANTHROPIC_API_KEY".to_string()],
+            ..Default::default()
+        };
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let result = collect_environment(&config, &info);
+        let matches: Vec<_> = result
+            .iter()
+            .filter(|e| e.key() == "ANTHROPIC_API_KEY")
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "ANTHROPIC_API_KEY should appear exactly once, got {}",
+            matches.len(),
+        );
+        assert_eq!(matches[0].value(), "sk-host-key");
+
+        std::env::remove_var("ANTHROPIC_API_KEY");
     }
 }

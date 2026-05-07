@@ -552,6 +552,7 @@ fn default_sandbox_image() -> String {
 fn default_sandbox_environment() -> Vec<String> {
     crate::session::environment::DEFAULT_TERMINAL_ENV_VARS
         .iter()
+        .chain(crate::session::environment::AUTO_FORWARD_API_ENV_VARS.iter())
         .map(|s| s.to_string())
         .collect()
 }
@@ -988,6 +989,7 @@ mod tests {
         assert!(sb.extra_volumes.is_empty());
         assert!(sb.environment.contains(&"TERM".to_string()));
         assert!(sb.environment.contains(&"COLORTERM".to_string()));
+        assert!(sb.environment.contains(&"ANTHROPIC_API_KEY".to_string()));
         assert!(sb.cpu_limit.is_none());
         assert!(sb.memory_limit.is_none());
         assert!(sb.volume_ignores.is_empty());

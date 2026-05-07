@@ -875,6 +875,40 @@ pub(crate) fn build_container_config(
         }
     }
 
+    // Mount GCP credentials into the well-known ADC path when Vertex AI is configured.
+    // GOOGLE_APPLICATION_CREDENTIALS is not forwarded as an env var; client libraries
+    // discover the well-known path automatically.
+    if std::env::var("CLAUDE_CODE_USE_VERTEX").is_ok() {
+        let container_cred_path = format!(
+            "{}/.config/gcloud/application_default_credentials.json",
+            CONTAINER_HOME
+        );
+        if let Ok(cred_path) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
+            let cred_file = std::path::Path::new(&cred_path);
+            if cred_file.exists() {
+                volumes.push(VolumeMount {
+                    host_path: cred_path.clone(),
+                    container_path: container_cred_path,
+                    read_only: true,
+                });
+            } else {
+                tracing::warn!(
+                    "GOOGLE_APPLICATION_CREDENTIALS points to non-existent file: {}",
+                    cred_path
+                );
+            }
+        } else {
+            let adc_path = home.join(".config/gcloud/application_default_credentials.json");
+            if adc_path.exists() {
+                volumes.push(VolumeMount {
+                    host_path: adc_path.to_string_lossy().to_string(),
+                    container_path: container_cred_path,
+                    read_only: true,
+                });
+            }
+        }
+    }
+
     // Sync host agent config into a shared sandbox directory per agent and
     // bind-mount it read-write. Only mount the config for the active tool.
     // Agent definitions are in AGENT_CONFIG_MOUNTS -- add new agents there, not here.
