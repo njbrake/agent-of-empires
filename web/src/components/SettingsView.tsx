@@ -5,7 +5,7 @@ import { SecuritySettings } from "./SecuritySettings";
 import { TerminalSettings } from "./TerminalSettings";
 import {
   fetchProfiles,
-  getSettings,
+  fetchSettings,
   setDefaultProfile,
   updateProfileSettings,
 } from "../lib/api";
@@ -95,7 +95,7 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
   };
 
   const loadSettings = useCallback(() => {
-    getSettings(selectedProfile).then((s) => {
+    fetchSettings(selectedProfile).then((s) => {
       if (s) setSettings(s);
     });
   }, [selectedProfile]);

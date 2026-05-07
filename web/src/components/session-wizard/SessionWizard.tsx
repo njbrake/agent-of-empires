@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer } from "react";
 import type { AgentInfo, GroupInfo, ProfileInfo, CreateSessionRequest, SessionResponse } from "../../lib/types";
-import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, getSettings, createSession } from "../../lib/api";
+import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, fetchSettings, createSession } from "../../lib/api";
 import { StepIndicator } from "./StepIndicator";
 import type { StepDef, StepId } from "./StepIndicator";
 import { ProjectStep } from "./steps/ProjectStep";
@@ -174,7 +174,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
     fetchGroups().then((g) => dispatch({ type: "SET_GROUPS", groups: g }));
     fetchProfiles().then((p) => dispatch({ type: "SET_PROFILES", profiles: p }));
     fetchDockerStatus().then((d) => dispatch({ type: "SET_DOCKER", available: d.available }));
-    getSettings().then((s) => {
+    fetchSettings().then((s) => {
       if (s) {
         const sandbox = s.sandbox as Record<string, unknown> | undefined;
         const img = (sandbox?.default_image as string) || "";

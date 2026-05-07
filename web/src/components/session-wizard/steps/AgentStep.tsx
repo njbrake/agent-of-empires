@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { AgentInfo, ProfileInfo } from "../../../lib/types";
-import { getSettings } from "../../../lib/api";
+import { fetchSettings } from "../../../lib/api";
 
 interface WizardData {
   tool: string;
@@ -70,7 +70,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
 
     // Load profile-resolved settings (global + profile overrides merged)
     try {
-      const settings = await getSettings(profileName);
+      const settings = await fetchSettings(profileName);
       if (settings) {
         const session = settings.session as Record<string, unknown> | undefined;
         const sandbox = settings.sandbox as Record<string, unknown> | undefined;

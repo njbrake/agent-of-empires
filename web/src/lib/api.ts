@@ -113,10 +113,6 @@ export function fetchSettings(profile?: string): Promise<SettingsResponse | null
   return fetchJson<SettingsResponse>(`/api/settings${params}`);
 }
 
-export function getSettings(profile?: string): Promise<Record<string, unknown> | null> {
-  return fetchSettings(profile);
-}
-
 export async function updateSettings(
   updates: Record<string, unknown>,
 ): Promise<boolean> {
