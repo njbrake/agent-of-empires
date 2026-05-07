@@ -5,6 +5,7 @@ import { getSettings } from "../../../lib/api";
 interface WizardData {
   tool: string;
   title: string;
+  worktreeBranch: string;
   profile: string;
   profileDirty: boolean;
   sandboxEnabled: boolean;
@@ -206,17 +207,29 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
 
       {showAdvanced && (
         <div className="mt-2 space-y-4 border-t border-surface-700/30 pt-4">
-          {/* Session name / branch */}
+          {/* Session title / branch */}
           <div>
-            <label className="block text-sm text-text-dim mb-1.5">Session name</label>
+            <label className="block text-sm text-text-dim mb-1.5">Session title</label>
             <input
               type="text"
               value={data.title}
               onChange={(e) => onChange("title", e.target.value)}
-              placeholder="Auto-generated if empty"
+              placeholder="Shown in Agent of Empires"
               className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
-            <p className="text-xs text-text-dim mt-1">Used as the git branch name. Leave empty for auto-generated name.</p>
+            <p className="text-xs text-text-dim mt-1">Shown in the dashboard and session lists. Renaming it later does not rename the git branch.</p>
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-dim mb-1.5">Branch name</label>
+            <input
+              type="text"
+              value={data.worktreeBranch}
+              onChange={(e) => onChange("worktreeBranch", e.target.value)}
+              placeholder="Uses session title if empty"
+              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+            />
+            <p className="text-xs text-text-dim mt-1">Git branch and worktree name. Clearing it switches back to the session title. Leave both title and branch empty to auto-generate.</p>
           </div>
 
           {/* Container config (if sandbox enabled) */}

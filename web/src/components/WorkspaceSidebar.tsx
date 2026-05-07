@@ -130,10 +130,17 @@ const SessionRow = memo(function SessionRow({
     status: sessionStatus,
     idle_entered_at: idleEnteredAt,
   });
-  const label =
-    workspace.branch ?? workspace.sessions[0]?.title ?? "default";
   const runningSession = workspace.sessions.find((s) => isSessionActive(s));
   const firstSession = workspace.sessions[0];
+  const singleSession = workspace.sessions.length === 1;
+  const sessionTitle = firstSession?.title.trim() ?? "";
+  const branchLabel = workspace.branch ?? null;
+  const label = singleSession
+    ? sessionTitle || branchLabel || "default"
+    : branchLabel || sessionTitle || "default";
+  const subtitle = singleSession && sessionTitle && branchLabel && sessionTitle !== branchLabel
+    ? branchLabel
+    : null;
   const sessionId = firstSession?.id;
   const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
   const sessionPath = navigationSessionId
@@ -240,14 +247,17 @@ const SessionRow = memo(function SessionRow({
   const startRename = () => {
     if (renaming) return;
     setContextMenu(null);
-    setRenameValue(label);
+    setRenameValue(sessionTitle || label);
     setRenaming(true);
   };
 
   const commitRename = async () => {
     setRenaming(false);
     const trimmed = renameValue.trim();
-    if (!trimmed || trimmed === label || !sessionId) return;
+    // Compare against the current title, not the displayed label: when a
+    // single session has no title yet, label is the branch and accepting
+    // the prefilled value should still set the title.
+    if (!trimmed || trimmed === sessionTitle || !sessionId) return;
     await renameSession(sessionId, trimmed);
   };
 
@@ -312,9 +322,16 @@ const SessionRow = memo(function SessionRow({
               idleEnteredAt={idleEnteredAt}
             />
           </span>
-          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
-            {label}
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className={`block text-[13px] md:text-[14px] truncate ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+              {label}
+            </span>
+            {subtitle && (
+              <span className="block text-[11px] font-mono text-text-dim truncate" title={subtitle}>
+                {subtitle}
+              </span>
+            )}
+          </div>
         </div>
       </Link>
       {contextMenu && createPortal(
@@ -449,6 +466,7 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
   return (
     ws.displayName.toLowerCase().includes(q) ||
     ws.projectPath.toLowerCase().includes(q) ||
+    (ws.branch?.toLowerCase().includes(q) ?? false) ||
     ws.agents.some((a) => a.toLowerCase().includes(q)) ||
     ws.sessions.some((s) => s.title.toLowerCase().includes(q))
   );
