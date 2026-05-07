@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { StepDef, StepId } from "../StepIndicator";
+import { getReviewSummary } from "../sessionNames";
 
-interface WizardData { path: string; title: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
-interface Props { data: WizardData; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
+interface WizardData { path: string; title: string; worktreeBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
+interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
@@ -23,9 +24,79 @@ function Row({ label, value, stepId, onJumpTo, accent }: { label: string; value:
   );
 }
 
-export function ReviewStep({ data, isSubmitting, error, onSubmit, onJumpTo, steps }: Props) {
+function EditableRow({ label, value, displayValue, placeholder, onChange, accent }: {
+  label: string;
+  value: string;
+  displayValue: string;
+  placeholder?: string;
+  onChange: (v: string) => void;
+  accent?: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const startEditing = () => {
+    setDraft(value);
+    setEditing(true);
+  };
+
+  const commit = () => {
+    setEditing(false);
+    if (draft !== value) onChange(draft);
+  };
+
+  const isPlaceholder = !value;
+
+  if (editing) {
+    return (
+      <div className="flex justify-between items-center w-full py-3 border-b border-surface-800 last:border-0 -mx-2 px-2 gap-3">
+        <span className="text-sm text-text-dim shrink-0">{label}</span>
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          placeholder={placeholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              // Stop the wizard's window-level Cmd+Enter submit handler
+              // from racing with our state update on commit.
+              e.preventDefault();
+              e.stopPropagation();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+            }
+          }}
+          className={`flex-1 min-w-0 text-sm font-mono bg-surface-800 border border-brand-600 rounded px-2 py-1 text-right placeholder:text-text-dim focus:outline-none ${accent ? "text-accent-600" : "text-text-primary"}`}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={startEditing}
+      className="flex justify-between items-center w-full py-3 border-b border-surface-800 last:border-0 text-left cursor-pointer hover:bg-surface-800/50 -mx-2 px-2 rounded-md"
+    >
+      <span className="text-sm text-text-dim">{label}</span>
+      <span className={`text-sm font-mono truncate ml-4 ${isPlaceholder ? "text-text-dim italic" : accent ? "text-accent-600" : "text-text-primary"}`}>{displayValue}</span>
+    </button>
+  );
+}
+
+export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJumpTo, steps }: Props) {
   const hasStep = (id: StepId) => steps.some((s) => s.id === id);
   const canSubmit = !isSubmitting && !!data.path && !!data.tool;
+  const summary = getReviewSummary(data.title, data.worktreeBranch);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -44,9 +115,21 @@ export function ReviewStep({ data, isSubmitting, error, onSubmit, onJumpTo, step
       <p className="text-sm text-text-muted mb-5">Here's what will be created. Make sure everything looks right.</p>
       <div className="bg-surface-900 border border-surface-700 rounded-lg p-4 mb-5">
         <Row label="Project" value={data.path || "(not set)"} stepId="project" onJumpTo={onJumpTo} />
-        {data.title && (
-          <Row label="Branch" value={data.title} stepId="agent" onJumpTo={onJumpTo} accent />
-        )}
+        <EditableRow
+          label="Title"
+          value={data.title}
+          displayValue={summary.title}
+          placeholder="Auto-generated"
+          onChange={(v) => onChange("title", v)}
+        />
+        <EditableRow
+          label="Branch"
+          value={data.worktreeBranch}
+          displayValue={summary.branch}
+          placeholder="Auto-generated"
+          onChange={(v) => onChange("worktreeBranch", v)}
+          accent
+        />
         <Row label="Agent" value={data.tool || "(not set)"} stepId="agent" onJumpTo={onJumpTo} />
         {data.profile && (
           <Row label="Profile" value={data.profileDirty ? `${data.profile} (Custom)` : data.profile} stepId="agent" onJumpTo={onJumpTo} accent />

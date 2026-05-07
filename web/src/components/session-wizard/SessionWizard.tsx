@@ -6,10 +6,13 @@ import type { StepDef, StepId } from "./StepIndicator";
 import { ProjectStep } from "./steps/ProjectStep";
 import { AgentStep } from "./steps/AgentStep";
 import { ReviewStep } from "./steps/ReviewStep";
+import { applyBranchOverride, getSubmittedBranch } from "./sessionNames";
 
 export interface WizardData {
   path: string;
   title: string;
+  worktreeBranch: string;
+  worktreeBranchDirty: boolean;
   group: string;
   tool: string;
   profile: string;
@@ -50,7 +53,8 @@ type Action =
   | { type: "APPLY_PROFILE_DEFAULTS"; yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] };
 
 const initialData: WizardData = {
-  path: "", title: "", group: "", tool: "claude", profile: "",
+  path: "", title: "", worktreeBranch: "", worktreeBranchDirty: false,
+  group: "", tool: "claude", profile: "",
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
   advancedEnabled: false, profileDirty: false,
   customInstruction: "", extraArgs: "", commandOverride: "",
@@ -60,6 +64,17 @@ function reducer(state: WizardState, action: Action): WizardState {
   switch (action.type) {
     case "SET_FIELD": {
       const newData = { ...state.data, [action.field]: action.value };
+      if (action.field === "title" && !state.data.worktreeBranchDirty) {
+        newData.worktreeBranch = String(action.value);
+      }
+      if (action.field === "worktreeBranch") {
+        const override = applyBranchOverride(
+          String(newData.title),
+          String(action.value),
+        );
+        newData.worktreeBranch = override.worktreeBranch;
+        newData.worktreeBranchDirty = override.worktreeBranchDirty;
+      }
       // Mark as dirty when user manually edits agent-step fields after a profile was chosen
       if (state.data.profile && ["yoloMode", "sandboxEnabled", "tool", "extraEnv"].includes(action.field)) {
         newData.profileDirty = true;
@@ -187,7 +202,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
       path: d.path, tool: d.tool,
       title: d.title || undefined, group: d.group || undefined,
       yolo_mode: d.yoloMode,
-      worktree_branch: d.title || "",
+      worktree_branch: getSubmittedBranch(d.title, d.worktreeBranch),
       create_new_branch: true,
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
@@ -222,7 +237,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
           />
         );
       case "review":
-        return <ReviewStep data={state.data} isSubmitting={state.isSubmitting} error={state.error} onSubmit={handleSubmit} onJumpTo={jumpTo} steps={steps} />;
+        return <ReviewStep data={state.data} onChange={handleChange} isSubmitting={state.isSubmitting} error={state.error} onSubmit={handleSubmit} onJumpTo={jumpTo} steps={steps} />;
       default:
         return null;
     }
