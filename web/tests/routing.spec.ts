@@ -1,11 +1,13 @@
 import { test, expect } from "@playwright/test";
 
+const NEW_SESSION_PANE_NAME = /New session Pick a project, then launch a new session/i;
+
 // Verifies URL-based routing: deep links land on the right view, refresh
 // preserves location, and back/forward replays history.
 test.describe("URL routing", () => {
   test("'/' renders the dashboard home screen", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("Open project")).toBeVisible();
+    await expect(page.getByRole("button", { name: NEW_SESSION_PANE_NAME })).toBeVisible();
     await expect(page).toHaveURL("/");
   });
 
@@ -34,7 +36,7 @@ test.describe("URL routing", () => {
     // the resolver finds no session and the dashboard renders. Importantly
     // the URL stays put so a real backend can later resolve it.
     await page.goto("/session/does-not-exist");
-    await expect(page.getByText("Open project")).toBeVisible();
+    await expect(page.getByRole("button", { name: NEW_SESSION_PANE_NAME })).toBeVisible();
     await expect(page).toHaveURL("/session/does-not-exist");
   });
 
