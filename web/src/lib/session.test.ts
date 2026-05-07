@@ -6,6 +6,7 @@ import {
   idleAgeMs,
   isFreshIdle,
   isSessionActive,
+  resolveIdleDecayWindowMs,
 } from "./session";
 import type { SessionResponse, SessionStatus } from "./types";
 
@@ -29,6 +30,31 @@ function session(
 ): Pick<SessionResponse, "status" | "idle_entered_at"> {
   return { status, idle_entered_at: idleEnteredAt };
 }
+
+describe("resolveIdleDecayWindowMs", () => {
+  it("falls back to the module default when settings are missing", () => {
+    expect(resolveIdleDecayWindowMs(null)).toBe(IDLE_DECAY_WINDOW_MS);
+    expect(resolveIdleDecayWindowMs({})).toBe(IDLE_DECAY_WINDOW_MS);
+  });
+
+  it("converts theme.idle_decay_minutes to milliseconds", () => {
+    expect(
+      resolveIdleDecayWindowMs({ theme: { idle_decay_minutes: 5 } }),
+    ).toBe(5 * 60 * 1000);
+  });
+
+  it("clamps negative values back to zero", () => {
+    expect(
+      resolveIdleDecayWindowMs({ theme: { idle_decay_minutes: -3 } }),
+    ).toBe(0);
+  });
+
+  it("ignores non-numeric theme values", () => {
+    expect(
+      resolveIdleDecayWindowMs({ theme: { idle_decay_minutes: "5" } }),
+    ).toBe(IDLE_DECAY_WINDOW_MS);
+  });
+});
 
 describe("IDLE_DECAY_WINDOW_MS default", () => {
   it("is 0 (off) by default — opt-in feature", () => {

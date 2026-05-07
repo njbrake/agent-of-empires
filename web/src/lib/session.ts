@@ -10,6 +10,18 @@ import type { SessionResponse, SessionStatus } from "./types";
  *  without changing the call sites. Pass a positive number to enable. */
 export const IDLE_DECAY_WINDOW_MS = 0;
 
+export function resolveIdleDecayWindowMs(
+  settings: Record<string, unknown> | null | undefined,
+): number {
+  const theme = settings?.theme;
+  if (!theme || typeof theme !== "object") return IDLE_DECAY_WINDOW_MS;
+  const value = (theme as Record<string, unknown>).idle_decay_minutes;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return IDLE_DECAY_WINDOW_MS;
+  }
+  return Math.max(0, value) * 60 * 1000;
+}
+
 /** Tailwind class for status dot background color by session status */
 export const STATUS_DOT_CLASS: Record<SessionStatus, string> = {
   Running: "bg-status-running",

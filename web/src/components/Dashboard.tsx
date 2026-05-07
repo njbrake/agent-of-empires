@@ -8,6 +8,7 @@ interface Props {
   onNewSession: () => void;
   onCloneFromUrl: () => void;
   onToggleSidebar: () => void;
+  idleDecayWindowMs: number;
   readOnly?: boolean;
 }
 
@@ -16,6 +17,7 @@ export function Dashboard({
   onNewSession,
   onCloneFromUrl,
   onToggleSidebar,
+  idleDecayWindowMs,
   readOnly,
 }: Props) {
   const stats = useMemo(() => {
@@ -25,12 +27,12 @@ export function Dashboard({
     let errors = 0;
     for (const s of sessions) {
       projects.add(s.main_repo_path || s.project_path);
-      if (isSessionActive(s)) active++;
+      if (isSessionActive(s, idleDecayWindowMs)) active++;
       if (s.status === "Waiting") waiting++;
       if (s.status === "Error") errors++;
     }
     return { active, waiting, errors, projects: projects.size };
-  }, [sessions]);
+  }, [sessions, idleDecayWindowMs]);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">

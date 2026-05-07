@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { SessionStatus } from "../lib/types";
-import { isFreshIdle } from "../lib/session";
+import { IDLE_DECAY_WINDOW_MS, isFreshIdle } from "../lib/session";
 
 /** Animated spinner frames from rattles (https://github.com/vyfor/rattles) */
 const RATTLES: Record<string, { frames: string[]; interval: number }> = {
@@ -52,13 +52,19 @@ export function StatusGlyph({
   status,
   createdAt,
   idleEnteredAt,
+  idleDecayWindowMs = IDLE_DECAY_WINDOW_MS,
 }: {
   status: SessionStatus;
   createdAt: string | null;
   idleEnteredAt?: string | null;
+  idleDecayWindowMs?: number;
 }) {
   const isFresh =
-    status === "Idle" && isFreshIdle({ status, idle_entered_at: idleEnteredAt ?? null });
+    status === "Idle" &&
+    isFreshIdle(
+      { status, idle_entered_at: idleEnteredAt ?? null },
+      idleDecayWindowMs,
+    );
   const rattleKey = STATUS_RATTLE[status];
   const rattle = isFresh
     ? FRESH_IDLE_RATTLE

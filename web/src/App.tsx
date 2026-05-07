@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
-import { isSessionActive } from "./lib/session";
+import {
+  IDLE_DECAY_WINDOW_MS,
+  isSessionActive,
+  resolveIdleDecayWindowMs,
+} from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
@@ -9,7 +13,13 @@ import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
-import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
+import {
+  loginStatus,
+  logout,
+  deleteSession,
+  fetchAbout,
+  getSettings,
+} from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
@@ -119,7 +129,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const settingsTab = settingsTabMatch?.params.tab ?? null;
 
   const { sessions, error, injectSession, setSessionStatus } = useSessions();
-  const workspaces = useWorkspaces(sessions);
+  const [idleDecayWindowMs, setIdleDecayWindowMs] =
+    useState(IDLE_DECAY_WINDOW_MS);
+  const workspaces = useWorkspaces(sessions, idleDecayWindowMs);
   const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
 
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -179,12 +191,14 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       focusKeyboardProxy();
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
-  }, [navigate, workspaces]);
+  }, [idleDecayWindowMs, navigate, workspaces]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
-      const running = ws.sessions.find((s) => isSessionActive(s));
+      const running = ws.sessions.find((s) =>
+        isSessionActive(s, idleDecayWindowMs),
+      );
       const picked = running?.id ?? ws.sessions[0]?.id ?? null;
       if (picked) {
         navigate(`/session/${encodeURIComponent(picked)}`);
@@ -216,6 +230,17 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [wizardPrefill, setWizardPrefill] = useState<WizardPrefill | undefined>(undefined);
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
   const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSettings().then((settings) => {
+      if (cancelled) return;
+      setIdleDecayWindowMs(resolveIdleDecayWindowMs(settings));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     fetchAbout().then((about) => {
@@ -448,6 +473,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           onNewSession={handleNewSession}
           onCloneFromUrl={handleCloneFromUrl}
           onToggleSidebar={handleToggleSidebar}
+          idleDecayWindowMs={idleDecayWindowMs}
           readOnly={serverAbout?.read_only}
         />
       );
@@ -545,6 +571,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             onCreateSession={handleCreateSession}
             onSettings={handleOpenSettings}
             onDeleteSession={handleDeleteSession}
+            idleDecayWindowMs={idleDecayWindowMs}
             readOnly={serverAbout?.read_only}
           />
         )}

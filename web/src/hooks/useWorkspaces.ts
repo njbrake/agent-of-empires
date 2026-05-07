@@ -7,7 +7,10 @@ function normalizePath(p: string): string {
   return p.replace(/\/+$/, "");
 }
 
-export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
+export function useWorkspaces(
+  sessions: SessionResponse[],
+  idleDecayWindowMs: number,
+): Workspace[] {
   return useMemo(() => {
     const groups = new Map<string, SessionResponse[]>();
 
@@ -29,7 +32,7 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
     for (const [id, groupSessions] of groups) {
       const first = groupSessions[0]!;
       const agents = [...new Set(groupSessions.map((s) => s.tool))];
-      const status = groupSessions.some((s) => isSessionActive(s))
+      const status = groupSessions.some((s) => isSessionActive(s, idleDecayWindowMs))
         ? "active"
         : "idle";
 
@@ -59,5 +62,5 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
     });
 
     return workspaces;
-  }, [sessions]);
+  }, [sessions, idleDecayWindowMs]);
 }
