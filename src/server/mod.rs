@@ -462,53 +462,11 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 
     let app = build_router(state.clone());
 
-    // Auto-spawn cockpit workers for persisted sessions that have
-    // cockpit_mode enabled. Best-effort: failures (e.g. missing Node)
-    // are logged and the session still appears in the list, just
-    // without a running worker until the user retries via REST or
-    // restarts serve. Each spawn runs on its own task so a slow agent
-    // doesn't delay startup.
-    #[cfg(feature = "serve")]
-    {
-        let cockpit_targets: Vec<_> = {
-            let instances = state.instances.read().await;
-            instances
-                .iter()
-                .filter(|i| i.cockpit_mode)
-                .map(|i| {
-                    (
-                        i.id.clone(),
-                        i.tool.clone(),
-                        i.cockpit_agent.clone(),
-                        i.cockpit_model.clone(),
-                        i.project_path.clone(),
-                    )
-                })
-                .collect()
-        };
-        for (id, tool, agent_override, model, project_path) in cockpit_targets {
-            let supervisor = state.cockpit_supervisor.clone();
-            let agent = supervisor
-                .pick_agent_for_tool(&tool, agent_override.as_deref())
-                .await;
-            let cwd = std::path::PathBuf::from(project_path);
-            tokio::spawn(async move {
-                if let Err(e) = supervisor
-                    .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
-                    .await
-                {
-                    let message = format!("Failed to start cockpit agent {agent:?}: {e}");
-                    tracing::warn!(
-                        target: "cockpit.supervisor",
-                        session = %id,
-                        agent = %agent,
-                        "auto-spawn at serve startup failed: {message}"
-                    );
-                    supervisor.publish_startup_error(&id, message);
-                }
-            });
-        }
-    }
+    // Cockpit workers for persisted sessions get auto-spawned by the
+    // reconciler in `status_poll_loop`. The poll interval's first tick
+    // fires immediately, so on cold startup this is equivalent to the
+    // old in-place loop here, while also covering sessions added via
+    // `aoe add --cockpit` while serve is already running.
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -1209,6 +1167,80 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     Ok(all)
 }
 
+/// Reconcile cockpit workers against the on-disk session list. Spawns a
+/// worker for every cockpit-mode session that doesn't already have one,
+/// recording the attempt in `attempted` so a permanently-failing spawn
+/// (e.g. `claude-agent-acp` not installed) doesn't retry every 2s tick.
+/// Pruning `attempted` to live ids first lets a delete + recreate of
+/// the same id spawn again.
+///
+/// Covers three entry points to "cockpit session exists, no worker
+/// running": cold serve startup (first tick fires immediately), `aoe
+/// add --cockpit` while serve is running (next tick after the disk
+/// write), and any race where serve starts before a session file is
+/// fully written.
+#[cfg(feature = "serve")]
+async fn reconcile_cockpit_workers(
+    state: &Arc<AppState>,
+    attempted: &mut std::collections::HashSet<String>,
+) {
+    let targets: Vec<_> = {
+        let instances = state.instances.read().await;
+        instances
+            .iter()
+            .filter(|i| i.cockpit_mode)
+            .map(|i| {
+                (
+                    i.id.clone(),
+                    i.tool.clone(),
+                    i.cockpit_agent.clone(),
+                    i.cockpit_model.clone(),
+                    i.project_path.clone(),
+                )
+            })
+            .collect()
+    };
+
+    let live: std::collections::HashSet<&String> = targets.iter().map(|t| &t.0).collect();
+    attempted.retain(|id| live.contains(id));
+
+    for (id, tool, agent_override, model, project_path) in targets {
+        if attempted.contains(&id) {
+            continue;
+        }
+        if state.cockpit_supervisor.is_running(&id).await {
+            // A REST-triggered spawn (POST /api/sessions or
+            // /api/cockpit/sessions/:id/enable) already owns the worker;
+            // record the id so we don't poll is_running every tick.
+            attempted.insert(id);
+            continue;
+        }
+        // Mark before spawning so the next 2s tick doesn't double-spawn
+        // while AcpClient::spawn is still negotiating with the agent.
+        attempted.insert(id.clone());
+        let supervisor = state.cockpit_supervisor.clone();
+        let agent = supervisor
+            .pick_agent_for_tool(&tool, agent_override.as_deref())
+            .await;
+        let cwd = std::path::PathBuf::from(project_path);
+        tokio::spawn(async move {
+            if let Err(e) = supervisor
+                .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
+                .await
+            {
+                let message = format!("Failed to start cockpit agent {agent:?}: {e}");
+                tracing::warn!(
+                    target: "cockpit.supervisor",
+                    session = %id,
+                    agent = %agent,
+                    "auto-spawn reconciler failed: {message}"
+                );
+                supervisor.publish_startup_error(&id, message);
+            }
+        });
+    }
+}
+
 /// Background task that periodically refreshes session statuses. On each
 /// tick, diffs pre- and post-refresh statuses and emits a `StatusChange`
 /// on `state.status_tx` for every transition. Keeping the diff here,
@@ -1217,6 +1249,9 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
 /// and keeps TUI/CLI callers unchanged.
 async fn status_poll_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    #[cfg(feature = "serve")]
+    let mut attempted_cockpit_spawns: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     loop {
         interval.tick().await;
 
@@ -1265,6 +1300,9 @@ async fn status_poll_loop(state: Arc<AppState>) {
                 }
             }
             *state.instances.write().await = instances;
+
+            #[cfg(feature = "serve")]
+            reconcile_cockpit_workers(&state, &mut attempted_cockpit_spawns).await;
         }
     }
 }
