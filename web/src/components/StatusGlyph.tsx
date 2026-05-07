@@ -52,13 +52,19 @@ export function StatusGlyph({
   status,
   createdAt,
   idleEnteredAt,
+  idleDecayWindowMs,
 }: {
   status: SessionStatus;
   createdAt: string | null;
   idleEnteredAt?: string | null;
+  idleDecayWindowMs?: number;
 }) {
   const isFresh =
-    status === "Idle" && isFreshIdle({ status, idle_entered_at: idleEnteredAt ?? null });
+    status === "Idle" &&
+    isFreshIdle(
+      { status, idle_entered_at: idleEnteredAt ?? null },
+      idleDecayWindowMs,
+    );
   const rattleKey = STATUS_RATTLE[status];
   const rattle = isFresh
     ? FRESH_IDLE_RATTLE

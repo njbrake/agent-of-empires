@@ -30,6 +30,7 @@ function closeOtherContextMenus() {
 interface Props {
   groups: RepoGroup[];
   activeId: string | null;
+  idleDecayWindowMs: number;
   open: boolean;
   onToggle: () => void;
   onSelect: (workspaceId: string) => void;
@@ -43,12 +44,15 @@ interface Props {
 
 function bestSession(
   ws: Workspace,
+  idleDecayWindowMs: number,
 ): {
   status: SessionStatus;
   createdAt: string | null;
   idleEnteredAt: string | null;
 } {
-  const running = ws.sessions.find((s) => isSessionActive(s));
+  const running = ws.sessions.find((s) =>
+    isSessionActive(s, idleDecayWindowMs)
+  );
   if (running)
     return {
       status: running.status,
@@ -117,6 +121,7 @@ const SessionRow = memo(function SessionRow({
   onDelete,
   readOnly,
   indented,
+  idleDecayWindowMs,
 }: {
   workspace: Workspace;
   isActive: boolean;
@@ -124,15 +129,24 @@ const SessionRow = memo(function SessionRow({
   onDelete?: (workspaceId: string) => void;
   readOnly?: boolean;
   indented?: boolean;
+  idleDecayWindowMs: number;
 }) {
-  const { status: sessionStatus, createdAt, idleEnteredAt } = bestSession(workspace);
-  const textClass = getStatusTextClass({
-    status: sessionStatus,
-    idle_entered_at: idleEnteredAt,
-  });
+  const { status: sessionStatus, createdAt, idleEnteredAt } = bestSession(
+    workspace,
+    idleDecayWindowMs,
+  );
+  const textClass = getStatusTextClass(
+    {
+      status: sessionStatus,
+      idle_entered_at: idleEnteredAt,
+    },
+    idleDecayWindowMs,
+  );
   const label =
     workspace.branch ?? workspace.sessions[0]?.title ?? "default";
-  const runningSession = workspace.sessions.find((s) => isSessionActive(s));
+  const runningSession = workspace.sessions.find((s) =>
+    isSessionActive(s, idleDecayWindowMs)
+  );
   const firstSession = workspace.sessions[0];
   const sessionId = firstSession?.id;
   const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
@@ -310,9 +324,10 @@ const SessionRow = memo(function SessionRow({
               status={sessionStatus}
               createdAt={createdAt}
               idleEnteredAt={idleEnteredAt}
+              idleDecayWindowMs={idleDecayWindowMs}
             />
           </span>
-          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
             {label}
           </span>
         </div>
@@ -457,6 +472,7 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 export function WorkspaceSidebar({
   groups,
   activeId,
+  idleDecayWindowMs,
   open,
   onToggle,
   onSelect,
@@ -645,6 +661,7 @@ export function WorkspaceSidebar({
                       onDelete={onDeleteSession}
                       readOnly={readOnly}
                       indented
+                      idleDecayWindowMs={idleDecayWindowMs}
                     />
                   ))}
               </div>

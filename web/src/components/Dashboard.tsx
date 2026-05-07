@@ -4,6 +4,7 @@ import { isSessionActive } from "../lib/session";
 
 interface Props {
   sessions: SessionResponse[];
+  idleDecayWindowMs: number;
   onSelectSession: (sessionId: string) => void;
   onNewSession: () => void;
   onCloneFromUrl: () => void;
@@ -13,6 +14,7 @@ interface Props {
 
 export function Dashboard({
   sessions,
+  idleDecayWindowMs,
   onNewSession,
   onCloneFromUrl,
   onToggleSidebar,
@@ -25,12 +27,12 @@ export function Dashboard({
     let errors = 0;
     for (const s of sessions) {
       projects.add(s.main_repo_path || s.project_path);
-      if (isSessionActive(s)) active++;
+      if (isSessionActive(s, idleDecayWindowMs)) active++;
       if (s.status === "Waiting") waiting++;
       if (s.status === "Error") errors++;
     }
     return { active, waiting, errors, projects: projects.size };
-  }, [sessions]);
+  }, [sessions, idleDecayWindowMs]);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">

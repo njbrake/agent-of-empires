@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
-import { isSessionActive } from "./lib/session";
+import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
@@ -9,7 +9,13 @@ import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
-import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
+import {
+  loginStatus,
+  logout,
+  deleteSession,
+  fetchAbout,
+  fetchSettings,
+} from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
@@ -40,6 +46,7 @@ import {
 import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
+import { resolveIdleDecayWindowMs } from "./lib/idleDecay";
 
 export default function App() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
@@ -110,6 +117,9 @@ export default function App() {
 }
 
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
+  const [idleDecayWindowMs, setIdleDecayWindowMs] = useState(
+    IDLE_DECAY_WINDOW_MS,
+  );
   const navigate = useNavigate();
   const sessionMatch = useMatch("/session/:sessionId");
   const settingsRootMatch = useMatch("/settings");
@@ -119,7 +129,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const settingsTab = settingsTabMatch?.params.tab ?? null;
 
   const { sessions, error, injectSession, setSessionStatus } = useSessions();
-  const workspaces = useWorkspaces(sessions);
+  const workspaces = useWorkspaces(sessions, idleDecayWindowMs);
   const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
 
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -184,7 +194,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
-      const running = ws.sessions.find((s) => isSessionActive(s));
+      const running = ws.sessions.find((s) =>
+        isSessionActive(s, idleDecayWindowMs),
+      );
       const picked = running?.id ?? ws.sessions[0]?.id ?? null;
       if (picked) {
         navigate(`/session/${encodeURIComponent(picked)}`);
@@ -216,6 +228,17 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [wizardPrefill, setWizardPrefill] = useState<WizardPrefill | undefined>(undefined);
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
   const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSettings().then((settings) => {
+      if (cancelled) return;
+      setIdleDecayWindowMs(resolveIdleDecayWindowMs(settings));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     fetchAbout().then((about) => {
@@ -444,6 +467,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       return (
         <Dashboard
           sessions={sessions}
+          idleDecayWindowMs={idleDecayWindowMs}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
           onCloneFromUrl={handleCloneFromUrl}
@@ -537,6 +561,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           <WorkspaceSidebar
             groups={groups}
             activeId={activeWorkspace?.id ?? null}
+            idleDecayWindowMs={idleDecayWindowMs}
             open={sidebarOpen}
             onToggle={() => setSidebarOpen(false)}
             onSelect={handleSelectWorkspace}

@@ -101,6 +101,19 @@ export function getSessionFileDiff(
 
 // --- Settings ---
 
+export interface SettingsResponse {
+  theme?: {
+    idle_decay_minutes?: number | null;
+  } | null;
+}
+
+export function fetchSettings(
+  profile?: string,
+): Promise<SettingsResponse | null> {
+  const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  return fetchJson<SettingsResponse>(`/api/settings${params}`);
+}
+
 export function getSettings(profile?: string): Promise<Record<string, unknown> | null> {
   const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
   return fetchJson<Record<string, unknown>>(`/api/settings${params}`);
