@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
-import { isSessionActive } from "./lib/session";
+import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
@@ -9,8 +9,19 @@ import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
-import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
+import {
+  loginStatus,
+  logout,
+  deleteSession,
+  fetchAbout,
+  fetchSettings,
+} from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
+import {
+  IdleDecayWindowContext,
+  parseIdleDecayWindowMs,
+  useIdleDecayWindowMs,
+} from "./lib/idleDecay";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
 import {
@@ -45,6 +56,7 @@ export default function App() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
   const [tokenExpired, setTokenExpired] = useState(false);
+  const [idleDecayWindowMs, setIdleDecayWindowMs] = useState(IDLE_DECAY_WINDOW_MS);
 
   useEffect(() => {
     const onTokenExpired = () => setTokenExpired(true);
@@ -70,6 +82,12 @@ export default function App() {
     loginStatus().then(({ required, authenticated }) => {
       setLoginRequired(required);
       setLoginAuthenticated(authenticated);
+    });
+  }, []);
+
+  useEffect(() => {
+    fetchSettings().then((settings) => {
+      setIdleDecayWindowMs(parseIdleDecayWindowMs(settings));
     });
   }, []);
 
@@ -106,11 +124,16 @@ export default function App() {
     return <div className="h-dvh bg-surface-900 safe-area-inset" />;
   }
 
-  return <AppContent loginRequired={loginRequired} onLogout={handleLogout} />;
+  return (
+    <IdleDecayWindowContext.Provider value={idleDecayWindowMs}>
+      <AppContent loginRequired={loginRequired} onLogout={handleLogout} />
+    </IdleDecayWindowContext.Provider>
+  );
 }
 
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
   const navigate = useNavigate();
+  const idleDecayWindowMs = useIdleDecayWindowMs();
   const sessionMatch = useMatch("/session/:sessionId");
   const settingsRootMatch = useMatch("/settings");
   const settingsTabMatch = useMatch("/settings/:tab");
@@ -184,7 +207,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
-      const running = ws.sessions.find((s) => isSessionActive(s));
+      const running = ws.sessions.find((s) =>
+        isSessionActive(s, idleDecayWindowMs),
+      );
       const picked = running?.id ?? ws.sessions[0]?.id ?? null;
       if (picked) {
         navigate(`/session/${encodeURIComponent(picked)}`);

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { SessionResponse } from "../lib/types";
 import { isSessionActive } from "../lib/session";
+import { useIdleDecayWindowMs } from "../lib/idleDecay";
 
 interface Props {
   sessions: SessionResponse[];
@@ -18,6 +19,7 @@ export function Dashboard({
   onToggleSidebar,
   readOnly,
 }: Props) {
+  const idleDecayWindowMs = useIdleDecayWindowMs();
   const stats = useMemo(() => {
     const projects = new Set<string>();
     let active = 0;
@@ -25,12 +27,12 @@ export function Dashboard({
     let errors = 0;
     for (const s of sessions) {
       projects.add(s.main_repo_path || s.project_path);
-      if (isSessionActive(s)) active++;
+      if (isSessionActive(s, idleDecayWindowMs)) active++;
       if (s.status === "Waiting") waiting++;
       if (s.status === "Error") errors++;
     }
     return { active, waiting, errors, projects: projects.size };
-  }, [sessions]);
+  }, [idleDecayWindowMs, sessions]);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
