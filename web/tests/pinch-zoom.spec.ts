@@ -1,4 +1,5 @@
 import { test, expect, devices, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import {
   mockTerminalApis,
   installTerminalSpies,
@@ -17,8 +18,7 @@ test.describe("Terminal pinch zoom (mobile)", () => {
       await sidebarToggle.click();
       await page.waitForTimeout(300);
     }
-    // First match is the group header; second is the session row.
-    await page.locator('button:has-text("pinch-test")').nth(1).click();
+    await clickSidebarSession(page, "pinch-test");
     await page.locator(".wterm").waitFor({ state: "visible", timeout: 10_000 });
   }
 

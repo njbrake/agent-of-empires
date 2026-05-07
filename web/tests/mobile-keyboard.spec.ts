@@ -1,4 +1,5 @@
 import { test, expect, devices, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis, seedSettings } from "./helpers/terminal-mocks";
 
 // Use iPhone 13 profile: pointer:coarse, hasTouch, correct viewport, WebKit UA.
@@ -75,10 +76,7 @@ async function openSession(page: Page) {
     await sidebarToggle.click();
     await page.waitForTimeout(300);
   }
-  // The session row is a button inside the expanded group. The group header
-  // is also a button with "pinch-test", so we need the second match (the
-  // indented session row), or target the button with role specifically.
-  await page.locator('button:has-text("pinch-test")').nth(1).click();
+  await clickSidebarSession(page, "pinch-test");
   await page.locator(".wterm").waitFor({ state: "visible", timeout: 10_000 });
 }
 

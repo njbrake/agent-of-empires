@@ -152,6 +152,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
   const currentStepDef = steps[state.currentStep];
   const isFirst = state.currentStep === 0;
   const isLast = currentStepDef?.id === "review";
+  const modalTitle = prefill?.skipToReview ? "New session" : "Add project";
 
   useEffect(() => {
     fetchAgents().then((a) => dispatch({ type: "SET_AGENTS", agents: a }));
@@ -234,7 +235,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative w-full max-w-lg bg-surface-800 border border-surface-700/30 rounded-xl flex flex-col max-h-[min(720px,90vh)]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700/20">
-          <h1 className="text-sm font-medium text-text-secondary">Add project</h1>
+          <h1 className="text-sm font-medium text-text-secondary">{modalTitle}</h1>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-700/50 transition-colors" aria-label="Close">&times;</button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-5">
