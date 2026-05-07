@@ -126,7 +126,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [diffCollapsed, setDiffCollapsed] = useState(
     () => window.innerWidth < 768,
   );
-  const [showAddProject, setShowAddProject] = useState(false);
+  const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
@@ -271,7 +271,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       group: latest?.group_path || undefined,
       skipToReview: true,
     });
-    setShowAddProject(true);
+    setShowSessionWizard(true);
   }, [sessions]);
 
   const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
@@ -330,12 +330,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   const handleNewSession = useCallback(() => {
     setWizardPrefill(undefined);
-    setShowAddProject(true);
+    setShowSessionWizard(true);
   }, []);
 
   const handleCloneFromUrl = useCallback(() => {
     setWizardPrefill({ initialTab: "clone" });
-    setShowAddProject(true);
+    setShowSessionWizard(true);
   }, []);
 
   const handleToggleTerminalFocus = useCallback(() => {
@@ -385,7 +385,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onNew: () => setShowAddProject(true),
+        onNew: () => setShowSessionWizard(true),
         onDiff: () => toggleDiff(),
         onEscape: () => {
           if (deletingWorkspaceId) {
@@ -396,7 +396,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             setShowPalette(false);
             return;
           }
-          setShowAddProject(false);
+          setShowSessionWizard(false);
           setShowHelp(false);
           if (showSettings) handleCloseSettings();
           setShowAbout(false);
@@ -541,7 +541,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             onToggle={() => setSidebarOpen(false)}
             onSelect={handleSelectWorkspace}
             onToggleRepo={toggleRepoCollapsed}
-            onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
+            onNew={() => { setWizardPrefill(undefined); setShowSessionWizard(true); }}
             onCreateSession={handleCreateSession}
             onSettings={handleOpenSettings}
             onDeleteSession={handleDeleteSession}
@@ -554,16 +554,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         </div>
       </div>
 
-      {showAddProject && (
+      {showSessionWizard && (
         <SessionWizard
-          onClose={() => { setShowAddProject(false); setWizardPrefill(undefined); }}
+          onClose={() => { setShowSessionWizard(false); setWizardPrefill(undefined); }}
           onCreated={(session?: SessionResponse) => {
             if (session) {
               injectSession(session);
               navigate(`/session/${encodeURIComponent(session.id)}`);
               if (window.innerWidth < 768) setSidebarOpen(false);
             }
-            setShowAddProject(false);
+            setShowSessionWizard(false);
             setWizardPrefill(undefined);
           }}
           prefill={wizardPrefill}
