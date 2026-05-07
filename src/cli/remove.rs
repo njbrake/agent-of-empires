@@ -85,6 +85,8 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                 if !on_destroy.is_empty() {
                     let is_sandboxed = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
 
+                    // CLI context: leave the terminal attached so a hook that
+                    // legitimately needs user input can still be answered.
                     let errors = if is_sandboxed {
                         if let Some(ref sandbox) = inst.sandbox_info {
                             let workdir = inst.container_workdir();
@@ -92,6 +94,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                                 &on_destroy,
                                 &sandbox.container_name,
                                 &workdir,
+                                false,
                             )
                         } else {
                             vec![]
@@ -100,6 +103,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                         crate::session::repo_config::execute_hooks_best_effort(
                             &on_destroy,
                             project_path,
+                            false,
                         )
                     };
 

@@ -145,7 +145,7 @@ impl TokenManager {
 
         // Persist to disk
         if let Ok(app_dir) = crate::session::get_app_dir() {
-            write_secret_file(&app_dir.join("serve.token"), &new_token);
+            write_secret_file(&app_dir.join("serve.token"), &new_token).await;
         }
 
         info!("Auth token rotated (previous token valid for 5 more minutes)");
@@ -340,7 +340,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         );
         None
     } else {
-        Some(load_or_generate_token()?)
+        Some(load_or_generate_token().await?)
     };
 
     let token_lifetime = if remote {
@@ -362,7 +362,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // started from the CLI. Owner-only perms; cleaned up on shutdown.
     if let Some(pp) = passphrase {
         if let Ok(app_dir) = crate::session::get_app_dir() {
-            write_secret_file(&app_dir.join("serve.passphrase"), pp);
+            write_secret_file(&app_dir.join("serve.passphrase"), pp).await;
         }
     }
 
@@ -607,12 +607,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         // backward-compatible with any consumer that does `head -1 serve.url`,
         // and the TUI parses both single- and multi-URL formats.
         if let Ok(app_dir) = crate::session::get_app_dir() {
-            write_secret_file(&app_dir.join("serve.url"), &tunnel_url_with_token);
+            write_secret_file(&app_dir.join("serve.url"), &tunnel_url_with_token).await;
             // serve.mode lets the TUI reattach to a running daemon and
             // render the right transport label: "tunnel" for Cloudflare,
             // "tailscale" for Tailscale Funnel, "local" for local-only.
             let mode = format!("{}\n", handle.mode_label());
-            let _ = std::fs::write(app_dir.join("serve.mode"), mode);
+            if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), mode).await {
+                tracing::debug!("Failed to write serve.mode: {e}");
+            }
         }
 
         // Start health monitor (uses CancellationToken internally)
@@ -670,8 +672,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 contents.push_str(url);
                 contents.push('\n');
             }
-            write_secret_file(&app_dir.join("serve.url"), &contents);
-            let _ = std::fs::write(app_dir.join("serve.mode"), "local\n");
+            write_secret_file(&app_dir.join("serve.url"), &contents).await;
+            if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), "local\n").await {
+                tracing::debug!("Failed to write serve.mode: {e}");
+            }
         }
 
         None
@@ -724,7 +728,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 {
                     let url_with_token = format!("{}/?token={}", base_url, token);
                     if let Ok(app_dir) = crate::session::get_app_dir() {
-                        write_secret_file(&app_dir.join("serve.url"), &url_with_token);
+                        write_secret_file(&app_dir.join("serve.url"), &url_with_token).await;
                     }
                 }
 
@@ -817,7 +821,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     }
 
     if let Ok(app_dir) = crate::session::get_app_dir() {
-        let _ = std::fs::remove_file(app_dir.join("serve.passphrase"));
+        let _ = tokio::fs::remove_file(app_dir.join("serve.passphrase")).await;
     }
 
     Ok(())
@@ -1108,23 +1112,23 @@ pub fn discover_tagged_ips() -> Vec<(IpKind, std::net::Ipv4Addr)> {
 
 /// Write a file with owner-only permissions (0600) to protect secrets.
 #[cfg(unix)]
-fn write_secret_file(path: &std::path::Path, contents: &str) {
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
+async fn write_secret_file(path: &std::path::Path, contents: &str) {
+    use tokio::io::AsyncWriteExt;
+    let opts = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(path)
-    {
-        use std::io::Write;
-        let _ = file.write_all(contents.as_bytes());
+        .await;
+    if let Ok(mut file) = opts {
+        let _ = file.write_all(contents.as_bytes()).await;
     }
 }
 
 #[cfg(not(unix))]
-fn write_secret_file(path: &std::path::Path, contents: &str) {
-    let _ = std::fs::write(path, contents);
+async fn write_secret_file(path: &std::path::Path, contents: &str) {
+    let _ = tokio::fs::write(path, contents).await;
 }
 
 /// Generate a cryptographically random 64-character hex token (256 bits of entropy).
@@ -1147,18 +1151,18 @@ fn is_valid_token_format(token: &str) -> bool {
 
 /// Load an existing auth token from disk if it's less than 24 hours old,
 /// otherwise generate a fresh one and persist it.
-fn load_or_generate_token() -> anyhow::Result<String> {
+async fn load_or_generate_token() -> anyhow::Result<String> {
     let app_dir = crate::session::get_app_dir()?;
     let token_path = app_dir.join("serve.token");
 
     // Try to reuse existing token if fresh enough
-    if let Ok(metadata) = std::fs::metadata(&token_path) {
+    if let Ok(metadata) = tokio::fs::metadata(&token_path).await {
         if let Ok(modified) = metadata.modified() {
             let age = std::time::SystemTime::now()
                 .duration_since(modified)
                 .unwrap_or_default();
             if age < std::time::Duration::from_secs(24 * 60 * 60) {
-                if let Ok(token) = std::fs::read_to_string(&token_path) {
+                if let Ok(token) = tokio::fs::read_to_string(&token_path).await {
                     let token = token.trim().to_string();
                     if !token.is_empty() && is_valid_token_format(&token) {
                         return Ok(token);
@@ -1169,7 +1173,7 @@ fn load_or_generate_token() -> anyhow::Result<String> {
     }
 
     let token = generate_token();
-    write_secret_file(&token_path, &token);
+    write_secret_file(&token_path, &token).await;
     Ok(token)
 }
 

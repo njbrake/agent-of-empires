@@ -953,12 +953,23 @@ fn select_opencode_session(
     let session_entries: Vec<serde_json::Value> =
         serde_json::from_str(trimmed).context("Failed to parse OpenCode session list JSON")?;
 
-    let matching = filter_agent_sessions(
-        &session_entries,
-        Some(match_path),
-        exclusion,
-        launch_time_ms,
-    );
+    select_opencode_session_from_values(&session_entries, match_path, exclusion, launch_time_ms)
+}
+
+/// Pick the best opencode session from already-parsed entries.
+///
+/// Shared by the JSON (subprocess) path and the SQLite (direct read) path.
+/// Each entry must expose `id`, `directory`, and `updated` keys; the SQLite
+/// reader synthesizes that shape from the `session` table so this filter
+/// behaves identically across both sources.
+fn select_opencode_session_from_values(
+    session_entries: &[serde_json::Value],
+    match_path: &str,
+    exclusion: &HashSet<String>,
+    launch_time_ms: Option<f64>,
+) -> Result<String> {
+    let matching =
+        filter_agent_sessions(session_entries, Some(match_path), exclusion, launch_time_ms);
 
     matching
         .first()
@@ -967,18 +978,172 @@ fn select_opencode_session(
         .ok_or_else(|| anyhow::anyhow!("No OpenCode sessions found matching project path"))
 }
 
-/// Capture an OpenCode session ID by running `opencode session list --format json`,
-/// parsing the output, and matching by CWD. Returns error (not fallback) when
-/// no unexcluded session matches.
+/// Resolve the path to opencode's local SQLite session store.
+///
+/// Mirrors opencode's own resolution order (see `packages/opencode/src/storage/db.ts`):
+///   1. `OPENCODE_DB` env var: absolute path used verbatim, relative path
+///      joined to data dir, `:memory:` is unsupported (bail).
+///   2. Most recently modified `opencode*.db` in the data dir (covers both
+///      the standard `opencode.db` and channel variants like `opencode-dev.db`).
+fn opencode_db_path() -> Result<PathBuf> {
+    // 1. Explicit override via OPENCODE_DB (same env var opencode reads).
+    if let Ok(db_env) = std::env::var("OPENCODE_DB") {
+        if !db_env.is_empty() {
+            if db_env == ":memory:" {
+                anyhow::bail!("opencode is using an in-memory DB; cannot read sessions via SQLite");
+            }
+            let p = PathBuf::from(&db_env);
+            if p.is_absolute() {
+                return Ok(p);
+            }
+            return Ok(opencode_data_dir()?.join(p));
+        }
+    }
+
+    let data_dir = opencode_data_dir()?;
+
+    // 2. Find the most recently modified opencode DB in data_dir.
+    //    Covers both the standard filename (latest/beta/prod) and channel
+    //    variants (opencode-{channel}.db). Picking by mtime ensures we read
+    //    the DB the running opencode instance is actively writing to.
+    if let Ok(entries) = std::fs::read_dir(&data_dir) {
+        let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let is_candidate = name_str == "opencode.db"
+                || (name_str.starts_with("opencode-") && name_str.ends_with(".db"));
+            if is_candidate {
+                if let Ok(meta) = entry.metadata() {
+                    let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                    if best.as_ref().is_none_or(|(_, t)| mtime > *t) {
+                        best = Some((entry.path(), mtime));
+                    }
+                }
+            }
+        }
+        if let Some((path, _)) = best {
+            return Ok(path);
+        }
+    }
+
+    // Nothing found; return standard path so the caller gets a clear
+    // "not found" error and falls back to the subprocess path.
+    Ok(data_dir.join("opencode.db"))
+}
+
+/// Resolve opencode's data directory.
+///
+/// Uses `XDG_DATA_HOME` if set (same `xdg-basedir` npm package opencode uses),
+/// otherwise `$HOME/.local/share`. Both Linux and macOS use this path.
+fn opencode_data_dir() -> Result<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return Ok(PathBuf::from(xdg).join("opencode"));
+        }
+    }
+    let home =
+        std::env::var("HOME").context("HOME is not set; cannot resolve opencode data dir")?;
+    Ok(PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("opencode"))
+}
+
+/// Load opencode's session rows from its SQLite store at `db_path`.
+///
+/// Selects `id`, `directory`, and `time_updated` from the `session` table
+/// and reshapes each row to match the JSON the CLI would emit (`id`,
+/// `directory`, `updated`). An `Err` here means the DB is unreadable
+/// (missing, locked, schema mismatch, IO) and the caller should fall back
+/// to the subprocess path. An `Ok` with an empty `Vec` is authoritative:
+/// opencode genuinely has no sessions, so we should NOT fall back; the
+/// subprocess would leak `/tmp/.<hash>.so` for the same empty answer.
+fn read_opencode_sessions_from_sqlite_at(db_path: &Path) -> Result<Vec<serde_json::Value>> {
+    use rusqlite::{Connection, OpenFlags};
+
+    if !db_path.exists() {
+        anyhow::bail!("opencode DB not found at {}", db_path.display());
+    }
+
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("Failed to open opencode DB at {}", db_path.display()))?;
+    conn.busy_timeout(Duration::from_millis(100))
+        .context("Failed to set opencode DB busy timeout")?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, directory, time_updated FROM session ORDER BY time_updated DESC")
+        .context("opencode session table schema mismatch")?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let directory: String = row.get(1)?;
+            let time_updated: i64 = row.get(2)?;
+            Ok(serde_json::json!({
+                "id": id,
+                "directory": directory,
+                "updated": time_updated as f64,
+            }))
+        })
+        .context("Failed to query opencode session table")?;
+
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for row in rows {
+        entries.push(row.context("Failed to read opencode session row")?);
+    }
+    Ok(entries)
+}
+
+fn log_opencode_sqlite_fallback_once(err: &anyhow::Error) {
+    use std::sync::Once;
+    static LOG_ONCE: Once = Once::new();
+    LOG_ONCE.call_once(|| {
+        tracing::warn!(
+            "opencode SQLite read failed ({}); falling back to `opencode session list`. \
+             That subprocess leaks /tmp/.<hash>.so files via bun:ffi (see anomalyco/opencode#6523).",
+            err
+        );
+    });
+}
+
+/// Capture an OpenCode session ID, preferring a direct SQLite read.
 ///
 /// `launch_time_ms` is the lower bound on the session's `updated` timestamp,
 /// used to ignore stale sessions left over from prior runs. Pass `None` for
 /// retroactive capture on TUI startup, when the launch time isn't known.
+///
+/// Reads `~/.local/share/opencode/opencode.db` (or `$XDG_DATA_HOME/opencode/`)
+/// first. If the DB exists and is readable, its result is authoritative
+/// (including "no match found"); we do NOT fall back to the subprocess in
+/// that case, because every `opencode session list` invocation leaks a
+/// 4.5MB OpenTUI shared library to `/tmp/.<hash>-NNNNNNNN.so` via bun:ffi
+/// (anomalyco/opencode#6523), and the subprocess would just return the
+/// same empty answer. Only fall back when the read itself fails (DB
+/// missing, locked, schema drift, IO).
 pub(crate) fn try_capture_opencode_session_id(
     project_path: &str,
     exclusion: &HashSet<String>,
     launch_time_ms: Option<f64>,
 ) -> Result<String> {
+    let entries_or_fallback =
+        opencode_db_path().and_then(|p| read_opencode_sessions_from_sqlite_at(&p));
+
+    match entries_or_fallback {
+        Ok(entries) => {
+            return select_opencode_session_from_values(
+                &entries,
+                project_path,
+                exclusion,
+                launch_time_ms,
+            );
+        }
+        Err(e) => log_opencode_sqlite_fallback_once(&e),
+    }
+
     let mut cmd = std::process::Command::new("opencode");
     cmd.args(["session", "list", "--format", "json"])
         .current_dir(project_path);
@@ -1612,25 +1777,51 @@ pub(crate) fn capture_hermes_session_id(
     let hermes_home = resolve_agent_home(Some("HERMES_HOME"), ".hermes")?;
     let db_path = hermes_home.join("state.db");
 
+    let ids = read_hermes_sessions_from_sqlite(&db_path)?;
+
+    ids.into_iter()
+        .find(|id| !exclusion.contains(id))
+        .ok_or_else(|| anyhow::anyhow!("No active Hermes session found"))
+}
+
+/// Read active CLI session IDs from Hermes's SQLite state database.
+///
+/// Returns session IDs ordered by most recent first. An `Err` means the DB
+/// is unreadable (missing, locked, schema mismatch); the poller will retry
+/// on the next tick.
+fn read_hermes_sessions_from_sqlite(db_path: &Path) -> Result<Vec<String>> {
+    use rusqlite::{Connection, OpenFlags};
+
     if !db_path.exists() {
-        anyhow::bail!("Hermes state.db not found: {}", db_path.display());
+        anyhow::bail!("Hermes state.db not found at {}", db_path.display());
     }
 
-    let mut cmd = std::process::Command::new("sqlite3");
-    cmd.args([
-        "-cmd",
-        ".timeout 1000",
-        db_path.to_string_lossy().as_ref(),
-        "SELECT id FROM sessions WHERE source='cli' AND ended_at IS NULL ORDER BY started_at DESC LIMIT 10;",
-    ]);
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("Failed to open Hermes state.db at {}", db_path.display()))?;
+    conn.busy_timeout(Duration::from_millis(100))
+        .context("Failed to set Hermes DB busy timeout")?;
 
-    let stdout_bytes = run_with_timeout(
-        cmd,
-        Duration::from_secs(HERMES_COMMAND_TIMEOUT_SECS),
-        "sqlite3 (hermes session scan)",
-    )?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM sessions \
+             WHERE source='cli' AND ended_at IS NULL \
+             ORDER BY started_at DESC LIMIT 10",
+        )
+        .context("Hermes sessions table schema mismatch")?;
 
-    select_hermes_session(&stdout_bytes, exclusion)
+    let rows = stmt
+        .query_map([], |row| row.get(0))
+        .context("Failed to query Hermes sessions table")?;
+
+    let mut ids: Vec<String> = Vec::new();
+    for row in rows {
+        ids.push(row.context("Failed to read Hermes session row")?);
+    }
+
+    Ok(ids)
 }
 
 /// Capture a Hermes session ID from inside a Docker container.
@@ -3209,17 +3400,13 @@ mod tests {
     fn test_capture_hermes_basic() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("state.db");
-        let create_output = std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
-            .output()
-            .unwrap();
-        assert!(create_output.status.success());
-        std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("INSERT INTO sessions VALUES ('20260429_193246_adcddd','cli',1000.0,NULL);")
-            .output()
-            .unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);
+             INSERT INTO sessions VALUES ('20260429_193246_adcddd','cli',1000.0,NULL);",
+        )
+        .unwrap();
+        drop(conn);
         unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
         let exclusion = HashSet::new();
         let result = capture_hermes_session_id(".", &exclusion).unwrap();
@@ -3232,16 +3419,13 @@ mod tests {
     fn test_capture_hermes_excludes_ended() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("state.db");
-        std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
-            .output()
-            .unwrap();
-        std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("INSERT INTO sessions VALUES ('ended_session','cli',1000.0,123456.0);")
-            .output()
-            .unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);
+             INSERT INTO sessions VALUES ('ended_session','cli',1000.0,123456.0);",
+        )
+        .unwrap();
+        drop(conn);
         unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
         let result = capture_hermes_session_id(".", &HashSet::new());
         assert!(result.is_err());
@@ -3253,16 +3437,13 @@ mod tests {
     fn test_capture_hermes_excludes_non_cli() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("state.db");
-        std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
-            .output()
-            .unwrap();
-        std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("INSERT INTO sessions VALUES ('telegram_session','telegram',1000.0,NULL);")
-            .output()
-            .unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);
+             INSERT INTO sessions VALUES ('telegram_session','telegram',1000.0,NULL);",
+        )
+        .unwrap();
+        drop(conn);
         unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
         let result = capture_hermes_session_id(".", &HashSet::new());
         assert!(result.is_err());
@@ -3274,16 +3455,14 @@ mod tests {
     fn test_capture_hermes_exclusion_set() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("state.db");
-        std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);")
-            .output()
-            .unwrap();
-        std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("INSERT INTO sessions VALUES ('first_session','cli',2000.0,NULL); INSERT INTO sessions VALUES ('second_session','cli',1000.0,NULL);")
-            .output()
-            .unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, ended_at REAL);
+             INSERT INTO sessions VALUES ('first_session','cli',2000.0,NULL);
+             INSERT INTO sessions VALUES ('second_session','cli',1000.0,NULL);",
+        )
+        .unwrap();
+        drop(conn);
         unsafe { std::env::set_var("HERMES_HOME", tmp.path()) };
         let mut exclusion = HashSet::new();
         exclusion.insert("first_session".to_string());
@@ -3305,5 +3484,243 @@ mod tests {
     #[test]
     fn test_hermes_session_id_format_valid() {
         assert!(is_valid_session_id("20260429_193246_adcddd"));
+    }
+
+    fn create_opencode_test_db(rows: &[(&str, &str, i64)]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
+                time_updated INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        for (id, directory, ts) in rows {
+            conn.execute(
+                "INSERT INTO session (id, directory, time_updated) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, directory, ts],
+            )
+            .unwrap();
+        }
+        (dir, db_path)
+    }
+
+    #[test]
+    fn test_opencode_sqlite_picks_most_recent_match() {
+        let project = std::env::current_dir().unwrap();
+        let project_str = project.to_string_lossy().to_string();
+        let other = "/tmp/other-project";
+        let (_dir, db_path) = create_opencode_test_db(&[
+            ("ses_old", &project_str, 1_000_000),
+            ("ses_other", other, 9_999_999),
+            ("ses_new", &project_str, 2_000_000),
+        ]);
+
+        let entries = read_opencode_sessions_from_sqlite_at(&db_path).unwrap();
+        let result =
+            select_opencode_session_from_values(&entries, &project_str, &HashSet::new(), None)
+                .unwrap();
+        assert_eq!(result, "ses_new");
+    }
+
+    #[test]
+    fn test_opencode_sqlite_excludes_known_ids() {
+        let project = std::env::current_dir().unwrap();
+        let project_str = project.to_string_lossy().to_string();
+        let (_dir, db_path) = create_opencode_test_db(&[
+            ("ses_skip", &project_str, 2_000_000),
+            ("ses_keep", &project_str, 1_000_000),
+        ]);
+
+        let mut exclusion = HashSet::new();
+        exclusion.insert("ses_skip".to_string());
+        let entries = read_opencode_sessions_from_sqlite_at(&db_path).unwrap();
+        let result =
+            select_opencode_session_from_values(&entries, &project_str, &exclusion, None).unwrap();
+        assert_eq!(result, "ses_keep");
+    }
+
+    #[test]
+    fn test_opencode_sqlite_respects_launch_time_floor() {
+        let project = std::env::current_dir().unwrap();
+        let project_str = project.to_string_lossy().to_string();
+        let (_dir, db_path) = create_opencode_test_db(&[
+            ("ses_stale", &project_str, 1_000),
+            ("ses_fresh", &project_str, 5_000),
+        ]);
+
+        let entries = read_opencode_sessions_from_sqlite_at(&db_path).unwrap();
+        let result = select_opencode_session_from_values(
+            &entries,
+            &project_str,
+            &HashSet::new(),
+            Some(2_000.0),
+        )
+        .unwrap();
+        assert_eq!(result, "ses_fresh");
+    }
+
+    #[test]
+    fn test_opencode_sqlite_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("does-not-exist.db");
+        let result = read_opencode_sessions_from_sqlite_at(&db_path);
+        assert!(result.is_err(), "missing DB must Err so caller falls back");
+    }
+
+    #[test]
+    fn test_opencode_sqlite_schema_mismatch_errors_for_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        // Missing required columns; the prepare() should fail and we should
+        // bubble up an error so the caller falls back to the subprocess path.
+        conn.execute_batch("CREATE TABLE session (id TEXT PRIMARY KEY);")
+            .unwrap();
+        drop(conn);
+
+        let result = read_opencode_sessions_from_sqlite_at(&db_path);
+        assert!(
+            result.is_err(),
+            "schema mismatch must Err so caller falls back"
+        );
+    }
+
+    #[test]
+    fn test_opencode_sqlite_no_matching_directory_returns_no_match_not_infra_error() {
+        // Critical for not re-introducing the leak: when the DB is readable
+        // but no session matches, the inner reader must succeed (so the
+        // public function does NOT fall back to the leaky subprocess), and
+        // the selector returns the genuine "no match" error.
+        let (_dir, db_path) = create_opencode_test_db(&[("ses_x", "/elsewhere", 1)]);
+        let entries = read_opencode_sessions_from_sqlite_at(&db_path)
+            .expect("readable DB must Ok even when no rows match the project path");
+        assert_eq!(entries.len(), 1);
+        let result =
+            select_opencode_session_from_values(&entries, "/different", &HashSet::new(), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_respects_opencode_db_env_absolute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_path = tmp.path().join("custom.db");
+        std::fs::write(&custom_path, "").unwrap();
+
+        let old = std::env::var("OPENCODE_DB").ok();
+        std::env::set_var("OPENCODE_DB", custom_path.to_str().unwrap());
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, custom_path);
+
+        match old {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => std::env::remove_var("OPENCODE_DB"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_respects_opencode_db_env_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join(".local").join("share").join("opencode");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let old_db = std::env::var("OPENCODE_DB").ok();
+        let old_home = std::env::var("HOME").ok();
+        let old_xdg = std::env::var("XDG_DATA_HOME").ok();
+        std::env::set_var("OPENCODE_DB", "custom.db");
+        std::env::set_var("HOME", tmp.path().to_str().unwrap());
+        std::env::remove_var("XDG_DATA_HOME");
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, data_dir.join("custom.db"));
+
+        match old_db {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => std::env::remove_var("OPENCODE_DB"),
+        }
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        if let Some(v) = old_xdg {
+            std::env::set_var("XDG_DATA_HOME", v);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_memory_returns_error() {
+        let old = std::env::var("OPENCODE_DB").ok();
+        std::env::set_var("OPENCODE_DB", ":memory:");
+
+        let result = opencode_db_path();
+        assert!(result.is_err());
+
+        match old {
+            Some(v) => std::env::set_var("OPENCODE_DB", v),
+            None => std::env::remove_var("OPENCODE_DB"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_finds_channel_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("opencode");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let channel_db = data_dir.join("opencode-dev.db");
+        std::fs::write(&channel_db, "").unwrap();
+
+        let old_db = std::env::var("OPENCODE_DB").ok();
+        let old_xdg = std::env::var("XDG_DATA_HOME").ok();
+        std::env::remove_var("OPENCODE_DB");
+        std::env::set_var("XDG_DATA_HOME", tmp.path().to_str().unwrap());
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, channel_db);
+
+        if let Some(v) = old_db {
+            std::env::set_var("OPENCODE_DB", v);
+        }
+        match old_xdg {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_opencode_db_path_picks_most_recent_when_both_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("opencode");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let standard = data_dir.join("opencode.db");
+        let channel = data_dir.join("opencode-dev.db");
+        std::fs::write(&standard, "").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&channel, "").unwrap();
+
+        let old_db = std::env::var("OPENCODE_DB").ok();
+        let old_xdg = std::env::var("XDG_DATA_HOME").ok();
+        std::env::remove_var("OPENCODE_DB");
+        std::env::set_var("XDG_DATA_HOME", tmp.path().to_str().unwrap());
+
+        let result = opencode_db_path().unwrap();
+        assert_eq!(result, channel, "should pick the most recently modified DB");
+
+        if let Some(v) = old_db {
+            std::env::set_var("OPENCODE_DB", v);
+        }
+        match old_xdg {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
     }
 }

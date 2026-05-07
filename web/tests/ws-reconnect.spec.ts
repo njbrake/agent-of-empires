@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 
 // Verifies useTerminal.ts reconnects after a WS drop and that the first
 // retry fires within the expected ~1s exponential-backoff window (not the
@@ -65,9 +66,7 @@ async function mockApisExceptWs(page: Page, sessionTitle: string) {
 async function openSession(page: Page, title: string) {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/");
-  // The sidebar renders a repo-group header and a nested session row with
-  // the same text. Click the nested (last) one to open the session.
-  await page.locator("button").filter({ hasText: title }).last().click();
+  await clickSidebarSession(page, title);
   await page.locator(".wterm").first().waitFor({ state: "visible", timeout: 10_000 });
 }
 

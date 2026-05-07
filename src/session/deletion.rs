@@ -226,6 +226,9 @@ fn run_on_destroy_hooks(instance: &Instance) {
 
     let is_sandboxed = instance.sandbox_info.as_ref().is_some_and(|s| s.enabled);
 
+    // perform_deletion is the shared path used by the TUI and web server, so
+    // detach the hook child from the controlling terminal: a credential prompt
+    // would otherwise corrupt the rendered UI (see issue #901).
     let errors = if is_sandboxed {
         if let Some(ref sandbox) = instance.sandbox_info {
             let workdir = instance.container_workdir();
@@ -233,12 +236,13 @@ fn run_on_destroy_hooks(instance: &Instance) {
                 &resolved_on_destroy,
                 &sandbox.container_name,
                 &workdir,
+                true,
             )
         } else {
             vec![]
         }
     } else {
-        repo_config::execute_hooks_best_effort(&resolved_on_destroy, project_path)
+        repo_config::execute_hooks_best_effort(&resolved_on_destroy, project_path, true)
     };
 
     if !errors.is_empty() {

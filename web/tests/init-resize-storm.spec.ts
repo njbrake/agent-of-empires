@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
 
 // Regression for #807. useTerminal.ts used to read term.cols/term.rows
@@ -36,7 +37,7 @@ function extractResizes(handle: MockHandle): ResizeMsg[] {
 }
 
 async function openSession(page: Page, handle: MockHandle) {
-  await page.locator('button:has-text("pinch-test")').nth(1).click();
+  await clickSidebarSession(page, "pinch-test");
   await page
     .locator(".wterm")
     .first()

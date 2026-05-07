@@ -526,16 +526,46 @@ enum HookTarget<'a> {
     },
 }
 
+/// Spawn-time options for a hook child process.
+///
+/// `detach_tty` disconnects the child from the parent's controlling terminal so
+/// interactive prompts (e.g., `git clone` over HTTPS asking for a username)
+/// cannot reach `/dev/tty` and corrupt the TUI screen. Used by every code path
+/// reachable from the TUI or web server; the CLI paths leave the terminal
+/// attached so the user's shell can still service prompts.
+#[derive(Clone, Copy, Default)]
+struct HookSpawnOpts {
+    /// Append `2>&1` to the shell command so stderr is captured alongside
+    /// stdout. Used by the streamed path that pipes a single fd to the UI.
+    merge_stderr: bool,
+    /// Severs every channel a credential prompt could escape through.
+    detach_tty: bool,
+}
+
+/// Env vars that defang non-interactive credential prompts. Setting these on
+/// the spawned process covers local hooks; for container hooks they must be
+/// re-injected via `docker exec -e` since `docker exec` does not forward host
+/// env vars by default.
+const PROMPT_SUPPRESS_ENV: &[(&str, &str)] = &[
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_ASKPASS", "true"),
+    ("SSH_ASKPASS", "true"),
+];
+
 /// Build a `Command` for running a hook. Local hooks use the user's `$SHELL`;
 /// container hooks use `bash` since the user shell may not be installed.
-fn build_hook_command(cmd: &str, target: &HookTarget, merge_stderr: bool) -> std::process::Command {
-    let shell_cmd = if merge_stderr {
+fn build_hook_command(
+    cmd: &str,
+    target: &HookTarget,
+    opts: HookSpawnOpts,
+) -> std::process::Command {
+    let shell_cmd = if opts.merge_stderr {
         format!("{} 2>&1", cmd)
     } else {
         cmd.to_string()
     };
 
-    match target {
+    let mut command = match target {
         HookTarget::Local { project_path } => {
             let shell = super::environment::user_shell();
             let mut command = std::process::Command::new(shell);
@@ -548,18 +578,53 @@ fn build_hook_command(cmd: &str, target: &HookTarget, merge_stderr: bool) -> std
         } => {
             let binary = crate::containers::runtime_binary();
             let mut command = std::process::Command::new(binary);
-            command.args([
-                "exec",
-                "--workdir",
-                workdir,
-                container_name,
-                "bash",
-                "-c",
-                &shell_cmd,
-            ]);
+            command.arg("exec").arg("--workdir").arg(workdir);
+            // For container hooks, env vars on the `docker exec` parent do not
+            // propagate inside the container; inject them via `-e` instead.
+            if opts.detach_tty {
+                for (k, v) in PROMPT_SUPPRESS_ENV {
+                    command.arg("-e").arg(format!("{}={}", k, v));
+                }
+            }
+            command
+                .arg(container_name)
+                .arg("bash")
+                .arg("-c")
+                .arg(&shell_cmd);
             command
         }
+    };
+
+    if opts.detach_tty {
+        // Cut every channel a credential prompt could escape through:
+        //   - stdin: don't inherit the TUI's raw-mode terminal
+        //   - prompt-suppression env vars (set on the parent for local hooks;
+        //     forwarded via `-e` above for container hooks)
+        //   - setsid (Unix, local only): no controlling terminal, so /dev/tty
+        //     open fails. Container hooks already run via `docker exec` with
+        //     no TTY allocated.
+        command.stdin(std::process::Stdio::null());
+        if matches!(target, HookTarget::Local { .. }) {
+            for (k, v) in PROMPT_SUPPRESS_ENV {
+                command.env(k, v);
+            }
+        }
+
+        #[cfg(unix)]
+        if matches!(target, HookTarget::Local { .. }) {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: setsid is async-signal-safe per POSIX, which is the only
+            // requirement for pre_exec closures.
+            unsafe {
+                command.pre_exec(|| {
+                    nix::unistd::setsid().map_err(std::io::Error::other)?;
+                    Ok(())
+                });
+            }
+        }
     }
+
+    command
 }
 
 /// Format a hook failure error message from captured output.
@@ -596,7 +661,7 @@ fn run_hooks_captured(commands: &[String], target: &HookTarget) -> Result<()> {
 
     for cmd in commands {
         tracing::info!("Running hook: {}", cmd);
-        let mut command = build_hook_command(cmd, target, false);
+        let mut command = build_hook_command(cmd, target, HookSpawnOpts::default());
         let output = command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -639,7 +704,14 @@ fn run_hooks_streamed(
         tracing::info!("Running hook (streamed): {}", cmd);
         let _ = progress_tx.send(HookProgress::Started(cmd.clone()));
 
-        let mut command = build_hook_command(cmd, target, true);
+        let mut command = build_hook_command(
+            cmd,
+            target,
+            HookSpawnOpts {
+                merge_stderr: true,
+                detach_tty: true,
+            },
+        );
         let mut child = command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -688,13 +760,28 @@ pub fn execute_hooks_in_container(
 /// Execute hooks with best-effort semantics: all commands are attempted even if
 /// some fail. Returns collected error messages. Designed for teardown hooks
 /// (on_destroy) where partial cleanup is better than aborting on first failure.
-fn run_hooks_best_effort(commands: &[String], target: &HookTarget) -> Vec<String> {
+///
+/// `detach_tty` should be true when called from a TUI/web context so a hook that
+/// blocks on a credential prompt cannot corrupt the rendered UI; false when
+/// called from a CLI context where the user can answer prompts in their shell.
+fn run_hooks_best_effort(
+    commands: &[String],
+    target: &HookTarget,
+    detach_tty: bool,
+) -> Vec<String> {
     let in_container = matches!(target, HookTarget::Container { .. });
     let mut errors = Vec::new();
 
     for cmd in commands {
         tracing::info!("Running hook (best-effort): {}", cmd);
-        let mut command = build_hook_command(cmd, target, false);
+        let mut command = build_hook_command(
+            cmd,
+            target,
+            HookSpawnOpts {
+                merge_stderr: false,
+                detach_tty,
+            },
+        );
         match command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -733,17 +820,28 @@ fn run_hooks_best_effort(commands: &[String], target: &HookTarget) -> Vec<String
 }
 
 /// Execute hooks locally with best-effort semantics (all commands attempted).
+///
+/// `detach_tty` should be true when called from a TUI/web context to keep
+/// credential prompts off the UI; false from CLI so prompts remain answerable.
 /// Returns a list of error messages for any hooks that failed.
-pub fn execute_hooks_best_effort(commands: &[String], project_path: &Path) -> Vec<String> {
-    run_hooks_best_effort(commands, &HookTarget::Local { project_path })
+pub fn execute_hooks_best_effort(
+    commands: &[String],
+    project_path: &Path,
+    detach_tty: bool,
+) -> Vec<String> {
+    run_hooks_best_effort(commands, &HookTarget::Local { project_path }, detach_tty)
 }
 
 /// Execute hooks in a container with best-effort semantics (all commands attempted).
+///
+/// `detach_tty` should be true when called from a TUI/web context to keep
+/// credential prompts off the UI; false from CLI so prompts remain answerable.
 /// Returns a list of error messages for any hooks that failed.
 pub fn execute_hooks_in_container_best_effort(
     commands: &[String],
     container_name: &str,
     workdir: &str,
+    detach_tty: bool,
 ) -> Vec<String> {
     run_hooks_best_effort(
         commands,
@@ -751,6 +849,7 @@ pub fn execute_hooks_in_container_best_effort(
             container_name,
             workdir,
         },
+        detach_tty,
     )
 }
 
@@ -1198,5 +1297,164 @@ mod tests {
         // Non-overridden fields should be preserved
         assert!(merged.sandbox.auto_cleanup);
         assert!(merged.worktree.auto_cleanup);
+    }
+
+    /// Regression for issue #901: streamed hooks must run detached from the
+    /// TUI's controlling terminal, so an interactive prompt (e.g., `git clone`
+    /// over HTTPS asking for a username) cannot reach `/dev/tty` and corrupt
+    /// the TUI screen. We verify the contract holds:
+    ///   1. stdin is not a TTY (`[ -t 0 ]` is false)
+    ///   2. `GIT_TERMINAL_PROMPT=0` is exported, so git fails fast with a
+    ///      clean error instead of falling back to a tty prompt
+    ///   3. `GIT_ASKPASS` / `SSH_ASKPASS` are defanged
+    #[test]
+    fn streamed_hook_detached_from_tty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = r#"
+            if [ -t 0 ]; then echo "STDIN=tty"; else echo "STDIN=notty"; fi
+            echo "GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-unset}"
+            echo "GIT_ASKPASS=${GIT_ASKPASS:-unset}"
+            echo "SSH_ASKPASS=${SSH_ASKPASS:-unset}"
+        "#;
+        let (tx, rx) = mpsc::channel();
+        execute_hooks_streamed(&[probe.to_string()], tmp.path(), &tx).unwrap();
+        drop(tx);
+
+        let lines: Vec<String> = rx
+            .into_iter()
+            .filter_map(|p| match p {
+                HookProgress::Output(line) => Some(line),
+                HookProgress::Started(_) => None,
+            })
+            .collect();
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("STDIN=notty"),
+            "streamed hook stdin should be disconnected from any TTY, got:\n{}",
+            joined
+        );
+        assert!(
+            joined.contains("GIT_TERMINAL_PROMPT=0"),
+            "GIT_TERMINAL_PROMPT must be 0 to prevent git tty prompts, got:\n{}",
+            joined
+        );
+        assert!(
+            joined.contains("GIT_ASKPASS=true"),
+            "GIT_ASKPASS must be defanged, got:\n{}",
+            joined
+        );
+        assert!(
+            joined.contains("SSH_ASKPASS=true"),
+            "SSH_ASKPASS must be defanged, got:\n{}",
+            joined
+        );
+    }
+
+    /// The CLI/captured path leaves the terminal attached so users running
+    /// `aoe add` from a real shell can still answer interactive prompts. We
+    /// only verify the env vars are NOT forced here (stdin may or may not be
+    /// a TTY depending on how tests are launched).
+    #[test]
+    fn captured_hook_does_not_force_git_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = "echo \"GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-unset}\" > out.txt";
+        execute_hooks(&[probe.to_string()], tmp.path()).unwrap();
+        let out = std::fs::read_to_string(tmp.path().join("out.txt")).unwrap();
+        assert!(
+            !out.contains("GIT_TERMINAL_PROMPT=0"),
+            "captured path must not force GIT_TERMINAL_PROMPT, got: {}",
+            out
+        );
+    }
+
+    /// Container hooks need prompt-suppression env vars forwarded into the
+    /// container via `docker exec -e`, since `docker exec` does not pass host
+    /// env vars by default. This is a structural test: we don't actually run
+    /// `docker exec` (CI lacks it), we just inspect the args we'd hand to it.
+    #[test]
+    fn container_hook_forwards_prompt_env_via_dash_e() {
+        let target = HookTarget::Container {
+            container_name: "test_container",
+            workdir: "/work",
+        };
+        let detached = build_hook_command(
+            "git clone https://example.com/repo",
+            &target,
+            HookSpawnOpts {
+                merge_stderr: true,
+                detach_tty: true,
+            },
+        );
+        let args: Vec<String> = detached
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("-e GIT_TERMINAL_PROMPT=0"),
+            "expected `-e GIT_TERMINAL_PROMPT=0` in docker exec args, got: {:?}",
+            args
+        );
+        assert!(
+            joined.contains("-e GIT_ASKPASS=true"),
+            "expected `-e GIT_ASKPASS=true` in docker exec args, got: {:?}",
+            args
+        );
+        assert!(
+            joined.contains("-e SSH_ASKPASS=true"),
+            "expected `-e SSH_ASKPASS=true` in docker exec args, got: {:?}",
+            args
+        );
+
+        let attached = build_hook_command("rm -rf /work/build", &target, HookSpawnOpts::default());
+        let attached_args: Vec<String> = attached
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !attached_args.iter().any(|a| a == "-e"),
+            "captured container path must not inject `-e` flags, got: {:?}",
+            attached_args
+        );
+    }
+
+    /// on_destroy hooks invoked from the TUI/web (via session::deletion) must
+    /// also detach from the controlling terminal. Verifies the new
+    /// `detach_tty` flag on `execute_hooks_best_effort` actually flows through.
+    #[test]
+    fn best_effort_hook_detaches_when_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = "echo \"GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-unset}\" > out.txt";
+        let errors = execute_hooks_best_effort(&[probe.to_string()], tmp.path(), true);
+        assert!(
+            errors.is_empty(),
+            "hook should succeed, errors: {:?}",
+            errors
+        );
+        let out = std::fs::read_to_string(tmp.path().join("out.txt")).unwrap();
+        assert!(
+            out.contains("GIT_TERMINAL_PROMPT=0"),
+            "best-effort path with detach_tty=true must export GIT_TERMINAL_PROMPT=0, got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn best_effort_hook_attached_for_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = "echo \"GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-unset}\" > out.txt";
+        let errors = execute_hooks_best_effort(&[probe.to_string()], tmp.path(), false);
+        assert!(
+            errors.is_empty(),
+            "hook should succeed, errors: {:?}",
+            errors
+        );
+        let out = std::fs::read_to_string(tmp.path().join("out.txt")).unwrap();
+        assert!(
+            !out.contains("GIT_TERMINAL_PROMPT=0"),
+            "CLI best-effort path must not force GIT_TERMINAL_PROMPT, got: {}",
+            out
+        );
     }
 }
