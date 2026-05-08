@@ -342,6 +342,21 @@ const SessionRow = memo(function SessionRow({
                 {subtitle}
               </span>
             )}
+            {firstSession && firstSession.workspace_repos.length > 1 && (
+              <span
+                className="mt-0.5 flex flex-wrap gap-1 text-[10px] font-mono text-text-dim"
+                title={firstSession.workspace_repos.map((r) => r.source_path).join("\n")}
+              >
+                {firstSession.workspace_repos.map((r) => (
+                  <span
+                    key={r.source_path}
+                    className="px-1 py-px bg-surface-800/50 border border-surface-700/40 rounded text-text-secondary"
+                  >
+                    {r.name}
+                  </span>
+                ))}
+              </span>
+            )}
           </div>
         </div>
       </Link>
